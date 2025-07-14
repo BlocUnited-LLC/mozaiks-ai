@@ -1,0 +1,884 @@
+/* Copy this content to your main CSS file (usually index.css or globals.css) */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Import Google Fonts for Mission Control Interface */
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&display=swap');
+
+/* Font Face Declarations */
+@font-face {
+  font-family: "Fagrak Inline";
+  src: url("../fonts/Fagrak Inline.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "Fagrak";
+  src: url("../fonts/Fagrak.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "Techfont";
+  src: url("../fonts/Techfont.woff") format("woff");
+}
+
+@font-face {
+  font-family: "Fueled by Schlitz";
+  src: url("../fonts/FBS.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "Hyperjump";
+  src: url("../fonts/Hyperjump Bold.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "Oxanium";
+  src: url("../fonts/Oxanium-VariableFont_wght.ttf") format("truetype");
+}
+
+/* Font Classes */
+.fagrak {
+  font-family: "Fagrak", sans-serif;
+}
+
+.fagrak-inline {
+  font-family: "Fagrak Inline", sans-serif !important;
+}
+
+.techfont {
+  font-family: "Techfont", monospace;
+}
+
+.oxanium {
+  font-family: "Oxanium", sans-serif;
+}
+
+.fbs {
+  font-family: "Fueled by Schlitz", sans-serif;
+}
+
+.hyperjump {
+  font-family: "Hyperjump", sans-serif;
+}
+
+/* Text Shadows and Effects */
+.main-text-shadow {
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+.custom-text-shadow {
+  text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.7);
+}
+
+.skyblueish-text-shadow {
+  text-shadow: 0 0 10px #00D1FF, 0 0 20px #00D1FF;
+}
+
+.text_space {
+  letter-spacing: 2px;
+}
+
+/* Mozaik Component Styles */
+.mozaik-box {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  overflow: hidden;
+  position: relative;
+}
+
+.mozaik-box-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    135deg,
+    rgba(0, 0, 0, 0.3) 0%,
+    rgba(0, 0, 0, 0.1) 50%,
+    rgba(0, 0, 0, 0.3) 100%
+  );
+  z-index: 1;
+}
+
+.mozaik-comp-box {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.coming-soon-tag {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 10;
+}
+
+.mozaikportal-button {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+}
+
+.mozaikportal-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+}
+
+/* Card Component Styles */
+.profile_container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile_container_inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile_container_rec {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 8px 16px;
+  border-radius: 8px;
+  transition: all 0.3s ease;
+}
+
+.profile_container_rec:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.signupcard, .usercard {
+  color: white;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.user_photo img {
+  border: 2px solid #667eea;
+}
+
+/* Responsive Classes */
+@media (max-width: 768px) {
+  .hiddenClass1 {
+    display: none;
+  }
+}
+
+/* Gradient Backgrounds */
+.gradient-background {
+  background: linear-gradient(135deg, #060B26 0%, #1A1F37 100%);
+}
+
+/* Button Shadows */
+.blue-button-shadow {
+  box-shadow: 0 0 20px rgba(97, 0, 255, 0.3);
+}
+
+.freelancer-prof-button-shadow {
+  box-shadow: 0 4px 15px rgba(97, 0, 255, 0.4);
+}
+
+/* Chat Styles */
+.chat-bg {
+  backdrop-filter: "blur(10px)";
+  box-shadow: 0px 0px 10px 0px #ffffff;
+  background: rgba(0, 0, 0, 0.08);
+  border: 2px solid #fdfdfd;
+}
+
+/* Mission Control Agent Message - Cosmic Command Interface */
+.design-mission-message-send {
+  background: rgba(15, 25, 50, 0.6);
+  border: 1px solid rgba(51, 240, 250, 0.4);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 
+    0 0 20px rgba(51, 240, 250, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 8px 32px rgba(157, 78, 255, 0.1);
+  position: relative;
+}
+
+.design-mission-message-send::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, 
+    rgba(51, 240, 250, 0.05) 0%, 
+    transparent 50%, 
+    rgba(157, 78, 255, 0.05) 100%);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* User Transmission Bubble - Elegant Warm Gray Theme */
+.design-mission-message-receive {
+  background: linear-gradient(135deg, 
+    rgba(71, 85, 105, 0.8) 0%, 
+    rgba(51, 65, 85, 0.7) 50%, 
+    rgba(30, 41, 59, 0.6) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 
+    0 0 25px rgba(100, 116, 139, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    0 8px 32px rgba(0, 0, 0, 0.4);
+  position: relative;
+}
+
+.design-mission-message-receive::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, 
+    rgba(148, 163, 184, 0.08) 0%, 
+    transparent 50%, 
+    rgba(100, 116, 139, 0.06) 100%);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.deisgn-mission-input {
+  background: rgba(0, 0, 0, 0.8);
+  box-shadow: 3px -3px 10px 0px #000 inset,
+    -3px 2px 2px 0px rgba(255, 255, 255, 0.55) inset,
+    0px 0px 4px 0px rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(10px);
+}
+
+.blueprint-button{
+  box-shadow: 3px -3px 10px 0px #000 inset,
+  -3px 3px 3px 0px rgba(255, 255, 255, 0.5) inset;
+  background-color: #cecece;
+}
+
+.blueprint-blue-button{
+  box-shadow: 3px -3px 10px 0px #000 inset,
+  -3px 3px 3px 0px rgba(255, 255, 255, 0.5) inset;
+  background-color: #00d1ff;
+}
+
+/* Scrollbar Styles */
+.my-scroll1::-webkit-scrollbar {
+  width: 8px;
+}
+
+.my-scroll1::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.my-scroll1::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 10px;
+}
+
+.my-scroll1::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* Cosmic Chat Theme - Agent UI Components with Solid Textures */
+.agent-ui-cosmic {
+  background: 
+    linear-gradient(145deg, #0d1a2e 0%, #1b2d4e 25%, #243d63 50%, #1b2d4e 75%, #0d1a2e 100%),
+    radial-gradient(circle at 25% 25%, rgba(0, 123, 255, 0.3) 0%, transparent 50%);
+  background-blend-mode: normal, screen;
+  border: 2px solid #2c4a6a;
+  box-shadow: 
+    inset 1px 1px 4px rgba(255, 255, 255, 0.1),
+    inset -1px -1px 4px rgba(0, 0, 0, 0.4),
+    0px 4px 15px rgba(0, 123, 255, 0.3);
+  position: relative;
+}
+
+.agent-ui-cosmic::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    repeating-linear-gradient(
+      45deg,
+      transparent,
+      transparent 3px,
+      rgba(255, 255, 255, 0.015) 3px,
+      rgba(255, 255, 255, 0.015) 6px
+    );
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.agent-ui-cosmic-intense {
+  background: 
+    linear-gradient(145deg, #1d2a3e 0%, #2b3d5e 25%, #344d73 50%, #2b3d5e 75%, #1d2a3e 100%),
+    radial-gradient(circle at 30% 30%, rgba(0, 123, 255, 0.4) 0%, transparent 50%),
+    radial-gradient(circle at 70% 70%, rgba(0, 209, 255, 0.2) 0%, transparent 50%);
+  background-blend-mode: normal, screen, screen;
+  border: 2px solid #3c5a7a;
+  box-shadow: 
+    inset 2px 2px 6px rgba(255, 255, 255, 0.12),
+    inset -2px -2px 6px rgba(0, 0, 0, 0.5),
+    0px 6px 20px rgba(0, 123, 255, 0.4);
+  position: relative;
+}
+
+.agent-ui-cosmic-intense::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    repeating-linear-gradient(
+      -30deg,
+      transparent,
+      transparent 2px,
+      rgba(255, 255, 255, 0.02) 2px,
+      rgba(255, 255, 255, 0.02) 4px
+    );
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.agent-ui-cosmic-button {
+  background: 
+    linear-gradient(145deg, #0d2a3a 0%, #1b4a5a 25%, #245a6a 50%, #1b4a5a 75%, #0d2a3a 100%),
+    radial-gradient(circle at 40% 40%, rgba(0, 123, 255, 0.4) 0%, transparent 60%);
+  background-blend-mode: normal, screen;
+  border: 2px solid #2c6a7a;
+  box-shadow: 
+    inset 1px 1px 4px rgba(255, 255, 255, 0.2),
+    inset -1px -1px 4px rgba(0, 0, 0, 0.4),
+    0px 4px 15px rgba(0, 123, 255, 0.3);
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.agent-ui-cosmic-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 2px,
+      rgba(255, 255, 255, 0.05) 2px,
+      rgba(255, 255, 255, 0.05) 4px
+    );
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.agent-ui-cosmic-button:hover {
+  background: 
+    linear-gradient(145deg, #1d4a5a 0%, #2b6a7a 25%, #357a8a 50%, #2b6a7a 75%, #1d4a5a 100%),
+    radial-gradient(circle at 40% 40%, rgba(0, 123, 255, 0.5) 0%, transparent 60%);
+  background-blend-mode: normal, screen;
+  box-shadow: 
+    inset 1px 1px 4px rgba(255, 255, 255, 0.25),
+    inset -1px -1px 4px rgba(0, 0, 0, 0.4),
+    0px 6px 20px rgba(0, 123, 255, 0.4),
+    0px 0px 30px rgba(0, 209, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.agent-ui-cosmic-input {
+  background: 
+    linear-gradient(145deg, #0a1a2e 0%, #1a2a3e 50%, #0a1a2e 100%),
+    radial-gradient(circle at 20% 80%, rgba(0, 123, 255, 0.15) 0%, transparent 50%);
+  background-blend-mode: normal, screen;
+  border: 2px solid #2a4a5e;
+  box-shadow: 
+    inset 2px 2px 6px rgba(0, 0, 0, 0.6),
+    inset -1px -1px 3px rgba(255, 255, 255, 0.05),
+    0px 0px 15px rgba(0, 123, 255, 0.1);
+  position: relative;
+}
+
+.agent-ui-cosmic-input::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    repeating-linear-gradient(
+      180deg,
+      transparent,
+      transparent 4px,
+      rgba(255, 255, 255, 0.01) 4px,
+      rgba(255, 255, 255, 0.01) 8px
+    );
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.agent-ui-cosmic-input:focus {
+  border-color: #3a5a7e;
+  box-shadow: 
+    inset 2px 2px 6px rgba(0, 0, 0, 0.6),
+    inset -1px -1px 3px rgba(255, 255, 255, 0.08),
+    0px 0px 20px rgba(0, 123, 255, 0.3),
+    0px 0px 40px rgba(0, 123, 255, 0.15);
+}
+
+/* Additional Solid Texture Classes for Consistency */
+
+/* Primary Cosmic Surface - for containers and panels */
+.cosmic-surface-primary {
+  background: 
+    linear-gradient(145deg, #0d1a2e 0%, #1b2d4e 25%, #243d63 50%, #1b2d4e 75%, #0d1a2e 100%),
+    radial-gradient(circle at 30% 20%, rgba(0, 123, 255, 0.2) 0%, transparent 60%);
+  background-blend-mode: normal, screen;
+  border: 1px solid #2c4a6a;
+  box-shadow: 
+    inset 1px 1px 3px rgba(255, 255, 255, 0.08),
+    inset -1px -1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Secondary Cosmic Surface - for secondary elements */
+.cosmic-surface-secondary {
+  background: 
+    linear-gradient(145deg, #2e0d2a 0%, #4e1b4a 25%, #63245a 50%, #4e1b4a 75%, #2e0d2a 100%),
+    radial-gradient(circle at 70% 80%, rgba(138, 43, 226, 0.2) 0%, transparent 60%);
+  background-blend-mode: normal, screen;
+  border: 1px solid #6a2c6a;
+  box-shadow: 
+    inset 1px 1px 3px rgba(255, 255, 255, 0.1),
+    inset -1px -1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Cosmic Card - for elevated content */
+.cosmic-card {
+  background: 
+    linear-gradient(145deg, #2a1d3e 0%, #3d2b5e 25%, #4d3473 50%, #3d2b5e 75%, #2a1d3e 100%),
+    radial-gradient(circle at 50% 50%, rgba(138, 43, 226, 0.2) 0%, transparent 70%);
+  background-blend-mode: normal, screen;
+  border: 2px solid #5a3c7a;
+  box-shadow: 
+    inset 2px 2px 6px rgba(255, 255, 255, 0.1),
+    inset -2px -2px 6px rgba(0, 0, 0, 0.4),
+    0px 8px 25px rgba(138, 43, 226, 0.2);
+  position: relative;
+}
+
+.cosmic-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    repeating-linear-gradient(
+      135deg,
+      transparent,
+      transparent 4px,
+      rgba(255, 255, 255, 0.02) 4px,
+      rgba(255, 255, 255, 0.02) 8px
+    );
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* Text color utilities for cosmic theme */
+.cosmic-text-primary {
+  color: #ffffff;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+}
+
+.cosmic-text-accent {
+  color: #00d1ff;
+  text-shadow: 0 0 10px rgba(0, 209, 255, 0.5);
+}
+
+.cosmic-text-secondary {
+  color: #b19cd9;
+  text-shadow: 0 0 8px rgba(177, 156, 217, 0.4);
+}
+
+/* 🚀 MOZAIKS MISSION CONTROL UI FRAMEWORK */
+
+/* Cosmic Design Tokens */
+:root {
+  --color-ui-bg: rgba(255, 255, 255, 0.05);
+  --color-ui-border: #33F0FA;
+  --color-glow: #9D4EFF;
+  --color-agent-text: #C5FFF8;
+  --glass-blur: blur(16px);
+  --space-depth: drop-shadow(0 0 8px #33F0FA);
+}
+
+/* 🌌 Holographic UI Module - Base Container */
+.cosmic-ui-module {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(51, 240, 250, 0.5);
+  border-radius: 16px;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  box-shadow: 
+    0 0 20px rgba(51, 240, 250, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    0 8px 32px rgba(0, 0, 0, 0.4);
+  position: relative;
+  margin: 12px 0;
+  padding: 20px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.cosmic-ui-module:hover {
+  border-color: rgba(51, 240, 250, 0.8);
+  box-shadow: 
+    0 0 30px rgba(51, 240, 250, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+.cosmic-ui-module::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, 
+    rgba(51, 240, 250, 0.03) 0%, 
+    transparent 50%, 
+    rgba(157, 78, 255, 0.03) 100%);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* 🎯 Module Header */
+.cosmic-module-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+  color: var(--color-agent-text);
+  font-family: 'Orbitron', 'Oxanium', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  text-shadow: 0 0 8px rgba(197, 255, 248, 0.5);
+}
+
+.cosmic-module-header .icon {
+  margin-right: 8px;
+  filter: var(--space-depth);
+}
+
+/* 🛸 Upload Pod - Holographic Drop Zone */
+.cosmic-upload-pod {
+  background: rgba(10, 20, 40, 0.8);
+  border: 2px dashed rgba(157, 78, 255, 0.7);
+  border-radius: 12px;
+  padding: 32px 24px;
+  text-align: center;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.cosmic-upload-pod:hover,
+.cosmic-upload-pod.drag-over {
+  border-color: rgba(157, 78, 255, 0.9);
+  background: rgba(157, 78, 255, 0.08);
+  box-shadow: 
+    0 0 25px rgba(157, 78, 255, 0.3),
+    inset 0 0 20px rgba(157, 78, 255, 0.05);
+}
+
+.cosmic-upload-pod::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  background: linear-gradient(45deg, 
+    transparent, 
+    rgba(157, 78, 255, 0.1), 
+    transparent, 
+    rgba(51, 240, 250, 0.1));
+  background-size: 300% 300%;
+  animation: cosmic-pulse 3s ease-in-out infinite;
+  border-radius: inherit;
+  z-index: -1;
+}
+
+@keyframes cosmic-pulse {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* 💭 Thought Pad - Transparent Writing Interface */
+.cosmic-thought-pad {
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(51, 240, 250, 0.5);
+  border-radius: 12px;
+  padding: 16px;
+  color: var(--color-agent-text);
+  font-family: 'Oxanium', monospace;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  resize: vertical;
+  min-height: 120px;
+  transition: all 0.3s ease;
+}
+
+.cosmic-thought-pad:focus {
+  outline: none;
+  border-color: rgba(51, 240, 250, 0.7);
+  box-shadow: 
+    0 0 20px rgba(51, 240, 250, 0.2),
+    inset 0 0 10px rgba(51, 240, 250, 0.05);
+}
+
+.cosmic-thought-pad::placeholder {
+  color: rgba(197, 255, 248, 0.4);
+  font-style: italic;
+}
+
+/* 🎛️ Input Console - Glowing Form Fields */
+.cosmic-input-console {
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(157, 78, 255, 0.6);
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: white;
+  font-family: 'Oxanium', sans-serif;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: all 0.3s ease;
+}
+
+.cosmic-input-console:focus {
+  outline: none;
+  border-color: rgba(157, 78, 255, 0.8);
+  box-shadow: 0 0 15px rgba(157, 78, 255, 0.3);
+}
+
+/* 🖥️ Terminal Log - Code Display */
+.cosmic-terminal-log {
+  background: rgba(0, 0, 0, 0.8);
+  border: 1px solid rgba(0, 255, 100, 0.3);
+  border-radius: 8px;
+  padding: 16px;
+  font-family: 'Courier New', monospace;
+  color: #00ff64;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-x: auto;
+  box-shadow: 
+    inset 0 0 20px rgba(0, 255, 100, 0.05),
+    0 0 15px rgba(0, 0, 0, 0.5);
+}
+
+.cosmic-terminal-log .line {
+  display: block;
+  opacity: 0;
+  animation: terminal-appear 0.5s ease forwards;
+}
+
+@keyframes terminal-appear {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* 📊 Galactic Grid - Data Tables */
+.cosmic-galactic-grid {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(51, 240, 250, 0.2);
+  border-radius: 12px;
+  overflow: hidden;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.cosmic-galactic-grid th {
+  background: rgba(51, 240, 250, 0.1);
+  color: var(--color-agent-text);
+  padding: 12px 16px;
+  font-family: 'Oxanium', sans-serif;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 1px;
+  border-bottom: 1px solid rgba(51, 240, 250, 0.2);
+}
+
+.cosmic-galactic-grid td {
+  padding: 12px 16px;
+  color: rgba(255, 255, 255, 0.9);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background 0.2s ease;
+}
+
+.cosmic-galactic-grid tr:hover td {
+  background: rgba(51, 240, 250, 0.05);
+}
+
+/* 🌠 Transmission Progress Bar */
+.cosmic-progress-bar {
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(51, 240, 250, 0.3);
+  border-radius: 20px;
+  height: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+.cosmic-progress-fill {
+  background: linear-gradient(90deg, #33F0FA, #9D4EFF);
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.3s ease;
+  box-shadow: 0 0 10px rgba(51, 240, 250, 0.5);
+  position: relative;
+}
+
+.cosmic-progress-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(45deg, 
+    transparent 30%, 
+    rgba(255, 255, 255, 0.3) 50%, 
+    transparent 70%);
+  animation: progress-shine 2s infinite;
+}
+
+@keyframes progress-shine {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* 🎮 Action Button - Cosmic Command */
+.cosmic-action-button {
+  background: linear-gradient(135deg, rgba(51, 240, 250, 0.8), rgba(157, 78, 255, 0.8));
+  border: 1px solid rgba(51, 240, 250, 0.6);
+  border-radius: 8px;
+  padding: 12px 24px;
+  color: white;
+  font-family: 'Oxanium', sans-serif;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.cosmic-action-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 
+    0 0 25px rgba(51, 240, 250, 0.4),
+    0 8px 20px rgba(0, 0, 0, 0.3);
+}
+
+.cosmic-action-button:active {
+  transform: translateY(0);
+}
+
+.cosmic-action-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, 
+    transparent, 
+    rgba(255, 255, 255, 0.2), 
+    transparent);
+  transition: left 0.5s;
+}
+
+.cosmic-action-button:hover::before {
+  left: 100%;
+}
+
+.command-center-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background: linear-gradient(135deg, rgba(0, 0, 0, 0.8), rgba(50, 50, 50, 0.8));
+  color: white;
+  font-family: "Orbitron", sans-serif;
+}
+
+.command-center-title h1 {
+  font-size: 1.5rem;
+  margin: 0;
+}
+
+.command-center-title h2 {
+  font-size: 1rem;
+  margin: 0;
+  color: #00D1FF;
+}
+
+.mozaiks-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.5rem;
+}
+
+.mozaiks-button img {
+  width: 40px;
+  height: 40px;
+}
+
+.chat-content {
+  display: flex;
+  position: relative;
+}
+
+.chat-pane {
+  flex: 1;
+  transition: margin-left 0.3s ease;
+}
+
+.chat-pane.shifted {
+  margin-left: 300px;
+}
+
+.side-panel {
+  width: 300px;
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  padding: 1rem;
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  box-shadow: -2px 0 5px rgba(0, 0, 0, 0.5);
+}

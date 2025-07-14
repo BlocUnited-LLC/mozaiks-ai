@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "lastUpdated": "2025-07-14T12:22:52.941605",
+  "workflow": "generator",
+  "components": {
+    "FileDownloadCenter": {
+      "file": "FileDownloadCenter.js",
+      "category": "discovered",
+      "toolType": null,
+      "description": "Auto-discovered artifact component: FileDownloadCenter",
+      "requiredTool": null,
+      "props": {}
+    }
+  }
+}

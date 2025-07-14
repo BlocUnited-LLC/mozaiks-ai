@@ -1,0 +1,13 @@
+{
+  "components": [
+    "componentGenerator",
+    "componentRegistry",
+    "ManifestGenerator",
+    "WorkflowComponentLoader"
+  ],
+  "agents": [],
+  "pages": [
+    "ChatPage"
+  ],
+  "generated": "2025-07-13T23:49:29.228Z"
+}

@@ -1,0 +1,93 @@
+{
+  "workflow_name": "Generator",
+  "max_turns": 25,
+  "initiating_agent": "ContextVariablesAgent",
+  "human_in_the_loop": true,
+  "transport": "sse",
+  "initial_message": "Hello! I'm here to help you generate custom AG2 group chat workflows. Please describe what kind of multi-agent system you'd like to create, and I'll guide you through the process.",
+  "ui_capable_agents": [
+    {
+      "name": "UserFeedbackAgent",
+      "role": "user_feedback_manager",
+      "capabilities": ["chat", "artifacts"],
+      "components": [
+        {
+          "name": "FileDownloadCenter",
+          "type": "artifact",
+          "description": "Download generated files",
+          "actions": ["download", "download_all"],
+          "backend_handler": "file_manager.handle_download"
+        }
+      ]
+    },
+    {
+      "name": "APIKeyAgent",
+      "role": "api_credential_manager",
+      "capabilities": ["chat", "inline_components"],
+      "components": [
+        {
+          "name": "AgentAPIKeyInput",
+          "type": "inline",
+          "description": "Secure API key collection",
+          "actions": ["submit", "cancel"],
+          "backend_handler": "api_manager.store_api_key"
+        }
+      ]
+    }
+  ],
+  "tools": {
+    "agent_tools": [
+      {
+        "name": "echo_all",
+        "module": "workflows.Generator.tools.echo_all",
+        "function": "echo",
+        "apply_to": "all",
+        "description": "Simple echo tool that is registered for every agent",
+        "enabled": true
+      },
+      {
+        "name": "echo_ctx_only",
+        "module": "workflows.Generator.tools.echo_ctx_only",
+        "function": "echo_context", 
+        "apply_to": ["ContextVariablesAgent"],
+        "description": "Echo tool registered only for ContextVariablesAgent",
+        "enabled": true
+      }
+    ],
+    "lifecycle_hooks": [
+      {
+        "name": "after_agent_echo",
+        "module": "workflows.Generator.tools.after_agent_echo",
+        "function": "echo_after_each",
+        "trigger": "after_each_agent",
+        "description": "Runs after every agent message and logs sender + char count",
+        "enabled": true
+      },
+      {
+        "name": "on_start_echo",
+        "module": "workflows.Generator.tools.on_start_echo", 
+        "function": "echo_on_start",
+        "trigger": "on_start",
+        "description": "Runs once at the very beginning of the group-chat",
+        "enabled": true
+      },
+      {
+        "name": "on_end_echo",
+        "module": "workflows.Generator.tools.on_end_echo",
+        "function": "echo_on_end",
+        "trigger": "on_end",
+        "description": "Runs once at the end of the group-chat",
+        "enabled": true
+      },
+      {
+        "name": "after_orchestrator_echo",
+        "module": "workflows.Generator.tools.after_orchestrator_echo",
+        "function": "echo_after_orchestrator",
+        "trigger": "after_each_agent",
+        "trigger_agent": "OrchestratorAgent",
+        "description": "Runs after OrchestratorAgent messages only",
+        "enabled": true
+      }
+    ]
+  }
+}

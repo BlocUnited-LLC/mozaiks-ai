@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "lastUpdated": "2025-07-14T12:22:52.942380",
+  "workflow": "generator",
+  "components": {
+    "AgentAPIKeyInput": {
+      "file": "AgentAPIKeyInput.js",
+      "category": "discovered",
+      "toolType": null,
+      "description": "Auto-discovered inline component: AgentAPIKeyInput",
+      "requiredTool": null,
+      "props": {}
+    }
+  }
+}

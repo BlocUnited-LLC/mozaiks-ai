@@ -1,0 +1,9 @@
+{
+  "name": "e2b_code_execution",
+  "version": "1.0.0",
+  "description": "E2B Code Execution Environment Plugin",
+  "author": "MozaiksAI",
+  "dependencies": ["e2b", "pyodide"],
+  "tags": ["code", "execution", "sandboxing"],
+  "enabled": true
+}
