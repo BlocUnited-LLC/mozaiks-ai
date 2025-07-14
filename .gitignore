@@ -1,3 +1,6 @@
+# Ignore logs directory but keep logging_config.py
+logs/logs/
+
 # Ignore node_modules
 node_modules/
 
@@ -7,10 +10,6 @@ node_modules/
 # Ignore Python cache files
 __pycache__/
 *.pyc
-
-# Ignore logs
-logs/
-*.log
 
 # Ignore IDE settings
 .vscode/
