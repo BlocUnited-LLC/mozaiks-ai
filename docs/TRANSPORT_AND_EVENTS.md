@@ -5,14 +5,86 @@ This document describes the unified transport and event system powering MozaiksA
 
 ---
 
-## Architecture Overview
+## System Architecture
 
+```mermaid
+flowchart TD
+    subgraph Workflows["🔄 Workflows"]
+        WF[Workflow Engine]
+        AG[AI Agents]
+        TM[Tool Manager]
+    end
+    
+    subgraph Transport["🚀 SimpleTransport"]
+        ST[Transport Layer]
+        MF[Message Filter]
+        ER[Event Router]
+    end
+    
+    subgraph Protocols["📡 Protocols"]
+        SSE[Server-Sent Events]
+        WS[WebSocket]
+        HTTP[HTTP Fallback]
+    end
+    
+    subgraph Frontend["🖥️ Frontend"]
+        UI[React UI]
+        CP[Chat Pane]
+        AP[Artifact Panel]
+    end
+    
+    subgraph Persistence["💾 Persistence"]
+        PM[PersistenceManager]
+        RM[AG2ResumeManager]
+        DB[(MongoDB)]
+    end
+    
+    AG --> ST
+    WF --> ST
+    TM --> ST
+    ST --> MF
+    MF --> ER
+    ER --> SSE
+    ER --> WS
+    ER --> HTTP
+    SSE --> UI
+    WS --> UI
+    HTTP --> UI
+    UI --> CP
+    UI --> AP
+    
+    ST --> PM
+    PM --> RM
+    PM --> DB
+    RM --> AG
 ```
-┌───────────────┐   ┌─────────────────────┐   ┌───────────────┐
-│  Workflows   │──▶│  SimpleTransport    │──▶│  Frontend UI  │
-└───────────────┘   │  (SSE/WebSocket)   │   │  (React)      │
-                  └─────────────────────┘   └───────────────┘
-```
+
+### Component Responsibilities
+
+#### 🔄 Workflows
+- **Workflow Engine**: Orchestrates agent execution and lifecycle
+- **AI Agents**: Generate content and request UI components  
+- **Tool Manager**: Handles tool registration and execution
+
+#### 🚀 SimpleTransport
+- **Transport Layer**: Unified communication manager
+- **Message Filter**: Removes internal/coordination messages
+- **Event Router**: Directs events to appropriate protocols
+
+#### 📡 Protocols
+- **Server-Sent Events**: One-way streaming (status, notifications)
+- **WebSocket**: Bidirectional real-time communication
+- **HTTP Fallback**: Basic request-response for compatibility
+
+#### 🖥️ Frontend
+- **React UI**: Main application interface
+- **Chat Pane**: Conversational interface with inline components
+- **Artifact Panel**: Full-screen components and generated content
+
+#### 💾 Persistence
+- **PersistenceManager**: Handles data storage operations
+- **AG2ResumeManager**: Manages groupchat state restoration
+- **MongoDB**: Document storage for messages and state
 
 ---
 
