@@ -1,4 +1,36 @@
-# Dynamic UI Component System - Simple Guide
+# Dynamic UI Component System
+
+## Visual System Flow
+
+```mermaid
+flowchart TD
+    subgraph Backend["🔧 Backend"]
+        A[AI Agent] 
+        T[SimpleTransport]
+        H[Backend Handler]
+        CV[Context Variables]
+    end
+    
+    subgraph Frontend["🖥️ Frontend UI"]
+        subgraph ChatPane["Chat Pane"]
+            IC[Inline Components<br/>• Forms<br/>• Buttons<br/>• Quick Actions]
+        end
+        
+        subgraph ArtifactPane["Artifact Panel"]
+            AC[Artifact Components<br/>• Code Editors<br/>• File Downloads<br/>• Visualizations]
+        end
+    end
+    
+    A -->|route_to_chat()| T
+    A -->|route_to_artifact()| T
+    T -->|ROUTE_TO_CHAT event| IC
+    T -->|ROUTE_TO_ARTIFACT event| AC
+    IC -->|onAction(payload)| T
+    AC -->|onAction(payload)| T
+    T -->|component_action| H
+    H -->|updates| CV
+    CV -->|read by| A
+```
 
 ## How It Actually Works (The Simple Version)
 
