@@ -571,16 +571,131 @@ test('component submits form data correctly', async () => {
 9. **Error Handling**: Provide clear error messages and recovery options
 10. **Documentation**: Include comprehensive prop and action documentation
 
-## LLM Generation Prompt
+## 🔄 Context Adjustment Integration (NEW)
+
+Your components can now automatically update AG2 ContextVariables through the workflow-agnostic context adjustment system.
+
+### Enabling Context Adjustment
+
+1. **Enable in workflow.json**: Add `"context_adjustment": true` to agents that need context updates
+2. **Use proper action structure**: Components must send structured action data
+3. **Optional custom handler**: Create `context_update()` function for workflow-specific logic
+
+### Component Integration Pattern
+
+```javascript
+const ContextAwareComponent = ({ onAction, agentId, ...props }) => {
+  const handleUserAction = async (actionType, payload) => {
+    // Standard onAction call - automatically routes to context adjustment
+    await onAction({
+      type: actionType,        // Required: action identifier
+      agentId: agentId,        // Required: requesting agent
+      data: payload,           // Component-specific data
+      timestamp: Date.now()    // Optional: when action occurred
+    });
+  };
+  
+  // Component automatically integrates with ContextVariables
+  const handleSubmit = () => {
+    handleUserAction('form_submit', {
+      formData: formValues,
+      isValid: true
+    });
+  };
+  
+  return (
+    <form onSubmit={handleSubmit}>
+      {/* Component UI */}
+    </form>
+  );
+};
+```
+
+### Context Adjustment Flow
 
 ```
-Create a {COMPONENT_TYPE} component for a {WORKFLOW_TYPE} workflow.
+1. User interacts with component
+   └── Component calls onAction() with structured data
 
-Component Purpose: {PURPOSE_DESCRIPTION}
-Required Props: {PROP_LIST}
-User Actions: {ACTION_LIST}
-Styling Theme: {THEME_REQUIREMENTS}
-Validation Rules: {VALIDATION_REQUIREMENTS}
+2. Core system detects context_adjustment: true
+   └── Routes to workflow-agnostic context adjustment bridge
 
-Generate a complete React component with proper error handling and responsive design.
+3. Bridge loads workflow's context_update() function (if exists)
+   └── OR applies generic context updates
+
+4. AG2 ContextVariables updated automatically
+   └── Agents can access user interaction data immediately
 ```
+
+### Benefits for Component Developers
+
+- ✅ **No backend handlers needed**: Context updates happen automatically
+- ✅ **AG2 native integration**: Uses standard ContextVariables for state
+- ✅ **Workflow-agnostic**: Works with any workflow configuration
+- ✅ **Fallback support**: Generic updates if no custom logic provided
+- ✅ **Immediate availability**: Agents can access data right after component interaction
+
+### Example: API Key Component with Context Integration
+
+```javascript
+const AgentAPIKeyInput = ({ onAction, service, agentId, ...props }) => {
+  const [apiKey, setApiKey] = useState('');
+  
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    
+    // This automatically updates ContextVariables via context adjustment
+    await onAction({
+      type: 'api_key_submit',
+      agentId: agentId,
+      data: {
+        service: service,
+        apiKey: apiKey.trim(),
+        maskedKey: `***...${apiKey.slice(-4)}`
+      }
+    });
+    
+    setApiKey(''); // Clear sensitive data
+  };
+  
+  const handleCancel = async () => {
+    await onAction({
+      type: 'cancel',
+      agentId: agentId,
+      data: { service: service }
+    });
+  };
+  
+  return (
+    <form onSubmit={handleSubmit}>
+      <input 
+        type="password"
+        value={apiKey}
+        onChange={(e) => setApiKey(e.target.value)}
+        placeholder={`Enter ${service} API key`}
+        required
+      />
+      <div className="actions">
+        <button type="submit" disabled={!apiKey.trim()}>
+          Submit API Key
+        </button>
+        <button type="button" onClick={handleCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+};
+```
+
+**What happens behind the scenes:**
+1. User submits API key → `onAction()` called
+2. Core detects `context_adjustment: true` for this agent
+3. Context bridge automatically stores API key in ContextVariables
+4. Agents can immediately check `context_variables.get('api_key_ready')`
+
+### Requirements for Context Adjustment
+
+1. **workflow.json Configuration**: Agent must have `"context_adjustment": true`
+2. **Structured Actions**: Use consistent action `type` and `data` structure
+3. **Agent ID**: Include `agentId` for proper context routing

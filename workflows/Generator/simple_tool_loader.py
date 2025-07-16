@@ -47,10 +47,27 @@ def load_tools_from_workflow(workflow_type: Optional[str] = None) -> Dict[str, L
         # Dynamically import and attach the actual functions
         for tool in agent_tools:
             try:
+                if "module" not in tool:
+                    business_logger.error(f"Tool {tool.get('name', 'unknown')} missing 'module' field")
+                    tool["enabled"] = False
+                    continue
+                    
+                if "function" not in tool:
+                    business_logger.error(f"Tool {tool.get('name', 'unknown')} missing 'function' field")
+                    tool["enabled"] = False
+                    continue
+                
                 module = importlib.import_module(tool["module"])
+                if not hasattr(module, tool["function"]):
+                    business_logger.error(f"Function '{tool['function']}' not found in module '{tool['module']}'")
+                    tool["enabled"] = False
+                    continue
+                    
                 tool["function_obj"] = getattr(module, tool["function"])
+                business_logger.debug(f"✅ Successfully loaded tool {tool['name']} from {tool['module']}.{tool['function']}")
             except Exception as e:
-                business_logger.error(f"Failed to import agent tool {tool['name']}: {e}")
+                business_logger.error(f"Failed to import agent tool {tool.get('name', 'unknown')}: {e}")
+                business_logger.error(f"Tool config: {tool}")
                 tool["enabled"] = False
         
         for hook in lifecycle_hooks:

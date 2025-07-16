@@ -13,9 +13,9 @@
 class WorkflowComponentLoader {
   constructor() {
     this.activeWorkflow = null;
-    this.artifactManifest = null;
-    this.inlineManifest = null;
+    this.workflowConfig = null;
     this.componentCache = new Map();
+    this.componentMappings = { artifacts: {}, inline: {} };
   }
 
   /**
@@ -30,42 +30,73 @@ class WorkflowComponentLoader {
     this.activeWorkflow = workflowName;
     this.componentCache.clear();
     
-    await this._loadWorkflowManifests(workflowName);
+    await this._loadWorkflowConfig(workflowName);
   }
 
   /**
-   * 📦 LOAD WORKFLOW MANIFESTS
+   * 📦 LOAD WORKFLOW CONFIG
    */
-  async _loadWorkflowManifests(workflowName) {
+  async _loadWorkflowConfig(workflowName) {
     try {
-      // Load Artifacts manifest
-      const artifactManifestPath = `../../../workflows/${workflowName}/Components/Artifacts/components.json`;
-      const artifactModule = await import(artifactManifestPath);
-      this.artifactManifest = artifactModule.default;
-      console.log(`✅ Loaded Artifacts manifest for workflow: ${workflowName}`);
+      // Load workflow.json directly
+      const workflowConfigPath = `../../../workflows/${workflowName}/workflow.json`;
+      const configModule = await import(workflowConfigPath);
+      this.workflowConfig = configModule.default;
+      
+      // Build component mappings from workflow config
+      this._buildComponentMappings();
+      
+      console.log(`✅ Loaded workflow config for: ${workflowName}`);
     } catch (error) {
-      console.warn(`⚠️ No Artifacts manifest found for workflow ${workflowName}`);
-      this.artifactManifest = { components: {} };
+      console.error(`❌ Failed to load workflow config for ${workflowName}:`, error);
+      this.workflowConfig = null;
+      this.componentMappings = { artifacts: {}, inline: {} };
+    }
+  }
+
+  /**
+   * 🗺️ BUILD COMPONENT MAPPINGS FROM WORKFLOW CONFIG
+   */
+  _buildComponentMappings() {
+    this.componentMappings = { artifacts: {}, inline: {} };
+    
+    if (!this.workflowConfig?.ui_capable_agents) {
+      return;
     }
 
-    try {
-      // Load Inline manifest
-      const inlineManifestPath = `../../../workflows/${workflowName}/Components/Inline/components.json`;
-      const inlineModule = await import(inlineManifestPath);
-      this.inlineManifest = inlineModule.default;
-      console.log(`✅ Loaded Inline manifest for workflow: ${workflowName}`);
-    } catch (error) {
-      console.warn(`⚠️ No Inline manifest found for workflow ${workflowName}`);
-      this.inlineManifest = { components: {} };
+    // Extract components from ui_capable_agents
+    for (const agent of this.workflowConfig.ui_capable_agents) {
+      if (agent.components) {
+        for (const component of agent.components) {
+          const componentInfo = {
+            name: component.name,
+            file: `${component.name}.js`,
+            description: component.description,
+            actions: component.actions,
+            backend_handler: component.backend_handler
+          };
+
+          if (component.type === 'artifact') {
+            this.componentMappings.artifacts[component.name] = componentInfo;
+          } else if (component.type === 'inline') {
+            this.componentMappings.inline[component.name] = componentInfo;
+          }
+        }
+      }
     }
+
+    console.log(`📦 Built component mappings:`, {
+      artifacts: Object.keys(this.componentMappings.artifacts),
+      inline: Object.keys(this.componentMappings.inline)
+    });
   }
 
   /**
    * 🔍 GET ARTIFACT COMPONENT
    */
   async getArtifactComponent(componentName) {
-    if (!this.activeWorkflow || !this.artifactManifest) {
-      console.warn('No active workflow set for artifact component loading');
+    if (!this.activeWorkflow || !this.componentMappings.artifacts[componentName]) {
+      console.warn(`Artifact component ${componentName} not found in workflow ${this.activeWorkflow}`);
       return null;
     }
 
@@ -74,11 +105,7 @@ class WorkflowComponentLoader {
       return this.componentCache.get(cacheKey);
     }
 
-    const config = this.artifactManifest.components[componentName];
-    if (!config) {
-      console.warn(`Artifact component ${componentName} not found in workflow ${this.activeWorkflow}`);
-      return null;
-    }
+    const config = this.componentMappings.artifacts[componentName];
 
     try {
       const componentPath = `../../../workflows/${this.activeWorkflow}/Components/Artifacts/${config.file}`;
@@ -98,8 +125,8 @@ class WorkflowComponentLoader {
    * 🔍 GET INLINE COMPONENT
    */
   async getInlineComponent(componentName) {
-    if (!this.activeWorkflow || !this.inlineManifest) {
-      console.warn('No active workflow set for inline component loading');
+    if (!this.activeWorkflow || !this.componentMappings.inline[componentName]) {
+      console.warn(`Inline component ${componentName} not found in workflow ${this.activeWorkflow}`);
       return null;
     }
 
@@ -108,11 +135,7 @@ class WorkflowComponentLoader {
       return this.componentCache.get(cacheKey);
     }
 
-    const config = this.inlineManifest.components[componentName];
-    if (!config) {
-      console.warn(`Inline component ${componentName} not found in workflow ${this.activeWorkflow}`);
-      return null;
-    }
+    const config = this.componentMappings.inline[componentName];
 
     try {
       const componentPath = `../../../workflows/${this.activeWorkflow}/Components/Inline/${config.file}`;
@@ -132,16 +155,22 @@ class WorkflowComponentLoader {
    * 🔍 GET COMPONENT BY TOOL TYPE
    */
   async getComponentByToolType(toolType) {
-    // Check artifacts first
-    if (this.artifactManifest?.toolTypes?.[toolType]) {
-      const componentName = this.artifactManifest.toolTypes[toolType].defaultComponent;
-      return await this.getArtifactComponent(componentName);
-    }
-
-    // Then check inline
-    if (this.inlineManifest?.toolTypes?.[toolType]) {
-      const componentName = this.inlineManifest.toolTypes[toolType].defaultComponent;
-      return await this.getInlineComponent(componentName);
+    // Search through workflow config for components with matching backend_handler or actions
+    for (const agent of this.workflowConfig?.ui_capable_agents || []) {
+      if (agent.components) {
+        for (const component of agent.components) {
+          // Match by backend_handler or custom logic
+          if (component.backend_handler?.includes(toolType) || 
+              component.actions?.includes(toolType)) {
+            
+            if (component.type === 'artifact') {
+              return await this.getArtifactComponent(component.name);
+            } else if (component.type === 'inline') {
+              return await this.getInlineComponent(component.name);
+            }
+          }
+        }
+      }
     }
 
     console.warn(`No component found for tool type: ${toolType} in workflow ${this.activeWorkflow}`);
@@ -152,8 +181,8 @@ class WorkflowComponentLoader {
    * 📋 GET ALL AVAILABLE COMPONENTS
    */
   getAvailableComponents() {
-    const artifacts = this.artifactManifest ? Object.keys(this.artifactManifest.components) : [];
-    const inline = this.inlineManifest ? Object.keys(this.inlineManifest.components) : [];
+    const artifacts = Object.keys(this.componentMappings.artifacts);
+    const inline = Object.keys(this.componentMappings.inline);
     
     return {
       artifacts,

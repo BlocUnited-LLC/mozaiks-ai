@@ -7,7 +7,6 @@ import { useParams } from "react-router-dom";
 import { useChatUI } from "../../../context/ChatUIContext";
 import agentManager from '../../../core/agentManager';
 import workflowConfig from '../../../config/workflowConfig';
-import { setActiveWorkflow } from '../../../agents/components/WorkflowComponentLoader';
 
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
@@ -18,11 +17,26 @@ const ChatPage = () => {
   const streamingMessagesRef = useRef(new Map());
   const [loading, setLoading] = useState(true);
   const [agentsInitialized, setAgentsInitialized] = useState(false);
+  
+  // Add logging to track message state changes
+  const setMessagesWithLogging = useCallback((updater) => {
+    setMessages(prev => {
+      const newMessages = typeof updater === 'function' ? updater(prev) : updater;
+      console.log('🔄 MESSAGES STATE UPDATE:');
+      console.log('  Previous count:', prev.length);
+      console.log('  New count:', newMessages.length);
+      console.log('  Previous messages:', prev.map(m => ({ id: m.id, sender: m.sender, content: m.content?.substring(0, 30) + '...' })));
+      console.log('  New messages:', newMessages.map(m => ({ id: m.id, sender: m.sender, content: m.content?.substring(0, 30) + '...' })));
+      return newMessages;
+    });
+  }, []);
+  
   // Connection status tracking
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [transportType, setTransportType] = useState(null);
   const [currentChatId, setCurrentChatId] = useState(null); // Store the current chat ID
   const [connectionInitialized, setConnectionInitialized] = useState(false); // Prevent duplicate connections
+  const connectionInProgressRef = useRef(false); // Additional guard against React double-execution
   const { enterpriseId, workflowType: urlWorkflowType } = useParams();
   const { user, api, config } = useChatUI();
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
@@ -61,18 +75,24 @@ const ChatPage = () => {
   // Unified incoming message handler for WS and SSE
   const handleIncoming = useCallback((data) => {
     console.log("Received stream message:", data);
+    console.log("Message type:", data.type, "Data:", data.data);
+    console.log("Current messages count:", messages.length);
+    console.log("Current streaming messages:", streamingMessagesRef.current.size);
     
-    // Handle different message types
-    if (data.type === 'TEXT_MESSAGE_START') {
+    // Handle different message types (support both formats)
+    if (data.type === 'TEXT_MESSAGE_START' || data.type === 'text_stream_start') {
       // Start of a new message - initialize streaming message
-      const messageId = data.data?.messageId;
+      const messageId = data.data?.messageId || data.data?.message_id || data.data?.stream_id || data.timestamp || Date.now();
       if (messageId) {
         console.log('📝 Starting new message:', messageId);
+        const friendlyAgentName = (data.agent_name || data.data?.agent_name) ? 
+          (data.agent_name || data.data?.agent_name).replace('Agent', '').replace(/([A-Z])/g, ' $1').trim() || (data.agent_name || data.data?.agent_name) : 
+          'Agent';
         streamingMessagesRef.current.set(messageId, {
           id: messageId,
           content: '',
           sender: 'agent',
-          agentName: data.agent_name || 'Agent',
+          agentName: friendlyAgentName,
           timestamp: Date.now(),
           isStreaming: true
         });
@@ -80,48 +100,83 @@ const ChatPage = () => {
       return;
     }
     
-    if (data.type === 'TEXT_MESSAGE_CONTENT') {
+    if (data.type === 'TEXT_MESSAGE_CONTENT' || data.type === 'text_stream_chunk') {
       // Streaming content - append to existing message
-      const messageId = data.data?.messageId;
-      const delta = data.data?.delta;
+      const messageId = data.data?.messageId || data.data?.message_id || data.data?.stream_id || data.timestamp;
+      const delta = data.data?.delta || data.data?.content || data.data?.chunk || data.content || '';
+      
+      console.log('🔍 Processing chunk - messageId:', messageId, 'delta:', delta);
       
       if (messageId && delta) {
-        const streamingMessage = streamingMessagesRef.current.get(messageId);
-        if (streamingMessage) {
-          // Update the streaming message content
-          streamingMessage.content += delta;
-          
-          // Update the messages array with the current content
-          setMessages(prev => {
-            const existingIndex = prev.findIndex(msg => msg.id === messageId);
-            if (existingIndex >= 0) {
-              // Update existing message
-              const updated = [...prev];
-              updated[existingIndex] = { ...streamingMessage };
-              return updated;
-            } else {
-              // Add new streaming message
-              return [...prev, { ...streamingMessage }];
-            }
-          });
+        let streamingMessage = streamingMessagesRef.current.get(messageId);
+        
+        // If no existing message found, create a new one (auto-start scenario)
+        if (!streamingMessage) {
+          console.log('🔄 Auto-creating message for stream_id:', messageId);
+          const friendlyAgentName = data.agent_name ? 
+            data.agent_name.replace('Agent', '').replace(/([A-Z])/g, ' $1').trim() || data.agent_name : 
+            'Agent';
+          streamingMessage = {
+            id: messageId,
+            content: '',
+            sender: data.agent_name === 'user' ? 'user' : 'agent',
+            agentName: friendlyAgentName,
+            timestamp: Date.now(),
+            isStreaming: true
+          };
+          streamingMessagesRef.current.set(messageId, streamingMessage);
+          console.log('✅ Created new streaming message:', streamingMessage);
+        } else {
+          // Update agent name if we have it and it's not set
+          if (data.agent_name && (!streamingMessage.agentName || streamingMessage.agentName === 'Agent')) {
+            const friendlyAgentName = data.agent_name.replace('Agent', '').replace(/([A-Z])/g, ' $1').trim() || data.agent_name;
+            streamingMessage.agentName = friendlyAgentName;
+          }
         }
+        
+        // Update the streaming message content
+        streamingMessage.content += delta;
+        console.log('📝 Updated message content to:', streamingMessage.content.substring(0, 50) + '...');
+        
+        // Update the messages array with the current content
+        setMessagesWithLogging(prev => {
+          const existingIndex = prev.findIndex(msg => msg.id === messageId);
+          if (existingIndex >= 0) {
+            // Update existing message
+            const updated = [...prev];
+            updated[existingIndex] = { ...streamingMessage };
+            console.log('🔄 Updated existing message at index:', existingIndex);
+            console.log('🔍 Updated message data:', updated[existingIndex]);
+            return updated;
+          } else {
+            // Add new streaming message
+            console.log('➕ Adding new message to array, current length:', prev.length);
+            console.log('🔍 New message data:', streamingMessage);
+            const newArray = [...prev, { ...streamingMessage }];
+            console.log('📊 New array length:', newArray.length);
+            return newArray;
+          }
+        });
+      } else {
+        console.warn('⚠️ Received chunk with no messageId or content:', data);
       }
       return;
     }
     
-    if (data.type === 'TEXT_MESSAGE_END') {
+    if (data.type === 'TEXT_MESSAGE_END' || data.type === 'text_stream_end') {
       // End of message - mark as complete
-      const messageId = data.data?.messageId;
+      const messageId = data.data?.messageId || data.data?.message_id || data.data?.stream_id || data.timestamp;
       if (messageId) {
         console.log('✅ Message completed:', messageId);
         const streamingMessage = streamingMessagesRef.current.get(messageId);
         if (streamingMessage) {
           streamingMessage.isStreaming = false;
-          setMessages(prev => {
+          setMessagesWithLogging(prev => {
             const updated = [...prev];
             const index = updated.findIndex(msg => msg.id === messageId);
             if (index >= 0) {
               updated[index] = { ...streamingMessage };
+              console.log('✅ Finalized message at index:', index);
             }
             return updated;
           });
@@ -146,7 +201,7 @@ const ChatPage = () => {
           timestamp: Date.now(),
           isStreaming: false
         };
-        setMessages(prev => [...prev, newMessage]);
+        setMessagesWithLogging(prev => [...prev, newMessage]);
       }
       return;
     }
@@ -165,7 +220,7 @@ const ChatPage = () => {
         timestamp: Date.now(),
         isStreaming: false
       };
-      setMessages(prev => [...prev, newMessage]);
+      setMessagesWithLogging(prev => [...prev, newMessage]);
     }
   }, []);
 
@@ -174,12 +229,13 @@ const ChatPage = () => {
     if (!api) return;
     
     // Prevent duplicate connections
-    if (connectionInitialized) {
-      console.log('🔄 Connection already initialized, skipping...');
+    if (connectionInitialized || connectionInProgressRef.current) {
+      console.log('🔄 Connection already initialized or in progress, skipping...');
       return;
     }
     
-    // Mark connection as initialized immediately to prevent duplicates
+    // Mark connection as in progress immediately to prevent duplicates
+    connectionInProgressRef.current = true;
     setConnectionInitialized(true);
     
     // Define connection functions inside useEffect to avoid dependency issues
@@ -316,12 +372,15 @@ const ChatPage = () => {
       cleanup = cleanupFn;
     }).catch(error => {
       console.error('Failed to connect with transport:', error);
-      // Reset connection initialized flag on error so user can retry
+      // Reset connection flags on error so user can retry
       setConnectionInitialized(false);
+      connectionInProgressRef.current = false;
     });
     
     return () => {
       if (cleanup) cleanup();
+      // Reset the in-progress flag when component unmounts
+      connectionInProgressRef.current = false;
     };
   }, [api, currentEnterpriseId, currentUserId, handleIncoming]); // Only essential dependencies
 
@@ -345,7 +404,7 @@ const ChatPage = () => {
     
     // Optimistic add: add user message to chat and mark pending
     pendingMessagesRef.current.push(messageContent.content);
-    setMessages(prevMessages => [...prevMessages, userMessage]);
+    setMessagesWithLogging(prevMessages => [...prevMessages, userMessage]);
     
     // Send directly to backend workflow (skip frontend agent processing)
     // Send to appropriate transport

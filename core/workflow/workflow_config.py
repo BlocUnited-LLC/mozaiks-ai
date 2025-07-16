@@ -114,10 +114,32 @@ class WorkflowConfig:
         return agent_name in frontend_agents
     
     def should_auto_start(self, workflow_type: str) -> bool:
-        """Determine if workflow should auto-start or wait for user input"""
-        # If human_in_the_loop is false, auto-start
-        # If human_in_the_loop is true, wait for user input
+        """
+        Determine if workflow should auto-start or wait for user input.
+        
+        Logic:
+        - auto_start: true → Start immediately with no message (autonomous workflow)
+        - auto_start: false → Wait for user connection, then send initial_message if present
+        
+        Scenarios:
+        1. Autonomous workflow: auto_start: true, initial_message: null → Start immediately
+        2. Wizard/Navigator: auto_start: false, initial_message: "Hello!" → Send greeting on connect
+        3. Continuation step: auto_start: false, initial_message: null → Wait for user input
+        """
+        config = self.get_config(workflow_type)
+        
+        # Use explicit auto_start setting if present
+        if "auto_start" in config:
+            return config["auto_start"]
+            
+        # Fallback: if no auto_start specified, use human_in_the_loop logic
+        # human_in_the_loop: false → auto-start (autonomous)
+        # human_in_the_loop: true → don't auto-start (wait for user)
         return not self.has_human_in_the_loop(workflow_type)
+    
+    def get_auto_start(self, workflow_type: str) -> bool:
+        """Get auto_start setting for workflow, with fallback logic"""
+        return self.should_auto_start(workflow_type)
     
     def get_all_workflow_types(self) -> list:
         """Get list of all available workflow types"""
@@ -209,6 +231,72 @@ class WorkflowConfig:
         """Get the initiating agent for the workflow, default to ContextVariablesAgent if not specified"""
         config = self.get_config(workflow_type)
         return config.get("initiating_agent", "ContextVariablesAgent")
+    
+    def reload_workflow(self, workflow_type: str):
+        """Reload a specific workflow configuration from disk"""
+        workflows_dir = Path(__file__).parent.parent.parent / "workflows"
+        
+        # Find the workflow directory by name (case-insensitive)
+        workflow_dir = None
+        for dir_item in workflows_dir.iterdir():
+            if dir_item.is_dir() and dir_item.name.lower() == workflow_type.lower():
+                workflow_dir = dir_item
+                break
+        
+        if workflow_dir is None:
+            logger.warning(f"⚠️ Workflow directory not found for: {workflow_type}")
+            return {}
+            
+        config_file = workflow_dir / "workflow.json"
+        
+        if config_file.exists():
+            try:
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                
+                workflow_name = workflow_type.lower()
+                self._configs[workflow_name] = config
+                logger.info(f"🔄 Reloaded workflow config: {workflow_name} from {config_file}")
+                return config
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to reload {config_file}: {e}")
+                return {}
+        else:
+            logger.warning(f"⚠️ Workflow config not found: {config_file}")
+            return {}
+    
+    def reload_all_workflows(self):
+        """Reload all workflow configurations from disk"""
+        self._configs.clear()
+        self._load_all_workflows()
+        logger.info("🔄 Reloaded all workflow configurations")
+    
+    def get_ui_capable_agents(self, workflow_type: str) -> List[Dict[str, Any]]:
+        """Get ui_capable_agents for a workflow type"""
+        config = self.get_config(workflow_type)
+        return config.get("ui_capable_agents", [])
+
+    def get_context_adjustment_agents(self, workflow_type: str) -> List[Dict[str, Any]]:
+        """Get agents that have context_adjustment enabled"""
+        ui_agents = self.get_ui_capable_agents(workflow_type)
+        context_agents = []
+        
+        for agent in ui_agents:
+            if agent.get("context_adjustment", False):
+                context_agents.append(agent)
+        
+        return context_agents
+
+    def has_context_adjustment_enabled(self, workflow_type: str, agent_name: str) -> bool:
+        """Check if specific agent has context_adjustment enabled"""
+        ui_agents = self.get_ui_capable_agents(workflow_type)
+        
+        for agent in ui_agents:
+            if agent.get("name") == agent_name:
+                return agent.get("context_adjustment", False)
+        
+        return False
 
 # Global instance
 workflow_config = WorkflowConfig()

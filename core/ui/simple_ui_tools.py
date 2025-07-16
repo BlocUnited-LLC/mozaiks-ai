@@ -12,8 +12,7 @@ if TYPE_CHECKING:
 from ..events.simple_events import (
     create_inline_component_route, 
     create_artifact_component_route, 
-    create_ui_tool_action,
-    SimpleEventEncoder
+    create_ui_tool_action
 )
 from logs.logging_config import get_event_logger, get_component_logger
 
@@ -23,7 +22,6 @@ ui_component_logger = get_component_logger("ui_tools")
 
 # Global reference to communication channel (set by groupchat_manager)
 _communication_channel: Optional['CommunicationChannel'] = None
-_event_encoder = SimpleEventEncoder()
 
 def set_communication_channel(channel: 'CommunicationChannel'):
     """Set the global communication channel for UI routing tools."""
@@ -97,68 +95,6 @@ async def route_to_artifact_component(title: str, content: str, component_name: 
         return f"Error: {str(e)}"
 
 
-async def smart_route_content(content: str, component_name: Optional[str] = None, reasoning: Optional[str] = None) -> str:
-    """
-    Automatically route content to appropriate component based on workflow configuration.
-    
-    Args:
-        content: Content to route
-        component_name: Optional specific component name (if known)
-        reasoning: Optional reasoning for the routing decision
-    
-    Returns:
-        Status message
-    """
-    if not _communication_channel:
-        logger.warning("No communication channel available for UI routing")
-        return "UI routing not available"
-    
-    try:
-        # If no component specified, use simple heuristics for routing type only
-        if not component_name:
-            # Simple heuristics for routing TYPE (inline vs artifact) only
-            route_to_artifact = (
-                len(content) > 500 or  # Long content
-                "```" in content or    # Code blocks
-                "<" in content and ">" in content or  # HTML/XML
-                "{" in content and "}" in content  # JSON/objects
-            )
-            
-            if route_to_artifact:
-                # Route to artifact component - let workflow determine which one
-                return await route_to_artifact_component(
-                    title="Generated Content",
-                    content=content,
-                    component_name="default_artifact",  # Workflow will resolve this
-                    category="code" if "```" in content else "general"
-                )
-            else:
-                # Route to inline component - let workflow determine which one
-                return await route_to_inline_component(
-                    content=content,
-                    component_name="default_inline"  # Workflow will resolve this
-                )
-        else:
-            # Component name specified - determine routing type from component name
-            # This would be set by the workflow/agent calling this function
-            if "artifact" in component_name.lower() or "editor" in component_name.lower() or "viewer" in component_name.lower():
-                return await route_to_artifact_component(
-                    title="Generated Content",
-                    content=content,
-                    component_name=component_name,
-                    category="general"
-                )
-            else:
-                return await route_to_inline_component(
-                    content=content,
-                    component_name=component_name
-                )
-            
-    except Exception as e:
-        logger.error(f"Failed to smart route content: {e}")
-        return f"Error: {str(e)}"
-
-
 async def send_ui_tool_action(tool_id: str, action_type: str, payload: Dict[str, Any]) -> str:
     """
     Simple tool: Send UI tool action.
@@ -190,3 +126,66 @@ async def send_ui_tool_action(tool_id: str, action_type: str, payload: Dict[str,
     except Exception as e:
         logger.error(f"Failed to send UI tool action: {e}")
         return f"Error: {str(e)}"
+
+
+async def handle_component_action(
+    workflow_type: str,
+    agent_name: str,
+    component_name: str,
+    action_data: Dict[str, Any],
+    context_variables: Optional[Any] = None
+) -> Dict[str, Any]:
+    """
+    Handle component action and optionally adjust context variables
+    
+    This is the main entry point for component actions from the transport layer.
+    It handles both backend processing and context adjustment.
+    
+    Args:
+        workflow_type: The workflow type (e.g., 'Generator')
+        agent_name: Name of the agent that owns the component
+        component_name: Name of the component that sent the action
+        action_data: The action data from the frontend component
+        context_variables: The AG2 ContextVariables (optional)
+        
+    Returns:
+        Result of the action handling
+    """
+    ui_component_logger.info(f"🎯 Handling component action: {workflow_type}.{agent_name}.{component_name}")
+    
+    try:
+        result = {"status": "success", "component_handled": False, "context_adjusted": False}
+        
+        # Step 1: Handle backend processing if enabled
+        # (This would integrate with existing backend handlers like api_manager.py, file_manager.py)
+        
+        # Step 2: Handle context adjustment if enabled
+        if context_variables:
+            from .context_adjustment import adjust_context_from_component_action
+            
+            context_result = await adjust_context_from_component_action(
+                workflow_type, agent_name, component_name, action_data, context_variables
+            )
+            
+            result["context_adjustment"] = context_result
+            result["context_adjusted"] = context_result.get("status") == "success"
+        
+        # Step 3: Update component interaction tracking
+        result.update({
+            "workflow_type": workflow_type,
+            "agent_name": agent_name,
+            "component_name": component_name,
+            "action_type": action_data.get('type', 'unknown')
+        })
+        
+        ui_component_logger.info(f"✅ Component action handled: {component_name}")
+        return result
+        
+    except Exception as e:
+        ui_component_logger.error(f"❌ Component action failed for {component_name}: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "component_name": component_name,
+            "agent_name": agent_name
+        }

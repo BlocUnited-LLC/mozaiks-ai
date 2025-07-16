@@ -16,8 +16,13 @@ _WORKFLOW_TOOLS: Dict[str, List[Callable]] = {}  # Tools per workflow
 _WORKFLOW_TRANSPORTS: Dict[str, str] = {}  # Transport type per workflow (sse, websocket)
 _INITIALIZERS: List[Callable[[], Awaitable[None]]] = []
 
-# Import component generator
-from .component_generator import initialize_workflow_components
+# Import component generator (temporarily disabled - create component_generator.py if needed)
+# from .component_generator import initialize_workflow_components
+
+def initialize_workflow_components(workflow_type: str, workflow_name: str, base_dir: Path) -> List[str]:
+    """Stub function for component initialization - implement in component_generator.py if needed"""
+    logger.debug(f"Skipping component initialization for {workflow_type} (component_generator not implemented)")
+    return []
 
 def add_initialization_coroutine(coro: Callable[[], Awaitable[None]]) -> Callable[[], Awaitable[None]]:
     """Register startup coroutine"""

@@ -14,6 +14,7 @@ Shared state and data structures for agent communication
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from datetime import datetime
+import time
 
 @dataclass
 class {WORKFLOW_NAME}Context:
@@ -110,234 +111,10 @@ def validate_context(context: {WORKFLOW_NAME}Context) -> List[str]:
     {VALIDATION_RULES}
     
     return errors
-```
 
-## Configuration Fields
-
-### WORKFLOW_NAME
-- **Format**: PascalCase (e.g., "ContentGenerator", "DataAnalysis")
-- **Purpose**: Creates the context class name
-- **Example**: "ContentGenerator" → "ContentGeneratorContext"
-
-### USER_DATA_FIELDS
-Define fields that store user-provided information:
-
-```python
-# User preferences and settings
-user_preferences: Dict[str, Any] = field(default_factory=dict)
-user_email: Optional[str] = None
-user_role: Optional[str] = None
-
-# User inputs and requirements
-requirements: List[str] = field(default_factory=list)
-selected_options: Dict[str, Any] = field(default_factory=dict)
-uploaded_files: List[Dict[str, Any]] = field(default_factory=list)
-```
-
-### WORKFLOW_SPECIFIC_FIELDS
-Define fields specific to your workflow's domain:
-
-```python
-# Content generation workflow
-content_type: Optional[str] = None
-target_audience: Optional[str] = None
-content_length: Optional[int] = None
-style_preferences: Dict[str, Any] = field(default_factory=dict)
-
-# Data analysis workflow  
-dataset_info: Dict[str, Any] = field(default_factory=dict)
-analysis_type: Optional[str] = None
-selected_columns: List[str] = field(default_factory=list)
-visualization_preferences: Dict[str, Any] = field(default_factory=dict)
-
-# API integration workflow
-api_credentials: Dict[str, str] = field(default_factory=dict)
-endpoint_config: Dict[str, Any] = field(default_factory=dict)
-request_parameters: Dict[str, Any] = field(default_factory=dict)
-```
-
-### OUTPUT_FIELDS
-Define fields that store generated results:
-
-```python
-# Generated content
-generated_content: List[Dict[str, Any]] = field(default_factory=list)
-generated_files: List[Dict[str, Any]] = field(default_factory=list)
-download_urls: Dict[str, str] = field(default_factory=dict)
-
-# Analysis results
-analysis_results: Dict[str, Any] = field(default_factory=dict)
-visualizations: List[Dict[str, Any]] = field(default_factory=list)
-summary_report: Optional[str] = None
-
-# API responses
-api_responses: List[Dict[str, Any]] = field(default_factory=list)
-processed_data: Dict[str, Any] = field(default_factory=dict)
-export_data: Dict[str, Any] = field(default_factory=dict)
-```
-
-### VALID_STAGES
-Define the workflow progression stages:
-
-```python
-# Simple linear workflow
-{"initialized", "collecting_requirements", "processing", "generating", "completed"}
-
-# Complex branching workflow
-{"initialized", "user_onboarding", "requirements_gathering", "api_setup", 
- "data_processing", "content_generation", "review", "finalization", "completed"}
-
-# Iterative workflow
-{"initialized", "planning", "execution", "review", "revision", "approval", "completed"}
-```
-
-### HANDOFF_VALIDATION_LOGIC
-Define when agents can hand off to each other:
-
-```python
-if target_agent == "ContentGeneratorAgent":
-    return (self.content_type is not None and 
-            len(self.requirements) > 0 and
-            bool(self.api_credentials.get("openai")))
-
-elif target_agent == "ReviewAgent":
-    return (len(self.generated_content) > 0 and
-            self.workflow_stage == "generating")
-
-elif target_agent == "ConversationAgent":
-    return True  # Can always hand back to conversation agent
-```
-
-## Field Type Guidelines
-
-### Simple Values
-```python
-# Use for single values
-name: Optional[str] = None
-count: int = 0
-is_enabled: bool = False
-timestamp: datetime = field(default_factory=datetime.now)
-```
-
-### Collections
-```python
-# Use for lists of items
-items: List[str] = field(default_factory=list)
-metadata: Dict[str, Any] = field(default_factory=dict)
-file_mappings: Dict[str, str] = field(default_factory=dict)
-```
-
-### Complex Objects
-```python
-# Use for structured data
-user_profile: Dict[str, Any] = field(default_factory=dict)
-generation_config: Dict[str, Any] = field(default_factory=lambda: {
-    "model": "gpt-4",
-    "temperature": 0.7,
-    "max_tokens": 1000
-})
-```
-
-## Validation Rules Examples
-
-### Required Fields Validation
-```python
-if not context.user_id:
-    errors.append("user_id is required")
-
-if not context.requirements:
-    errors.append("At least one requirement must be specified")
-
-if context.content_type not in ["blog", "article", "social", "email"]:
-    errors.append("Invalid content_type")
-```
-
-### Data Consistency Validation
-```python
-if context.api_credentials and not context.api_credentials.get("openai"):
-    errors.append("OpenAI API key required for content generation")
-
-if context.generated_files and not context.download_urls:
-    errors.append("Download URLs missing for generated files")
-```
-
-### Workflow Stage Validation
-```python
-if context.workflow_stage == "generating" and not context.requirements:
-    errors.append("Cannot generate content without requirements")
-
-if context.completion_status == "completed" and context.workflow_stage != "finished":
-    errors.append("Workflow stage must be 'finished' when completed")
-```
-
-## Usage Patterns
-
-### Simple Data Collection Workflow
-```python
-@dataclass
-class SimpleFormContext:
-    # User inputs
-    name: Optional[str] = None
-    email: Optional[str] = None
-    message: Optional[str] = None
-    
-    # System state
-    form_completed: bool = False
-    validation_errors: List[str] = field(default_factory=list)
-```
-
-### Multi-Step Content Generation
-```python
-@dataclass
-class ContentGenerationContext:
-    # Step 1: Requirements
-    content_type: Optional[str] = None
-    target_audience: Optional[str] = None
-    tone: Optional[str] = None
-    
-    # Step 2: Configuration
-    api_keys: Dict[str, str] = field(default_factory=dict)
-    generation_params: Dict[str, Any] = field(default_factory=dict)
-    
-    # Step 3: Generation
-    generated_content: List[Dict[str, Any]] = field(default_factory=list)
-    revision_history: List[Dict[str, Any]] = field(default_factory=list)
-    
-    # Step 4: Delivery
-    final_files: List[Dict[str, Any]] = field(default_factory=list)
-    download_links: Dict[str, str] = field(default_factory=dict)
-```
-
-### API Integration Workflow
-```python
-@dataclass  
-class APIIntegrationContext:
-    # Connection setup
-    api_credentials: Dict[str, str] = field(default_factory=dict)
-    endpoint_config: Dict[str, Any] = field(default_factory=dict)
-    
-    # Request configuration
-    request_templates: List[Dict[str, Any]] = field(default_factory=list)
-    parameter_mappings: Dict[str, str] = field(default_factory=dict)
-    
-    # Execution results
-    test_results: List[Dict[str, Any]] = field(default_factory=list)
-    api_responses: List[Dict[str, Any]] = field(default_factory=list)
-    error_log: List[str] = field(default_factory=list)
-```
-
-## Best Practices
-
-1. **Start Simple**: Begin with minimal fields, add complexity as needed
-2. **Use Type Hints**: Always specify types for better IDE support and validation
-3. **Default Factories**: Use `field(default_factory=dict)` for mutable defaults
-4. **Clear Naming**: Use descriptive field names that explain the data's purpose
-5. **Validation**: Include validation methods to ensure data consistency
-6. **Documentation**: Add docstrings explaining each field's purpose
-7. **Immutable IDs**: Don't change user_id or session_id after creation
-8. **Stage Management**: Use clear, descriptive stage names
-9. **Error Tracking**: Include error handling and logging capabilities
-10. **Serialization**: Ensure all fields can be serialized to/from JSON
+# ================================================================================
+# CONTEXT ADJUSTMENT INTEGRATION (NEW)
+# ================================================================================
 
 ## LLM Generation Prompt
 
@@ -351,3 +128,243 @@ Agent Handoffs: {HANDOFF_REQUIREMENTS}
 
 Generate the complete context class with validation and helper methods.
 ```
+
+## 🔄 Context Adjustment Integration Guide
+
+### Overview
+The context adjustment system allows UI components to automatically update AG2 ContextVariables without requiring separate backend handlers. When users interact with components, their actions are automatically processed and stored in the workflow's context.
+
+### How It Works
+
+1. **Component Action**: User interacts with component (submits form, downloads file, etc.)
+2. **Core Routing**: Action routes through workflow-agnostic context adjustment bridge
+3. **Context Update**: Your `context_update()` function processes the action
+4. **AG2 Integration**: ContextVariables updated, agents can access data immediately
+
+### Setup Requirements
+
+#### 1. Enable in workflow.json
+```json
+{
+  "ui_capable_agents": [
+    {
+      "name": "YourAgent",
+      "context_adjustment": true,
+      "components": [...]
+    }
+  ]
+}
+```
+
+#### 2. Implement context_update() Function
+```python
+# workflows/YourWorkflow/ContextVariables.py
+async def context_update(agent_name, component_name, action_data, context_variables):
+    """Handle component actions and update context"""
+    
+    action_type = action_data.get('type')
+    
+    if component_name == 'AgentAPIKeyInput' and action_type == 'api_key_submit':
+        # Store API key securely
+        service = action_data.get('service')
+        api_key = action_data.get('apiKey')
+        
+        secure_keys = context_variables.get('secure_api_keys', {}) or {}
+        secure_keys[service] = api_key
+        context_variables.set('secure_api_keys', secure_keys)
+        context_variables.set('api_key_ready', True)
+        
+        return {"status": "success", "service": service}
+    
+    return {"status": "unhandled"}
+```
+
+#### 3. Component Uses Standard onAction
+```javascript
+// Component automatically integrates - no changes needed
+const AgentAPIKeyInput = ({ onAction, service, agentId }) => {
+  const handleSubmit = async (apiKey) => {
+    await onAction({
+      type: 'api_key_submit',
+      agentId: agentId,
+      data: { service, apiKey }
+    });
+  };
+  
+  return <form onSubmit={handleSubmit}>{/* UI */}</form>;
+};
+```
+
+### Benefits
+
+- ✅ **Automatic Integration**: No separate backend handlers needed
+- ✅ **Workflow Agnostic**: Works with any workflow configuration
+- ✅ **AG2 Native**: Uses standard ContextVariables for state management
+- ✅ **Immediate Access**: Agents can use data right after component interaction
+- ✅ **Fallback Support**: Generic updates if no custom logic provided
+
+### Common Patterns
+
+#### Secure Data Storage
+```python
+# Store sensitive data securely
+secure_data = context_variables.get('secure_api_keys', {}) or {}
+secure_data[service] = sensitive_value
+context_variables.set('secure_api_keys', secure_data)
+```
+
+#### Public Metadata Storage
+```python
+# Store public metadata for UI/display
+public_data = context_variables.get('api_keys', {}) or {}
+public_data[service] = {
+    'masked_key': f"{api_key[:6]}...{api_key[-4:]}",
+    'status': 'active',
+    'submitted_at': str(time.time())
+}
+context_variables.set('api_keys', public_data)
+```
+
+#### Boolean Flags for Agents
+```python
+# Set flags that agents can check
+context_variables.set('api_key_ready', True)
+context_variables.set('form_completed', True)
+context_variables.set('files_downloaded', len(downloads) > 0)
+```
+
+### Testing Your Integration
+
+Use the test system to verify your context adjustment is working:
+
+```python
+# Test your context_update function
+python test_context_system.py
+```
+
+This will simulate component actions and verify that ContextVariables are updated correctly.
+
+# ================================================================================
+# END OF CONTEXT ADJUSTMENT INTEGRATION
+# ================================================================================
+
+async def context_update(agent_name: str, component_name: str, action_data: Dict[str, Any], context_variables) -> Dict[str, Any]:
+    """
+    Workflow-specific context update function for component actions
+    
+    This function is automatically called by the core context adjustment system
+    when UI components perform actions that should update AG2 ContextVariables.
+    
+    Args:
+        agent_name: Name of the AG2 agent that owns the component
+        component_name: Name of the UI component that triggered the action
+        action_data: Data from the component action (includes 'type' and component data)
+        context_variables: AG2 ContextVariables object to update
+        
+    Returns:
+        Dict with status and any response data for the component
+    """
+    
+    # Extract action type and data
+    action_type = action_data.get('type')
+    component_data = action_data.get('data', {})
+    
+    # Handle component-specific actions
+    if component_name == 'AgentAPIKeyInput':
+        return handle_api_key_actions(action_type, component_data, context_variables)
+    
+    elif component_name == 'FileDownloadCenter':
+        return handle_file_actions(action_type, component_data, context_variables)
+    
+    elif component_name in ['FormComponent', 'MultiStepForm']:
+        return handle_form_actions(action_type, component_data, context_variables)
+    
+    # Add more component handlers as needed...
+    
+    # Generic fallback - let core system handle if no specific logic
+    return {"status": "unhandled", "message": f"No specific handler for {component_name}.{action_type}"}
+
+# Example component action handlers for different workflow types:
+
+# API Key Management Handler
+def handle_api_key_actions(action_type: str, component_data: Dict[str, Any], context_variables) -> Dict[str, Any]:
+    """Handle API key component actions"""
+    
+    if action_type == 'api_key_submit':
+        service = component_data.get('service')
+        api_key = component_data.get('apiKey')
+        
+        if not service or not api_key:
+            return {"status": "error", "message": "Missing service or API key"}
+        
+        # Store in secure context variables
+        secure_keys = context_variables.get('secure_api_keys', {}) or {}
+        secure_keys[service] = api_key
+        context_variables.set('secure_api_keys', secure_keys)
+        
+        # Store public metadata
+        api_keys = context_variables.get('api_keys', {}) or {}
+        api_keys[service] = {
+            'masked_key': f"{api_key[:6]}...{api_key[-4:]}",
+            'status': 'active',
+            'submitted_at': str(time.time())
+        }
+        context_variables.set('api_keys', api_keys)
+        context_variables.set('last_api_key_service', service)
+        context_variables.set('api_key_ready', True)
+        
+        return {"status": "success", "service": service, "message": f"{service} API key stored securely"}
+    
+    elif action_type == 'cancel':
+        service = component_data.get('service')
+        return {"status": "cancelled", "service": service}
+    
+    return {"status": "unhandled"}
+
+# File Management Handler  
+def handle_file_actions(action_type: str, component_data: Dict[str, Any], context_variables) -> Dict[str, Any]:
+    """Handle file download/upload component actions"""
+    
+    if action_type == 'download':
+        file_id = component_data.get('fileId')
+        filename = component_data.get('filename')
+        
+        # Track download in context
+        downloads = context_variables.get('downloaded_files', []) or []
+        downloads.append({
+            'file_id': file_id,
+            'filename': filename,
+            'download_time': str(time.time()),
+            'status': 'completed'
+        })
+        context_variables.set('downloaded_files', downloads)
+        context_variables.set('last_download', filename)
+        
+        return {"status": "success", "filename": filename, "message": f"Download tracked: {filename}"}
+    
+    elif action_type == 'upload':
+        # Handle file upload logic
+        pass
+    
+    return {"status": "unhandled"}
+
+# Form Submission Handler
+def handle_form_actions(action_type: str, component_data: Dict[str, Any], context_variables) -> Dict[str, Any]:
+    """Handle form component actions"""
+    
+    if action_type == 'form_submit':
+        form_data = component_data.get('formData', {})
+        
+        # Store form data in context
+        forms = context_variables.get('submitted_forms', []) or []
+        forms.append({
+            'data': form_data,
+            'submitted_at': str(time.time()),
+            'is_valid': component_data.get('isValid', False)
+        })
+        context_variables.set('submitted_forms', forms)
+        context_variables.set('last_form_data', form_data)
+        
+        return {"status": "success", "message": "Form data saved to context"}
+    
+    return {"status": "unhandled"}

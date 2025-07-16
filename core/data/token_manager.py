@@ -1,5 +1,5 @@
 ﻿# ==============================================================================
-# FILE: token_manager.py
+# FILE: core\data\token_manager.py
 # DESCRIPTION: Manages user budgets, token balances, and business logic for 
 #              chat workflows. Integrates with AG2ObservabilityManager for
 #              technical token tracking and uses AG2's native usage APIs.
@@ -12,10 +12,11 @@ USE_MOCK_API = True  # Set to False when ready to use real Tokens API
 
 # Mock user data for testing - replace with real API calls
 MOCK_TOKEN_BALANCES = {
-    "user123": 1000,
-    "user456": 500, 
-    "user789": 50,   # Low balance for testing warnings
-    "user0001": 150000,    # No tokens for testing depletion
+    "user123": 100000,     # Increased for testing - was 1000, reduced to 454 through usage
+    "user456": 50000, 
+    "user789": 5000,       # Low balance for testing warnings  
+    "user0001": 150000,    # High balance user
+    "test_user": 200000,   # Test user for groupchat testing
 }
 
 MOCK_APP_IDS = {
@@ -76,7 +77,7 @@ from typing import Dict, List, Any, Optional, Tuple
 
 from autogen import Agent, gather_usage_summary
 
-from core.data.db_manager import mongodb_manager
+from core.data.persistence_manager import persistence_manager as mongodb_manager
 from core.monitoring.observability import AG2ObservabilityManager
 from core.capabilities.config import get_free_trial_config
 from logs.logging_config import get_business_logger, get_performance_logger, get_token_manager_logger, log_business_event, log_performance_metric
@@ -395,6 +396,16 @@ class TokenManager:
                 self.business_usage["api_calls_made"] += 1
                 self.business_usage["api_tokens_consumed"] += session_TotalTokens
                 
+                # IMPORTANT: Reset agent usage counters after successful billing
+                # This prevents cumulative token counting in subsequent turns
+                try:
+                    from core.monitoring.observability import get_observer
+                    observer = get_observer(self.chat_id, self.enterprise_id)
+                    observer.reset_agent_usage(agents)
+                    token_logger.debug(f"[BILLING] Reset agent usage counters after billing {session_TotalTokens} tokens")
+                except Exception as reset_error:
+                    token_logger.warning(f"[BILLING] Failed to reset agent usage: {reset_error}")
+                
                 token_logger.info(f"[API_SUCCESS] User: {self.user_id} | Consumed: {session_TotalTokens} | Balance: {self.token_balance}")
                 
                 log_business_event(
@@ -429,6 +440,16 @@ class TokenManager:
         else:
             # For free trial users, track usage but don't consume tokens
             token_logger.info(f"[FREE_TRIAL] Chat: {self.chat_id[:8]} | Tokens: {session_TotalTokens} (tracked) | Loops Left: {self.free_loops_remaining}")
+            
+            # Reset agent usage counters for free trial users too
+            try:
+                from core.monitoring.observability import get_observer
+                observer = get_observer(self.chat_id, self.enterprise_id)
+                observer.reset_agent_usage(agents)
+                token_logger.debug(f"[FREE_TRIAL] Reset agent usage counters after tracking {session_TotalTokens} tokens")
+            except Exception as reset_error:
+                token_logger.warning(f"[FREE_TRIAL] Failed to reset agent usage: {reset_error}")
+            
             log_business_event(
                 event_type="tokens_tracked_not_consumed",
                 description=f"Free trial: {session_TotalTokens} tokens tracked but not consumed",
@@ -448,7 +469,7 @@ class TokenManager:
 
         # Save using clean schema only (phasing out comprehensive persistence)
         try:
-            from core.data.db_manager import mongodb_manager
+            # mongodb_manager is already imported at the top as persistence_manager alias
             await mongodb_manager.save_token_usage(
                 chat_id=self.chat_id,
                 enterprise_id=self.enterprise_id, 

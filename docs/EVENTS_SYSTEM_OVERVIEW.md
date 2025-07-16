@@ -1,5 +1,7 @@
 # MozaiksAI Events System Architecture Overview
 
+> **🔧 Implementation Details**: For technical documentation, code examples, and API reference, see [Transport System Documentation](./TRANSPORT_SYSTEM.md)
+
 ## Executive Summary
 
 The MozaiksAI events system is a unified, transport-agnostic communication framework designed to enable real-time, bidirectional communication between AI workflows and frontend interfaces. The system abstracts away the complexity of different transport mechanisms (SSE, WebSocket) while maintaining compatibility with the AG2 (AutoGen) framework and providing a simplified event model for developers.
@@ -66,20 +68,21 @@ Key protocol methods:
 
 ### 2. Transport Management Layer
 
-#### **TransportManager**
-The central orchestrator that:
-- **Selects appropriate transport** based on workflow configuration 
-- **Manages connection lifecycle** (creation, maintenance, cleanup)
-- **Provides unified interface** to workflows regardless of transport type
-- **Handles connection recovery** and error scenarios
-- **Routes incoming user input** to appropriate workflow handlers
+#### **SimpleTransport (Unified Architecture)**
+The consolidated transport system that replaces multiple complex managers:
+- **Single-file architecture**: All transport functionality in `simple_transport.py`
+- **Protocol compatibility**: Implements `SimpleCommunicationChannel` interface
+- **Built-in filtering**: Automatic AutoGen noise removal
+- **AG2 resume**: Native groupchat persistence and recovery
+- **Dynamic UI support**: Production-ready component routing
+- **Transport agnostic**: Works with SSE, WebSocket, and future protocols
 
-#### **Transport Selection Logic**
-The system automatically determines the optimal transport mechanism based on:
-- Workflow requirements (real-time vs. batch processing)
-- User interaction patterns (bidirectional vs. unidirectional)
-- System configuration and capabilities
-- Performance considerations
+#### **Simplified Transport Selection**
+The system uses intelligent defaults with minimal configuration:
+- **Protocol detection**: Automatic SSE vs WebSocket selection
+- **Configuration-driven**: Single config object for all transport settings
+- **Smart defaults**: Sensible defaults for production deployment
+- **Minimal setup**: No complex configuration required
 
 ### 3. SSE (Server-Sent Events) Implementation
 

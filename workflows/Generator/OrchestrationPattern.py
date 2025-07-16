@@ -11,7 +11,7 @@ from .ContextVariables import get_context
 from .Handoffs import wire_handoffs
 from .Hooks import wire_hooks, discover_all_tools, register_agent_tools, register_groupchat_hooks
 logger = logging.getLogger(__name__)
-from core.data.db_manager import mongodb_manager
+from core.data.persistence_manager import persistence_manager as mongodb_manager
 import logging
 import time
 
@@ -176,9 +176,7 @@ async def run_groupchat(
         business_logger.debug(f"🤖 [{workflow_name_upper}] Defining agents...")
         
         agents, group_chat_manager = await define_agents(
-            base_llm_config=llm_config,
-            communication_channel=communication_channel,  # Pass unified channel
-            hooks=hooks_config
+            base_llm_config=llm_config
         )
         
         agents_build_time = (time.time() - agents_start) * 1000
@@ -244,11 +242,20 @@ async def run_groupchat(
             business_logger.error(f"❌ [{workflow_name_upper}] Failed to load initial message from workflow.json: {e}")
             workflow_initial_message = None
         
+        # Use passed initial_message if workflow config doesn't have one, or fallback to generic prompt
+        final_initial_message = workflow_initial_message or initial_message
+        
+        # If still no message, provide a generic fallback that tells agents to proceed
+        if not final_initial_message:
+            final_initial_message = "You have been tasked with an assignment. Please proceed per your instructions in your system message within the context of the context_variables."
+        
         # Log the approach based on final message
         if workflow_initial_message:
             business_logger.info(f"🎯 [{workflow_name_upper}] Starting with {initiating_agent_name} (system-led navigator mode)")
+        elif initial_message:
+            business_logger.info(f"🎯 [{workflow_name_upper}] Starting with {initiating_agent_name} (user-provided message)")
         else:
-            business_logger.info(f"🎯 [{workflow_name_upper}] Starting with {initiating_agent_name} (auto-start mode)")
+            business_logger.info(f"🎯 [{workflow_name_upper}] Starting with {initiating_agent_name} (generic fallback prompt)")
 
         await start_or_resume_group_chat(
             manager=enhanced_manager,
@@ -256,7 +263,7 @@ async def run_groupchat(
             chat_id=chat_id,
             enterprise_id=enterprise_id,
             user_id=user_id,
-            initial_message=workflow_initial_message,  # Dynamic initial message from workflow.json
+            initial_message=final_initial_message,  # Use workflow.json message or passed parameter
             max_turns=WORKFLOW_MAX_TURNS,  # Dynamic max_turns from workflow.json
             workflow_type=WORKFLOW_CONFIG["workflow_type"],  # Dynamic workflow type from workflow.json
             communication_channel=communication_channel  # Use unified transport channel

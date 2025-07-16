@@ -1,4 +1,5 @@
-function ChatMessageComponent({ message, message_from }) {
+function ChatMessageComponent({ message, message_from, agentName }) {
+  console.log('💬 ChatMessageComponent render:', { message: message?.substring(0, 50) + '...', message_from, agentName, hasMessage: !!message });
  
   return (
     <>
@@ -9,6 +10,7 @@ function ChatMessageComponent({ message, message_from }) {
           px-[15px] py-[10px] design-mission-message-receive"
           >
             <div className="flex flex-col ">
+              <div className="text-xs text-cyan-200 mb-1 opacity-75">You</div>
               {message && <div className="sm:w-full flex pr-2 oxanium  md:text-[16px] font-bold text-[10px]  text-white">
                 <div className="w-full">{message}</div>
               </div>}
@@ -23,6 +25,7 @@ function ChatMessageComponent({ message, message_from }) {
                     px-[15px] py-[10px] design-mission-message-send"
           >
             <div className="flex  flex-col ">
+              <div className="text-xs text-purple-200 mb-1 opacity-75">{agentName || 'Agent'}</div>
               <div className="w-full flex pr-2 oxanium  md:text-[16px] text-[10px] font-bold text-white">
                 <div className="w-full">{message}</div>
               </div>

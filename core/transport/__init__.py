@@ -1,14 +1,8 @@
 """
-Transport Layer Module
-Handles all communication protocols, adapters, and transport mechanisms.
+Transport Layer Module - Simplified
+All transport functionality consolidated in simple_transport.py
 """
 
-from .ag2_sse_adapter import *
-from .ag2_websocket_adapter import *
-from ..events.simple_protocols import *
-from .transport import *
+from .simple_transport import SimpleTransport
 
-__all__ = [
-    # Export key classes and functions from transport modules
-    # This will be populated based on actual exports from each module
-]
+__all__ = ['SimpleTransport']

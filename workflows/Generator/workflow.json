@@ -3,13 +3,15 @@
   "max_turns": 25,
   "initiating_agent": "ContextVariablesAgent",
   "human_in_the_loop": true,
+  "auto_start": true,
   "transport": "sse",
-  "initial_message": "Hello! I'm here to help you generate custom AG2 group chat workflows. Please describe what kind of multi-agent system you'd like to create, and I'll guide you through the process.",
+  "initial_message": null,
   "ui_capable_agents": [
     {
       "name": "UserFeedbackAgent",
       "role": "user_feedback_manager",
       "capabilities": ["chat", "artifacts"],
+      "context_adjustment": true,
       "components": [
         {
           "name": "FileDownloadCenter",
@@ -24,6 +26,7 @@
       "name": "APIKeyAgent",
       "role": "api_credential_manager",
       "capabilities": ["chat", "inline_components"],
+      "context_adjustment": true,
       "components": [
         {
           "name": "AgentAPIKeyInput",

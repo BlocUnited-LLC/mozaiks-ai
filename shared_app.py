@@ -21,9 +21,9 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from core.core_config import make_streaming_config, get_mongo_client
-from core.transport import TransportManager
-from core.workflow.init_registry import get_initialization_coroutines, get_registered_workflows, workflow_status_summary, get_workflow_transport, get_workflow_tools
-from core.data.db_manager import mongodb_manager
+from core.transport.simple_transport import SimpleTransport
+from core.workflow.init_registry import get_initialization_coroutines, get_registered_workflows, workflow_status_summary, get_workflow_transport, get_workflow_tools, workflow_human_loop
+from core.data.persistence_manager import persistence_manager as mongodb_manager
 from core.data.token_manager import _mock_get_remaining, _mock_consume_tokens
 
 # Request model for starting a chat session
@@ -80,21 +80,21 @@ app.add_middleware(
 )
 
 mongo_client = get_mongo_client()
-transport_manager: Optional[TransportManager] = None
+simple_transport: Optional[SimpleTransport] = None
 
 @app.on_event("startup")
 async def startup():
     """Initialize application on startup"""
-    global transport_manager
+    global simple_transport
     startup_start = datetime.utcnow()
 
     business_logger.info("🚀 Starting MozaiksAI Runtime...")
 
     try:
-        # Initialize transport manager
+        # Initialize simple transport
         streaming_start = datetime.utcnow()
         _, streaming_llm_config = await make_streaming_config()
-        transport_manager = TransportManager(default_llm_config=streaming_llm_config)
+        simple_transport = SimpleTransport(streaming_llm_config)
         
         streaming_time = (datetime.utcnow() - streaming_start).total_seconds() * 1000
         log_performance_metric(
@@ -103,7 +103,7 @@ async def startup():
             context={"config_keys": list(streaming_llm_config.keys()) if streaming_llm_config else []}
         )
         
-        business_logger.info("🔌 Transport manager initialized")
+        business_logger.info("🔌 Simple transport initialized")
 
         # Test MongoDB connection
         mongo_start = datetime.utcnow()
@@ -251,15 +251,15 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     """Cleanup on shutdown"""
-    global transport_manager
+    global simple_transport
     shutdown_start = datetime.utcnow()
     
     business_logger.info("🛑 Shutting down server...")
     
     try:
-        if transport_manager:
-            await transport_manager.cleanup()
-            business_logger.info("🔌 Transport manager cleaned up")
+        if simple_transport:
+            simple_transport.disconnect()
+            business_logger.info("🔌 Simple transport cleaned up")
         
         if mongo_client:
             mongo_client.close()
@@ -402,20 +402,29 @@ async def list_workflows():
     try:
         registered = get_registered_workflows()
         
+        # Convert workflow names to full workflow objects
+        workflows = []
+        for workflow_type in registered:
+            workflows.append({
+                "workflow_type": workflow_type,
+                "transport": get_workflow_transport(workflow_type),
+                "human_loop": workflow_human_loop(workflow_type)
+            })
+        
         response_time = (datetime.utcnow() - request_start).total_seconds() * 1000
         log_performance_metric(
             metric_name="api_workflows_duration",
             value=response_time,
             unit="ms",
-            context={"workflows_count": len(registered)}
+            context={"workflows_count": len(workflows)}
         )
         
-        business_logger.debug(f"📋 Workflows API called - {len(registered)} workflows returned")
+        business_logger.debug(f"📋 Workflows API called - {len(workflows)} workflows returned")
         
         return {
-            "workflows": registered,
-            "count": len(registered),
-            "message": f"Found {len(registered)} registered workflows"
+            "workflows": workflows,
+            "count": len(workflows),
+            "message": f"Found {len(workflows)} registered workflows"
         }
         
     except Exception as e:
@@ -491,8 +500,8 @@ async def health_check():
         # Get workflow status
         status = workflow_status_summary()
         
-        # Get active connections from transport manager
-        connection_info = transport_manager.get_connection_info() if transport_manager else {
+        # Get active connections from simple transport
+        connection_info = simple_transport.get_connection_info() if simple_transport else {
             "sse_connections": 0, "websocket_connections": 0, "total_connections": 0
         }
 
@@ -514,7 +523,7 @@ async def health_check():
             "status": "healthy",
             "mongodb": "connected",
             "mongodb_ping_ms": round(mongo_ping_time, 2),
-            "transport_manager": "initialized" if transport_manager else "not_initialized",
+            "simple_transport": "initialized" if simple_transport else "not_initialized",
             "active_connections": connection_info,
             "workflows": status["registered_workflows"],
             "transport_groups": status.get("transport_groups", {}),
@@ -588,7 +597,7 @@ async def sse_endpoint(
     user_id: str,
 ):
     """SSE endpoint to stream agent responses."""
-    if not transport_manager:
+    if not simple_transport:
         raise HTTPException(status_code=503, detail="Transport service is not available.")
 
     # Check if this workflow uses SSE transport
@@ -602,9 +611,8 @@ async def sse_endpoint(
     connection_id = f"{enterprise_id}_{chat_id}_{user_id}"
     business_logger.info(f"🔌 New SSE connection: {connection_id} for workflow '{workflow_type}'")
     
-    return await transport_manager.create_sse_stream(
+    return await simple_transport.create_sse_stream(
         chat_id=chat_id,
-        enterprise_id=enterprise_id,
         user_id=user_id,
         workflow_type=workflow_type
     )
@@ -618,7 +626,7 @@ async def websocket_endpoint(
     user_id: str,
 ):
     """WebSocket endpoint for real-time agent communication."""
-    if not transport_manager:
+    if not simple_transport:
         await websocket.close(code=1000, reason="Transport service not available")
         return
 
@@ -633,10 +641,9 @@ async def websocket_endpoint(
 
     business_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_type}'")
     
-    await transport_manager.handle_websocket_connection(
+    await simple_transport.handle_websocket(
         websocket=websocket,
         chat_id=chat_id,
-        enterprise_id=enterprise_id,
         user_id=user_id,
         workflow_type=workflow_type
     )
@@ -649,7 +656,7 @@ async def handle_user_input(
     user_id: str,
 ):
     """Endpoint to receive user input and trigger the workflow."""
-    if not transport_manager:
+    if not simple_transport:
         raise HTTPException(status_code=503, detail="Transport service is not available.")
 
     try:
@@ -672,9 +679,8 @@ async def handle_user_input(
         if not message:
             raise HTTPException(status_code=400, detail="'message' field is required.")
 
-        result = await transport_manager.handle_user_input(
+        result = await simple_transport.handle_user_input_from_api(
             chat_id=chat_id, 
-            enterprise_id=enterprise_id, 
             user_id=user_id, 
             workflow_type=workflow_type,
             message=message

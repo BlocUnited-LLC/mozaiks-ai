@@ -74,6 +74,14 @@ def register_agent_tools(agents: Dict[str, Any], agent_tools: Dict[str, Dict[str
         
         business_logger.debug(f"🔧 Tool {tool_name}: func={type(func)}, apply_to={apply_to}")
         
+        if func is None:
+            business_logger.error(f"Tool {tool_name} has no function_obj - tool may have failed to load")
+            continue
+            
+        if not callable(func):
+            business_logger.error(f"Tool {tool_name} function_obj is not callable: {type(func)}")
+            continue
+        
         if not apply_to:
             business_logger.warning(f"Tool {tool_name} has no apply_to metadata, skipping")
             continue
@@ -99,26 +107,9 @@ def register_agent_tools(agents: Dict[str, Any], agent_tools: Dict[str, Dict[str
                 continue
                 
             try:
-                # AG2 expects tools to be registered using update_tool_signature
-                if hasattr(agent, "update_tool_signature"):
-                    # Create a proper tool signature dict with function schema, not the function itself
-                    tool_signature = {
-                        tool_name: {
-                            "description": tool_info.get("description", getattr(func, "__doc__", f"Tool function {tool_name}")),
-                            "parameters": {
-                                "type": "object",
-                                "properties": {},
-                                "required": []
-                            }
-                        }
-                    }
-                    agent.update_tool_signature(tool_signature, is_remove=False)
-                    # Also need to register the actual function for execution
-                    if hasattr(agent, "register_for_execution"):
-                        agent.register_for_execution(tool_name)(func)
-                    business_logger.info(f"🔧 Registered tool {tool_name} on agent {agent_name} (update_tool_signature)")
-                elif hasattr(agent, "register_for_execution"):
-                    # Alternative AG2 approach
+                # Try a different approach - skip update_tool_signature for now and just use register_for_execution
+                if hasattr(agent, "register_for_execution"):
+                    # Use register_for_execution which is simpler and more reliable
                     agent.register_for_execution(tool_name)(func)
                     business_logger.info(f"🔧 Registered tool {tool_name} on agent {agent_name} (register_for_execution)")
                 elif hasattr(agent, "_function_map"):
@@ -129,7 +120,11 @@ def register_agent_tools(agents: Dict[str, Any], agent_tools: Dict[str, Dict[str
                     # Skip tool registration for now to avoid errors
                     business_logger.warning(f"Skipping tool registration for {tool_name} on {agent_name} - no compatible method found")
             except Exception as e:
-                business_logger.error(f"Failed to register tool {tool_name} on agent {agent_name}: {e}")
+                business_logger.error(f"Failed to register tool {tool_name} on agent {agent_name}: {type(e).__name__}: {e}")
+                business_logger.error(f"Tool info: {tool_info}")
+                business_logger.error(f"Agent info: name={agent_name}, type={type(agent)}, hasattr(update_tool_signature)={hasattr(agent, 'update_tool_signature')}")
+                import traceback
+                business_logger.error(f"Full traceback:\n{traceback.format_exc()}")
 
 
 def register_groupchat_hooks(group_chat_manager: Any, groupchat_tools: Dict[str, Dict[str, Any]]) -> None:

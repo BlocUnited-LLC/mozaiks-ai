@@ -78,6 +78,14 @@ export const getArtifactComponentByToolType = async (toolType) => {
 };
 
 /**
+ * Initialize components (now handled by workflow.json loading)
+ */
+export const initializeComponents = async () => {
+  console.log('✅ Component initialization complete (using workflow.json discovery)');
+  return Promise.resolve();
+};
+
+/**
  * React hook for workflow-specific components
  */
 export const useComponent = (componentName) => {
@@ -102,5 +110,6 @@ export default {
   getComponentByToolType,
   setActiveWorkflow,
   getArtifactComponent,
-  getInlineComponent
+  getInlineComponent,
+  initializeComponents
 };

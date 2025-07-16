@@ -52,6 +52,7 @@ class AG2StreamingIOStream(IOStreamProtocol):
         self.current_message_id: Optional[str] = None
         self.current_agent_name: Optional[str] = None
         self.is_streaming = False
+        self._stream_next_content = False  # Flag to control what gets streamed
         
         # Streaming configuration
         self.chunk_size = 1  # Stream character by character for maximum effect
@@ -63,12 +64,26 @@ class AG2StreamingIOStream(IOStreamProtocol):
         
         AG2 agents call this method to output text. We intercept it and
         stream the content progressively instead of sending it all at once.
+        
+        Message filtering is now handled by the transport layer, so this
+        method only checks for explicit streaming marks.
         """
         # Convert the print arguments to text (same as standard print)
         content = sep.join(str(obj) for obj in objects) + end
         
         if not content.strip():  # Skip empty content
             return
+        
+        # Only stream content that is explicitly marked for streaming
+        # This prevents internal AutoGen coordination messages from being streamed
+        if not hasattr(self, '_stream_next_content') or not self._stream_next_content:
+            logger.debug(f"🔇 [IOStream] Skipping non-streamable content: {content[:50]}...")
+            return
+            
+        # Reset the flag after use
+        self._stream_next_content = False
+            
+        logger.info(f"📡 [IOStream] Streaming marked content: {content[:50]}...")
         
         # Start streaming session if not already started
         if not self.is_streaming:
@@ -80,6 +95,10 @@ class AG2StreamingIOStream(IOStreamProtocol):
         # Handle flush or end-of-message scenarios
         if flush or end == "\n\n":
             asyncio.create_task(self._complete_streaming_session())
+    
+    def mark_next_content_for_streaming(self):
+        """Mark the next print() call content to be streamed to UI."""
+        self._stream_next_content = True
     
     def send(self, message: Any) -> None:
         """
@@ -279,6 +298,14 @@ class AG2StreamingManager:
         """Set the current agent for better streaming context."""
         if self.streaming_iostream:
             self.streaming_iostream.set_agent_context(agent_name)
+    
+    def mark_content_for_streaming(self, agent_name: str, message_content: str):
+        """Mark the next content from this agent to be streamed to UI."""
+        if self.streaming_iostream:
+            # Mark the next print() call to be streamed
+            self.streaming_iostream.mark_next_content_for_streaming()
+            self.streaming_iostream.set_agent_context(agent_name)
+            logger.info(f"🎯 [STREAMING] Marked content from {agent_name} for streaming: {message_content[:50]}...")
     
     def restore_original_iostream(self):
         """Restore the original IOStream when streaming is complete."""

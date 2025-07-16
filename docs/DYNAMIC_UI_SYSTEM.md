@@ -1,418 +1,488 @@
-# Dynamic UI Component System - Technical Architecture
+# Dynamic UI Component System - Simple Guide
 
-## Overview
+## How It Actually Works (The Simple Version)
 
-The MozaiksAI Dynamic UI System enables AG2 (AutoGen) agents to dynamically request and control React components in the frontend without hardcoding. This document explains the complete technical architecture, component interaction patterns, and response handling mechanisms.
+Here's the core concept: **AG2 agents can request UI components, and users interact with those components to send data back to the agents.**
 
-## 🏗️ System Architecture
+### The 3-Step Process:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    DYNAMIC UI SYSTEM                        │
-├─────────────────────────────────────────────────────────────┤
-│  AG2 Agents    │  Transport    │  Frontend     │  Components │
-│  ┌─────────┐   │  ┌─────────┐  │  ┌─────────┐  │  ┌─────────┐ │
-│  │ Agent   │◄──┤  │WebSocket│◄─┤  │Event    │◄─┤  │Component│ │
-│  │Tools    │   │  │   SSE   │  │  │Processor│  │  │Registry │ │
-│  └─────────┘   │  └─────────┘  │  └─────────┘  │  └─────────┘ │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **Define UI capabilities in `workflow.json`** - Tell the system which agents can use which components
+2. **Agent calls a UI tool** - Agent says "I need component X with data Y"  
+3. **Component renders and handles responses** - User interacts, data flows back to agent
 
-### Core Components
+## 🎯 The Key Question: How Do Components Talk to Backend?
 
-1. **Component Discovery System**: Scans workflow directories for UI components
-2. **AG2 Tool Integration**: Agents request UI via tool calls
-3. **Event Transport Layer**: WebSocket/SSE for real-time communication
-4. **Dynamic Component Loader**: Frontend resolves and renders components
-5. **Response Handling System**: Captures user interactions and sends back to AG2
-
-## 📁 Directory Structure
-
-```
-workflows/
-├── Generator/                          # Workflow name
-│   ├── workflow.json                   # Workflow configuration
-│   ├── components.json                 # Auto-generated manifest
-│   ├── Components/
-│   │   ├── Artifacts/                  # Full-featured components
-│   │   │   └── FileDownloadCenter.js   # Artifact component
-│   │   └── Inline/                     # Lightweight components
-│   │       └── AgentAPIKeyInput.js     # Inline component
-│   └── GroupchatTools/                 # Backend tools for this workflow
-│       ├── db_manager.py               # API key storage
-│       └── file_manager.py             # File operations
-```
-
-## 🔧 Component Types
-
-### 1. Inline Components
-**Purpose**: Lightweight UI elements embedded in chat flow
-**Location**: `workflows/{workflow}/Components/Inline/`
-**Use Case**: Forms, inputs, simple interactions
+**Answer: They don't make API calls directly.** Instead, they use a **callback system**:
 
 ```javascript
-// Example: AgentAPIKeyInput.js
-const AgentAPIKeyInput = ({ 
-  agentId, 
-  service,
-  onAction,    // ← Key: Response handler
-  // ... other props
-}) => {
+// In your component file (e.g., AgentAPIKeyInput.js)
+const AgentAPIKeyInput = ({ onAction, service, ...props }) => {
   const handleSubmit = async (e) => {
-    await onAction?.({
-      type: 'api_key_submit',
-      agentId,
-      data: { service, apiKey, maskedKey }
-    });
-  };
-  // ... component logic
-};
-```
-
-### 2. Artifact Components
-**Purpose**: Full-featured components in right panel
-**Location**: `workflows/{workflow}/Components/Artifacts/`
-**Use Case**: File downloads, code editors, complex interactions
-
-```javascript
-// Example: FileDownloadCenter.js
-const FileDownloadCenter = ({ 
-  files,
-  onDownload,  // ← Key: Response handler
-  title
-}) => {
-  const handleDownloadFile = async (file) => {
-    await onDownload?.(file);
-  };
-  // ... component logic
-};
-```
-
-## 🎯 How AG2 Agents Request UI Components
-
-### 1. Tool Registration
-
-AG2 agents get UI tools registered automatically:
-
-```python
-# In groupchat setup
-from core.ui.simple_ui_tools import route_to_inline_component, route_to_artifact_component
-
-# Tools available to agents
-tools = [
-    route_to_inline_component,
-    route_to_artifact_component,
-    # ... other tools
-]
-```
-
-### 2. Agent Tool Call Example
-
-```python
-# Agent requests API key input (inline component)
-await route_to_inline_component(
-    content="I need your OpenAI API key to continue",
-    component_name="AgentAPIKeyInput",
-    component_data={
-        "service": "OpenAI",
-        "agentId": "ContentGeneratorAgent",
-        "description": "Required for generating content with GPT models"
-    }
-)
-
-# Agent creates file download artifact
-await route_to_artifact_component(
-    title="Generated Files Ready",
-    content="Your files have been generated and are ready for download",
-    component_name="FileDownloadCenter",
-    component_data={
-        "files": [
-            {"name": "app.py", "size": 1024, "content": "..."},
-            {"name": "config.json", "size": 512, "content": "..."}
-        ]
-    }
-)
-```
-
-### 3. Event Flow
-
-```python
-# 1. AG2 agent calls tool
-agent_reply = await agent.a_generate_reply(messages)
-
-# 2. Tool creates Simple Event
-event = create_inline_component_route(content, component_name, component_data)
-
-# 3. Event sent via transport
-await communication_channel.send_event(
-    event_type="route_to_chat",
-    data=event.data
-)
-
-# 4. Frontend receives and processes
-{
-  "type": "route_to_chat",
-  "data": {
-    "content": "I need your OpenAI API key",
-    "component_name": "AgentAPIKeyInput",
-    "component_data": {...}
-  }
-}
-```
-
-## 🎮 Component Response Handling System
-
-### 1. Frontend Response Flow
-
-When users interact with components, responses flow back to AG2:
-
-```javascript
-// Component interaction triggers response
-const onAction = async (action) => {
-  // Send response back to AG2 via transport
-  await transport.send({
-    type: "ui_tool_action",
-    data: {
-      tool_id: componentId,
-      action_type: action.type,
-      payload: action.data
-    }
-  });
-};
-```
-
-### 2. Backend Response Processing
-
-The backend processes component responses and makes them available to AG2:
-
-```python
-# In GroupchatTools - backend handlers
-class SimpleAPIKeyManager:
-    async def store_api_key(self, enterprise_id: str, service_name: str, api_key: str):
-        """Store API key when component submits data"""
-        # Store securely in database
-        await self.api_keys_collection.update_one(...)
-        return True
-
-class FileManager:
-    async def handle_download_request(self, file_data: dict):
-        """Handle file download from artifact component"""
-        # Process file download
-        # Log business event
-        # Return download URL
-```
-
-### 3. Component-to-AG2 Integration
-
-**Key Pattern**: Components don't directly call AG2 - they use workflow-specific tools:
-
-```python
-# In workflows/Generator/GroupchatTools/db_manager.py
-async def handle_api_key_submission(enterprise_id: str, service: str, api_key: str):
-    """
-    Called when AgentAPIKeyInput component submits API key.
-    This is workflow-specific logic.
-    """
-    manager = SimpleAPIKeyManager()
-    success = await manager.store_api_key(enterprise_id, service, api_key)
-    
-    if success:
-        # API key stored, agent can continue
-        return {"status": "success", "message": "API key stored securely"}
-    else:
-        return {"status": "error", "message": "Failed to store API key"}
-```
-
-## 🔄 Complete Interaction Flow Example
-
-### Scenario: Agent needs API key, user provides it
-
-1. **AG2 Agent Requests Component**:
-```python
-await route_to_inline_component(
-    content="I need your OpenAI API key",
-    component_name="AgentAPIKeyInput",
-    component_data={"service": "OpenAI", "agentId": "ContentGeneratorAgent"}
-)
-```
-
-2. **Frontend Renders Component**:
-```javascript
-// Dynamic component loading
-const ComponentClass = await loadWorkflowComponent(
-    "Generator", 
-    "AgentAPIKeyInput", 
-    "inline"
-);
-
-// Render with response handler
-<ComponentClass 
-    {...componentData} 
-    onAction={handleComponentResponse}
-/>
-```
-
-3. **User Interacts**:
-```javascript
-// User submits API key
-const handleSubmit = async () => {
+    // This callback sends data back through the transport layer
     await onAction({
-        type: 'api_key_submit',
-        agentId: 'ContentGeneratorAgent',
-        data: { service: 'OpenAI', apiKey: userInput }
+      type: 'api_key_submit',
+      data: { service, apiKey: userInput }
     });
+  };
+  
+  return (
+    <form onSubmit={handleSubmit}>
+      <input type="password" placeholder={`Enter ${service} API key...`} />
+      <button type="submit">Submit</button>
+    </form>
+  );
 };
 ```
 
-4. **Response Flows Back**:
+**The system automatically provides the `onAction` callback** - you don't need to create API endpoints or make fetch calls. The callback routes through the WebSocket/SSE transport back to your backend handler.
+
+## 🚨 IMPORTANT: Who Handles User Selections?
+
+**When components need user selections (clicks, choices, inputs), the COMPONENT handles it - NOT the core transport layer.**
+
+### ❌ What Core Transport Does NOT Handle:
+- User clicks within your component
+- Form submissions from your component  
+- Selection choices (dropdowns, radio buttons, etc.)
+- Component-specific user interactions
+
+### ✅ What YOUR Component Must Handle:
 ```javascript
-// Frontend sends to backend
-transport.send({
-    type: "ui_tool_action",
-    data: {
-        tool_id: "AgentAPIKeyInput_123",
-        action_type: "api_key_submit",
-        payload: { service: "OpenAI", apiKey: "sk-..." }
-    }
-});
+// Your component handles ALL its own user interactions
+const ImageSelector = ({ onAction, images, ...props }) => {
+  const [selectedImage, setSelectedImage] = useState(null);
+  
+  // Component handles the user click/selection
+  const handleImageClick = (imageId) => {
+    setSelectedImage(imageId);
+    // Component sends selection back to agent via onAction
+    onAction({
+      type: 'image_selected',
+      data: { selectedImage: imageId }
+    });
+  };
+  
+  return (
+    <div>
+      {images.map(img => (
+        <img 
+          key={img.id}
+          onClick={() => handleImageClick(img.id)} // Component handles click
+          src={img.url}
+          className={selectedImage === img.id ? 'selected' : ''}
+        />
+      ))}
+    </div>
+  );
+};
 ```
 
-5. **Backend Processes**:
-```python
-# Workflow-specific handler processes
-await handle_api_key_submission(
-    enterprise_id="ent_123",
-    service="OpenAI", 
-    api_key="sk-..."
-)
+### 🔄 The Correct Flow:
+```
+1. Agent: "Show user 3 image options"
+   └── Generates ImageSelector component
+
+2. Component: Renders 3 clickable images
+   └── User sees UI with image choices
+
+3. User: Clicks on image #2
+   └── Component's handleImageClick() runs
+
+4. Component: Calls onAction({ type: 'image_selected', data: { selectedImage: 2 }})
+   └── Data flows to backend handler
+
+5. Backend Handler: Processes selection
+   └── Agent continues with user's choice
 ```
 
-6. **AG2 Agent Continues**:
-```python
-# Agent can now access stored API key and continue workflow
-api_key = await get_stored_api_key("ent_123", "OpenAI")
-# Continue with content generation...
-```
+**Key Point**: The core system provides the **transport mechanism** (onAction callback), but your **component provides the interaction logic** (what happens when user clicks/selects).
 
-## 🔗 Workflow Configuration
+Think of it like this:
+- **Core System**: "Here's a phone line to talk to the backend" (onAction)
+- **Your Component**: "Here's what the user can click and what message to send" (UI + interaction logic)
 
-### workflow.json Structure
+## ⚙️ Complete Setup (Step by Step)
+
+### 1. Define in workflow.json
 
 ```json
 {
-  "human_in_the_loop": true,
-  "transport": "sse",
-  "visible_agents": ["user", "ConversationAgent", "ContentGeneratorAgent"],
-  "component_capable_agents": {
-    "chatpane": ["ConversationAgent"],           // Can use inline components
-    "artifact": ["ContentGeneratorAgent"]       // Can create artifacts
-  }
+  "ui_capable_agents": [
+    {
+      "name": "APIKeyAgent",
+      "capabilities": ["chat", "inline_components"], 
+      "components": [
+        {
+          "name": "AgentAPIKeyInput",           # Must match .js filename
+          "type": "inline",
+          "actions": ["submit", "cancel"],
+          "backend_handler": "api_manager.store_api_key"  # Python function to handle responses
+        }
+      ]
+    }
+  ]
 }
 ```
 
-### Component Discovery
+### 2. Create Component File
 
-The system automatically discovers components at startup:
-
-```python
-# Component manifest generation
-{
-  "artifacts": ["FileDownloadCenter"],
-  "inline": ["AgentAPIKeyInput"],
-  "tool_mappings": {
-    "api_key_input": "AgentAPIKeyInput",
-    "file_download": "FileDownloadCenter"
-  }
-}
-```
-
-## 🔒 Security & Data Flow
-
-### 1. Component Isolation
-- Each workflow has isolated component namespace
-- Components cannot access other workflow's tools
-- Secure data passing via encrypted transport
-
-### 2. Response Validation
-- All component responses validated before processing
-- Workflow-specific handlers ensure proper data handling
-- API keys encrypted before storage
-
-### 3. Permission Model
-- Only authorized agents can request specific component types
-- User interactions logged for audit trail
-- Component access controlled by workflow configuration
-
-## 🚀 Why This Works
-
-### 1. **Convention Over Configuration**
-- Predictable file structure enables automatic discovery
-- Naming conventions eliminate hardcoding needs
-- Workflow isolation prevents conflicts
-
-### 2. **Event-Driven Architecture**
-- Loose coupling between AG2 and frontend
-- Transport abstraction (WebSocket/SSE)
-- Asynchronous response handling
-
-### 3. **Dynamic Component Loading**
-- React dynamic imports enable runtime component resolution
-- Component registry built at startup
-- Lazy loading for performance
-
-### 4. **Workflow-Scoped Tools**
-- Each workflow defines its own response handlers
-- Components use workflow-specific backend tools
-- Clear separation of concerns
-
-## 📈 Performance Considerations
-
-1. **Component Caching**: Components loaded once and cached
-2. **Event Batching**: Multiple UI events can be batched
-3. **Lazy Loading**: Components loaded only when needed
-4. **Transport Optimization**: Efficient WebSocket/SSE usage
-
-## 🔧 Adding New Components
-
-### 1. Create Component File
 ```javascript
-// workflows/MyWorkflow/Components/Inline/MyComponent.js
-const MyComponent = ({ onAction, ...props }) => {
-  const handleUserAction = async (data) => {
+// workflows/YourWorkflow/Components/Inline/AgentAPIKeyInput.js
+const AgentAPIKeyInput = ({ onAction, service, agentId, ...props }) => {
+  const [apiKey, setApiKey] = useState('');
+  
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    // This automatically routes to your backend_handler
     await onAction({
-      type: 'my_action',
-      data: data
+      type: 'api_key_submit',
+      agentId,
+      data: { service, apiKey }
     });
   };
-  // ... component logic
+  
+  return (
+    <form onSubmit={handleSubmit}>
+      <input 
+        type="password" 
+        value={apiKey}
+        onChange={(e) => setApiKey(e.target.value)}
+        placeholder={`Enter ${service} API key...`} 
+      />
+      <button type="submit">Submit</button>
+    </form>
+  );
+};
+
+export default AgentAPIKeyInput;
+```
+
+### 3. Create Backend Handler
+
++> **Python Handler Placement & Import Path**
++> - Place your `.py` handler file under `workflows/YourWorkflow/tools`.
++> - In `workflow.json`, set `backend_handler` to the module path and function name (e.g., `api_manager.store_api_key`).
++> - The system uses this path to import and invoke your async handler at runtime.
+
+```python
+# workflows/YourWorkflow/tools/api_manager.py
+async def store_api_key(data):
+    """This function gets called when user submits the form"""
+    service = data['service']
+    api_key = data['apiKey'] 
+    agent_id = data['agentId']
+    
+    # Store the API key securely
+    await db.store_api_key(agent_id, service, api_key)
+    
+    # Return response (optional)
+    return {"status": "success", "message": "API key stored"}
+```
+
+### 4. Agent Uses It
+
+```python
+# In your AG2 agent
+class APIKeyAgent:
+    async def generate_reply(self, messages):
+        if self.needs_api_key():
+            # This triggers the component to render
+            await route_to_inline_component(
+                content="I need your OpenAI API key to continue",
+                component_name="AgentAPIKeyInput",
+                component_data={
+                    "service": "OpenAI",
+                    "agentId": self.name
+                }
+            )
+            # Agent waits for user to submit the form
+            # Then continues with the stored API key
+```
+
+## 🔄 The Flow In Action
+
+```
+1. Agent: "I need an API key" 
+   └── Calls route_to_inline_component()
+
+2. Frontend: Component renders with onAction callback
+   └── User sees API key input form
+
+3. User: Enters API key and clicks submit
+   └── onAction() called with data
+
+4. Backend: Handler processes the data  
+   └── api_manager.store_api_key() runs
+
+5. Agent: Can now access stored API key
+   └── Continues workflow
+```
+
+## 🎯 Key Points for Non-Developers
+
+- ✅ **No API calls needed** - Components use callbacks provided by the system
+- ✅ **No endpoints to create** - The transport layer handles everything  
+- ✅ **Simple file structure** - Just create `.js` files in the right folders
+- ✅ **Automatic discovery** - System finds components from workflow.json
+- ✅ **Type safety** - Data flows cleanly between frontend and backend
+
+The beauty is that **you don't need to understand the plumbing** - just define your components in workflow.json, create the .js files with onAction callbacks, and create Python handlers. The system connects everything automatically!
+│## 📁 Directory Structure
+
+```
+workflows/
+├── YourWorkflow/
+│   ├── workflow.json                   # Define UI capabilities here
+│   ├── Components/
+│   │   ├── Artifacts/                  # Full-screen components (right panel)
+│   │   │   └── FileDownloadCenter.js   
+│   │   └── Inline/                     # Chat-embedded components
+│   │       └── AgentAPIKeyInput.js     
+│   └── tools/                          # Backend response handlers
+│       └── api_manager.py              # Handles component responses
+```
+
+## 🛠️ Technical Details (For Developers)
+
+### Component Types
+
+**Inline Components**: Embedded in chat (forms, inputs, simple interactions)
+**Artifact Components**: Full-screen in right panel (file downloads, editors, complex UIs)
+
+### The Transport Layer
+
+The system uses both WebSocket and SSE transports via a unified transport manager and component bridge. The `onAction` callback sends a `component_action` message to the backend, which the core `component_bridge.route_component_action` function handles and dispatches to your specified `backend_handler`.
+
+- Supports WebSocket and SSE transports.
+- Unified handling via `route_component_action` in `core/ui/component_bridge.py`.
+- Payload includes `type`, `data`, `agentId`, and workflow `context_variables`.
+
+When you call `onAction(data)`, it automatically routes through this transport to your specified `backend_handler` function.
+
+### Backend Handler Integration with AG2 ContextVariables
+
+When your handler is invoked, it receives a `context_variables` object. You can use `context_variables.set(key, value)` to persist state across the conversation and `context_variables.get(key)` to retrieve it later. Updating these variables directly changes the groupchat state, enabling branching logic, conditional prompts, or dynamic UI based on prior interactions. This mechanism lets you drive the flow of the chat by storing flags, counters, or user choices in `context_variables`.
+
+**🔗 Complete Integration Flow:**
+```
+1. Component Action (React)
+   └── onAction({ type: 'submit', data: {...} })
+
+2. Transport Layer  
+   └── Routes to component_bridge.route_component_action()
+
+3. Backend Handler (Python)
+   └── async def store_api_key(data, context_variables)
+   └── Updates AG2 ContextVariables with user interaction data
+
+4. AG2 Agents
+   └── Use tools to access context_variables
+   └── Continue workflow with user's input/choices
+```
+
+**🐍 Backend Handler Structure:**
+```python
+# workflows/YourWorkflow/tools/api_manager.py
+async def store_api_key(data: Dict[str, Any], context_variables: ContextVariables) -> Dict[str, Any]:
+    api_key = data.get('apiKey')
+    service = data.get('service')
+    
+    # Store in AG2 ContextVariables for agents to access
+    secure_keys = context_variables.get('secure_api_keys', {})
+    secure_keys[service] = api_key
+    context_variables.set('secure_api_keys', secure_keys)
+    context_variables.set('api_key_ready', True)
+    
+    return {"status": "success", "service": service}
+```
+
+**🤖 Agent Tool Access:**
+```python
+# workflows/YourWorkflow/tools/component_context_tool.py
+def check_api_key_for_service(service: str, context_variables: ContextVariables) -> str:
+    secure_keys = context_variables.get('secure_api_keys', {})
+    if service in secure_keys:
+        return f"✅ API key for {service} is available"
+    return f"❌ No API key configured for {service}"
+```
+
+**📋 Required Files for Full Integration:**
+```
+workflows/YourWorkflow/
+├── workflow.json                           # Define components + backend_handlers
+├── Components/
+│   ├── Inline/AgentAPIKeyInput.js         # React component with onAction
+│   └── Artifacts/FileDownloadCenter.js    # React component with onAction  
+└── tools/
+    ├── api_manager.py                     # Backend handler for API keys
+    ├── file_manager.py                    # Backend handler for downloads
+    ├── component_bridge.py                # Routes actions to handlers
+    └── component_context_tool.py          # Agent tools to access state
+```
+
+### Error Handling
+
+If your backend handler throws an error, it's automatically caught and can be displayed in the component. The system provides built-in error boundaries and validation.
+
+### Security
+
+**Current Transport Security**: The WebSocket/SSE transport layer has **minimal built-in security**:
+
+- ✅ **Basic Transport**: Uses standard WebSocket/SSE protocols
+- ❌ **No Authentication**: No auth tokens or user verification in transport layer
+- ❌ **No Input Validation**: Raw data passes through to handlers
+- ❌ **No Encryption**: Data sent as plain JSON (unless HTTPS/WSS is configured at server level)
+
+**What You Need to Implement:**
+- **API Key Security**: Encrypt sensitive data in your backend handlers
+- **Input Validation**: Add validation in both React components and Python handlers  
+- **Authentication**: Implement user verification at the FastAPI/server level
+- **Data Sanitization**: Clean user inputs before processing
+
+**Recommendation**: The transport layer is a "dumb pipe" - all security must be implemented in your components and handlers.
+
+## 🎯 Common Use Cases
+
+### API Key Collection
+Agent needs credentials → Renders secure input → User enters key → Stored for workflow
+
+### File Download
+Agent generates files → Renders download center → User downloads → Workflow complete
+
+### Form Data Collection  
+Agent needs user info → Renders form → User fills out → Data processed by workflow
+
+### Progress Tracking
+Long-running task → Renders progress bar → Updates in real-time → Completion notification
+
+### User Selection/Choice Components
+Agent needs user decision → Renders choice component → **Component handles user clicks** → Selection sent to agent
+
+**Example: Image Selection Component**
+```javascript
+// Agent requests: "Let user pick their favorite image"
+// Component renders: 3 clickable images
+// User clicks: Image #2
+// Component handles: onClick → onAction({ type: 'choice', data: { selection: 2 }})
+// Agent receives: User chose image #2, continues workflow
+```
+
+**Remember**: Your component = Your interaction logic. The core just provides the communication channel (onAction).
+
+## 🔄 Workflow-Agnostic Context Variable Integration
+
+**NEW: The system now supports automatic AG2 ContextVariables updates from component actions!**
+
+### How It Works:
+
+1. **Enable in workflow.json**: Add `"context_adjustment": true` to ui_capable_agents
+2. **Component sends action**: Use `onAction()` with proper action data structure  
+3. **Core system routes**: Automatically updates AG2 ContextVariables
+4. **Agents access**: Use tools to access updated context and continue workflow
+
+### Example Configuration:
+
+```json
+// workflow.json
+{
+  "ui_capable_agents": [
+    {
+      "name": "APIKeyAgent",
+      "capabilities": ["chat", "inline_components"],
+      "context_adjustment": true,
+      "components": [
+        {
+          "name": "AgentAPIKeyInput",
+          "type": "inline",
+          "actions": ["submit", "cancel"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Component Implementation:
+
+```javascript
+// Component MUST include action type and data
+const AgentAPIKeyInput = ({ onAction, service, ...props }) => {
+  const handleSubmit = async (apiKey) => {
+    await onAction({
+      type: 'api_key_submit',    // Required: action type
+      apiKey: apiKey,            // Component data
+      service: service,          // Component data
+      agentId: 'APIKeyAgent'     // Optional: agent context
+    });
+  };
+  
+  const handleCancel = async () => {
+    await onAction({
+      type: 'cancel',            // Required: action type
+      service: service           // Component data
+    });
+  };
+  
+  return (
+    <form onSubmit={handleSubmit}>
+      {/* Component UI */}
+    </form>
+  );
 };
 ```
 
-### 2. Create Backend Handler
+### Workflow Context Handler (Optional):
+
 ```python
-# workflows/MyWorkflow/GroupchatTools/my_handler.py
-async def handle_my_action(data: dict):
-    # Process component response
-    return {"status": "success"}
+# workflows/YourWorkflow/ContextVariables.py
+async def context_update(agent_name, component_name, action_data, context_variables):
+    """Custom context update function - called automatically by core system"""
+    
+    action_type = action_data.get('type')
+    
+    if component_name == 'AgentAPIKeyInput' and action_type == 'api_key_submit':
+        # Store API key in ContextVariables
+        api_key = action_data.get('apiKey')
+        service = action_data.get('service')
+        
+        # Store securely
+        secure_keys = context_variables.get('secure_api_keys', {}) or {}
+        secure_keys[service] = api_key
+        context_variables.set('secure_api_keys', secure_keys)
+        
+        # Store public metadata
+        api_keys = context_variables.get('api_keys', {}) or {}
+        api_keys[service] = {
+            'masked_key': f"{api_key[:6]}...{api_key[-4:]}",
+            'status': 'active',
+            'submitted_at': str(time.time())
+        }
+        context_variables.set('api_keys', api_keys)
+        context_variables.set('api_key_ready', True)
+        
+        return {"status": "success", "service": service}
+    
+    # Handle other components...
+    return {"status": "unhandled"}
 ```
 
-### 3. Register with AG2
+### Agent Access:
+
 ```python
-# In workflow setup
-tools = [
-    route_to_inline_component,  # Already available
-    handle_my_action           # Your custom handler
-]
+# Agent tool to access component context
+def check_api_status(context_variables):
+    """Agent can check if user provided API keys"""
+    return context_variables.get('api_key_ready', False)
+
+def get_secure_api_key(service: str, context_variables):
+    """Agent can retrieve stored API keys"""
+    secure_keys = context_variables.get('secure_api_keys', {})
+    return secure_keys.get(service)
 ```
 
-The system automatically discovers and integrates the new component!
-
-## 🎯 Key Advantages
-
-1. **Zero Hardcoding**: All components discovered dynamically
-2. **Workflow Isolation**: Each workflow has its own component ecosystem
-3. **Type Safety**: Transport layer ensures consistent data flow
-4. **Scalability**: Easy to add new components and workflows
-5. **Maintainability**: Clear separation between UI and business logic
-
-This architecture enables AG2 agents to dynamically control sophisticated React UIs while maintaining clean separation of concerns and complete workflow flexibility.
+**Key Benefits:**
+- ✅ **Workflow-agnostic**: Works with any workflow type
+- ✅ **No backend endpoints needed**: Core handles routing automatically  
+- ✅ **AG2 native**: Uses standard ContextVariables for seamless integration
+- ✅ **Fallback support**: Generic updates if no custom function provided
+- ✅ **Optional**: Only enabled with `"context_adjustment": true`

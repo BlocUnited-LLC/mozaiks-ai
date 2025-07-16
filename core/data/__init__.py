@@ -1,13 +1,12 @@
 """
-Data & Persistence Module
+Data & Persistence Module - Simplified
 Handles database operations, token management, and session state.
 """
 
-from .db_manager import *
+from .persistence_manager import persistence_manager, PersistenceManager
 from .token_manager import *
 
 __all__ = [
-    # Export data management classes
-    # MongoDBManager from db_manager
-    # TokenManager from token_manager
+    'persistence_manager',
+    'PersistenceManager'
 ]

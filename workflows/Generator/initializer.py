@@ -74,16 +74,10 @@ async def workflow_startup():
         
         business_logger.info(f"🔍 [{WORKFLOW_NAME_UPPER}] Pre-discovered {len(groupchat_tools)} GroupchatTools: {list(groupchat_tools.keys())}")
         
-        # Register the GroupchatTools globally so they're available when group chats start
-        # This ensures on_start hooks are registered before OrchestrationPattern runs
+        # Note: The actual function loading happens during workflow execution
+        # We just need to know the tools exist for startup validation
         if groupchat_tools:
-            # Extract the actual functions from the tool info dictionaries
-            groupchat_functions = [tool_info["func"] for tool_info in groupchat_tools.values()]
-            
-            # Store the discovered tools in the registry for later use
-            from core.workflow.init_registry import register_workflow_tools
-            register_workflow_tools(WORKFLOW_TYPE, groupchat_functions)
-            business_logger.info(f"✅ [{WORKFLOW_NAME_UPPER}] Pre-registered {len(groupchat_functions)} GroupchatTools for early group chat hook setup")
+            business_logger.info(f"✅ [{WORKFLOW_NAME_UPPER}] Found {len(groupchat_tools)} GroupchatTools for group chat hook setup")
         
         business_logger.info(f"🔧 [{WORKFLOW_NAME_UPPER}] AgentTools discovery will occur during workflow execution via OrchestrationPattern")
 

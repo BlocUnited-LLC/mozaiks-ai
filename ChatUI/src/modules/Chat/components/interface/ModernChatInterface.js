@@ -47,6 +47,18 @@ const ModernChatInterface = ({ messages, onSendMessage, loading, onAgentAction, 
   const [buttonText, setButtonText] = useState('SEND');
   const [isScrolledUp, setIsScrolledUp] = useState(false);
   const navigate = useNavigate();
+  const renderCountRef = useRef(0);
+  
+  // Increment render count and log every render
+  renderCountRef.current += 1;
+  console.log(`🔄 ModernChatInterface render #${renderCountRef.current} with ${messages?.length || 0} messages`);
+  
+  // Add logging for messages prop
+  useEffect(() => {
+    console.log('🖥️ ModernChatInterface received messages:');
+    console.log('  Count:', messages?.length || 0);
+    console.log('  Messages:', messages?.map(m => ({ id: m.id, sender: m.sender, content: m.content?.substring(0, 30) + '...' })) || []);
+  }, [messages]);
   
   // The dynamic component loading hook has been moved to MemoizedAgentUIRenderer.
   // This keeps the main chat interface clean and avoids hook violations.
@@ -182,13 +194,18 @@ const ModernChatInterface = ({ messages, onSendMessage, loading, onAgentAction, 
           className="absolute inset-0 overflow-y-auto p-6 space-y-4 my-scroll1"
         >
           {messages?.map((chat, index) => {
-            if (!chat) return null;
+            console.log(`🎨 Rendering message ${index}:`, { id: chat?.id, sender: chat?.sender, content: chat?.content?.substring(0, 50) + '...' });
+            if (!chat) {
+              console.warn(`⚠️ Message at index ${index} is null/undefined`);
+              return null;
+            }
             
             return (
               <div key={index}>
                 <ChatMessageComponent
                   message={chat.content}
                   message_from={chat.sender}
+                  agentName={chat.agentName}
                 />
                 
                 {/* Render Agent UI Components if present */}
