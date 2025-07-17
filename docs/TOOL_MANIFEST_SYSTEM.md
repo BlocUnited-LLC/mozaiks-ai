@@ -1,7 +1,7 @@
-# Tool Manifest System
+# Tool System Documentation
 
 ## Purpose
-This document explains MozaiksAI's manifest-based tool registration system, which replaces legacy module-level variables with centralized JSON configuration. It covers tool types, registration patterns, and lifecycle hooks.
+This document explains MozaiksAI's hybrid tool registration system, which combines workflow.json configuration with AG2-compatible module-level variables. This provides both centralized management and full AG2 compatibility.
 
 ---
 
@@ -10,13 +10,13 @@ This document explains MozaiksAI's manifest-based tool registration system, whic
 ```mermaid
 flowchart LR
     subgraph Config["📋 Configuration"]
-        TM[tool_manifest.json]
         WJ[workflow.json]
+        MV[Module Variables]
     end
     
     subgraph Loading["⚙️ Loading"]
-        MTL[ManifestToolLoader]
-        H[Hooks.py]
+        WC[WorkflowConfig]
+        UTR[UnifiedToolRegistry]
     end
     
     subgraph Runtime["🚀 Runtime"]
@@ -25,37 +25,48 @@ flowchart LR
         TF[Tool Functions]
     end
     
-    TM --> MTL
-    WJ --> MTL
-    MTL --> H
-    H --> A
-    H --> GCM
+    WJ --> UTR
+    MV --> UTR
+    UTR --> WC
+    WC --> A
+    WC --> GCM
     A --> TF
     GCM --> TF
 ```
 
 ---
 
+## Hybrid Configuration Approach
+
+Our system supports **both** configuration methods for maximum flexibility:
+
+### 1. Workflow.json Configuration (Centralized Management)
+Define tools in workflow.json for centralized configuration management.
+
+### 2. AG2 Module-Level Variables (AG2 Compatibility)
+Use module-level variables for AG2-standard tool configuration that overrides workflow.json.
+
+**Priority**: Module-level variables take precedence over workflow.json when both are present.
+
+---
+
 ## Tool Types
 
-### 1. AgentTools
+### 1. Agent Tools
 Tools registered directly with individual agents for use during conversations.
 
 **Supported `apply_to` values:**
 - `"all"` - Register on every agent
 - `"specific_agent_name"` - Register on a specific agent by name
 - `["agent1", "agent2"]` - Register on a list of specific agents
-- `"manager"` - Register on the manager agent only
 
-### 2. GroupchatTools
+### 2. Lifecycle Hooks
 Tools triggered by group chat events and lifecycle hooks.
 
 **Supported `trigger` values:**
 - `"on_start"` - Runs once at the beginning of group chat
 - `"on_end"` - Runs once at the end of group chat
 - `"after_each_agent"` - Runs after every agent message
-- `"before_each_agent"` - Runs before every agent message (future)
-- `"after_all_agents"` - Runs after all agents have responded (future)
 
 **Optional `trigger_agent`:**
 - Can be combined with `after_each_agent` to trigger only for specific agents
@@ -64,68 +75,100 @@ Tools triggered by group chat events and lifecycle hooks.
 
 ## Configuration Structure
 
-### tool_manifest.json
+## Configuration Examples
+
+### Example 1: Workflow.json Configuration
 ```json
 {
-  "AgentTools": [
-    {
-      "name": "echo_all",
-      "module": "workflows.Generator.tools.echo_all",
-      "function": "echo",
-      "apply_to": "all",
-      "description": "Simple echo tool registered for every agent",
-      "enabled": true
-    },
-    {
-      "name": "echo_ctx_only",
-      "module": "workflows.Generator.tools.echo_ctx_only",
-      "function": "echo_context",
-      "apply_to": ["ContextVariablesAgent"],
-      "description": "Echo tool registered only for ContextVariablesAgent",
-      "enabled": true
-    }
-  ],
-  "GroupchatTools": [
-    {
-      "name": "after_agent_echo",
-      "module": "workflows.Generator.tools.after_agent_echo",
-      "function": "echo_after_each",
-      "trigger": "after_each_agent",
-      "description": "Runs after every agent message and logs sender + char count",
-      "enabled": true
-    },
-    {
-      "name": "after_orchestrator_echo",
-      "module": "workflows.Generator.tools.after_orchestrator_echo",
-      "function": "echo_after_orchestrator",
-      "trigger": "after_each_agent",
-      "trigger_agent": "OrchestratorAgent",
-      "description": "Runs after OrchestratorAgent messages only",
-      "enabled": true
-    }
-  ]
+  "workflow_name": "Generator",
+  "tools": {
+    "agent_tools": [
+      {
+        "name": "echo_all",
+        "module": "workflows.Generator.tools.echo_all",
+        "function": "echo",
+        "apply_to": "all",
+        "description": "Simple echo tool for all agents",
+        "enabled": true
+      }
+    ],
+    "lifecycle_hooks": [
+      {
+        "name": "after_agent_echo",
+        "module": "workflows.Generator.tools.after_agent_echo",
+        "function": "echo_after_each",
+        "trigger": "after_each_agent",
+        "description": "Logs after every agent message",
+        "enabled": true
+      }
+    ]
+  }
 }
+```
+
+### Example 2: AG2 Module-Level Variables (Overrides workflow.json)
+```python
+# workflows/Generator/tools/echo_all.py
+from typing import Annotated
+
+# AG2-compatible configuration (takes precedence over workflow.json)
+APPLY_TO = "all"
+
+def echo(message: Annotated[str, "The message to echo"]) -> str:
+    """Simple echo tool that returns the input message."""
+    return f"Echo: {message}"
+```
+
+```python
+# workflows/Generator/tools/after_agent_echo.py
+from typing import Any, List, Dict
+
+# AG2-compatible lifecycle hook configuration
+TRIGGER = "after_each_agent"
+
+def echo_after_each(manager: Any, message_history: List[Dict[str, Any]]) -> None:
+    """Log information after each agent message."""
+    # Hook implementation here
+    pass
+```
+
+### Example 3: Agent-Specific Hook
+```python
+# workflows/Generator/tools/after_orchestrator_echo.py
+from typing import Any, List, Dict
+
+# AG2-compatible agent-specific hook
+TRIGGER = "after_each_agent"
+TRIGGER_AGENT = "OrchestratorAgent"  # Only trigger for this agent
+
+def echo_after_orchestrator(manager: Any, message_history: List[Dict[str, Any]]) -> None:
+    """Log information after OrchestratorAgent messages only."""
+    # Hook implementation here
+    pass
+```
 ```
 
 ---
 
 ## Tool Registration Flow
 
-1. **Manifest Loading**: `ManifestToolLoader` reads `tool_manifest.json`
-2. **Function Import**: Each tool's module and function are dynamically imported
+1. **Workflow Loading**: `WorkflowConfig` reads tools from `workflow.json`
+2. **Function Import**: Each tool's module and function are dynamically imported by `SimpleToolLoader`
 3. **Tool Registration**:
-   - AgentTools are registered with specific agents based on `apply_to`
-   - GroupchatTools are registered as hooks based on `trigger`
+   - Agent tools are registered with specific agents based on `apply_to`
+   - Lifecycle hooks are registered as hooks based on `trigger`
 4. **Execution**: Tools are called during conversation flow
 
 ### Example Registration Code
 ```python
 # In workflows/Generator/Hooks.py
+from .simple_tool_loader import load_tools_from_workflow
+
 def discover_all_tools():
-    loader = ManifestToolLoader("tool_manifest.json")
+    tools = load_tools_from_workflow(WORKFLOW_TYPE)
     return {
-        "AgentTools": loader.get_agent_tools(),
-        "GroupchatTools": loader.get_groupchat_tools()
+        "AgentTools": {tool["name"]: tool for tool in tools["agent_tools"]},
+        "GroupchatTools": {hook["name"]: hook for hook in tools["lifecycle_hooks"]}
     }
 
 # Tools are automatically registered during workflow initialization
@@ -160,28 +203,163 @@ def echo_after_each(sender, recipient, message, **kwargs):
 ## Current Implementation Status
 
 ### ✅ Working Features
-- Manifest-based tool loading and registration
-- AgentTools with flexible `apply_to` patterns
-- GroupchatTools with lifecycle hooks
-- Dynamic tool discovery from JSON configuration
-- Tool enabling/disabling via `enabled` flag
+- **Hybrid Configuration**: Both workflow.json and AG2 module-level variables supported
+- **AG2 Compatibility**: Full compliance with AG2 tool patterns and conventions
+- **Centralized Management**: workflow.json for platform-wide tool configuration
+- **Module Override**: AG2 variables override workflow.json for compatibility
+- **Type Annotations**: Full support for AG2 Annotated types for LLM guidance
+- **Flexible Registration**: Agent tools with apply_to patterns and lifecycle hooks with triggers
 
-### 📋 Configuration Files
-- **tool_manifest.json**: Tool registration patterns
-- **workflow.json**: Workflow settings and agent definitions
+### 📋 Configuration Priority
+1. **Module-level variables** (APPLY_TO, TRIGGER, TRIGGER_AGENT) take precedence
+2. **workflow.json** values used when module variables not present
+3. **Enables both** centralized platform management and AG2 standard compliance
+
+---
+
+## AG2 LLM Guidance System
+
+### How AG2 Uses Tool Metadata for LLM Decision Making
+
+AG2 automatically extracts function metadata and sends it to the LLM as part of the tool schema. This enables the LLM to make intelligent decisions about **when** and **how** to use tools.
+
+#### 1. Type Annotations → LLM Parameter Descriptions
+```python
+from typing import Annotated
+
+def check_weather(
+    city: Annotated[str, "The city name to check weather for"],
+    units: Annotated[str, "Temperature units: 'celsius' or 'fahrenheit'"] = "celsius"
+) -> str:
+    """Get current weather information for a specified city."""
+```
+
+**What the LLM receives:**
+```json
+{
+  "name": "check_weather",
+  "parameters": {
+    "city": {"type": "string", "description": "The city name to check weather for"},
+    "units": {"type": "string", "description": "Temperature units: 'celsius' or 'fahrenheit'"}
+  }
+}
+```
+
+#### 2. Docstrings → LLM Tool Descriptions
+The function docstring becomes the tool description that helps the LLM decide **when** to use the tool:
+
+```python
+def check_weather(...):
+    """Get current weather information for a specified city.
+    
+    Use this tool when the user asks about weather conditions,
+    temperature, or forecast for any location."""
+```
+
+#### 3. Best Practices for LLM-Friendly Tools
+
+**✅ Good Example:**
+```python
+from typing import Annotated
+
+def analyze_sentiment(
+    text: Annotated[str, "The text content to analyze for emotional sentiment"],
+    include_confidence: Annotated[bool, "Whether to include confidence scores"] = False
+) -> str:
+    """Analyze the emotional sentiment of text content.
+    
+    Use this tool when users want to understand the emotional tone,
+    mood, or sentiment expressed in text, messages, or documents.
+    Returns sentiment classification (positive/negative/neutral).
+    """
+```
+
+**❌ Avoid This:**
+```python
+def analyze_sentiment(text, include_confidence=False):
+    """Analyzes stuff."""  # Too vague for LLM!
+    # No type hints = LLM doesn't know parameter expectations
+```
+
+#### 4. Why This Matters
+- **Tool Selection**: Clear descriptions help LLM choose the RIGHT tool
+- **Parameter Accuracy**: Type annotations help LLM provide properly formatted arguments  
+- **User Experience**: Better tool selection = more accurate AI responses
+- **Debugging**: Unclear descriptions can be traced when tools are called incorrectly
+
+---
+
+## AG2 Compatibility Benefits
+
+### Why Module-Level Variables Are Important
+
+1. **AG2 Standard**: Follows official AG2 documentation patterns
+2. **Type Safety**: Works with AG2's function registration system
+3. **LLM Guidance**: Type annotations provide clear parameter descriptions to LLM
+4. **Flow Control**: Tools can return ReplyResult for conversation control
+5. **Direct Registration**: Compatible with `functions=[tool_func]` pattern
+
+### Best Practices for AG2 Compatibility
+
+```python
+# ✅ Good: AG2-compatible tool
+from typing import Annotated
+
+APPLY_TO = "all"  # or ["AgentName"] or "AgentName"
+
+def my_tool(
+    param: Annotated[str, "Clear description for LLM"]
+) -> str:
+    """Clear docstring describing what the tool does."""
+    return result
+
+# ✅ Good: AG2-compatible lifecycle hook
+TRIGGER = "after_each_agent"
+TRIGGER_AGENT = "SpecificAgent"  # Optional for agent-specific hooks
+
+def my_hook(manager: Any, message_history: List[Dict[str, Any]]) -> None:
+    """Hook that runs after agent messages."""
+    pass
+```
+
+---
+
+### Adding AG2 Compatibility to Existing Tools
+
+```python
+# Before (workflow.json only)
+def echo(message):
+    return f"Echo: {message}"
+
+# After (AG2 compatible)
+from typing import Annotated
+
+APPLY_TO = "all"  # AG2 module-level configuration
+
+def echo(message: Annotated[str, "Message to echo"]) -> str:
+    """Echo the input message back to the caller."""
+    return f"Echo: {message}"
+```
 
 ---
 
 ## Suggestions & Future Enhancements
 
-- **Tool Validation**: Add JSON schema validation for tool manifest structure
+- **Tool Validation**: Add JSON schema validation for workflow.json tool structure
 - **Hot Reload**: Enable tool reloading without workflow restart
 - **Tool Dependencies**: Support tool dependency graphs and ordered execution
 - **Tool Metadata**: Add versioning, author, and category fields
 - **Tool Testing**: Automated testing framework for tool functions
-- **Tool Documentation**: Auto-generate tool docs from manifest + docstrings
+- **Tool Documentation**: Auto-generate tool docs from workflow.json + docstrings
+
+---
+
+## Related Documentation
+
+- **[UNIFIED_TOOL_AND_UI_SYSTEM.md](./UNIFIED_TOOL_AND_UI_SYSTEM.md)** - How backend tools and frontend UI components work together
+- **[WORKFLOW_CONFIG.md](./WORKFLOW_CONFIG.md)** - Complete workflow.json configuration reference
 
 ---
 
 ## Status
-This document reflects the current Tool Manifest System as implemented in July 2025. All legacy module-level tool registration has been removed in favor of the manifest-based approach described above.
+This document reflects the current Hybrid Tool System as implemented in July 2025. The system combines workflow.json centralized configuration with AG2-compatible module-level variables, providing both platform management benefits and full AG2 standard compliance with LLM guidance capabilities.

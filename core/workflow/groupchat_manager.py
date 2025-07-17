@@ -16,7 +16,6 @@ from ..ui.simple_ui_tools import (
     route_to_inline_component, 
     route_to_artifact_component, 
     send_ui_tool_action,
-    handle_component_action,
     set_communication_channel
 )
 from ..monitoring.observability import get_observer, get_token_tracker
@@ -379,6 +378,7 @@ async def start_or_resume_group_chat(
     max_turns: Optional[int] = None,
     workflow_type: str = "unknown",
     communication_channel: Optional['CommunicationChannel'] = None,
+    context_variables: Optional[Any] = None,  # 🎯 ADD: ContextVariables for contextual UI agents
 ):
     """
     Starts a new group chat or resumes an existing one with unified transport support.
@@ -551,11 +551,27 @@ async def start_or_resume_group_chat(
                 func=route_to_artifact_component,
             )
             
-            # Register component action handler
-            manager.register_tool(
-                name="handle_component_action",
-                func=handle_component_action,
-            )
+            # Register UI context tools for AG2 ContextVariables
+            try:
+                # Import workflow-specific context tools
+                from workflows.Generator.ContextVariables import (
+                    get_ui_context_summary,
+                    check_component_state
+                )
+                
+                manager.register_tool(
+                    name="get_ui_context_summary",
+                    func=get_ui_context_summary,
+                )
+                
+                manager.register_tool(
+                    name="check_component_state",
+                    func=check_component_state,
+                )
+                
+                chat_logger.info("🎯 [CORE] AG2 UI context tools registered (get_ui_context_summary, check_component_state)")
+            except ImportError as e:
+                chat_logger.warning(f"⚠️ [CORE] Workflow context tools not available: {e}")
             
             # Register UI tool action
             manager.register_tool(
@@ -564,7 +580,7 @@ async def start_or_resume_group_chat(
             )
             
             setattr(manager, "_ui_routing_tools_registered", True)
-            chat_logger.info("🔧 [CORE] UI routing tools registered (route_to_inline_component, route_to_artifact_component, handle_component_action, send_ui_tool_action)")
+            chat_logger.info("🔧 [CORE] UI routing tools registered (route_to_inline_component, route_to_artifact_component, send_ui_tool_action)")
             chat_logger.info("🎯 [CORE] Auto-routing enabled - all agent messages will be routed to appropriate UI components")
         except Exception as e:
             chat_logger.error(f"❌ [CORE] Failed to register UI routing tools: {e}")
@@ -929,6 +945,13 @@ async def start_or_resume_group_chat(
             }
             if determined_max_turns:
                 initiate_kwargs["max_turns"] = determined_max_turns
+            
+            # 🎯 CRITICAL: Add ContextVariables for contextual UI agents!
+            if context_variables:
+                initiate_kwargs["context_variables"] = context_variables
+                chat_logger.info(f"🎯 [CORE] ContextVariables attached for contextual UI agents")
+            else:
+                chat_logger.debug(f"🤖 [CORE] No ContextVariables provided - UI context adjustment disabled")
 
             chat_logger.info(f"🚀 [CORE] Initiating chat with message: '{safe_initial_message}'")
             

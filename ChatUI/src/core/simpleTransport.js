@@ -20,7 +20,7 @@ class SimpleTransport {
   }
 
   /**
-   * Connect to backend - tries WebSocket first, falls back to SSE
+   * Connect to backend TODO - tries WebSocket first, falls back to SSE
    */
   async connect(chatId, userId = 'user', workflowType = 'generator', enterpriseId = '68542c1109381de738222350') {
     const baseUrl = process.env.REACT_APP_BASE_URL || 'http://localhost:8000';
@@ -48,6 +48,12 @@ class SimpleTransport {
       const wsUrl = baseUrl.replace('http', 'ws') + `/ws/${workflowType}/${enterpriseId}/${chatId}/${userId}`;
       this.connection = new WebSocket(wsUrl);
       this.connectionType = 'websocket';
+      
+      // Store connection details for component actions
+      this.chatId = chatId;
+      this.enterpriseId = enterpriseId;
+      this.userId = userId;
+      this.workflowType = workflowType;
 
       this.connection.onopen = () => {
         console.log('✅ WebSocket connected');
@@ -86,6 +92,12 @@ class SimpleTransport {
       const sseUrl = `${baseUrl}/sse/${workflowType}/${enterpriseId}/${chatId}/${userId}`;
       this.connection = new EventSource(sseUrl);
       this.connectionType = 'sse';
+
+      // Store connection details for component actions
+      this.chatId = chatId;
+      this.enterpriseId = enterpriseId;
+      this.userId = userId;
+      this.workflowType = workflowType;
 
       this.connection.onopen = () => {
         console.log('✅ SSE connected');
@@ -130,6 +142,65 @@ class SimpleTransport {
     } else {
       // For SSE, we'd need to make HTTP POST request
       throw new Error('Cannot send messages via SSE connection');
+    }
+  }
+
+  /**
+   * Send component action to backend for AG2 ContextVariables update
+   * Supports BOTH WebSocket and SSE connections
+   */
+  async sendComponentAction(componentId, actionType, actionData = {}) {
+    if (!this.isConnected) {
+      console.warn('Cannot send component action - not connected');
+      return;
+    }
+
+    const actionMessage = {
+      type: 'component_action',
+      component_id: componentId,     // Unique component identifier
+      action_type: actionType,       // Type of action (submit, download, etc.)
+      action_data: actionData,       // Associated data
+      timestamp: new Date().toISOString()
+    };
+
+    console.log('📤 Sending component action:', actionMessage);
+
+    if (this.connectionType === 'websocket') {
+      // Send via WebSocket
+      if (this.connection && this.connection.readyState === WebSocket.OPEN) {
+        this.connection.send(JSON.stringify(actionMessage));
+      } else {
+        console.warn('WebSocket connection not ready');
+      }
+    } else if (this.connectionType === 'sse') {
+      // Send via HTTP POST for SSE connections
+      try {
+        const baseUrl = process.env.REACT_APP_BASE_URL || 'http://localhost:8000';
+        const response = await fetch(`${baseUrl}/chat/${this.enterpriseId}/${this.chatId}/component_action`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            component_id: componentId,
+            action_type: actionType,
+            action_data: actionData
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        console.log('✅ Component action sent via HTTP:', result);
+        return result;
+      } catch (error) {
+        console.error('❌ Failed to send component action via HTTP:', error);
+        this.handleError(error);
+      }
+    } else {
+      console.warn('Unknown connection type:', this.connectionType);
     }
   }
 

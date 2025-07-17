@@ -777,6 +777,59 @@ class SimpleTransport:
                                     "timestamp": datetime.utcnow().isoformat()
                                 }))
                     
+                    elif message_data.get("type") == "component_action":
+                        # Handle component action for AG2 ContextVariables
+                        component_id = message_data.get("component_id")  # Changed from agent_name.component_name
+                        action_type = message_data.get("action_type")    # Changed from component_name
+                        action_data = message_data.get("action_data", {})
+                        
+                        logger.info(f"📋 Received component action: {component_id} -> {action_type}")
+                        
+                        try:
+                            # Get the active workflow's context update tool
+                            from workflows.Generator.ContextVariables import update_context_from_ui
+                            
+                            # Get current context variables from active session
+                            context_variables = None
+                            if chat_id in self.connections and "context" in self.connections[chat_id]:
+                                context_variables = self.connections[chat_id]["context"]
+                            
+                            # Call AG2 tool directly
+                            if context_variables:
+                                result = update_context_from_ui(
+                                    component_id=component_id,
+                                    action_type=action_type,
+                                    action_data=action_data,
+                                    context_variables=context_variables
+                                )
+                                
+                                logger.info(f"✅ Context updated via AG2 tool: {result}")
+                                
+                                # Send acknowledgment back to frontend
+                                await websocket.send_text(json.dumps({
+                                    "type": "component_action_response",
+                                    "status": "success",
+                                    "result": result,
+                                    "timestamp": datetime.utcnow().isoformat()
+                                }))
+                            else:
+                                logger.warning(f"⚠️ No context variables found for chat {chat_id}")
+                                await websocket.send_text(json.dumps({
+                                    "type": "component_action_response", 
+                                    "status": "warning",
+                                    "message": "No context variables available",
+                                    "timestamp": datetime.utcnow().isoformat()
+                                }))
+                                
+                        except Exception as action_error:
+                            logger.error(f"❌ Component action failed: {action_error}")
+                            await websocket.send_text(json.dumps({
+                                "type": "component_action_response",
+                                "status": "error", 
+                                "error": str(action_error),
+                                "timestamp": datetime.utcnow().isoformat()
+                            }))
+                    
                     elif message_data.get("type") == "ping":
                         # Respond to ping with pong
                         await websocket.send_text(json.dumps({

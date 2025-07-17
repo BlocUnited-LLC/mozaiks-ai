@@ -3,12 +3,21 @@
 # DESCRIPTION: Runs after every agent message and logs sender + char count
 # ==============================================================================
 import logging
+from typing import Any, List, Dict
+
 biz_log = logging.getLogger("business.tools.after_agent")
 
+# AG2-compatible configuration for lifecycle hooks
+TRIGGER = "after_each_agent"  # When this hook should be triggered
 
-def echo_after_each(manager, message_history):
+
+def echo_after_each(manager: Any, message_history: List[Dict[str, Any]]) -> None:
     """
     Log information after each agent message.
+    
+    This lifecycle hook runs after every agent message and provides
+    debugging information about the conversation flow.
+    
     Args:
         manager: The group chat manager instance
         message_history: List of messages in the conversation

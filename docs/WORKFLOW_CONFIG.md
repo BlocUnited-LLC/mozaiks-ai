@@ -73,7 +73,6 @@ Define which agents can use UI components:
     "name": "UserFeedbackAgent",
     "role": "user_feedback_manager",
     "capabilities": ["chat", "artifacts"],
-    "context_adjustment": true,
     "components": [
       {
         "name": "FileDownloadCenter",
@@ -88,7 +87,6 @@ Define which agents can use UI components:
     "name": "APIKeyAgent",
     "role": "api_credential_manager",
     "capabilities": ["chat", "inline_components"],
-    "context_adjustment": true,
     "components": [
       {
         "name": "AgentAPIKeyInput",
@@ -108,7 +106,6 @@ Define which agents can use UI components:
 
 ### Component Integration
 - **backend_handler**: Python function path for handling component actions
-- **context_adjustment**: When true, component actions update AG2 ContextVariables
 - **actions**: Supported user actions for the component
 
 ---
@@ -141,47 +138,6 @@ Tools are registered via nested structure:
   ]
 }
 ```
-
----
-
-## Context Variable Integration
-
-### Configuration
-```json
-{
-  "name": "ContextVariablesAgent",
-  "context_adjustment": true
-}
-```
-
-### Backend Handler Access
-```python
-# workflows/Generator/tools/api_manager.py
-async def store_api_key(data: Dict[str, Any], context_variables: ContextVariables) -> Dict[str, Any]:
-    api_key = data.get('apiKey')
-    service = data.get('service')
-    
-    # Store in context for agents to access
-    secure_keys = context_variables.get('secure_api_keys', {})
-    secure_keys[service] = api_key
-    context_variables.set('secure_api_keys', secure_keys)
-    
-    return {"status": "success", "service": service}
-```
-
-### Agent Tool Access
-```python
-# workflows/Generator/tools/component_context_tool.py
-def check_api_key_for_service(service: str, context_variables: ContextVariables) -> str:
-    secure_keys = context_variables.get('secure_api_keys', {})
-    if service in secure_keys:
-        return f"✅ API key configured for {service}"
-    else:
-        return f"❌ No API key configured for {service}"
-```
-
----
-
 ## Workflow Loading Process
 
 1. **File Discovery**: System finds `workflow.json` in workflow directories
@@ -198,7 +154,6 @@ def check_api_key_for_service(service: str, context_variables: ContextVariables)
 workflows/
 ├── Generator/
 │   ├── workflow.json                   # Main configuration
-│   ├── tool_manifest.json              # Tool registration (legacy support)
 │   ├── Components/
 │   │   ├── Artifacts/                  # Full-screen components
 │   │   │   └── FileDownloadCenter.js   
@@ -224,7 +179,6 @@ workflows/
 
 ### 📋 Configuration Sources
 - **workflow.json**: Primary configuration (single source of truth)
-- **tool_manifest.json**: Legacy tool registration support
 
 ---
 
@@ -232,7 +186,6 @@ workflows/
 
 ### Code Generation from Configuration
 - **Auto-Generated Agent Files**: Generate `Agents.py`, `ContextVariables.py`, `Handoffs.py`, `Hooks.py`, `OrchestrationPattern.py`, and `StructuredOutputs.py` files directly from `workflow.json` configuration
-- **Template-Based Generation**: Use configuration templates to create standardized agent patterns and behaviors
 - **Configuration-to-Code Pipeline**: Automated workflow that generates Python files when `workflow.json` is updated
 
 ### System Improvements

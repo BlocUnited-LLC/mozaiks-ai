@@ -3,12 +3,21 @@
 # DESCRIPTION: Runs after OrchestratorAgent messages only
 # ==============================================================================
 import logging
+from typing import Any, List, Dict
+
 biz_log = logging.getLogger("business.tools.after_orchestrator")
 
+# AG2-compatible configuration for agent-specific lifecycle hooks
+TRIGGER = "after_each_agent"  # Base trigger
+TRIGGER_AGENT = "OrchestratorAgent"  # Only trigger for this specific agent
 
-def echo_after_orchestrator(manager, message_history):
+
+def echo_after_orchestrator(manager: Any, message_history: List[Dict[str, Any]]) -> None:
     """
     Log information after OrchestratorAgent messages only.
+    
+    This lifecycle hook demonstrates agent-specific triggering.
+    
     Args:
         manager: The group chat manager instance
         message_history: List of messages in the conversation

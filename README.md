@@ -161,6 +161,7 @@ MozaiksAI/
 - **[Persistence & Resume](docs/PERSISTENCE_AND_RESUME.md)** – MongoDB integration and AG2 groupchat state restoration
 
 ### Development Guides
+- **[Unified Tool and UI System](docs/UNIFIED_TOOL_AND_UI_SYSTEM.md)** – How backend tools and frontend components work together through workflow.json
 - **[Workflow Development Framework](docs/WORKFLOW_DEVELOPMENT_FRAMEWORK.md)** – Plugin contracts, templates, and best practices for modular workflows
 - **[Frontend-Backend Alignment](docs/FRONTEND_BACKEND_ALIGNMENT.md)** – Ensuring seamless data flow and UI rendering between systems
 

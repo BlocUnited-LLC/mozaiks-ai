@@ -277,26 +277,5 @@ class WorkflowConfig:
         config = self.get_config(workflow_type)
         return config.get("ui_capable_agents", [])
 
-    def get_context_adjustment_agents(self, workflow_type: str) -> List[Dict[str, Any]]:
-        """Get agents that have context_adjustment enabled"""
-        ui_agents = self.get_ui_capable_agents(workflow_type)
-        context_agents = []
-        
-        for agent in ui_agents:
-            if agent.get("context_adjustment", False):
-                context_agents.append(agent)
-        
-        return context_agents
-
-    def has_context_adjustment_enabled(self, workflow_type: str, agent_name: str) -> bool:
-        """Check if specific agent has context_adjustment enabled"""
-        ui_agents = self.get_ui_capable_agents(workflow_type)
-        
-        for agent in ui_agents:
-            if agent.get("name") == agent_name:
-                return agent.get("context_adjustment", False)
-        
-        return False
-
 # Global instance
 workflow_config = WorkflowConfig()

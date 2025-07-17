@@ -74,8 +74,8 @@ flowchart TD
 - **Transport Layer**: Unified communication manager with enterprise context
 - **Message Filter**: Removes internal/coordination messages (AutoGen noise)
 - **Event Router**: Directs events to appropriate protocols
-- **Cross-Protocol Broadcaster**: **NEW** - Sends events to both SSE and WebSocket connections simultaneously
-- **Enterprise Context**: **NEW** - Manages enterprise-specific routing and session handling
+- **Cross-Protocol Broadcaster**: Sends events to both SSE and WebSocket connections simultaneously
+- **Enterprise Context**: Manages enterprise-specific routing and session handling
 
 #### 📡 Protocols (Enhanced)
 - **Server-Sent Events**: One-way streaming with asyncio.Queue-based event broadcasting
@@ -108,7 +108,6 @@ flowchart TD
   - **Unified Communication Channel**: `SimpleCommunicationChannelWrapper` for workflow integration
 
 ### Key Production Improvements
-✅ **No TODOs**: All enterprise_id and workflow integration completed  
 ✅ **Cross-Protocol Events**: SSE and WebSocket clients receive identical event streams  
 ✅ **Memory Management**: Proper cleanup of SSE queues and WebSocket connections  
 ✅ **Enterprise Context**: Full support for multi-tenant deployments  
@@ -122,14 +121,15 @@ flowchart TD
 ---
 
 ## Event Types & Broadcasting
-MozaiksAI uses six core event types for all backend-to-frontend communication. **All events are broadcast to both SSE and WebSocket connections simultaneously**:
+MozaiksAI uses seven core event types for all backend-to-frontend communication. **All events are broadcast to both SSE and WebSocket connections simultaneously**:
 
 1. **CHAT_MESSAGE**: Standard conversational exchanges with agent filtering
 2. **ROUTE_TO_ARTIFACT**: Content for artifact panel (code, files, visualizations)
 3. **ROUTE_TO_CHAT**: Inline UI components in chat pane
 4. **UI_TOOL_ACTION**: Interactive tool events and responses
-5. **STATUS**: System status updates, progress indicators, heartbeats
-6. **ERROR**: Error conditions, validation failures
+5. **COMPONENT_ACTION**: Frontend-to-backend component interactions for AG2 ContextVariables
+6. **STATUS**: System status updates, progress indicators, heartbeats
+7. **ERROR**: Error conditions, validation failures
 
 ### Event Structure
 All events include:
@@ -137,6 +137,40 @@ All events include:
 - `data`: Flexible payload with chat_id context
 - `timestamp`: ISO timestamp for ordering
 - `agent_name`: Optional, for multi-agent workflows
+
+### Component Actions (Frontend → Backend)
+**COMPONENT_ACTION** events flow from frontend to backend for AG2 ContextVariables:
+
+**WebSocket Flow:**
+```javascript
+// Frontend sends via WebSocket
+{
+  "type": "component_action",
+  "component_id": "APIKeyInput_openai",
+  "action_type": "submit", 
+  "action_data": {"service": "openai", "hasApiKey": true}
+}
+```
+
+**SSE Flow:**
+```javascript
+// Frontend sends via HTTP POST to /chat/{enterprise_id}/{chat_id}/component_action
+fetch(`/chat/${enterpriseId}/${chatId}/component_action`, {
+  method: 'POST',
+  body: JSON.stringify({
+    component_id: "APIKeyInput_openai",
+    action_type: "submit",
+    action_data: {"service": "openai", "hasApiKey": true}
+  })
+});
+```
+
+**Backend Processing (Both Paths):**
+```python
+# Both WebSocket and HTTP call the same AG2 tool
+from workflows.Generator.ContextVariables import update_context_from_ui
+result = update_context_from_ui(component_id, action_type, action_data, context_variables)
+```
 
 ### Broadcasting Mechanism
 - **SSE Connections**: Events added to `asyncio.Queue` and streamed as `data: {json}`
@@ -154,7 +188,6 @@ All events include:
   - Removes short/empty content and AutoGen noise
   - Filters JSON structures and UUIDs
   - Formats agent names for UI display (CamelCase → Title Case)
-  - **Production-ready**: No TODO comments or unfinished implementations
 
 ---
 

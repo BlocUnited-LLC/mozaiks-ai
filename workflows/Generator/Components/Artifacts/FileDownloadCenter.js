@@ -1,15 +1,17 @@
 // ==============================================================================
 // FILE: workflows/Generator/Components/Artifacts/FileDownloadCenter.js
-// DESCRIPTION: Artifact component for file downloads and management
+// DESCRIPTION: Artifact component for file downloads with AG2 context integration
 // ==============================================================================
 
 import React, { useState, useEffect } from 'react';
+import { simpleTransport } from '../../../../ChatUI/src/core/simpleTransport';
 
 const FileDownloadCenter = ({ 
   files = [], 
   title = "Generated Files",
   onDownload,
-  onDownloadAll 
+  onDownloadAll,
+  componentId = "FileDownloadCenter" // Unique identifier for this component instance
 }) => {
   const [downloadStatus, setDownloadStatus] = useState({});
 
@@ -17,9 +19,22 @@ const FileDownloadCenter = ({
     setDownloadStatus(prev => ({ ...prev, [fileId]: 'downloading' }));
     
     try {
+      // Send component action to AG2 ContextVariables
+      await simpleTransport.sendComponentAction(
+        componentId,
+        'download',
+        {
+          fileId: fileId,
+          filename: filename,
+          downloadTime: new Date().toISOString()
+        }
+      );
+      
+      // Call the original onDownload if provided
       if (onDownload) {
         await onDownload(fileId, filename);
       }
+      
       setDownloadStatus(prev => ({ ...prev, [fileId]: 'completed' }));
     } catch (error) {
       console.error('Download failed:', error);
@@ -29,6 +44,17 @@ const FileDownloadCenter = ({
 
   const handleDownloadAll = async () => {
     try {
+      // Send component action for bulk download
+      await simpleTransport.sendComponentAction(
+        componentId,
+        'download_all',
+        {
+          fileCount: files.length,
+          files: files.map(f => ({ id: f.id, name: f.name })),
+          downloadTime: new Date().toISOString()
+        }
+      );
+      
       if (onDownloadAll) {
         await onDownloadAll();
       }

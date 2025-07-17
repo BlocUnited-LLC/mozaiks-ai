@@ -1,9 +1,10 @@
 // ==============================================================================
 // FILE: workflows/Generator/Components/Inline/AgentAPIKeyInput.js
-// DESCRIPTION: Inline component for secure API key collection
+// DESCRIPTION: Inline component for secure API key collection with AG2 context integration
 // ==============================================================================
 
 import React, { useState } from 'react';
+import { simpleTransport } from '../../../../ChatUI/src/core/simpleTransport';
 
 const AgentAPIKeyInput = ({ 
   onSubmit,
@@ -11,7 +12,9 @@ const AgentAPIKeyInput = ({
   placeholder = "Enter your API key...",
   label = "API Key",
   required = true,
-  maskInput = true
+  maskInput = true,
+  service = "openai", // Which service this API key is for
+  componentId = "AgentAPIKeyInput" // Unique identifier for this component instance
 }) => {
   const [apiKey, setApiKey] = useState('');
   const [isVisible, setIsVisible] = useState(!maskInput);
@@ -27,9 +30,22 @@ const AgentAPIKeyInput = ({
     setIsSubmitting(true);
     
     try {
+      // Send component action to AG2 ContextVariables
+      await simpleTransport.sendComponentAction(
+        componentId,
+        'submit',
+        {
+          service: service,
+          hasApiKey: true, // Don't send actual key for security
+          submissionTime: new Date().toISOString()
+        }
+      );
+      
+      // Call the original onSubmit if provided
       if (onSubmit) {
         await onSubmit(apiKey.trim());
       }
+      
       setApiKey(''); // Clear input after successful submission
     } catch (error) {
       console.error('API key submission failed:', error);
@@ -38,7 +54,17 @@ const AgentAPIKeyInput = ({
     }
   };
 
-  const handleCancel = () => {
+  const handleCancel = async () => {
+    // Send cancel action to context
+    await simpleTransport.sendComponentAction(
+      componentId,
+      'cancel',
+      {
+        service: service,
+        cancelTime: new Date().toISOString()
+      }
+    );
+    
     setApiKey('');
     if (onCancel) {
       onCancel();

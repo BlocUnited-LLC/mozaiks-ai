@@ -257,7 +257,8 @@ async def run_groupchat(
             initial_message=final_initial_message,  # Use workflow.json message or passed parameter
             max_turns=WORKFLOW_MAX_TURNS,  # Dynamic max_turns from workflow.json
             workflow_type=WORKFLOW_CONFIG["workflow_type"],  # Dynamic workflow type from workflow.json
-            communication_channel=communication_channel  # Use unified transport channel
+            communication_channel=communication_channel,  # Use unified transport channel
+            context_variables=context  # 🎯 CRITICAL: Pass context for contextual UI agents!
         )
         
         chat_time = (time.time() - chat_start) * 1000

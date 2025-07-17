@@ -864,3 +864,84 @@ async def get_workflow_configs():
     except Exception as e:
         logger.error(f"❌ Failed to get workflow configs: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve workflow configurations")
+
+@app.post("/chat/{enterprise_id}/{chat_id}/component_action")
+async def handle_component_action(
+    request: Request,
+    enterprise_id: str,
+    chat_id: str,
+):
+    """Endpoint to receive component actions for AG2 ContextVariables (SSE support)."""
+    if not simple_transport:
+        raise HTTPException(status_code=503, detail="Transport service is not available.")
+
+    try:
+        data = await request.json()
+        component_id = data.get("component_id")
+        action_type = data.get("action_type")
+        action_data = data.get("action_data", {})
+        
+        log_business_event(
+            event_type="COMPONENT_ACTION_ENDPOINT_CALLED",
+            description=f"Component action endpoint called for chat {chat_id}",
+            context={
+                "enterprise_id": enterprise_id,
+                "chat_id": chat_id,
+                "component_id": component_id,
+                "action_type": action_type
+            }
+        )
+        
+        if not component_id or not action_type:
+            raise HTTPException(status_code=400, detail="'component_id' and 'action_type' fields are required.")
+
+        logger.info(f"📋 Received component action via HTTP: {component_id} -> {action_type}")
+
+        try:
+            # Same logic as WebSocket - call AG2 tool directly
+            from workflows.Generator.ContextVariables import update_context_from_ui
+            
+            # Get current context variables from active session
+            context_variables = None
+            if chat_id in simple_transport.connections and "context" in simple_transport.connections[chat_id]:
+                context_variables = simple_transport.connections[chat_id]["context"]
+            
+            # Call AG2 tool directly
+            if context_variables:
+                result = update_context_from_ui(
+                    component_id=component_id,
+                    action_type=action_type,
+                    action_data=action_data,
+                    context_variables=context_variables
+                )
+                
+                logger.info(f"✅ Context updated via AG2 tool (HTTP): {result}")
+                
+                log_business_event(
+                    event_type="COMPONENT_ACTION_PROCESSED",
+                    description=f"Component action processed successfully for chat {chat_id}",
+                    context={"result": result}
+                )
+                
+                return {
+                    "status": "success",
+                    "result": result,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            else:
+                logger.warning(f"⚠️ No context variables found for chat {chat_id}")
+                return {
+                    "status": "warning",
+                    "message": "No context variables available",
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                
+        except Exception as action_error:
+            logger.error(f"❌ Component action failed (HTTP): {action_error}")
+            raise HTTPException(status_code=500, detail=f"Component action failed: {action_error}")
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+    except Exception as e:
+        logger.error(f"❌ Error handling component action for chat {chat_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process component action: {e}")

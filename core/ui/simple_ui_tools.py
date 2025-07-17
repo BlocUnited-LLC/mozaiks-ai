@@ -128,64 +128,6 @@ async def send_ui_tool_action(tool_id: str, action_type: str, payload: Dict[str,
         return f"Error: {str(e)}"
 
 
-async def handle_component_action(
-    workflow_type: str,
-    agent_name: str,
-    component_name: str,
-    action_data: Dict[str, Any],
-    context_variables: Optional[Any] = None
-) -> Dict[str, Any]:
-    """
-    Handle component action and optionally adjust context variables
-    
-    This is the main entry point for component actions from the transport layer.
-    It handles both backend processing and context adjustment.
-    
-    Args:
-        workflow_type: The workflow type (e.g., 'Generator')
-        agent_name: Name of the agent that owns the component
-        component_name: Name of the component that sent the action
-        action_data: The action data from the frontend component
-        context_variables: The AG2 ContextVariables (optional)
-        
-    Returns:
-        Result of the action handling
-    """
-    ui_component_logger.info(f"🎯 Handling component action: {workflow_type}.{agent_name}.{component_name}")
-    
-    try:
-        result = {"status": "success", "component_handled": False, "context_adjusted": False}
-        
-        # Step 1: Handle backend processing if enabled
-        # (This would integrate with existing backend handlers like api_manager.py, file_manager.py)
-        
-        # Step 2: Handle context adjustment if enabled
-        if context_variables:
-            from .context_adjustment import adjust_context_from_component_action
-            
-            context_result = await adjust_context_from_component_action(
-                workflow_type, agent_name, component_name, action_data, context_variables
-            )
-            
-            result["context_adjustment"] = context_result
-            result["context_adjusted"] = context_result.get("status") == "success"
-        
-        # Step 3: Update component interaction tracking
-        result.update({
-            "workflow_type": workflow_type,
-            "agent_name": agent_name,
-            "component_name": component_name,
-            "action_type": action_data.get('type', 'unknown')
-        })
-        
-        ui_component_logger.info(f"✅ Component action handled: {component_name}")
-        return result
-        
-    except Exception as e:
-        ui_component_logger.error(f"❌ Component action failed for {component_name}: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "component_name": component_name,
-            "agent_name": agent_name
-        }
+# Note: handle_component_action has been replaced by AG2-native tools
+# Component actions are now handled directly by the transport layer calling
+# AG2 tools from workflows/{WorkflowName}/ContextVariables.py

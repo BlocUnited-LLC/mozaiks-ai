@@ -571,53 +571,78 @@ test('component submits form data correctly', async () => {
 9. **Error Handling**: Provide clear error messages and recovery options
 10. **Documentation**: Include comprehensive prop and action documentation
 
-## 🔄 Context Adjustment Integration (NEW)
+## 🔄 AG2 Contextual UI Integration (CURRENT)
 
-Your components can now automatically update AG2 ContextVariables through the workflow-agnostic context adjustment system.
+Your components can automatically update AG2 ContextVariables for agent awareness using the new simplified system.
 
-### Enabling Context Adjustment
+### Integration Steps
 
-1. **Enable in workflow.json**: Add `"context_adjustment": true` to agents that need context updates
-2. **Use proper action structure**: Components must send structured action data
-3. **Optional custom handler**: Create `context_update()` function for workflow-specific logic
+1. **✅ ZERO CONFIG**: No workflow.json configuration required
+2. **Import simpleTransport**: Use the transport layer for component actions  
+3. **Call sendComponentAction**: Send structured actions to update agent context
 
 ### Component Integration Pattern
 
 ```javascript
-const ContextAwareComponent = ({ onAction, agentId, ...props }) => {
-  const handleUserAction = async (actionType, payload) => {
-    // Standard onAction call - automatically routes to context adjustment
-    await onAction({
-      type: actionType,        // Required: action identifier
-      agentId: agentId,        // Required: requesting agent
-      data: payload,           // Component-specific data
-      timestamp: Date.now()    // Optional: when action occurred
+import { simpleTransport } from '../core/simpleTransport';
+
+const ContextAwareComponent = ({ title, defaultValue, ...props }) => {
+  const [value, setValue] = useState(defaultValue);
+  
+  const handleUserAction = async (actionType, actionData) => {
+    // Send action to AG2 ContextVariables (works with WebSocket AND SSE)
+    await simpleTransport.sendComponentAction(
+      'MyComponent_unique',    // component_id: unique identifier
+      actionType,              // action_type: submit, click, change, etc.
+      actionData               // action_data: relevant data for agents
+    );
+  };
+  
+  const handleSubmit = () => {
+    handleUserAction('submit', {
+      userInput: value,
+      timestamp: new Date().toISOString(),
+      componentState: 'completed'
     });
   };
   
-  // Component automatically integrates with ContextVariables
-  const handleSubmit = () => {
-    handleUserAction('form_submit', {
-      formData: formValues,
-      isValid: true
+  const handleChange = (newValue) => {
+    setValue(newValue);
+    handleUserAction('change', {
+      currentValue: newValue,
+      timestamp: new Date().toISOString()
     });
   };
   
   return (
     <form onSubmit={handleSubmit}>
-      {/* Component UI */}
+      <input 
+        value={value} 
+        onChange={(e) => handleChange(e.target.value)}
+      />
+      <button type="submit">Submit</button>
     </form>
   );
 };
 ```
 
-### Context Adjustment Flow
+### AG2 ContextVariables Flow
 
 ```
 1. User interacts with component
-   └── Component calls onAction() with structured data
+   └── Component calls simpleTransport.sendComponentAction()
 
-2. Core system detects context_adjustment: true
+2. Transport automatically detects connection type:
+   ├── WebSocket: Sends via WebSocket message
+   └── SSE: Sends via HTTP POST to /component_action
+
+3. Backend calls AG2 tool: update_context_from_ui()
+   └── Updates ui_interactions[] and component_states{}
+
+4. Agents can access context:
+   ├── get_ui_context_summary() - Overall activity
+   └── check_component_state('MyComponent_unique') - Specific state
+```
    └── Routes to workflow-agnostic context adjustment bridge
 
 3. Bridge loads workflow's context_update() function (if exists)
@@ -690,12 +715,12 @@ const AgentAPIKeyInput = ({ onAction, service, agentId, ...props }) => {
 
 **What happens behind the scenes:**
 1. User submits API key → `onAction()` called
-2. Core detects `context_adjustment: true` for this agent
+2. ✅ **NEW**: AG2-native system works automatically for all agents
 3. Context bridge automatically stores API key in ContextVariables
 4. Agents can immediately check `context_variables.get('api_key_ready')`
 
 ### Requirements for Context Adjustment
 
-1. **workflow.json Configuration**: Agent must have `"context_adjustment": true`
+1. **DEPRECATED**: Old system required `"context_adjustment": true` in workflow.json - **NO LONGER NEEDED**
 2. **Structured Actions**: Use consistent action `type` and `data` structure
 3. **Agent ID**: Include `agentId` for proper context routing
