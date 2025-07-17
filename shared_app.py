@@ -569,10 +569,13 @@ async def start_chat(
     # Generate unique chat ID
     chat_id = str(uuid4())
     
-    # Get concept for enterprise
+    # Get concept for enterprise (optional - create default if none exists)
     concept = await mongodb_manager.find_latest_concept_for_enterprise(enterprise_id)
     if not concept:
-        raise HTTPException(status_code=404, detail="No concept found for enterprise")
+        logger.info(f"No concept found for enterprise {enterprise_id}, creating default concept")
+        # Create a default concept ID for the workflow
+        from bson.objectid import ObjectId
+        concept = {"_id": ObjectId()}
     
     # Initialize workflow in database
     workflow_id = await mongodb_manager.create_workflow_for_chat(
@@ -614,7 +617,8 @@ async def sse_endpoint(
     return await simple_transport.create_sse_stream(
         chat_id=chat_id,
         user_id=user_id,
-        workflow_type=workflow_type
+        workflow_type=workflow_type,
+        enterprise_id=enterprise_id
     )
 
 @app.websocket("/ws/{workflow_type}/{enterprise_id}/{chat_id}/{user_id}")
@@ -645,7 +649,8 @@ async def websocket_endpoint(
         websocket=websocket,
         chat_id=chat_id,
         user_id=user_id,
-        workflow_type=workflow_type
+        workflow_type=workflow_type,
+        enterprise_id=enterprise_id
     )
 
 @app.post("/chat/{enterprise_id}/{chat_id}/{user_id}/input")

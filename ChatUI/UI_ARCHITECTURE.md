@@ -2,7 +2,27 @@
 
 ## Overview
 
-Our application features a sophisticated dual-pane interface designed to handle different types of AI agent outputs through intelligent routing. The system provides two distinct presentation areas, each optimized for specific content types and user interaction patterns.
+Our application features a sophisticated dual-pane interface designed to handle different types of AI agent outputs through intelligent routing. The system uses **backend workflow.json as the single source of truth** for component definitions, eliminating frontend duplication of backend logic.
+
+## Production Architecture
+
+```
+Backend (Python)                    Frontend (React)
+├── workflow.json ──────────────────→ Component Loader
+│   ├── ui_capable_agents            │
+│   └── component definitions        │
+├── AG2 Agents ─────────────────────→ Transport Layer
+└── WorkflowConfig ─────────────────→ API Adapters
+                                     │
+                                     ├── Chat Pane
+                                     └── Artifact Panel
+```
+
+### Key Principles:
+- ✅ **No frontend registries** - All component definitions come from backend
+- ✅ **Single source of truth** - Backend workflow.json controls everything  
+- ✅ **Dynamic loading** - Components loaded on-demand from workflow system
+- ✅ **Clean separation** - Frontend connects via API, no logic duplication
 
 ## Chat Pane (Left Side)
 
@@ -21,55 +41,6 @@ The chat pane serves as the primary conversational interface, handling real-time
 #### 2. **Interactive Components** *(Revolutionary Feature)*
 Embedded UI components that appear inline with chat messages, enabling immediate user interaction without context switching.
 
-**API Request Components:**
-```
-Agent: "I need to fetch data from the analytics API. Do you approve?"
-[API Request Card]
-├── Endpoint: https://api.analytics.com/data
-├── Method: GET
-├── Description: Fetch user engagement metrics
-└── [Approve] [Deny] buttons
-```
-
-**Permission Request Components:**
-```
-Agent: "I need access to your files to analyze the data structure."
-[Permission Card]
-├── Action: Access Files
-├── Scope: /data directory (read-only)
-├── Risk Level: Low
-└── [Grant Permission] [Deny] buttons
-```
-
-**Yes/No Decision Components:**
-```
-Agent: "I found a performance optimization. Should I proceed?"
-[Decision Card]
-├── Question: Apply optimization to reduce load time by 40%?
-├── Context: Will modify 3 files
-├── Impact: Performance improvement
-└── [Yes, Proceed] [No, Skip] buttons
-```
-
-**Form Components:**
-```
-Agent: "Please provide the following details for the API configuration:"
-[Form Card]
-├── API Key: [input field]
-├── Environment: [dropdown: dev/staging/prod]
-├── Rate Limit: [number input]
-└── [Submit Configuration] button
-```
-
-**Status & Progress Indicators:**
-```
-Agent: "Processing your data files..."
-[Progress Card]
-├── Status: Analyzing CSV files
-├── Progress: ████████░░ 80%
-└── ETA: 2 minutes remaining
-```
-
 ### Design Principles
 - **Immediate Interaction**: Components provide instant feedback without page navigation
 - **Contextual Relevance**: Each component appears alongside explanatory text
@@ -80,51 +51,6 @@ Agent: "Processing your data files..."
 
 ### Purpose
 The artifact panel is a dedicated workspace for complex, structured content that requires specialized rendering, interaction, or execution environments. It's designed for content that users need to examine, modify, or interact with extensively.
-
-### Content Types
-
-#### 1. **Code Artifacts**
-- **Syntax Highlighted Code**: Full syntax highlighting with language detection
-- **Executable Scripts**: Code that can be run directly in the interface
-- **Interactive Code Editors**: Monaco-based editing with IntelliSense
-- **Code Diff Views**: Side-by-side comparisons for code changes
-
-#### 2. **Docker Environment Artifacts**
-- **Containerized Applications**: Full applications running in isolated environments
-- **Development Environments**: Pre-configured dev setups with tools and dependencies
-- **Interactive Terminals**: Command-line access to containerized environments
-- **File System Access**: Browse and edit files within containers
-
-#### 3. **Data Visualization Artifacts**
-- **Interactive Charts**: D3.js, Chart.js powered visualizations
-- **Data Tables**: Sortable, filterable data grids
-- **Dashboard Widgets**: KPI cards, metrics displays
-- **Geographic Maps**: Location-based data visualizations
-
-#### 4. **Document Artifacts**
-- **Rich Text Documents**: Formatted documents with images and styling
-- **Markdown Renderers**: Live markdown preview with editing capabilities
-- **PDF Viewers**: Embedded PDF display and annotation
-- **Presentation Modes**: Slide-based content presentation
-
-#### 5. **Interactive Applications**
-- **Web Applications**: Full React/Vue/Angular apps embedded as artifacts
-- **API Testing Interfaces**: Postman-like API exploration tools
-- **Database Query Interfaces**: SQL query builders and result viewers
-- **Configuration Generators**: Form-based config file creators
-
-#### 6. **File Management Artifacts**
-- **File Browsers**: Navigate and manage project file structures
-- **Archive Viewers**: Extract and explore ZIP/TAR files
-- **Image Galleries**: Photo and diagram viewers with zoom/pan
-- **Media Players**: Video and audio content playback
-
-### Design Principles
-- **Dedicated Workspace**: Full-screen real estate for complex content
-- **Specialized Rendering**: Each artifact type gets optimal presentation
-- **Persistent State**: Artifacts maintain state during chat interactions
-- **Export Capabilities**: Users can download, copy, or share artifact content
-- **Sandboxed Execution**: Safe execution environments for code and applications
 
 ## Intelligent Routing System
 
@@ -141,9 +67,29 @@ ELIF needs_user_interaction OR permission_request OR quick_decision:
 ELIF complex_code OR visualization OR app OR file:
     → Artifact Panel
 
-ELIF uncertain:
-    → Smart Router (AI-powered decision)
+### Implementation Details
+
+#### Component Loading (Production)
+```javascript
+// Frontend components loaded from backend workflow.json
+const component = await getComponent(componentName);
+// No frontend registries - backend is single source of truth
 ```
+
+#### Data Flow
+```
+1. Backend workflow.json defines available components
+2. Frontend API adapters query backend for component definitions  
+3. Dynamic component loader imports React components on-demand
+4. Components render with props from backend agents
+5. User interactions flow back to backend via WebSocket/SSE
+```
+
+#### API Integration
+- ✅ **RestApiAdapter** - HTTP requests for component metadata
+- ✅ **WebSocketApiAdapter** - Real-time bi-directional communication  
+- ✅ **enterpriseApi** - Default API instance with enterprise context
+- ✅ **Workflow-aware routing** - Components loaded based on active workflow
 
 ### User Experience Flow
 
@@ -212,3 +158,9 @@ The UI routing system is powered by intelligent agent tools that analyze content
 - **Context Continuity**: Maintaining conversation flow vs. focused work
 
 This architecture provides users with the optimal interface for each type of content while maintaining the natural flow of AI-assisted work.
+
+### Developer Experience
+- 🚀 **Faster Development**: No need to maintain frontend and backend component lists separately
+- 🔧 **Easier Debugging**: Single workflow.json file defines entire system behavior
+- 📦 **Better Performance**: Dynamic imports and code splitting for components
+- 🏢 **Enterprise Ready**: Multi-tenant support with enterprise context throughout

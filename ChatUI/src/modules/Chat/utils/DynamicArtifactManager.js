@@ -134,4 +134,5 @@ class DynamicArtifactManager {
 
 // Global instance
 export const dynamicArtifactManager = new DynamicArtifactManager();
+export { DynamicArtifactManager };
 export default dynamicArtifactManager;

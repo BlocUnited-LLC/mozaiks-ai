@@ -76,10 +76,9 @@ export const ChatUIProvider = ({
   }, [authAdapter, apiAdapter, onReady]);
 
   useEffect(() => {
-    // Custom agent registration is no longer needed - 
-    // agents are auto-discovered through the registry system
+    // Agents are auto-discovered through the workflow system
     if (agents.length > 0) {
-      console.warn('⚠️ Custom agent registration via props is deprecated. Agents are now auto-discovered. See agents/README.md for migration guide.');
+      console.warn('Custom agent registration via props is not supported. Agents are defined in workflow.json files.');
     }
   }, [agents]);
 

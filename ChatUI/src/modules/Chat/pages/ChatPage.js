@@ -7,6 +7,7 @@ import { useParams } from "react-router-dom";
 import { useChatUI } from "../../../context/ChatUIContext";
 import agentManager from '../../../core/agentManager';
 import workflowConfig from '../../../config/workflowConfig';
+import { dynamicUIHandler } from '../../../core/dynamicUIHandler';
 
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
@@ -46,6 +47,44 @@ const ChatPage = () => {
   const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
   const defaultWorkflow = urlWorkflowType || config?.chat?.defaultWorkflow || null; // Let workflowConfig.getDefaultWorkflow() handle discovery
   const [currentWorkflowType, setCurrentWorkflowType] = useState(defaultWorkflow?.toLowerCase() || null); // Dynamic workflow detection
+  
+  // Dynamic UI updates state
+  const [dynamicUIUpdates, setDynamicUIUpdates] = useState([]);
+
+  // Subscribe to dynamic UI updates
+  useEffect(() => {
+    const unsubscribe = dynamicUIHandler.onUIUpdate((updateData) => {
+      console.log('🔔 Received dynamic UI update:', updateData);
+      
+      // Handle different types of UI updates
+      switch (updateData.type) {
+        case 'open_artifact_panel':
+          setIsSidePanelOpen(true);
+          break;
+          
+        case 'show_notification':
+          console.log('📢 Notification:', updateData.message);
+          break;
+          
+        case 'component_update':
+          console.log('🔄 Component update for:', updateData.componentId);
+          break;
+          
+        case 'status_update':
+          // Could update connection status or other UI elements
+          console.log('📊 Status:', updateData.status);
+          break;
+          
+        default:
+          console.log('🔔 Unknown UI update type:', updateData.type);
+      }
+      
+      // Store update for debugging/history
+      setDynamicUIUpdates(prev => [...prev.slice(-10), updateData]);
+    });
+
+    return unsubscribe;
+  }, []);
 
   // Initialize agents on page load
   useEffect(() => {
@@ -79,7 +118,46 @@ const ChatPage = () => {
     console.log("Current messages count:", messages.length);
     console.log("Current streaming messages:", streamingMessagesRef.current.size);
     
-    // Handle different message types (support both formats)
+    // Handle dynamic UI event types from backend
+    switch (data.type) {
+      case 'route_to_artifact':
+      case 'ROUTE_TO_ARTIFACT':
+        console.log('🎯 Routing to artifact:', data.data);
+        dynamicUIHandler.processUIEvent(data);
+        return;
+        
+      case 'ui_tool_action':
+      case 'UI_TOOL_ACTION':
+        console.log('🔧 UI Tool Action:', data.data);
+        dynamicUIHandler.processUIEvent(data);
+        return;
+        
+      case 'status':
+      case 'STATUS':
+        console.log('📊 Status Update:', data.data);
+        dynamicUIHandler.processUIEvent(data);
+        return;
+        
+      case 'error':
+      case 'ERROR':
+        console.error('❌ Error Event:', data.data);
+        dynamicUIHandler.processUIEvent(data);
+        return;
+        
+      case 'route_to_chat':
+      case 'ROUTE_TO_CHAT':
+        console.log('💬 Routing to chat:', data.data);
+        dynamicUIHandler.processUIEvent(data);
+        return;
+        
+      case 'component_update':
+      case 'COMPONENT_UPDATE':
+        console.log('🔄 Component Update:', data.data);
+        dynamicUIHandler.processUIEvent(data);
+        return;
+    }
+    
+    // Handle streaming text message types (existing logic)
     if (data.type === 'TEXT_MESSAGE_START' || data.type === 'text_stream_start') {
       // Start of a new message - initialize streaming message
       const messageId = data.data?.messageId || data.data?.message_id || data.data?.stream_id || data.timestamp || Date.now();
@@ -186,33 +264,17 @@ const ChatPage = () => {
       return;
     }
     
-    // Handle legacy agent_message format
-    if (data.type === 'agent_message') {
-      const agentName = data.agent_name || data.data?.agent_name || 'Agent';
-      const content = data.data?.content || data.content;
-      const messageId = data.data?.message_id || data.message_id || Date.now().toString();
-      
-      if (content) {
-        const newMessage = {
-          id: messageId,
-          sender: 'agent',
-          agentName,
-          content,
-          timestamp: Date.now(),
-          isStreaming: false
-        };
-        setMessagesWithLogging(prev => [...prev, newMessage]);
-      }
-      return;
-    }
-    
-    // Handle legacy message format or other types
+    // Handle standard message format
     const content = data.content || data.message;
     if (content) {
       const idx = pendingMessagesRef.current.indexOf(content);
-      if (idx > -1) { pendingMessagesRef.current.splice(idx, 1); return; }
+      if (idx > -1) { 
+        pendingMessagesRef.current.splice(idx, 1); 
+        return; 
+      }
+      
       const newMessage = { 
-        id: Date.now().toString(),
+        id: data.message_id || Date.now().toString(),
         sender: data.sender || 'agent', 
         agentName: data.agent_name || 'Agent',
         content, 
@@ -240,9 +302,17 @@ const ChatPage = () => {
     
     // Define connection functions inside useEffect to avoid dependency issues
     const connectWebSocket = () => {
+      // WebSocket requires an existing chat ID, so we can't use it for initial connections
+      if (!currentChatId) {
+        console.warn('WebSocket requires existing chat ID, use SSE first');
+        return () => {};
+      }
+      
       setConnectionStatus('connecting');
       setTransportType('websocket');
 
+      const workflowType = urlWorkflowType || workflowConfig.getDefaultWorkflow();
+      
       const connection = api.createWebSocketConnection(
         currentEnterpriseId,
         currentUserId,
@@ -262,7 +332,9 @@ const ChatPage = () => {
             console.log("WebSocket connection closed");
             setConnectionStatus('disconnected');
           }
-        }
+        },
+        workflowType,
+        currentChatId // Pass the existing chat ID
       );
 
       setWs(connection);
@@ -450,7 +522,7 @@ const ChatPage = () => {
     console.log('Agent action received in chat page:', action);
     
     try {
-      const response = await agentManager.handleAgentAction(action);
+      const response = await agentManager.handleAction(action);
       if (response) {
         setMessages(prevMessages => [...prevMessages, response]);
       }

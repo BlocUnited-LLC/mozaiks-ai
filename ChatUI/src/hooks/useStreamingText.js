@@ -67,7 +67,6 @@ export const useStreamingText = () => {
                 });
                 break;
                 
-            // Legacy support for existing events
             case 'TEXT_MESSAGE_START':
                 setStreamingMessages(prev => {
                     const newMap = new Map(prev);

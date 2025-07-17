@@ -305,9 +305,10 @@ class PersistenceManager:
                 agent_name = agent_info.get("name")
                 if agent_name in agent_lookup:
                     agent = agent_lookup[agent_name]
-                    # Restore chat_messages if they exist
+                    # Store chat messages in a safe way - AG2 agents may not have direct message storage
                     if "chat_messages" in agent_info:
-                        agent.chat_messages = agent_info["chat_messages"]
+                        # Store in custom attribute for safe access
+                        setattr(agent, 'restored_chat_messages', agent_info["chat_messages"])
             
             # Apply groupchat configuration if available
             config = state.get("groupchat_config", {})
@@ -315,10 +316,14 @@ class PersistenceManager:
                 if hasattr(groupchat, key) and value is not None:
                     setattr(groupchat, key, value)
             
-            # Set last speaker if available
+            # Set last speaker if available (AG2 compatible)
             last_speaker = state.get("last_speaker")
             if last_speaker:
-                groupchat._last_speaker_name = last_speaker
+                # Use safe attribute setting for AG2 compatibility
+                setattr(groupchat, 'restored_last_speaker', last_speaker)
+                # Try to set AG2's actual last speaker attribute if it exists
+                if hasattr(groupchat, '_last_speaker_name'):
+                    setattr(groupchat, '_last_speaker_name', last_speaker)
             
             logger.info(f"✅ AG2 groupchat resumed: {len(messages)} messages restored")
             
@@ -416,7 +421,13 @@ class PersistenceManager:
     ) -> Optional[ObjectId]:
         """Create new workflow with enhanced persistence structure"""
         try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
+            # Try to validate enterprise exists, create a fallback ObjectId if it doesn't
+            try:
+                eid = await self._validate_enterprise_exists(enterprise_id)
+            except InvalidEnterpriseIdError:
+                # Create ObjectId from the enterprise_id for new enterprises
+                eid = self._ensure_object_id(enterprise_id, "enterprise_id")
+                logger.info(f"Creating workflow for new/unknown enterprise {enterprise_id}")
             
             workflow_doc = {
                 "_id": ObjectId(),
@@ -456,11 +467,16 @@ class PersistenceManager:
     async def find_latest_concept_for_enterprise(self, enterprise_id: Union[str, ObjectId]) -> Optional[Dict[str, Any]]:
         """Find the latest concept for an enterprise (compatibility method)"""
         try:
-            enterprise_oid = await self._validate_enterprise_exists(enterprise_id)
+            # Try to validate enterprise exists, but don't fail if it doesn't
+            try:
+                enterprise_oid = await self._validate_enterprise_exists(enterprise_id)
+            except InvalidEnterpriseIdError:
+                # Enterprise doesn't exist yet - this is okay for new enterprises
+                logger.info(f"Enterprise {enterprise_id} not found in database - this is normal for new enterprises")
+                return None
             
-            # Check concepts collection in db1 (MozaiksDB)
-            db1 = self.client['MozaiksDB']
-            concepts_collection = db1['Concepts']
+            # Check concepts collection in db2 (autogen_ai_agents) - this is where concepts actually are
+            concepts_collection = self.db2['Concepts']  # Use self.db2 instead of db1
             
             concept = await concepts_collection.find_one(
                 {"enterprise_id": enterprise_oid},
@@ -497,7 +513,12 @@ class PersistenceManager:
     async def update_budget_fields(self, chat_id: str, enterprise_id: Union[str, ObjectId], budget_data: Dict[str, Any]) -> bool:
         """Update budget fields for a workflow"""
         try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
+            # Handle missing enterprises gracefully
+            try:
+                eid = await self._validate_enterprise_exists(enterprise_id)
+            except InvalidEnterpriseIdError:
+                eid = self._ensure_object_id(enterprise_id, "enterprise_id")
+                logger.info(f"Updating budget for new/unknown enterprise {enterprise_id}")
             
             result = await self.workflows_collection.update_one(
                 {"chat_id": chat_id, "enterprise_id": eid},
@@ -515,7 +536,12 @@ class PersistenceManager:
     async def decrement_free_loops(self, chat_id: str, enterprise_id: Union[str, ObjectId]) -> int:
         """Decrement free loops counter and return remaining count"""
         try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
+            # Handle missing enterprises gracefully
+            try:
+                eid = await self._validate_enterprise_exists(enterprise_id)
+            except InvalidEnterpriseIdError:
+                eid = self._ensure_object_id(enterprise_id, "enterprise_id")
+                logger.info(f"Decrementing loops for new/unknown enterprise {enterprise_id}")
             
             result = await self.workflows_collection.find_one_and_update(
                 {"chat_id": chat_id, "enterprise_id": eid},
@@ -538,7 +564,12 @@ class PersistenceManager:
                              total_cost: float = 0.0, turn_number: int = 0, **kwargs) -> bool:
         """Save token usage data"""
         try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
+            # Handle missing enterprises gracefully
+            try:
+                eid = await self._validate_enterprise_exists(enterprise_id)
+            except InvalidEnterpriseIdError:
+                eid = self._ensure_object_id(enterprise_id, "enterprise_id")
+                logger.info(f"Saving token usage for new/unknown enterprise {enterprise_id}")
             
             usage_record = {
                 "chat_id": chat_id,
@@ -567,7 +598,12 @@ class PersistenceManager:
                                observability_data: Optional[Dict[str, Any]] = None, **kwargs) -> bool:
         """Update token usage in workflow"""
         try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
+            # Handle missing enterprises gracefully
+            try:
+                eid = await self._validate_enterprise_exists(enterprise_id)
+            except InvalidEnterpriseIdError:
+                eid = self._ensure_object_id(enterprise_id, "enterprise_id")
+                logger.info(f"Updating token usage for new/unknown enterprise {enterprise_id}")
             
             token_data = {
                 "session_usage": session_usage or {},

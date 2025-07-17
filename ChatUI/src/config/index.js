@@ -25,9 +25,7 @@ class ChatUIConfig {
 
       // Chat Configuration
       chat: {
-        // TODO: Set up proper auth system - this is a placeholder enterprise ID for testing
-        // Enterprise ID: 68542c1109381de738222350 (test enterprise with existing data/context)
-        // This enterprise has actual data that the generator workflow uses for context variables
+        // Auth system placeholder - replace with actual auth implementation
         defaultEnterpriseId: process.env.REACT_APP_DEFAULT_ENTERPRISE_ID || '68542c1109381de738222350',
         defaultUserId: process.env.REACT_APP_DEFAULT_USER_ID || 'user123',
         defaultWorkflow: process.env.REACT_APP_DEFAULT_WORKFLOW || null, // Let backend provide default

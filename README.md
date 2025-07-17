@@ -12,12 +12,13 @@ MozaiksAI transforms how teams build and deploy AI-driven applications by provid
 
 ## 🏛️ Core Principles
 
-- **Unified Backend-Frontend:** Seamless integration between AI agents and React UI components with real-time bidirectional communication
-- **Protocol-Agnostic Transport:** Robust communication via WebSocket, SSE, or HTTP with automatic fallback and message filtering
-- **Dynamic UI Control:** Agents can request, render, and control frontend React components on the fly based on context and user interactions
-- **Manifest-Driven Architecture:** Tools, workflows, and components are registered via JSON manifests for hot-reload capabilities
+- **Backend Single Source of Truth:** All component definitions, agent configurations, and workflows controlled by backend workflow.json
+- **Clean Architecture:** Frontend eliminated registries and hardcoded logic - connects via clean APIs only
+- **Protocol-Agnostic Transport:** Robust communication via WebSocket, SSE, or HTTP with automatic fallback and enterprise context
+- **Dynamic UI Control:** Agents request and control frontend React components loaded from workflow folders
+- **Manifest-Driven Workflows:** Tools, workflows, and components defined in JSON manifests for extensibility
 - **AG2 Compatibility:** Full support for AutoGen groupchat patterns with persistent state and resume functionality
-- **Modular Everything:** Agents, tools, UI components, and workflows are pluggable modules that can be extended without touching the core
+- **Production Ready:** React.StrictMode enabled, ESLint compliant, enterprise-ready multi-tenant architecture
 
 ---
 
@@ -204,8 +205,7 @@ npm start
 Visit [http://localhost:3000](http://localhost:3000) to interact with your AI agents through the dynamic UI system.
 
 ### Configuration
-- **Workflow Configuration:** Edit `workflows/Generator/workflow.json` to customize agent behavior
-- **Tool Manifests:** Modify `workflows/Generator/tool_manifest.json` to add new agent capabilities
+- **Workflow Configuration:** Edit `workflows/{workflow_name}/workflow.json` to customize agent behavior and define components
 - **Transport Settings:** Configure WebSocket/SSE preferences in `core/transport/simple_transport.py`
 
 ---

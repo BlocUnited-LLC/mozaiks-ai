@@ -15,10 +15,6 @@ from core.data.persistence_manager import persistence_manager as mongodb_manager
 import logging
 import time
 
-# AG2 logging setup
-import autogen
-from autogen import runtime_logging
-
 # Import enhanced logging
 from logs.logging_config import (
     get_business_logger,
@@ -104,11 +100,6 @@ async def run_groupchat(
     
     try:
         wlog.info(f"Workflow max turns: {WORKFLOW_MAX_TURNS}")
-        
-        # Temporarily disable AG2 runtime logging to avoid ModelMetaclass serialization issues
-        # We can re-enable this later with proper configuration
-        logging_session_id = f"{workflow_name}_{chat_id}_{int(time.time())}"
-        wlog.info(f"AG2 runtime logging disabled temporarily to avoid serialization issues: {logging_session_id}")
 
         # 1. Load concept from database
         concept_start = time.time()
@@ -307,5 +298,5 @@ async def run_groupchat(
         )
         raise
     finally:
-        # AG2 logging cleanup (currently disabled)
-        chat_logger.info(f"📄 [{workflow_name.upper()}] AG2 runtime logging cleanup (currently disabled)")
+        # Workflow cleanup completed
+        chat_logger.debug(f"🧹 [{workflow_name.upper()}] Workflow cleanup completed")

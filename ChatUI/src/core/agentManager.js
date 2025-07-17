@@ -1,79 +1,75 @@
 // ==============================================================================
 // FILE: core/agentManager.js
-// DESCRIPTION: Core agent manager - uses new registry system
+// DESCRIPTION: Production-ready agent manager - connects to backend workflow system
 // ==============================================================================
 
-import { getAgent, getAgentsByCapability, getAllAgents, getAgentMetadata } from '../agents/registry';
+import { enterpriseApi } from '../adapters/api';
 
 /**
- * Core Agent Manager
+ * Production Agent Manager
  * 
- * Now uses the registry system for dynamic agent management.
- * This provides the same interface but with registry-based backend.
+ * Connects to backend workflow system instead of duplicating registry logic.
+ * Gets agent/component info from workflow.json via backend API.
  */
-class CoreAgentManager {
+class ProductionAgentManager {
   constructor() {
-    this.instanceCache = new Map();
     this.metrics = {
       messagesProcessed: 0,
       actionsHandled: 0,
-      agentsUsed: new Set(),
       errors: 0
     };
+    this.workflowCache = new Map();
   }
 
   /**
-   * Get agent instance (with caching)
+   * Get workflow configuration from backend
    */
-  async getAgentInstance(agentType, options = {}) {
-    const cacheKey = `${agentType}_${JSON.stringify(options)}`;
+  async getWorkflowConfig(workflowType = 'generator') {
+    const cacheKey = workflowType;
     
-    if (this.instanceCache.has(cacheKey)) {
-      return this.instanceCache.get(cacheKey);
+    if (this.workflowCache.has(cacheKey)) {
+      return this.workflowCache.get(cacheKey);
     }
 
     try {
-      // Use registry to get agent
-      const agent = await getAgent(agentType, options);
-      this.instanceCache.set(cacheKey, agent);
-      this.metrics.agentsUsed.add(agentType);
+      // Get workflow config from backend API
+      const response = await enterpriseApi.get(`/workflow/${workflowType}/config`);
+      const config = response.data;
       
-      console.log(`🤖 Agent instance created: ${agentType}`);
-      return agent;
+      this.workflowCache.set(cacheKey, config);
+      console.log(`✅ Loaded workflow config: ${workflowType}`);
+      
+      return config;
       
     } catch (error) {
-      console.error(`Failed to create agent instance: ${agentType}`, error);
-      this.metrics.errors++;
-      throw error;
+      console.error(`Failed to load workflow config: ${workflowType}`, error);
+      // Fallback to basic config
+      return {
+        ui_capable_agents: [],
+        workflow_name: workflowType
+      };
     }
   }
 
   /**
-   * Process message through best available agent
+   * Process message through backend workflow system
    */
   async processMessage(message, agentType = null) {
     this.metrics.messagesProcessed++;
     
     try {
-      if (agentType) {
-        // Use specific agent
-        const agent = await this.getAgentInstance(agentType);
-        return await agent.processMessage(message);
-      }
+      // Send to backend workflow system
+      const response = await enterpriseApi.post('/chat/message', {
+        content: message.content || message.text || message,
+        agent_type: agentType,
+        workflow_type: 'generator', // Use actual workflow type from context
+        context: {
+          session_id: message.sessionId,
+          enterprise_id: message.enterpriseId
+        }
+      });
 
-      // Auto-select best agent based on message content
-      const selectedAgent = await this.selectAgentForMessage(message);
-      if (selectedAgent) {
-        const agent = await this.getAgentInstance(selectedAgent);
-        return await agent.processMessage(message);
-      }
-
-      // Fallback response
-      return {
-        type: 'text',
-        content: 'No suitable agent found for this message.',
-        agentType: 'system'
-      };
+      return response.data;
       
     } catch (error) {
       this.metrics.errors++;
@@ -88,26 +84,25 @@ class CoreAgentManager {
   }
 
   /**
-   * Handle UI actions
+   * Handle UI actions via backend
    */
   async handleAction(action) {
     this.metrics.actionsHandled++;
     
-    const { agentId, agentType } = action;
-    if (!agentId && !agentType) {
-      console.warn('Action missing agent identifier:', action);
-      return null;
-    }
-
     try {
-      const agent = await this.getAgentInstance(agentType || agentId);
-      
-      if (agent.handleAction) {
-        return await agent.handleAction(action);
-      }
-      
-      console.warn(`Agent ${agentType || agentId} does not support actions`);
-      return null;
+      // Send action to backend workflow system
+      const response = await enterpriseApi.post('/agent/action', {
+        action_type: action.type,
+        action_data: action.data || action,
+        agent_id: action.agentId,
+        component_name: action.componentName,
+        context: {
+          session_id: action.sessionId,
+          enterprise_id: action.enterpriseId
+        }
+      });
+
+      return response.data;
       
     } catch (error) {
       this.metrics.errors++;
@@ -120,51 +115,30 @@ class CoreAgentManager {
   }
 
   /**
-   * Select best agent for a message (smart routing)
+   * Get available agents from workflow config
    */
-  async selectAgentForMessage(message) {
-    // Simple capability-based selection
-    // In a real system, this could use ML/LLM for better routing
-    
-    const messageText = message.text || message.content || '';
-    const messageLower = messageText.toLowerCase();
-    
-    // Capability keywords mapping
-    const capabilityKeywords = {
-      'feedback_collection': ['feedback', 'review', 'rating', 'survey'],
-      'code_generation': ['code', 'function', 'script', 'program'],
-      'data_analysis': ['data', 'chart', 'analyze', 'statistics'],
-      'ui_generation': ['form', 'button', 'interface', 'component'],
-      'file_upload': ['upload', 'file', 'attach', 'document']
-    };
-    
-    // Find matching capabilities
-    const matchingCapabilities = [];
-    for (const [capability, keywords] of Object.entries(capabilityKeywords)) {
-      if (keywords.some(keyword => messageLower.includes(keyword))) {
-        matchingCapabilities.push(capability);
-      }
+  async getAvailableAgents(workflowType = 'generator') {
+    try {
+      const config = await this.getWorkflowConfig(workflowType);
+      return config.ui_capable_agents || [];
+    } catch (error) {
+      console.error('Failed to get available agents:', error);
+      return [];
     }
-    
-    // Get agents with matching capabilities
-    for (const capability of matchingCapabilities) {
-      const agents = getAgentsByCapability(capability);
-      if (agents.length > 0) {
-        // Return highest priority agent
-        const sortedAgents = agents
-          .map(agentType => ({
-            agentType,
-            metadata: getAgentMetadata(agentType)
-          }))
-          .sort((a, b) => (b.metadata?.priority || 50) - (a.metadata?.priority || 50));
-        
-        return sortedAgents[0].agentType;
-      }
+  }
+
+  /**
+   * Get agent components from workflow config
+   */
+  async getAgentComponents(agentName, workflowType = 'generator') {
+    try {
+      const config = await this.getWorkflowConfig(workflowType);
+      const agent = config.ui_capable_agents?.find(a => a.name === agentName);
+      return agent?.components || [];
+    } catch (error) {
+      console.error('Failed to get agent components:', error);
+      return [];
     }
-    
-    // Fallback to first available agent
-    const allAgents = getAllAgents();
-    return allAgents.length > 0 ? allAgents[0] : null;
   }
 
   /**
@@ -173,39 +147,28 @@ class CoreAgentManager {
   getMetrics() {
     return {
       ...this.metrics,
-      agentsUsed: Array.from(this.metrics.agentsUsed),
-      cacheSize: this.instanceCache.size
+      cacheSize: this.workflowCache.size
     };
   }
 
   /**
-   * Clear agent cache
+   * Clear cache
    */
   clearCache() {
-    this.instanceCache.clear();
+    this.workflowCache.clear();
     console.log('🧹 Agent cache cleared');
-  }
-
-  /**
-   * Get available agents
-   */
-  getAvailableAgents() {
-    return getAllAgents().map(agentType => ({
-      agentType,
-      metadata: getAgentMetadata(agentType)
-    }));
   }
 }
 
 // Create singleton instance
-const manager = new CoreAgentManager();
+const manager = new ProductionAgentManager();
 
-// Export convenience functions
+// Export convenience functions that connect to real backend
 export const processMessage = (message, agentType) => manager.processMessage(message, agentType);
 export const handleAction = (action) => manager.handleAction(action);
-export const getAgentInstance = (agentType, options) => manager.getAgentInstance(agentType, options);
+export const getAvailableAgents = (workflowType) => manager.getAvailableAgents(workflowType);
+export const getAgentComponents = (agentName, workflowType) => manager.getAgentComponents(agentName, workflowType);
 export const getMetrics = () => manager.getMetrics();
 export const clearCache = () => manager.clearCache();
-export const getAvailableAgents = () => manager.getAvailableAgents();
 
 export default manager;

@@ -105,7 +105,7 @@ export {
 };
 
 // Default export
-export default {
+const componentRegistry = {
   getComponent,
   getComponentByToolType,
   setActiveWorkflow,
@@ -113,3 +113,5 @@ export default {
   getInlineComponent,
   initializeComponents
 };
+
+export default componentRegistry;

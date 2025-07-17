@@ -4,16 +4,15 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { getComponent, getComponentByToolType } from '../agents/components';
+import { getComponent } from '../agents/components';
 
 /**
  * Hook for loading components dynamically from active workflow
  * @param {string} componentName - Name of the component to load
- * @param {string} context - Context (deprecated - now workflow-aware)
  * @param {Object} options - Loading options
  * @returns {Object} { component, loading, error, metadata, reload }
  */
-export function useDynamicComponent(componentName, context = 'workflow', options = {}) {
+export function useDynamicComponent(componentName, options = {}) {
   const [component, setComponent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -76,10 +75,9 @@ export function useDynamicComponent(componentName, context = 'workflow', options
 /**
  * Hook for loading multiple components by category
  * @param {string} category - Component category to load
- * @param {string} context - Context (deprecated, registry handles this automatically)
  * @returns {Object} { components, loading, error, reload }
  */
-export function useDynamicComponentsByCategory(category, context = 'inline-component') {
+export function useDynamicComponentsByCategory(category) {
   const [components, setComponents] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -91,8 +89,8 @@ export function useDynamicComponentsByCategory(category, context = 'inline-compo
     setError(null);
 
     try {
-      // Workflow-aware component loading - categories are now in workflow manifests
-      console.warn(`useComponentsByCategory: Category-based loading deprecated. Check workflow manifest for '${category}' components`);
+      // Components are now loaded from workflow manifests, not categories
+      console.warn(`Category-based loading is not supported. Components are loaded via workflow.json ui_capable_agents.`);
       setComponents({});
     } catch (err) {
       console.error(`Failed to load components for category ${category}:`, err);

@@ -7,7 +7,15 @@ import logging
 from pathlib import Path
 from core.transport.ag2_iostream import AG2StreamingManager
 
-logger = logging.getLogger(__name__)
+# Import enhanced logging for workflows
+from logs.logging_config import (
+    get_workflow_logger,
+    log_business_event,
+    log_performance_metric
+)
+
+# Use workflow logger for registry operations
+logger = get_workflow_logger(workflow_type="registry")
 
 # Registry storage
 _WORKFLOW_HANDLERS: Dict[str, Callable[..., Awaitable[Any]]] = {}
@@ -16,13 +24,59 @@ _WORKFLOW_TOOLS: Dict[str, List[Callable]] = {}  # Tools per workflow
 _WORKFLOW_TRANSPORTS: Dict[str, str] = {}  # Transport type per workflow (sse, websocket)
 _INITIALIZERS: List[Callable[[], Awaitable[None]]] = []
 
-# Import component generator (temporarily disabled - create component_generator.py if needed)
-# from .component_generator import initialize_workflow_components
-
 def initialize_workflow_components(workflow_type: str, workflow_name: str, base_dir: Path) -> List[str]:
-    """Stub function for component initialization - implement in component_generator.py if needed"""
-    logger.debug(f"Skipping component initialization for {workflow_type} (component_generator not implemented)")
-    return []
+    """Initialize components from workflow.json ui_capable_agents"""
+    from .workflow_config import WorkflowConfig
+    
+    try:
+        workflow_config = WorkflowConfig()
+        ui_capable_agents = workflow_config.get_ui_capable_agents(workflow_type)
+        
+        # Log the initialization context
+        logger.debug(f"Initializing components for workflow '{workflow_name}' in {base_dir}")
+        
+        if not ui_capable_agents:
+            logger.debug(f"No ui_capable_agents found for {workflow_type}")
+            return []
+        
+        # Count components from ui_capable_agents
+        component_count = 0
+        components_found = []
+        
+        for agent in ui_capable_agents:
+            agent_name = agent.get("name", "Unknown")
+            components = agent.get("components", [])
+            
+            logger.debug(f"Processing agent '{agent_name}' with {len(components)} components")
+            
+            for component in components:
+                component_name = component.get("name")
+                component_type = component.get("type")
+                if component_name and component_type:
+                    component_count += 1
+                    components_found.append(f"{component_name} ({component_type})")
+        
+        if component_count > 0:
+            logger.info(f"🎨 Found {component_count} UI components in {workflow_type}: {', '.join(components_found)}")
+            
+            # Log business event for component discovery
+            log_business_event(
+                event_type="WORKFLOW_COMPONENTS_DISCOVERED",
+                description=f"Discovered {component_count} UI components for {workflow_type}",
+                context={
+                    "workflow_type": workflow_type,
+                    "component_count": component_count,
+                    "components": components_found
+                }
+            )
+        else:
+            logger.debug(f"No components defined in ui_capable_agents for {workflow_type}")
+        
+        return components_found
+        
+    except Exception as e:
+        logger.warning(f"Failed to initialize components for {workflow_type}: {e}")
+        return []
 
 def add_initialization_coroutine(coro: Callable[[], Awaitable[None]]) -> Callable[[], Awaitable[None]]:
     """Register startup coroutine"""
@@ -155,10 +209,10 @@ async def run_workflow_with_streaming(
     
     # Set up AG2 streaming
     streaming_manager = AG2StreamingManager(communication_channel, chat_id, enterprise_id)
-    streaming_iostream = streaming_manager.setup_streaming(streaming_speed=streaming_speed)
+    streaming_manager.setup_streaming(streaming_speed=streaming_speed)
     
     try:
-        logger.info(f"🚀 Starting {workflow_type} workflow with AG2 streaming")
+        logger.info(f"🚀 Starting {workflow_type} workflow with AG2 streaming (speed: {streaming_speed})")
         
         # Run the workflow handler with streaming enabled
         result = await handler(

@@ -1,34 +1,36 @@
 // API adapter interface
 import workflowConfig from '../config/workflowConfig';
+import config from '../config';
 
 export class ApiAdapter {
-  async sendMessage(message, enterpriseId, userId) {
+  async sendMessage(_message, _enterpriseId, _userId) {
     throw new Error('sendMessage must be implemented');
   }
 
   async sendMessageToWorkflow(message, enterpriseId, userId, workflowType = null, chatId = null) {
     // Use dynamic default workflow type
     const actualWorkflowType = workflowType || workflowConfig.getDefaultWorkflow();
+    console.log(`Sending message to workflow: ${actualWorkflowType}`);
     throw new Error('sendMessageToWorkflow must be implemented');
   }
 
-  createWebSocketConnection(enterpriseId, userId, callbacks) {
+  createWebSocketConnection(_enterpriseId, _userId, _callbacks, _workflowType = null, _chatId = null) {
     throw new Error('createWebSocketConnection must be implemented');
   }
 
-  async createSSEConnection(enterpriseId, userId, callbacks) {
+  async createSSEConnection(_enterpriseId, _userId, _callbacks) {
     throw new Error('createSSEConnection must be implemented');
   }
 
-  async getMessageHistory(enterpriseId, userId) {
+  async getMessageHistory(_enterpriseId, _userId) {
     throw new Error('getMessageHistory must be implemented');
   }
 
-  async uploadFile(file, enterpriseId, userId) {
+  async uploadFile(_file, _enterpriseId, _userId) {
     throw new Error('uploadFile must be implemented');
   }
 
-  async getWorkflowTransport(workflowType) {
+  async getWorkflowTransport(_workflowType) {
     throw new Error('getWorkflowTransport must be implemented');
   }
 }
@@ -40,7 +42,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
     this.config = config;
   }
 
-  async sendMessage(message, enterpriseId, userId) {
+  async sendMessage() {
     // For WebSocket, sending is handled by the connection
     // This method can be used for HTTP fallback if needed
     return { success: true };
@@ -81,8 +83,16 @@ export class WebSocketApiAdapter extends ApiAdapter {
     }
   }
 
-  createWebSocketConnection(enterpriseId, userId, callbacks = {}) {
-    const wsUrl = `${this.config.api.wsUrl}/ws/cv/test1/${userId}/${enterpriseId}`;
+  createWebSocketConnection(enterpriseId, userId, callbacks = {}, workflowType = null, chatId = null) {
+    const actualWorkflowType = workflowType || workflowConfig.getDefaultWorkflow();
+    
+    if (!chatId) {
+      console.error('Chat ID is required for WebSocket connection');
+      return null;
+    }
+    
+    const wsUrl = `${this.config.api.wsUrl}/ws/${actualWorkflowType}/${enterpriseId}/${chatId}/${userId}`;
+    console.log(`🔗 Connecting to WebSocket: ${wsUrl}`);
     const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
@@ -168,7 +178,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
       };
       
       return {
-        source: eventSource,
+        eventSource,
         chatId: chat_id,
         close: () => eventSource.close()
       };
@@ -289,8 +299,8 @@ export class RestApiAdapter extends ApiAdapter {
     }
   }
 
-  createWebSocketConnection(enterpriseId, userId, callbacks = {}) {
-    // For REST API, we can implement polling or Server-Sent Events
+  createWebSocketConnection() {
+    // REST API adapter doesn't support WebSocket connections
     console.warn('WebSocket not supported in REST API adapter');
     return null;
   }
@@ -362,7 +372,6 @@ export class RestApiAdapter extends ApiAdapter {
       
       const sessionObject = {
         eventSource,
-        source: eventSource, // Backwards compatibility
         chatId: chat_id,
         close: () => {
           eventSource.close();
@@ -432,3 +441,6 @@ export class RestApiAdapter extends ApiAdapter {
     return null;
   }
 }
+
+// Default API instance for enterprise usage
+export const enterpriseApi = new RestApiAdapter(config.api);

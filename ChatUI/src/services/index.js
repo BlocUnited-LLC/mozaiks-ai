@@ -69,8 +69,8 @@ class ChatUIServices {
     return this.authAdapter?.getCurrentUser();
   }
 
-  createWebSocketConnection(enterpriseId, userId, callbacks) {
-    return this.apiAdapter?.createWebSocketConnection(enterpriseId, userId, callbacks);
+  createWebSocketConnection(enterpriseId, userId, callbacks, workflowType, chatId) {
+    return this.apiAdapter?.createWebSocketConnection(enterpriseId, userId, callbacks, workflowType, chatId);
   }
 }
 

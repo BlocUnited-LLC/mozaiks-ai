@@ -22,17 +22,17 @@ class SimpleTransport {
   /**
    * Connect to backend - tries WebSocket first, falls back to SSE
    */
-  async connect(chatId, userId = 'user', workflowType = 'generator') {
+  async connect(chatId, userId = 'user', workflowType = 'generator', enterpriseId = '68542c1109381de738222350') {
     const baseUrl = process.env.REACT_APP_BASE_URL || 'http://localhost:8000';
     
     try {
       // Try WebSocket first (for interactive workflows)
-      await this.connectWebSocket(baseUrl, chatId, userId, workflowType);
+      await this.connectWebSocket(baseUrl, chatId, userId, workflowType, enterpriseId);
     } catch (error) {
       console.log('WebSocket failed, trying SSE...', error.message);
       try {
         // Fallback to SSE (for streaming workflows)
-        await this.connectSSE(baseUrl, chatId, userId, workflowType);
+        await this.connectSSE(baseUrl, chatId, userId, workflowType, enterpriseId);
       } catch (sseError) {
         console.error('Both WebSocket and SSE failed:', sseError);
         this.handleError(new Error('Unable to connect to backend'));
@@ -43,9 +43,9 @@ class SimpleTransport {
   /**
    * Connect via WebSocket
    */
-  async connectWebSocket(baseUrl, chatId, userId, workflowType) {
+  async connectWebSocket(baseUrl, chatId, userId, workflowType, enterpriseId) {
     return new Promise((resolve, reject) => {
-      const wsUrl = baseUrl.replace('http', 'ws') + `/ws/${chatId}/${userId}`;
+      const wsUrl = baseUrl.replace('http', 'ws') + `/ws/${workflowType}/${enterpriseId}/${chatId}/${userId}`;
       this.connection = new WebSocket(wsUrl);
       this.connectionType = 'websocket';
 
@@ -69,7 +69,7 @@ class SimpleTransport {
       this.connection.onclose = () => {
         this.isConnected = false;
         this.notifyStatus('disconnected');
-        this.attemptReconnect(baseUrl, chatId, userId, workflowType);
+        this.attemptReconnect(baseUrl, chatId, userId, workflowType, enterpriseId);
       };
 
       this.connection.onerror = (error) => {
@@ -81,9 +81,9 @@ class SimpleTransport {
   /**
    * Connect via SSE  
    */
-  async connectSSE(baseUrl, chatId, userId, workflowType) {
+  async connectSSE(baseUrl, chatId, userId, workflowType, enterpriseId) {
     return new Promise((resolve, reject) => {
-      const sseUrl = `${baseUrl}/sse/${chatId}/${userId}`;
+      const sseUrl = `${baseUrl}/sse/${workflowType}/${enterpriseId}/${chatId}/${userId}`;
       this.connection = new EventSource(sseUrl);
       this.connectionType = 'sse';
 
@@ -176,7 +176,7 @@ class SimpleTransport {
   /**
    * Attempt to reconnect
    */
-  async attemptReconnect(baseUrl, chatId, userId, workflowType) {
+  async attemptReconnect(baseUrl, chatId, userId, workflowType, enterpriseId) {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       this.handleError(new Error('Max reconnection attempts reached'));
       return;
@@ -189,7 +189,7 @@ class SimpleTransport {
     
     setTimeout(async () => {
       try {
-        await this.connect(chatId, userId, workflowType);
+        await this.connect(chatId, userId, workflowType, enterpriseId);
       } catch (error) {
         console.error('Reconnection failed:', error);
       }

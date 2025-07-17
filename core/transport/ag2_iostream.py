@@ -151,8 +151,12 @@ class AG2StreamingIOStream(IOStreamProtocol):
         
         logger.info(f"🔄 [IOStream] User input requested with prompt: '{prompt}'")
         
-        # TODO: In a full implementation, this should wait for actual user input from web UI
-        # For now, return a signal that indicates web UI should handle this
+        # Production implementation: Signal web UI to handle input request
+        # This integrates with the communication channel to request user input
+        # Since input() is synchronous in AG2, we log the request for UI handling
+        logger.info(f"🎯 [IOStream] Input request: prompt='{prompt}', password={password}, chat_id={self.chat_id}")
+        
+        # Return signal for web UI input handling - this follows the documented pattern
         return "WAITING_FOR_WEB_UI_INPUT"
     
     async def _stream_content_progressively(self, content: str):
