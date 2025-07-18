@@ -11,12 +11,12 @@ This document explains MozaiksAI's hybrid tool registration system, which combin
 flowchart LR
     subgraph Config["📋 Configuration"]
         WJ[workflow.json]
-        MV[Module Variables]
+        TM[Tool Modules]
     end
     
-    subgraph Loading["⚙️ Loading"]
+    subgraph Core["⚙️ Core System"]
         WC[WorkflowConfig]
-        UTR[UnifiedToolRegistry]
+        TL[core/workflow/tool_loader.py]
     end
     
     subgraph Runtime["🚀 Runtime"]
@@ -25,9 +25,9 @@ flowchart LR
         TF[Tool Functions]
     end
     
-    WJ --> UTR
-    MV --> UTR
-    UTR --> WC
+    WJ --> TL
+    TM --> TL
+    TL --> WC
     WC --> A
     WC --> GCM
     A --> TF
@@ -36,17 +36,15 @@ flowchart LR
 
 ---
 
-## Hybrid Configuration Approach
+## Simplified Configuration Approach
 
-Our system supports **both** configuration methods for maximum flexibility:
+Our system uses **workflow.json** as the single source of truth for tool configuration, with the core system handling all registration automatically.
 
-### 1. Workflow.json Configuration (Centralized Management)
-Define tools in workflow.json for centralized configuration management.
-
-### 2. AG2 Module-Level Variables (AG2 Compatibility)
-Use module-level variables for AG2-standard tool configuration that overrides workflow.json.
-
-**Priority**: Module-level variables take precedence over workflow.json when both are present.
+### Core Tool Loading System
+- **Location**: `core/workflow/tool_loader.py` (universal, workflow-agnostic)
+- **Configuration**: `workflow.json` in each workflow folder
+- **Registration**: Automatic AG2-compatible registration using `register_for_execution` and `register_for_llm`
+- **Lifecycle Hooks**: Automatic registration using AG2's `register_hook` system
 
 ---
 
@@ -63,13 +61,16 @@ Tools registered directly with individual agents for use during conversations.
 ### 2. Lifecycle Hooks
 Tools triggered by group chat events and lifecycle hooks.
 
-**Supported `trigger` values:**
-- `"on_start"` - Runs once at the beginning of group chat
-- `"on_end"` - Runs once at the end of group chat
-- `"after_each_agent"` - Runs after every agent message
+### Supported AG2 Lifecycle Hooks
+AG2 provides several built-in hooks that can be registered with agents:
 
-**Optional `trigger_agent`:**
-- Can be combined with `after_each_agent` to trigger only for specific agents
+**Available Hook Names:**
+- `"update_agent_state"` - Called to update agent state before replying
+- `"process_message_before_send"` - Called before sending a message
+- `"process_all_messages_before_reply"` - Called before generating a reply to process all messages
+- `"process_last_received_message"` - Called to process the most recent received message
+
+**Note**: Lifecycle hooks are registered directly with individual agents, not the GroupChatManager.
 
 ---
 
@@ -106,45 +107,79 @@ Tools triggered by group chat events and lifecycle hooks.
 }
 ```
 
-### Example 2: AG2 Module-Level Variables (Overrides workflow.json)
+### Example 1: Complete Workflow.json Configuration
+```json
+{
+  "workflow_name": "Generator",
+  "tools": {
+    "agent_tools": [
+      {
+        "name": "echo_all",
+        "module": "workflows.Generator.tools.echo_all",
+        "function": "echo",
+        "apply_to": "all",
+        "description": "Simple echo tool for all agents",
+        "enabled": true
+      },
+      {
+        "name": "weather_check",
+        "module": "workflows.Generator.tools.weather",
+        "function": "check_weather",
+        "apply_to": ["WeatherAgent"],
+        "description": "Check weather for a city",
+        "enabled": true
+      }
+    ],
+    "lifecycle_hooks": [
+      {
+        "name": "message_processor",
+        "module": "workflows.Generator.tools.message_processor",
+        "function": "process_message",
+        "trigger": "process_last_received_message",
+        "apply_to": ["OrchestratorAgent"],
+        "description": "Process messages before reply",
+        "enabled": true
+      }
+    ]
+  }
+}
+```
+
+### Example 2: Tool Module with AG2 Annotations
 ```python
 # workflows/Generator/tools/echo_all.py
 from typing import Annotated
 
-# AG2-compatible configuration (takes precedence over workflow.json)
-APPLY_TO = "all"
-
-def echo(message: Annotated[str, "The message to echo"]) -> str:
-    """Simple echo tool that returns the input message."""
+def echo(message: Annotated[str, "The message to echo back"]) -> str:
+    """Simple echo tool that returns the input message.
+    
+    Use this tool when you need to repeat or confirm information.
+    """
     return f"Echo: {message}"
 ```
 
+### Example 3: Lifecycle Hook Module
 ```python
-# workflows/Generator/tools/after_agent_echo.py
+# workflows/Generator/tools/message_processor.py
 from typing import Any, List, Dict
 
-# AG2-compatible lifecycle hook configuration
-TRIGGER = "after_each_agent"
-
-def echo_after_each(manager: Any, message_history: List[Dict[str, Any]]) -> None:
-    """Log information after each agent message."""
-    # Hook implementation here
-    pass
-```
-
-### Example 3: Agent-Specific Hook
-```python
-# workflows/Generator/tools/after_orchestrator_echo.py
-from typing import Any, List, Dict
-
-# AG2-compatible agent-specific hook
-TRIGGER = "after_each_agent"
-TRIGGER_AGENT = "OrchestratorAgent"  # Only trigger for this agent
-
-def echo_after_orchestrator(manager: Any, message_history: List[Dict[str, Any]]) -> None:
-    """Log information after OrchestratorAgent messages only."""
-    # Hook implementation here
-    pass
+def process_message(
+    sender: Any,
+    message: Dict[str, Any],
+    recipient: Any,
+    request_reply: bool = False,
+    silent: bool = False,
+    sender_type: str = "agent"
+) -> Dict[str, Any]:
+    """Process the last received message before generating a reply.
+    
+    This hook allows preprocessing of messages before the agent responds.
+    """
+    # Process the message
+    processed_message = message.copy()
+    processed_message["processed"] = True
+    
+    return processed_message
 ```
 ```
 
@@ -153,28 +188,28 @@ def echo_after_orchestrator(manager: Any, message_history: List[Dict[str, Any]])
 ## Tool Registration Flow
 
 1. **Workflow Loading**: `WorkflowConfig` reads tools from `workflow.json`
-2. **Function Import**: Each tool's module and function are dynamically imported by `SimpleToolLoader`
-3. **Tool Registration**:
-   - Agent tools are registered with specific agents based on `apply_to`
-   - Lifecycle hooks are registered as hooks based on `trigger`
-4. **Execution**: Tools are called during conversation flow
+2. **Core Tool Loading**: `core/workflow/tool_loader.py` imports modules and functions
+3. **AG2 Registration**:
+   - Agent tools: `agent.register_for_execution()` and `agent.register_for_llm()`
+   - Lifecycle hooks: `agent.register_hook(hook_name, function)`
+4. **Execution**: Tools and hooks are called during conversation flow
 
 ### Example Registration Code
 ```python
-# In workflows/Generator/Hooks.py
-from .simple_tool_loader import load_tools_from_workflow
+# In workflows/Generator/Agents.py
+from core.workflow.tool_loader import load_tools_from_workflow, register_agent_tools, register_lifecycle_hooks
 
-def discover_all_tools():
-    tools = load_tools_from_workflow(WORKFLOW_TYPE)
-    return {
-        "AgentTools": {tool["name"]: tool for tool in tools["agent_tools"]},
-        "GroupchatTools": {hook["name"]: hook for hook in tools["lifecycle_hooks"]}
-    }
-
-# Tools are automatically registered during workflow initialization
-tools = discover_all_tools()
-register_agent_tools(agents, tools["AgentTools"])
-register_groupchat_hooks(group_chat_manager, tools["GroupchatTools"])
+def define_agents():
+    # Create agents...
+    
+    # Load and register tools automatically
+    tools_data = load_tools_from_workflow("generator")
+    agent_tools = tools_data.get("agent_tools", [])
+    lifecycle_hooks = tools_data.get("lifecycle_hooks", [])
+    
+    # Register with AG2's proper methods
+    register_agent_tools(agents, agent_tools)
+    register_lifecycle_hooks(agents, lifecycle_hooks)  # Note: hooks go to agents, not manager
 ```
 
 ---
@@ -203,17 +238,19 @@ def echo_after_each(sender, recipient, message, **kwargs):
 ## Current Implementation Status
 
 ### ✅ Working Features
-- **Hybrid Configuration**: Both workflow.json and AG2 module-level variables supported
-- **AG2 Compatibility**: Full compliance with AG2 tool patterns and conventions
-- **Centralized Management**: workflow.json for platform-wide tool configuration
-- **Module Override**: AG2 variables override workflow.json for compatibility
+- **Centralized Configuration**: workflow.json as single source of truth
+- **Core Tool Loading**: Universal `core/workflow/tool_loader.py` for all workflows
+- **AG2 Compatibility**: Full compliance with AG2 tool and hook registration
+- **Automatic Registration**: Tools and hooks are registered automatically during agent creation
 - **Type Annotations**: Full support for AG2 Annotated types for LLM guidance
-- **Flexible Registration**: Agent tools with apply_to patterns and lifecycle hooks with triggers
+- **Flexible Application**: Agent tools with apply_to patterns for targeted registration
+- **Lifecycle Hooks**: AG2-compatible hook registration with individual agents
 
-### 📋 Configuration Priority
-1. **Module-level variables** (APPLY_TO, TRIGGER, TRIGGER_AGENT) take precedence
-2. **workflow.json** values used when module variables not present
-3. **Enables both** centralized platform management and AG2 standard compliance
+### 📋 Simplified Architecture
+- **No workflow-specific files**: All tool loading handled by core system
+- **Configuration-driven**: Everything defined in workflow.json
+- **AG2 Standard**: Uses proper AG2 registration methods (`register_for_execution`, `register_for_llm`, `register_hook`)
+- **Automatic Discovery**: Core system discovers and loads tools without custom logic
 
 ---
 
@@ -291,54 +328,79 @@ def analyze_sentiment(text, include_confidence=False):
 
 ## AG2 Compatibility Benefits
 
-### Why Module-Level Variables Are Important
+### Why Our System Works Well with AG2
 
-1. **AG2 Standard**: Follows official AG2 documentation patterns
-2. **Type Safety**: Works with AG2's function registration system
+1. **AG2 Standard Registration**: Uses official `register_for_execution` and `register_for_llm` methods
+2. **Type Safety**: Compatible with AG2's function registration system
 3. **LLM Guidance**: Type annotations provide clear parameter descriptions to LLM
-4. **Flow Control**: Tools can return ReplyResult for conversation control
-5. **Direct Registration**: Compatible with `functions=[tool_func]` pattern
+4. **Hook Integration**: Uses AG2's built-in `register_hook` system
+5. **Tool Discovery**: Compatible with AG2's function introspection
 
 ### Best Practices for AG2 Compatibility
 
 ```python
-# ✅ Good: AG2-compatible tool
+# ✅ Good: AG2-compatible tool with proper annotations
 from typing import Annotated
 
-APPLY_TO = "all"  # or ["AgentName"] or "AgentName"
-
 def my_tool(
-    param: Annotated[str, "Clear description for LLM"]
+    param: Annotated[str, "Clear description for LLM guidance"],
+    optional_param: Annotated[int, "Optional parameter description"] = 10
 ) -> str:
-    """Clear docstring describing what the tool does."""
-    return result
+    """Clear docstring describing exactly what the tool does and when to use it.
+    
+    The LLM will use this description to decide when to call this tool.
+    """
+    return f"Processed: {param} with value {optional_param}"
 
 # ✅ Good: AG2-compatible lifecycle hook
-TRIGGER = "after_each_agent"
-TRIGGER_AGENT = "SpecificAgent"  # Optional for agent-specific hooks
-
-def my_hook(manager: Any, message_history: List[Dict[str, Any]]) -> None:
-    """Hook that runs after agent messages."""
-    pass
+def my_hook(
+    sender: Any,
+    message: Dict[str, Any],
+    recipient: Any,
+    request_reply: bool = False,
+    silent: bool = False,
+    sender_type: str = "agent"
+) -> Dict[str, Any]:
+    """Hook that processes messages using AG2's standard hook signature."""
+    # Process and return the message
+    return message
 ```
 
 ---
 
-### Adding AG2 Compatibility to Existing Tools
+### Adding Tools to Existing Workflows
 
 ```python
-# Before (workflow.json only)
-def echo(message):
-    return f"Echo: {message}"
-
-# After (AG2 compatible)
+# 1. Create the tool function with AG2 annotations
+# workflows/MyWorkflow/tools/my_new_tool.py
 from typing import Annotated
 
-APPLY_TO = "all"  # AG2 module-level configuration
+def my_new_tool(
+    input_text: Annotated[str, "Text to process"]
+) -> str:
+    """Process input text and return a result.
+    
+    Use this tool when you need to process or transform text.
+    """
+    return f"Processed: {input_text}"
 
-def echo(message: Annotated[str, "Message to echo"]) -> str:
-    """Echo the input message back to the caller."""
-    return f"Echo: {message}"
+# 2. Add to workflow.json
+{
+  "tools": {
+    "agent_tools": [
+      {
+        "name": "my_new_tool",
+        "module": "workflows.MyWorkflow.tools.my_new_tool",
+        "function": "my_new_tool",
+        "apply_to": "all",
+        "description": "Process input text",
+        "enabled": true
+      }
+    ]
+  }
+}
+
+# 3. Tool is automatically registered when workflow loads!
 ```
 
 ---
@@ -362,4 +424,4 @@ def echo(message: Annotated[str, "Message to echo"]) -> str:
 ---
 
 ## Status
-This document reflects the current Hybrid Tool System as implemented in July 2025. The system combines workflow.json centralized configuration with AG2-compatible module-level variables, providing both platform management benefits and full AG2 standard compliance with LLM guidance capabilities.
+This document reflects the current Simplified Tool System as implemented in July 2025. The system uses workflow.json as the single source of truth with a universal core tool loader (`core/workflow/tool_loader.py`) that provides automatic AG2-compatible tool and hook registration for all workflows.

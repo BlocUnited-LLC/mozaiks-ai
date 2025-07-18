@@ -970,23 +970,11 @@ async def start_or_resume_group_chat(
             chat_logger.info("⏱️ [CORE] Starting agent conversation...")
             
             try:
-                # NEW ROBUST APPROACH:
-                # Instead of just passing a message string to a_initiate_chat,
-                # we will manually add the first message to the history. This
-                # ensures the first agent to speak has a message to reply to,
-                # preventing the IndexError.
+                # SIMPLIFIED ROBUST APPROACH:
+                # Just pass the message directly to a_initiate_chat as intended by AG2.
+                # The previous attempt to manually queue messages was causing the IndexError.
                 
-                # 1. Add the initial message to the recipient's history
-                initiating_agent.send(
-                    message=initial_message,
-                    recipient=manager,
-                    request_reply=False,  # We don't need a reply here, just queuing the message
-                    silent=True,          # Prevent this from being printed unnecessarily
-                )
-                chat_logger.info(f"📨 [CORE] Queued initial message for manager: '{initial_message}'")
-
-                # 2. Initiate the chat without a message, as it's already in the history
-                initiate_kwargs['message'] = None
+                chat_logger.info(f"📨 [CORE] Starting chat with message: '{safe_initial_message}'")
                 await manager.a_initiate_chat(**initiate_kwargs)
 
             except IndexError as e:

@@ -9,7 +9,7 @@ from core.workflow.groupchat_manager import start_or_resume_group_chat, create_e
 from .Agents import define_agents
 from .ContextVariables import get_context
 from .Handoffs import wire_handoffs
-from .Hooks import wire_hooks, discover_all_tools, register_agent_tools, register_groupchat_hooks
+from core.workflow.tool_loader import load_tools_from_workflow, register_agent_tools, register_lifecycle_hooks
 logger = logging.getLogger(__name__)
 from core.data.persistence_manager import persistence_manager as mongodb_manager
 import logging
@@ -132,15 +132,12 @@ async def run_groupchat(
         wlog.info("Discovering and registering tools...")
         tools_start = time.time()
         
-        # Discover AgentTools (GroupchatTools were pre-discovered at startup)
-        all_tools = discover_all_tools()
-        agent_tools = all_tools.get("AgentTools", {})
+        # Load tools from workflow.json using simple approach
+        tools_data = load_tools_from_workflow("generator")
+        agent_tools = tools_data.get("agent_tools", [])
+        lifecycle_hooks = tools_data.get("lifecycle_hooks", [])
         
-        # GroupchatTools were already discovered and registered at server startup
-        # This ensures on_start hooks are available before group chat creation
-        groupchat_tools = all_tools.get("GroupchatTools", {})
-        
-        business_logger.info(f"🔍 [{workflow_name_upper}] Discovered {len(agent_tools)} agent tools, using {len(groupchat_tools)} pre-registered groupchat tools")
+        business_logger.info(f"🔍 [{workflow_name_upper}] Loaded {len(agent_tools)} agent tools, {len(lifecycle_hooks)} lifecycle hooks")
         
         tools_discovery_time = (time.time() - tools_start) * 1000
         log_performance_metric(
@@ -149,8 +146,8 @@ async def run_groupchat(
             unit="ms",
             context={
                 "agent_tools_count": len(agent_tools),
-                "groupchat_tools_count": len(groupchat_tools),
-                "groupchat_tools_preregistered": True
+                "lifecycle_hooks_count": len(lifecycle_hooks),
+                "using_simple_loader": True
             }
         )
 
@@ -182,14 +179,9 @@ async def run_groupchat(
         # 6. Register discovered tools dynamically
         tools_registration_start = time.time()
         
-        # Enhance the group chat manager with hook registration capabilities
-        enhanced_manager = create_enhanced_group_chat_manager(group_chat_manager, chat_id, enterprise_id)
-        
-        # Register agent tools based on APPLY_TO metadata
-        register_agent_tools(agents, agent_tools)
-        
-        # Register groupchat hooks based on TRIGGER/TRIGGER_AGENT metadata
-        register_groupchat_hooks(enhanced_manager, groupchat_tools)
+        # Register agent tools and lifecycle hooks using simple approach
+        register_agent_tools(agents, agent_tools, "generator")
+        register_lifecycle_hooks(agents, lifecycle_hooks, "generator")
         
         tools_registration_time = (time.time() - tools_registration_start) * 1000
         log_performance_metric(
@@ -198,14 +190,13 @@ async def run_groupchat(
             unit="ms",
             context={
                 "agent_tools_registered": len(agent_tools),
-                "groupchat_hooks_registered": len(groupchat_tools)
+                "lifecycle_hooks_registered": len(lifecycle_hooks)
             }
         )
-        business_logger.info(f"✅ [{workflow_name_upper}] Tools registered: {len(agent_tools)} agent tools, {len(groupchat_tools)} groupchat hooks")
+        business_logger.info(f"✅ [{workflow_name_upper}] Tools registered: {len(agent_tools)} agent tools, {len(lifecycle_hooks)} lifecycle hooks")
 
-        # 7. Wire handoffs and hooks
+        # 7. Wire handoffs (simplified - no complex hook wiring needed)
         wire_handoffs(agents)
-        wire_hooks(agents, hooks_config)
 
         # 8. Start or resume chat via core helper
         chat_start = time.time()
@@ -249,7 +240,7 @@ async def run_groupchat(
             business_logger.info(f"🎯 [{workflow_name_upper}] Starting with {initiating_agent_name} (generic fallback prompt)")
 
         await start_or_resume_group_chat(
-            manager=enhanced_manager,
+            manager=group_chat_manager,
             initiating_agent=initiating_agent,
             chat_id=chat_id,
             enterprise_id=enterprise_id,

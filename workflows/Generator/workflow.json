@@ -57,36 +57,39 @@
     ],
     "lifecycle_hooks": [
       {
-        "name": "after_agent_echo",
-        "module": "workflows.Generator.tools.after_agent_echo",
-        "function": "echo_after_each",
-        "trigger": "after_each_agent",
-        "description": "Runs after every agent message and logs sender + char count",
+        "name": "agent_state_logger",
+        "module": "workflows.Generator.tools.agent_state_logger",
+        "function": "log_agent_state_update",
+        "trigger": "update_agent_state",
+        "apply_to": "all",
+        "description": "Logs when any agent updates its state before replying",
         "enabled": true
       },
       {
-        "name": "on_start_echo",
-        "module": "workflows.Generator.tools.on_start_echo", 
-        "function": "echo_on_start",
-        "trigger": "on_start",
-        "description": "Runs once at the very beginning of the group-chat",
+        "name": "message_sender_tracker",
+        "module": "workflows.Generator.tools.message_sender_tracker", 
+        "function": "track_message_sending",
+        "trigger": "process_message_before_send",
+        "apply_to": "all",
+        "description": "Tracks when any agent is about to send a message",
         "enabled": true
       },
       {
-        "name": "on_end_echo",
-        "module": "workflows.Generator.tools.on_end_echo",
-        "function": "echo_on_end",
-        "trigger": "on_end",
-        "description": "Runs once at the end of the group-chat",
+        "name": "conversation_analyzer",
+        "module": "workflows.Generator.tools.conversation_analyzer",
+        "function": "analyze_full_conversation",
+        "trigger": "process_all_messages_before_reply",
+        "apply_to": "all", 
+        "description": "Analyzes the full conversation before any agent replies",
         "enabled": true
       },
       {
-        "name": "after_orchestrator_echo",
-        "module": "workflows.Generator.tools.after_orchestrator_echo",
-        "function": "echo_after_orchestrator",
-        "trigger": "after_each_agent",
-        "trigger_agent": "OrchestratorAgent",
-        "description": "Runs after OrchestratorAgent messages only",
+        "name": "latest_message_inspector",
+        "module": "workflows.Generator.tools.latest_message_inspector",
+        "function": "inspect_latest_message",
+        "trigger": "process_last_received_message",
+        "apply_to": "all",
+        "description": "Inspects the latest message received by any agent",
         "enabled": true
       }
     ]

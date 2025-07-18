@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class MessageFilter:
     """Simple message filter to remove AutoGen noise"""
     
-    def should_stream_message(self, sender_name: str, message_content: str, message_type: str = "agent_message") -> bool:
+    def should_stream_message(self, sender_name: str, message_content: str) -> bool:
         """Core filtering logic - this is the real MVP"""
         
         # Filter out internal AutoGen agents
@@ -84,6 +84,7 @@ class PersistenceManager:
     ) -> bool:
         """Save AG2 groupchat state for resume"""
         try:
+            # Note: manager parameter available for future use if needed
             # Convert messages to AG2 format
             ag2_messages = []
             if hasattr(groupchat, 'messages') and groupchat.messages:
@@ -374,8 +375,7 @@ class SimpleTransport:
         chat_id: str,
         enterprise_id: str,
         groupchat: GroupChat,
-        manager: GroupChatManager,
-        new_message: Optional[str] = None
+        manager: GroupChatManager
     ) -> Tuple[bool, Optional[str]]:
         """Resume AG2 groupchat session with proper state restoration"""
         success, error = await self.persistence.resume_ag2_groupchat(

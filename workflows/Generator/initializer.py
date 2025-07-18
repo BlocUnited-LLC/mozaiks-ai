@@ -63,16 +63,20 @@ async def workflow_startup():
         # later during workflow execution.
         
         from pathlib import Path
-        from .Hooks import discover_all_tools
+        from core.workflow.tool_loader import load_tools_from_workflow
         
         business_logger.info(f"🔧 [{WORKFLOW_NAME_UPPER}] Pre-discovering GroupchatTools for group chat initialization...")
         
         # Discover tools early 
         workflow_dir = Path(__file__).parent
-        all_tools = discover_all_tools()
-        groupchat_tools = all_tools.get("GroupchatTools", {})
+        tools_data = load_tools_from_workflow("generator")
+        all_tools = {
+            "AgentTools": tools_data.get("agent_tools", []),
+            "GroupchatTools": tools_data.get("lifecycle_hooks", [])
+        }
+        groupchat_tools = all_tools.get("GroupchatTools", [])
         
-        business_logger.info(f"🔍 [{WORKFLOW_NAME_UPPER}] Pre-discovered {len(groupchat_tools)} GroupchatTools: {list(groupchat_tools.keys())}")
+        business_logger.info(f"🔍 [{WORKFLOW_NAME_UPPER}] Pre-discovered {len(groupchat_tools)} GroupchatTools: {[tool.get('name', 'unknown') for tool in groupchat_tools]}")
         
         # Note: The actual function loading happens during workflow execution
         # We just need to know the tools exist for startup validation

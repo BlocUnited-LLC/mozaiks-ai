@@ -2,11 +2,91 @@
 # FILE: Generator/Agents.py  
 # DESCRIPTION: Agent factory for the Generator workflow
 # ==============================================================================
+import asyncio
+import sys
+import os
+from pathlib import Path
+
+# Add the core directory to the Python path
+core_path = Path(__file__).parent.parent.parent / "core"
+sys.path.insert(0, str(core_path))
+
+from core.core_config import make_llm_config
 from autogen import ConversableAgent, GroupChat, GroupChatManager
 from .StructuredOutputs import get_llm
 import logging
+import importlib.util
+import inspect
+from typing import List, Dict, Any, Callable
 
 logger = logging.getLogger(__name__)
+
+def register_tools_for_agent(agent: ConversableAgent, tools_config: List[Dict[str, Any]]) -> None:
+    """
+    Register tools with an AG2 agent according to workflow.json configuration.
+    
+    Args:
+        agent: The ConversableAgent to register tools with
+        tools_config: List of tool configurations from workflow.json
+    """
+    if not tools_config:
+        return
+        
+    for tool_config in tools_config:
+        tool_name = tool_config.get("name")
+        tool_file = tool_config.get("file")
+        tool_function = tool_config.get("function")
+        
+        if not all([tool_name, tool_file, tool_function]):
+            print(f"⚠️ Incomplete tool config: {tool_config}")
+            continue
+            
+        try:
+            # Build path to tool file
+            if tool_file is None:
+                print(f"⚠️ Tool file is None for {tool_name}")
+                continue
+                
+            tool_path = Path(__file__).parent / "tools" / tool_file
+            
+            if not tool_path.exists():
+                print(f"⚠️ Tool file not found: {tool_path}")
+                continue
+                
+            # Load the tool module
+            spec = importlib.util.spec_from_file_location(f"tool_{tool_name}", tool_path)
+            if spec is None or spec.loader is None:
+                print(f"⚠️ Could not create module spec for {tool_path}")
+                continue
+                
+            tool_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(tool_module)
+            
+            # Get the tool function
+            if tool_function is None:
+                print(f"⚠️ Tool function is None for {tool_name}")
+                continue
+                
+            tool_func = getattr(tool_module, tool_function, None)
+            if not tool_func:
+                print(f"⚠️ Function '{tool_function}' not found in {tool_file}")
+                continue
+                
+            if not callable(tool_func):
+                print(f"⚠️ '{tool_function}' is not callable in {tool_file}")
+                continue
+                
+            # Register the tool with AG2 agent
+            # Register for execution (agent can call it)
+            agent.register_for_execution(name=tool_name)(tool_func)
+            
+            # Register for LLM (LLM can see and call it)
+            agent.register_for_llm(name=tool_name, description=tool_config.get("description", f"Tool: {tool_name}"))(tool_func)
+            
+            print(f"✅ Registered tool '{tool_name}' with agent '{agent.name}'")
+            
+        except Exception as e:
+            print(f"❌ Failed to register tool '{tool_name}': {e}")
 
 async def define_agents(base_llm_config):
     """Define agents with unified transport channel and dynamic hooks"""
@@ -293,6 +373,23 @@ Present the complete workflow to the user for approval:
         llm_config=base_llm_config
     )
     logger.info("✅ [GENERATOR] GroupChatManager created")
+
+    # Load and register tools after agents are created
+    logger.info("🔧 [GENERATOR] Loading and registering tools...")
+    from core.workflow.tool_loader import load_tools_from_workflow, register_agent_tools, register_lifecycle_hooks
+    
+    # Load tools from workflow.json
+    tools_data = load_tools_from_workflow("generator")
+    agent_tools = tools_data.get("agent_tools", [])
+    lifecycle_hooks = tools_data.get("lifecycle_hooks", [])
+    
+    # Register agent tools with appropriate agents
+    register_agent_tools(agents, agent_tools, "generator")
+    logger.info(f"✅ [GENERATOR] Registered {len(agent_tools)} agent tools")
+    
+    # Register lifecycle hooks with agents (not manager)
+    register_lifecycle_hooks(agents, lifecycle_hooks, "generator")
+    logger.info(f"✅ [GENERATOR] Registered {len(lifecycle_hooks)} lifecycle hooks")
 
     # Log completion
     agent_count = len(agents)

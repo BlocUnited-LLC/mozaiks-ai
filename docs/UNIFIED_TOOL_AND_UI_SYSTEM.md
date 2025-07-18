@@ -17,9 +17,13 @@ flowchart TD
         COMP[components]
     end
     
-    subgraph Backend["⚙️ Backend"]
+    subgraph Core["⚙️ Core System"]
+        TL[core/workflow/tool_loader.py]
+        WC[WorkflowConfig]
+    end
+    
+    subgraph Backend["🔧 Backend"]
         AG[Agents]
-        GCM[GroupChatManager]
         TF[Tool Functions]
         BH[Backend Handlers]
     end
@@ -30,14 +34,14 @@ flowchart TD
         IC[Inline Components]
     end
     
-    AT --> AG
-    LH --> GCM
+    AT --> TL
+    LH --> TL
+    TL --> AG
     AG --> TF
-    GCM --> TF
     
-    UCA --> DC
-    COMP --> AP
-    COMP --> IC
+    UCA --> WC
+    COMP --> WC
+    WC --> DC
     BH --> DC
 ```
 
@@ -48,10 +52,11 @@ flowchart TD
 ### 1. Backend Tools
 **Purpose**: Pure backend functionality for agents
 **Location**: `workflow.json → tools`
+**Loading**: `core/workflow/tool_loader.py` (universal core system)
 **AG2 Compatibility**: Full support for AG2 type annotations and LLM guidance
 **Types**:
-- **Agent Tools**: Functions registered with specific agents for conversation use (with AG2 LLM guidance)
-- **Lifecycle Hooks**: Functions triggered by groupchat events
+- **Agent Tools**: Functions registered with specific agents using `register_for_execution` and `register_for_llm`
+- **Lifecycle Hooks**: Functions registered with agents using `register_hook`
 
 **Example**:
 ```json
@@ -68,10 +73,12 @@ flowchart TD
     ],
     "lifecycle_hooks": [
       {
-        "name": "on_start_echo",
-        "module": "workflows.Generator.tools.on_start_echo",
-        "function": "echo_on_start",
-        "trigger": "on_start"
+        "name": "message_processor",
+        "module": "workflows.Generator.tools.message_processor",
+        "function": "process_message",
+        "trigger": "process_last_received_message",
+        "apply_to": ["OrchestratorAgent"],
+        "description": "Process messages before reply"
       }
     ]
   }
@@ -125,8 +132,12 @@ Both systems use the same loading pattern:
 
 ### 1. Configuration Loading
 ```python
-# From core/workflow/workflow_config.py
-agent_tools = workflow_config.get_enabled_agent_tools(workflow_type)
+# From core/workflow/tool_loader.py
+tools_data = load_tools_from_workflow(workflow_type)
+agent_tools = tools_data.get("agent_tools", [])
+lifecycle_hooks = tools_data.get("lifecycle_hooks", [])
+
+# From core/workflow/workflow_config.py  
 ui_components = workflow_config.get_ui_capable_agents(workflow_type)
 ```
 
@@ -142,9 +153,12 @@ component_path = f"workflows/{workflow_type}/Components/{component_name}"
 
 ### 3. Registration
 ```python
-# Tools: Register with agents or manager
-agent.register_tool(tool_name, tool_function)
-manager.register_hook(trigger, hook_function)
+# Tools: Register with AG2's proper methods
+agent.register_for_execution(name=tool_name)(tool_function)
+agent.register_for_llm(name=tool_name, description=description)(tool_function)
+
+# Hooks: Register with AG2's hook system
+agent.register_hook(hook_name, hook_function)
 
 # Components: Make available to frontend
 transport.send_ui_tool_event(component_definition)
@@ -198,16 +212,17 @@ transport.send_ui_tool_event(component_definition)
 ## Current Implementation Status
 
 ### ✅ Fully Implemented
-- Workflow.json-based tool configuration
-- Dynamic tool loading and registration
+- Workflow.json-based tool configuration with core loading system
+- Universal tool loading via `core/workflow/tool_loader.py`
+- AG2-compatible tool registration with `register_for_execution` and `register_for_llm`
+- AG2-compatible lifecycle hook registration with `register_hook`
 - Frontend component discovery from workflow folders
-- Agent tool registration with apply_to patterns
-- Lifecycle hook registration with trigger patterns
 - UI component rendering and action handling
+- Automatic tool and hook registration during agent creation
 ---
 
 ## Conclusion
 
-The unified tool and UI system provides a clean separation of concerns while maintaining a consistent configuration approach. Backend tools handle pure functionality with full AG2 compatibility and LLM guidance, while frontend UI components handle user interaction, but both are configured in the same workflow.json file and follow similar loading patterns.
+The unified tool and UI system provides a clean separation of concerns while maintaining a consistent configuration approach. Backend tools handle pure functionality with full AG2 compatibility and LLM guidance through the universal `core/workflow/tool_loader.py` system, while frontend UI components handle user interaction. Both are configured in workflow.json and follow automated loading patterns.
 
-This design enables agents to have both computational capabilities (tools with LLM guidance) and user interaction capabilities (UI components) without mixing concerns or creating complex interdependencies.
+This design enables agents to have both computational capabilities (tools with LLM guidance) and user interaction capabilities (UI components) without mixing concerns or requiring workflow-specific loading logic. The core system handles all the complexity automatically.
