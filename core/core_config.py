@@ -98,7 +98,13 @@ async def make_llm_config(
         logger.info(f"[LLM CONFIG #{i}] {redacted}")
     
     client = OpenAIWrapper(config_list=config_list)
-    llm_config = {"timeout": 600, "cache_seed": 153, "config_list": config_list}
+
+    # Build LLM runtime configuration
+    llm_config = {
+        "timeout": 600,
+        "cache_seed": 153,
+        "config_list": config_list
+    }
     logger.info("LLM runtime config initialized successfully.")
     
     return client, llm_config

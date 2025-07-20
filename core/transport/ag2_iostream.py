@@ -30,9 +30,25 @@ except ImportError:
             pass
 
 from ..events.simple_protocols import SimpleCommunicationChannel as CommunicationChannel
-from logs.logging_config import get_chat_logger
+from logs.logging_config import get_chat_logger, setup_logging
+
+# Import SimpleTransport for user input collection
+SIMPLE_TRANSPORT_AVAILABLE = True
+try:
+    from .simple_transport import SimpleTransport
+except ImportError:
+    # Fallback if circular import issues - will be handled at runtime
+    SIMPLE_TRANSPORT_AVAILABLE = False
+    SimpleTransport = None  # type: ignore
+
+# Ensure logging is set up
+try:
+    setup_logging()
+except:
+    pass  # Logging may already be set up
 
 logger = get_chat_logger("ag2_iostream")
+chat_logger = get_chat_logger("agent_output")  # Chat logger for agent output tracking
 
 
 class AG2StreamingIOStream(IOStreamProtocol):
@@ -83,6 +99,10 @@ class AG2StreamingIOStream(IOStreamProtocol):
             
         # Reset the flag after use
         self._stream_next_content = False
+        
+        # Log agent output to agent_chat.log for tracking
+        agent_name = getattr(self, '_current_agent_name', 'Unknown Agent')
+        chat_logger.info(f"AGENT_OUTPUT | Chat: {self.chat_id} | Agent: {agent_name} | Content: {content[:200]}{'...' if len(content) > 200 else ''}")
             
         logger.info(f"📡 [IOStream] Streaming marked content: {content[:50]}...")
         
@@ -144,18 +164,57 @@ class AG2StreamingIOStream(IOStreamProtocol):
     
     async def _handle_input_async(self, prompt: str, password: bool) -> str:
         """
-        Simplified input handling for AG2 compatibility.
+        Production-ready user input handling for AG2 workflows.
         
-        Returns a default response since UI input logic is handled in workflow components.
-        This prevents AG2 from crashing when it calls input() internally.
+        This method integrates with the web UI to collect actual user input
+        when agents request it (like UserFeedbackAgent asking for feedback).
         """
         logger.info(f"🎯 [IOStream] Input request received: prompt='{prompt}', password={password}")
         
-        # Return default response since UI logic is handled in workflow components
-        default_response = "continue" if not password else "default_key"
+        # Create unique input request ID
+        import uuid
+        input_request_id = str(uuid.uuid4())
         
-        logger.info(f"✅ [IOStream] Returning default response: '{default_response}'")
-        return default_response
+        # Send input request to frontend via SSE
+        await self.communication_channel.send_event(
+            "user_input_request",
+            {
+                "input_request_id": input_request_id,
+                "prompt": prompt,
+                "password": password,
+                "agent_name": getattr(self, '_current_agent_name', 'Agent'),
+                "chat_id": self.chat_id,
+                "timestamp": datetime.utcnow().isoformat()
+            },
+            agent_name=getattr(self, '_current_agent_name', 'Agent')
+        )
+        
+        logger.info(f"� [IOStream] Sent user input request {input_request_id} to frontend")
+        
+        # Wait for user input response from the transport layer
+        # The transport layer will handle the API endpoint to receive user input
+        try:
+            # Handle SimpleTransport import - may have been None due to circular imports
+            if not SIMPLE_TRANSPORT_AVAILABLE:
+                from core.transport.simple_transport import SimpleTransport  # type: ignore
+            
+            # Get user input with timeout  
+            user_input = await SimpleTransport.wait_for_user_input(  # type: ignore
+                input_request_id, 
+                timeout=300  # 5 minute timeout
+            )
+            
+            logger.info(f"✅ [IOStream] Received user input for request {input_request_id}")
+            chat_logger.info(f"USER_INPUT | Chat: {self.chat_id} | Request: {input_request_id} | Input: {user_input[:100]}{'...' if len(user_input) > 100 else ''}")
+            
+            return user_input
+            
+        except asyncio.TimeoutError:
+            logger.warning(f"⏰ [IOStream] User input request {input_request_id} timed out, returning default")
+            return "continue"  # Fallback to continue workflow
+        except Exception as e:
+            logger.error(f"❌ [IOStream] Error waiting for user input: {e}")
+            return "continue"  # Fallback to continue workflow
     
     async def _stream_content_progressively(self, content: str):
         """
@@ -236,6 +295,9 @@ class AG2StreamingIOStream(IOStreamProtocol):
     def set_agent_context(self, agent_name: str):
         """Set the current agent for better streaming metadata."""
         self.current_agent_name = agent_name
+        # Also store for use in print method logging
+        self._current_agent_name = agent_name
+        chat_logger.debug(f"AGENT_CONTEXT | Chat: {self.chat_id} | Agent: {agent_name} | Status: Ready for output")
     
     def configure_streaming(self, chunk_size: int = 1, delay: float = 0.01):
         """Configure streaming behavior."""

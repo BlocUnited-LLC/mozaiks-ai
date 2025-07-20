@@ -4,6 +4,7 @@
 # ==============================================================================
 import json
 import logging
+import re
 from typing import Dict, Any, Optional, Union, Tuple, List
 from fastapi import WebSocket
 from fastapi.responses import StreamingResponse
@@ -15,7 +16,62 @@ import time
 from autogen import Agent, GroupChatManager
 from autogen.agentchat.groupchat import GroupChat
 
+# Logging setup
 logger = logging.getLogger(__name__)
+
+# Import chat logger for agent message tracking
+from logs.logging_config import get_chat_logger, setup_logging
+
+# Ensure logging is set up and create our chat loggers
+try:
+    setup_logging()
+except:
+    pass  # Logging may already be set up
+
+chat_logger = get_chat_logger("agent_messages")  # Specific logger for agent messages
+
+# ==================================================================================
+# COMMUNICATION CHANNEL WRAPPER
+# ==================================================================================
+
+class SimpleCommunicationChannelWrapper:
+    """Wrapper class for AG2 communication channel integration"""
+    
+    def __init__(self, transport_instance, chat_id: str):
+        self.transport = transport_instance
+        self.chat_id = chat_id
+        
+    async def send_message(self, message: str, agent_name: Optional[str] = None):
+        """Send a message through the transport layer"""
+        await self.transport.stream_message_to_user(self.chat_id, message, agent_name)
+        
+    async def send_event(self, event_type: str, data: dict, agent_name: Optional[str] = None):
+        """Send an event through the transport layer SSE system"""
+        # Create event data structure
+        event_data = {
+            "type": event_type,
+            "data": data,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        # Use the internal broadcast method
+        await self.transport._broadcast_to_sse(event_data, self.chat_id)
+        
+    async def get_user_input(self, prompt: Optional[str] = None) -> str:
+        """Get user input through the transport layer"""
+        # This would integrate with the user input collection system
+        import time
+        input_request_id = f"{self.chat_id}_{int(time.time())}"
+        
+        # Send user input request via SSE
+        event_data = {
+            "type": "user_input_request",
+            "data": {"request_id": input_request_id, "prompt": prompt or "Please provide input:"},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        await self.transport._broadcast_to_sse(event_data, self.chat_id)
+        
+        # Wait for user response
+        return await SimpleTransport.wait_for_user_input(input_request_id)
 
 # ==================================================================================
 # MESSAGE FILTERING
@@ -50,17 +106,6 @@ class MessageFilter:
             return False
         
         return True
-    
-    def format_agent_name_for_ui(self, agent_name: str) -> str:
-        """Format agent names for better UI display"""
-        if not agent_name:
-            return "Assistant"
-        
-        # Convert CamelCase to Title Case
-        import re
-        formatted = re.sub(r'([A-Z])', r' \1', agent_name).strip()
-        formatted = formatted.replace("Agent", "").strip()
-        return formatted or "Assistant"
 
 # ==================================================================================
 # PERSISTENCE FUNCTIONALITY
@@ -185,8 +230,9 @@ class SimpleTransport:
     - Connection state tracking
     """
     
-    def __init__(self, default_llm_config: Dict[str, Any]):
-        self.default_llm_config = default_llm_config
+    def __init__(self, default_llm_config: Optional[Dict[str, Any]] = None):
+        # LLM config is optional - transport doesn't need it for routing
+        self.default_llm_config = default_llm_config or {}
         self.active_connections = {}
         self.connections: Dict[str, Dict[str, Any]] = {}
         self.message_filter = MessageFilter()
@@ -195,18 +241,96 @@ class SimpleTransport:
         # Store SSE event queues for broadcasting
         self.sse_queues: Dict[str, asyncio.Queue] = {}
         
-    def should_show_to_user(self, message: str, agent_name: Optional[str] = None) -> bool:
-        """The core filtering logic - removes AutoGen noise"""
-        return self.message_filter.should_stream_message(
-            sender_name=agent_name or "unknown",
-            message_content=message
-        )
-    
-    def format_agent_name(self, agent_name: Optional[str]) -> str:
-        """Clean up agent names for UI display"""
+        # User input collection mechanism
+        self.pending_input_requests: Dict[str, asyncio.Future] = {}
+        
+        # Set this instance as the singleton for user input collection
+        self._set_as_instance()
+        
+    def format_agent_name_for_ui(self, agent_name: str) -> str:
+        """Format agent names for better UI display"""
         if not agent_name:
             return "Assistant"
-        return self.message_filter.format_agent_name_for_ui(agent_name)
+        
+        # Convert CamelCase to Title Case
+        import re
+        formatted = re.sub(r'([A-Z])', r' \1', agent_name).strip()
+        formatted = formatted.replace("Agent", "").strip()
+        return formatted or "Assistant"
+        
+    # ==================================================================================
+    # USER INPUT COLLECTION (Production-Ready)
+    # ==================================================================================
+    
+    @classmethod
+    async def wait_for_user_input(cls, input_request_id: str, timeout: int = 300) -> str:
+        """
+        Wait for user input response for a specific input request.
+        
+        This is called by AG2StreamingIOStream when agents request user input.
+        The frontend will call submit_user_input() to provide the response.
+        """
+        # Access the singleton instance
+        instance = cls._get_instance()
+        if not instance:
+            raise RuntimeError("SimpleTransport instance not available")
+            
+        if input_request_id not in instance.pending_input_requests:
+            # Create a future to wait for the input
+            instance.pending_input_requests[input_request_id] = asyncio.Future()
+        
+        try:
+            # Wait for the user input with timeout
+            user_input = await asyncio.wait_for(
+                instance.pending_input_requests[input_request_id],
+                timeout=timeout
+            )
+            return user_input
+        finally:
+            # Clean up the pending request
+            if input_request_id in instance.pending_input_requests:
+                del instance.pending_input_requests[input_request_id]
+    
+    async def submit_user_input(self, input_request_id: str, user_input: str) -> bool:
+        """
+        Submit user input response for a pending input request.
+        
+        This method is called by the API endpoint when the frontend submits user input.
+        """
+        if input_request_id in self.pending_input_requests:
+            future = self.pending_input_requests[input_request_id]
+            if not future.done():
+                future.set_result(user_input)
+                logger.info(f"✅ [INPUT] Submitted user input for request {input_request_id}")
+                return True
+            else:
+                logger.warning(f"⚠️ [INPUT] Request {input_request_id} already completed")
+                return False
+        else:
+            logger.warning(f"⚠️ [INPUT] No pending request found for {input_request_id}")
+            return False
+    
+    @classmethod
+    def _get_instance(cls):
+        """Get the singleton instance of SimpleTransport"""
+        # This is a simple approach - in production you might use a proper singleton pattern
+        # For now, we'll store the instance as a class variable
+        return getattr(cls, '_instance', None)
+    
+    def _set_as_instance(self):
+        """Set this instance as the singleton"""
+        SimpleTransport._instance = self
+        
+    def should_show_to_user(self, message: str, agent_name: Optional[str]) -> bool:
+        """Check if a message should be shown to the user interface"""
+        # For now, show all messages - can be enhanced with filtering logic
+        return True
+        
+    def format_agent_name(self, agent_name: Optional[str]) -> str:
+        """Format agent name for display"""
+        if agent_name is None:
+            return "System"
+        return self.format_agent_name_for_ui(agent_name)
     
     # ==================================================================================
     # CONTEXT MANAGEMENT
@@ -245,6 +369,12 @@ class SimpleTransport:
         
         # Format agent name
         formatted_agent = self.format_agent_name(agent_name)
+        
+        # Log agent message to agent_chat.log for tracking
+        if isinstance(message, str) and formatted_agent and formatted_agent != "Assistant":
+            chat_logger.info(f"AGENT_MESSAGE | Chat: {chat_id or 'unknown'} | Agent: {formatted_agent} | Message: {str(message)[:200]}{'...' if len(str(message)) > 200 else ''}")
+        elif isinstance(message, str):
+            chat_logger.info(f"SYSTEM_MESSAGE | Chat: {chat_id or 'unknown'} | Type: {message_type} | Message: {str(message)[:200]}{'...' if len(str(message)) > 200 else ''}")
         
         # Create event data
         event_data = {
@@ -593,13 +723,14 @@ class SimpleTransport:
                 effective_enterprise_id = enterprise_id or self.get_enterprise_context()
                 await self.create_session(chat_id, effective_enterprise_id, check_resume=True)
                 
-                # Auto-start workflow with welcome message for better UX
+                # Auto-start workflow if it's configured for auto-start
+                # Let the workflow handle its own initialization (no fake user message)
                 logger.info(f"🚀 Auto-starting workflow '{workflow_type}' for new session {chat_id}")
                 welcome_result = await self.handle_user_input_from_api(
                     chat_id=chat_id,
                     user_id=user_id,
                     workflow_type=workflow_type,
-                    message="Hello, I'm ready to start working with you!"
+                    message=None  # Let workflow handle initialization with null initial_message
                 )
                 logger.info(f"✅ Auto-start completed for {chat_id}: {welcome_result.get('status', 'unknown')}")
             
@@ -868,19 +999,26 @@ class SimpleTransport:
         chat_id: str, 
         user_id: Optional[str], 
         workflow_type: str, 
-        message: str
+        message: Optional[str]
     ) -> Dict[str, Any]:
         """
         Handle user input from the POST API endpoint
         Integrates with workflow registry and follows the documented event system
+        
+        Args:
+            message: User message or None for auto-start without user input
         """
         try:
-            # Send user message using the event system
-            await self.send_event("chat_message", {
-                "message": message,
-                "agent_name": "User",
-                "chat_id": chat_id
-            })
+            # Only send user message event if there's an actual message
+            if message is not None:
+                await self.send_event("chat_message", {
+                    "message": message,
+                    "agent_name": "User", 
+                    "chat_id": chat_id
+                })
+            else:
+                # For auto-start without user input, just log
+                logger.info(f"🚀 Starting workflow '{workflow_type}' for {chat_id} without initial user message")
             
             # Create session if it doesn't exist, with resume capability
             if chat_id not in self.connections:
@@ -898,7 +1036,10 @@ class SimpleTransport:
             communication_channel = SimpleCommunicationChannelWrapper(self, chat_id)
             
             # Integrate with actual workflow system
-            logger.info(f"🚀 Starting workflow '{workflow_type}' for message: {message[:50]}...")
+            if message:
+                logger.info(f"🚀 Starting workflow '{workflow_type}' for message: {message[:50]}...")
+            else:
+                logger.info(f"🚀 Starting workflow '{workflow_type}' with auto-start (no initial message)")
             
             # Send status update
             await self.send_event("status", {
@@ -930,6 +1071,9 @@ class SimpleTransport:
                 # Extract enterprise_id from context or use default for backwards compatibility
                 enterprise_id = getattr(self, 'current_enterprise_id', 'default')
                 
+                # Log workflow start to agent_chat.log
+                chat_logger.info(f"WORKFLOW_START | Chat: {chat_id} | Workflow: {workflow_type} | User: {user_id or 'unknown'} | HasMessage: {message is not None}")
+                
                 result = await workflow_handler(
                     enterprise_id=enterprise_id,
                     chat_id=chat_id,
@@ -939,6 +1083,9 @@ class SimpleTransport:
                 )
                 
                 logger.info(f"✅ Workflow '{workflow_type}' completed successfully")
+                
+                # Log workflow completion to agent_chat.log
+                chat_logger.info(f"WORKFLOW_COMPLETE | Chat: {chat_id} | Workflow: {workflow_type} | Result: {str(result)[:100] if result else 'None'}")
                 
                 # Send completion status
                 await self.send_event("status", {
@@ -957,6 +1104,9 @@ class SimpleTransport:
             except Exception as workflow_error:
                 error_msg = f"Workflow execution failed: {str(workflow_error)}"
                 logger.error(f"❌ {error_msg}", exc_info=True)
+                
+                # Log workflow error to agent_chat.log
+                chat_logger.error(f"WORKFLOW_ERROR | Chat: {chat_id} | Workflow: {workflow_type} | Error: {str(workflow_error)[:200]}")
                 
                 await self.send_event("error", {
                     "error": error_msg,
@@ -995,7 +1145,14 @@ class SimpleTransport:
         """Send event (for protocol compatibility)"""
         if event_type == "chat_message":
             message = data.get("message", str(data)) if isinstance(data, dict) else str(data)
-            await self.send_to_ui(message, agent_name, "chat_message")
+            chat_id = data.get("chat_id") if isinstance(data, dict) else None
+            
+            # Log chat messages to agent_chat.log
+            formatted_agent = self.format_agent_name(agent_name)
+            if message and formatted_agent:
+                chat_logger.info(f"EVENT_MESSAGE | Chat: {chat_id or 'unknown'} | Agent: {formatted_agent} | Message: {str(message)[:200]}{'...' if len(str(message)) > 200 else ''}")
+            
+            await self.send_to_ui(message, agent_name, "chat_message", chat_id)
         elif event_type == "error":
             error_msg = data.get("error", str(data)) if isinstance(data, dict) else str(data)
             await self.send_error(error_msg)
@@ -1046,44 +1203,5 @@ class SimpleTransport:
         
         # This is where the actual transport would send the event to frontend
         # The event_data is properly formatted for frontend consumption
-
-# ==================================================================================
-# COMMUNICATION CHANNEL WRAPPER
-# ==================================================================================
-
-class SimpleCommunicationChannelWrapper:
-    """
-    Wrapper to make SimpleTransport compatible with workflow communication protocols
-    Implements the communication channel interface documented in TRANSPORT_AND_EVENTS.md
-    """
-    
-    def __init__(self, transport: SimpleTransport, chat_id: str):
-        self.transport = transport
-        self.chat_id = chat_id
-    
-    async def send_event(self, event_type: str, data: Any, agent_name: Optional[str] = None) -> None:
-        """Send event through the transport layer"""
-        await self.transport.send_event(event_type, data, agent_name)
-    
-    async def send_custom_event(self, name: str, value: Any) -> None:
-        """Send custom event with chat_id context"""
-        await self.transport.send_custom_event(name, value, self.chat_id)
-    
-    async def send_ui_component_route(self, agent_id: str, content: str, routing_decision: dict) -> None:
-        """Send UI component routing event - supports artifact panel routing"""
-        await self.transport.send_event("route_to_artifact", {
-            "agent_id": agent_id,
-            "content": content,
-            "routing_decision": routing_decision,
-            "chat_id": self.chat_id
-        })
-    
-    async def send_ui_tool(self, tool_id: str, payload: Any) -> None:
-        """Send UI tool action event - supports interactive tool events"""
-        await self.transport.send_event("ui_tool_action", {
-            "tool_id": tool_id,
-            "payload": payload,
-            "chat_id": self.chat_id
-        })
 
 

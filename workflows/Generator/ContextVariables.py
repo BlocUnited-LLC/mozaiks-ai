@@ -3,9 +3,10 @@
 # DESCRIPTION: AG2-native context variables for Generator workflow
 # ==============================================================================
 from autogen.agentchat.group import ContextVariables
-from typing import Annotated
+from typing import Annotated, Dict, Any, Optional, List
+import time
 
-def get_context(concept_data=None):
+def get_context(concept_data: Optional[Dict[str, Any]] = None) -> ContextVariables:
     """Create initial context variables for the Generator workflow"""
     overview = concept_data.get('ConceptOverview', '') if concept_data else ''
 
@@ -15,7 +16,6 @@ def get_context(concept_data=None):
         "component_states": {},          # Current state of each component
         "user_preferences": {},          # User-set preferences and settings
         "session_metadata": {            # Session tracking
-            "start_time": None,
             "interaction_count": 0
         }
     })
@@ -24,7 +24,7 @@ def get_context(concept_data=None):
 def update_context_from_ui(
     component_id: Annotated[str, "Unique identifier for the UI component"],
     action_type: Annotated[str, "Type of action performed (submit, download, etc.)"],
-    action_data: Annotated[dict, "Data associated with the action"],
+    action_data: Annotated[Dict[str, Any], "Data associated with the action"],
     context_variables: ContextVariables
 ) -> str:
     """
@@ -32,8 +32,6 @@ def update_context_from_ui(
     This tool is called automatically by the transport layer when components
     send actions, providing agents with contextual awareness.
     """
-    import time
-    
     # Create interaction record
     interaction = {
         "timestamp": time.time(),
@@ -43,12 +41,12 @@ def update_context_from_ui(
     }
     
     # Add to interaction history
-    interactions = context_variables.get("ui_interactions", [])
+    interactions = context_variables.get("ui_interactions") or []
     interactions.append(interaction)
     context_variables.set("ui_interactions", interactions)
     
     # Update component state
-    component_states = context_variables.get("component_states", {})
+    component_states = context_variables.get("component_states") or {}
     component_states[component_id] = {
         "last_action": action_type,
         "last_action_time": time.time(),
@@ -57,7 +55,7 @@ def update_context_from_ui(
     context_variables.set("component_states", component_states)
     
     # Update session metadata
-    session_meta = context_variables.get("session_metadata", {})
+    session_meta = context_variables.get("session_metadata") or {}
     session_meta["interaction_count"] = len(interactions)
     context_variables.set("session_metadata", session_meta)
     
@@ -69,9 +67,9 @@ def get_ui_context_summary(context_variables: ContextVariables) -> str:
     AG2 tool for agents to get a summary of current UI interactions and state.
     Agents can call this tool to understand what the user has been doing.
     """
-    interactions = context_variables.get("ui_interactions", [])
-    component_states = context_variables.get("component_states", {})
-    session_meta = context_variables.get("session_metadata", {})
+    interactions = context_variables.get("ui_interactions") or []
+    component_states = context_variables.get("component_states") or {}
+    session_meta = context_variables.get("session_metadata") or {}
     
     if not interactions:
         return "No UI interactions yet."
@@ -98,7 +96,7 @@ def check_component_state(
     """
     AG2 tool for agents to check the current state of a specific UI component.
     """
-    component_states = context_variables.get("component_states", {})
+    component_states = context_variables.get("component_states") or {}
     
     if component_id not in component_states:
         return f"Component '{component_id}' has not been interacted with yet."

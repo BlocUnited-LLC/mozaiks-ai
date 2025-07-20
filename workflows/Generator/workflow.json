@@ -1,11 +1,12 @@
 {
   "workflow_name": "Generator",
   "max_turns": 25,
-  "initiating_agent": "ContextVariablesAgent",
+  "initiating_agent": "AgentsAgent",
   "human_in_the_loop": true,
   "auto_start": true,
   "transport": "sse",
-  "initial_message": null,
+  "initial_message_to_user": null,
+  "initial_message_to_groupchat": "Based on the concept overview in the context variables, please begin by analyzing what types of agents will be needed for this application. Define the agent architecture first, then we'll create the context variables based on those agent requirements.",
   "ui_capable_agents": [
     {
       "name": "UserFeedbackAgent",
@@ -43,16 +44,14 @@
         "module": "workflows.Generator.tools.echo_all",
         "function": "echo",
         "apply_to": "all",
-        "description": "Simple echo tool that is registered for every agent",
-        "enabled": true
+        "description": "Simple echo tool that is registered for every agent"
       },
       {
         "name": "echo_ctx_only",
         "module": "workflows.Generator.tools.echo_ctx_only",
         "function": "echo_context", 
         "apply_to": ["ContextVariablesAgent"],
-        "description": "Echo tool registered only for ContextVariablesAgent",
-        "enabled": true
+        "description": "Echo tool registered only for ContextVariablesAgent"
       }
     ],
     "lifecycle_hooks": [
@@ -62,8 +61,7 @@
         "function": "log_agent_state_update",
         "trigger": "update_agent_state",
         "apply_to": "all",
-        "description": "Logs when any agent updates its state before replying",
-        "enabled": true
+        "description": "Logs when any agent updates its state before replying"
       },
       {
         "name": "message_sender_tracker",
@@ -71,8 +69,7 @@
         "function": "track_message_sending",
         "trigger": "process_message_before_send",
         "apply_to": "all",
-        "description": "Tracks when any agent is about to send a message",
-        "enabled": true
+        "description": "Tracks when any agent is about to send a message"
       },
       {
         "name": "conversation_analyzer",
@@ -80,8 +77,7 @@
         "function": "analyze_full_conversation",
         "trigger": "process_all_messages_before_reply",
         "apply_to": "all", 
-        "description": "Analyzes the full conversation before any agent replies",
-        "enabled": true
+        "description": "Analyzes the full conversation before any agent replies"
       },
       {
         "name": "latest_message_inspector",
@@ -89,8 +85,7 @@
         "function": "inspect_latest_message",
         "trigger": "process_last_received_message",
         "apply_to": "all",
-        "description": "Inspects the latest message received by any agent",
-        "enabled": true
+        "description": "Inspects the latest message received by any agent"
       }
     ]
   }

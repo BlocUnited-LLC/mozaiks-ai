@@ -43,8 +43,10 @@ Our system uses **workflow.json** as the single source of truth for tool configu
 ### Core Tool Loading System
 - **Location**: `core/workflow/tool_loader.py` (universal, workflow-agnostic)
 - **Configuration**: `workflow.json` in each workflow folder
-- **Registration**: Automatic AG2-compatible registration using `register_for_execution` and `register_for_llm`
+- **Registration**: Automatic AG2-compatible registration using `register_for_execution` only (avoids IndexError)
 - **Lifecycle Hooks**: Automatic registration using AG2's `register_hook` system
+
+**CRITICAL**: The system uses `register_for_execution()` only to avoid AG2's function calling pathway that causes IndexError when message lists are empty. This provides execution-only tool access without LLM function calling.
 
 ---
 
@@ -190,9 +192,11 @@ def process_message(
 1. **Workflow Loading**: `WorkflowConfig` reads tools from `workflow.json`
 2. **Core Tool Loading**: `core/workflow/tool_loader.py` imports modules and functions
 3. **AG2 Registration**:
-   - Agent tools: `agent.register_for_execution()` and `agent.register_for_llm()`
+   - Agent tools: `agent.register_for_execution()` (execution-only to avoid IndexError)
    - Lifecycle hooks: `agent.register_hook(hook_name, function)`
 4. **Execution**: Tools and hooks are called during conversation flow
+
+**IMPORTANT**: Tools are registered with `register_for_execution()` only, not `register_for_llm()`, to avoid AG2's function calling pathway which can cause IndexError crashes when message lists are empty.
 
 ### Example Registration Code
 ```python
@@ -326,15 +330,51 @@ def analyze_sentiment(text, include_confidence=False):
 
 ---
 
+## ⚠️ CRITICAL: IndexError Prevention
+
+### The Problem
+AG2's function calling system can cause `IndexError: list index out of range` when agents attempt to call functions but have empty message lists. This crash occurs in AG2's `a_generate_function_call_reply` method.
+
+### The Solution
+**Use `register_for_execution()` ONLY** - Do not use `register_for_llm()` for tools. This provides:
+- ✅ **Execution-only access**: Tools can be called programmatically
+- ✅ **No IndexError**: Avoids AG2's function calling pathway
+- ✅ **System stability**: Prevents crashes during agent initialization
+- ✅ **Hook compatibility**: Lifecycle hooks work normally
+
+### Safe Registration Pattern
+```python
+# ✅ SAFE: Execution-only registration
+agent.register_for_execution(name="my_tool")(tool_function)
+
+# ✅ SAFE: Hook registration (unaffected)
+agent.register_hook("process_message_before_send", hook_function)
+
+# ❌ AVOID: LLM registration (causes IndexError)
+# agent.register_for_llm(name="my_tool")(tool_function)
+```
+
+### Implementation in Core System
+The `core/workflow/tool_loader.py` automatically uses safe registration:
+```python
+# From tool_loader.py - safe registration pattern
+agent.register_for_execution(name=tool_name)(tool_func)
+# NOTE: We intentionally do NOT register for LLM to avoid AG2 function calling
+```
+
+---
+
 ## AG2 Compatibility Benefits
 
 ### Why Our System Works Well with AG2
 
-1. **AG2 Standard Registration**: Uses official `register_for_execution` and `register_for_llm` methods
+1. **AG2 Standard Registration**: Uses official `register_for_execution` method (execution-only to avoid IndexError)
 2. **Type Safety**: Compatible with AG2's function registration system
-3. **LLM Guidance**: Type annotations provide clear parameter descriptions to LLM
-4. **Hook Integration**: Uses AG2's built-in `register_hook` system
-5. **Tool Discovery**: Compatible with AG2's function introspection
+3. **Hook Integration**: Uses AG2's built-in `register_hook` system
+4. **Tool Discovery**: Compatible with AG2's function introspection
+5. **Crash Prevention**: Avoids AG2's function calling pathway that causes IndexError
+
+**IMPORTANT**: We intentionally use `register_for_execution()` only, not `register_for_llm()`, to prevent AG2's function calling system from triggering IndexError when message lists are empty.
 
 ### Best Practices for AG2 Compatibility
 

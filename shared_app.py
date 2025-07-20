@@ -705,6 +705,49 @@ async def handle_user_input(
         logger.error(f"❌ Error handling user input for chat {chat_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process input: {e}")
 
+@app.post("/api/user-input/submit")
+async def submit_user_input_response(request: Request):
+    """
+    API endpoint for submitting user input responses.
+    
+    This endpoint is called by the frontend when a user responds to a user input request
+    sent via SSE from AG2 agents.
+    """
+    if not simple_transport:
+        raise HTTPException(status_code=503, detail="Transport service is not available.")
+
+    try:
+        data = await request.json()
+        input_request_id = data.get("input_request_id")
+        user_input = data.get("user_input")
+        
+        if not input_request_id:
+            raise HTTPException(status_code=400, detail="'input_request_id' field is required.")
+        if not user_input:
+            raise HTTPException(status_code=400, detail="'user_input' field is required.")
+        
+        # Submit the user input to the transport layer
+        success = await simple_transport.submit_user_input(input_request_id, user_input)
+        
+        if success:
+            log_business_event(
+                event_type="USER_INPUT_RESPONSE_SUBMITTED",
+                description=f"User input response submitted for request {input_request_id}",
+                context={
+                    "input_request_id": input_request_id,
+                    "input_length": len(user_input)
+                }
+            )
+            return {"status": "success", "message": "User input submitted successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="Input request not found or already completed")
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+    except Exception as e:
+        logger.error(f"❌ Error submitting user input response: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to submit user input: {e}")
+
 @app.get("/api/workflows/{workflow_type}/transport")
 async def get_workflow_transport_info(workflow_type: str):
     """Get transport information for a specific workflow."""

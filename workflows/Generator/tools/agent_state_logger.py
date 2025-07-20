@@ -6,14 +6,22 @@
 from typing import Dict, Any
 
 def log_agent_state_update(
-    messages: Dict[str, Any]
-) -> Dict[str, Any]:
+    agent,
+    messages
+) -> Any:
     """AG2 Hook: Logs when any agent updates its state before generating a reply.
     
     This hook fires when an agent is about to generate a response and updates
     its internal state. Useful for tracking agent behavior and state changes.
-    """
-    print(f"🔄 STATE LOGGER: Agent updating state before reply (messages: {len(messages)})")
     
-    # Return messages unchanged
+    Args:
+        agent: The agent that is updating its state
+        messages: The conversation messages
+    """
+    agent_name = getattr(agent, 'name', 'Unknown') if agent else 'Unknown'
+    message_count = len(messages) if messages else 0
+    
+    print(f"🔄 STATE LOGGER: {agent_name} updating state before reply (messages: {message_count})")
+    
+    # Return messages unchanged (or None for state updates)
     return messages

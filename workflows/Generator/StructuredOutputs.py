@@ -7,16 +7,6 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Literal
 from core.core_config import make_llm_config, make_structured_config
 
-# ContextVariablesAgent Output
-class ContextVariablesDefinition(BaseModel):
-    name: str = Field(description="Variable name (e.g., 'project_title', 'user_requirements')")
-    extraction_code: str = Field(description="Python code to extract value (e.g., \"concept_data.get('ProjectTitle', '')\")")
-    description: str = Field(description="Description of what this context variable represents")
-    default_value: str = Field(default="''", description="Default value if extraction fails")
-
-class ContextVariablesOutput(BaseModel):
-    context_variables: List[ContextVariablesDefinition] = Field(description="All context variables for workflow")
-
 # AgentsAgent Output
 class AgentDefinition(BaseModel):
     name: str = Field(description="Agent variable name")
@@ -28,6 +18,16 @@ class AgentDefinition(BaseModel):
 
 class AgentsOutput(BaseModel):
     agent_list: List[AgentDefinition] = Field(description="All agent definitions for workflow")
+    
+# ContextVariablesAgent Output
+class ContextVariablesDefinition(BaseModel):
+    name: str = Field(description="Variable name (e.g., 'project_title', 'user_requirements')")
+    extraction_code: str = Field(description="Python code to extract value (e.g., \"concept_data.get('ProjectTitle', '')\")")
+    description: str = Field(description="Description of what this context variable represents")
+    default_value: str = Field(default="''", description="Default value if extraction fails")
+
+class ContextVariablesOutput(BaseModel):
+    context_variables: List[ContextVariablesDefinition] = Field(description="All context variables for workflow")
 
 # HandoffsAgent Output
 class HandoffRule(BaseModel):

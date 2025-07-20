@@ -55,7 +55,7 @@ flowchart TD
 **Loading**: `core/workflow/tool_loader.py` (universal core system)
 **AG2 Compatibility**: Full support for AG2 type annotations and LLM guidance
 **Types**:
-- **Agent Tools**: Functions registered with specific agents using `register_for_execution` and `register_for_llm`
+- **Agent Tools**: Functions registered with specific agents using `register_for_execution` only (avoids IndexError)
 - **Lifecycle Hooks**: Functions registered with agents using `register_hook`
 
 **Example**:
@@ -155,7 +155,7 @@ component_path = f"workflows/{workflow_type}/Components/{component_name}"
 ```python
 # Tools: Register with AG2's proper methods
 agent.register_for_execution(name=tool_name)(tool_function)
-agent.register_for_llm(name=tool_name, description=description)(tool_function)
+# NOTE: We intentionally do NOT use register_for_llm to avoid AG2 IndexError
 
 # Hooks: Register with AG2's hook system
 agent.register_hook(hook_name, hook_function)
@@ -214,7 +214,7 @@ transport.send_ui_tool_event(component_definition)
 ### ✅ Fully Implemented
 - Workflow.json-based tool configuration with core loading system
 - Universal tool loading via `core/workflow/tool_loader.py`
-- AG2-compatible tool registration with `register_for_execution` and `register_for_llm`
+- AG2-compatible tool registration with `register_for_execution` only (prevents IndexError)
 - AG2-compatible lifecycle hook registration with `register_hook`
 - Frontend component discovery from workflow folders
 - UI component rendering and action handling

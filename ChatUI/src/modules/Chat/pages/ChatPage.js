@@ -37,6 +37,7 @@ const ChatPage = () => {
   const [transportType, setTransportType] = useState(null);
   const [currentChatId, setCurrentChatId] = useState(null); // Store the current chat ID
   const [connectionInitialized, setConnectionInitialized] = useState(false); // Prevent duplicate connections
+  const [workflowConfigLoaded, setWorkflowConfigLoaded] = useState(false); // Track workflow config loading
   const connectionInProgressRef = useRef(false); // Additional guard against React double-execution
   const { enterpriseId, workflowType: urlWorkflowType } = useParams();
   const { user, api, config } = useChatUI();
@@ -103,8 +104,10 @@ const ChatPage = () => {
       try {
         await workflowConfig.fetchWorkflowConfigs();
         console.log('✅ Workflow configurations loaded');
+        setWorkflowConfigLoaded(true);
       } catch (error) {
         console.warn('⚠️ Failed to load workflow configurations:', error);
+        setWorkflowConfigLoaded(true); // Still allow connection attempt
       }
     };
     
@@ -290,6 +293,12 @@ const ChatPage = () => {
   useEffect(() => {
     if (!api) return;
     
+    // Wait for workflow configuration to be loaded before connecting
+    if (!workflowConfigLoaded) {
+      console.log('⏳ Waiting for workflow configuration to load...');
+      return;
+    }
+    
     // Prevent duplicate connections
     if (connectionInitialized || connectionInProgressRef.current) {
       console.log('🔄 Connection already initialized or in progress, skipping...');
@@ -454,7 +463,7 @@ const ChatPage = () => {
       // Reset the in-progress flag when component unmounts
       connectionInProgressRef.current = false;
     };
-  }, [api, currentEnterpriseId, currentUserId, handleIncoming]); // Only essential dependencies
+  }, [api, currentEnterpriseId, currentUserId, handleIncoming, workflowConfigLoaded]); // Include workflowConfigLoaded
 
   const sendMessage = async (messageContent) => {
     console.log('🚀 [SEND] Sending message:', messageContent);

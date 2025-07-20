@@ -44,19 +44,19 @@ def wire_handoffs(agents: dict):
     try:
         business_logger.info("🔗 [HANDOFFS] Configuring AG2-style handoffs...")
         
-        # Configure ContextVariablesAgent to hand off to AgentsAgent when done
-        if "ContextVariablesAgent" in agents and "AgentsAgent" in agents:
-            agents["ContextVariablesAgent"].handoffs.set_after_work(
-                AgentTarget(agents["AgentsAgent"])
-            )
-            business_logger.debug("🔗 [HANDOFFS] ContextVariablesAgent → AgentsAgent (after work)")
-        
-        # Configure AgentsAgent to hand off to HandoffsAgent when done
-        if "AgentsAgent" in agents and "HandoffsAgent" in agents:
+        # Configure AgentsAgent to hand off to ContextVariablesAgent when done
+        if "AgentsAgent" in agents and "ContextVariablesAgent" in agents:
             agents["AgentsAgent"].handoffs.set_after_work(
+                AgentTarget(agents["ContextVariablesAgent"])
+            )
+            business_logger.debug("🔗 [HANDOFFS] AgentsAgent → ContextVariablesAgent (after work)")
+        
+        # Configure ContextVariablesAgent to hand off to HandoffsAgent when done
+        if "ContextVariablesAgent" in agents and "HandoffsAgent" in agents:
+            agents["ContextVariablesAgent"].handoffs.set_after_work(
                 AgentTarget(agents["HandoffsAgent"])
             )
-            business_logger.debug("🔗 [HANDOFFS] AgentsAgent → HandoffsAgent (after work)")
+            business_logger.debug("🔗 [HANDOFFS] ContextVariablesAgent → HandoffsAgent (after work)")
         
         # Configure HandoffsAgent to hand off to HooksAgent when done
         if "HandoffsAgent" in agents and "HooksAgent" in agents:
@@ -79,31 +79,41 @@ def wire_handoffs(agents: dict):
             )
             business_logger.debug("🔗 [HANDOFFS] OrchestratorAgent → UserFeedbackAgent (after work)")
 
-        # Configure UserFeedbackAgent conditional handoffs based on what's needed
+        # Configure UserFeedbackAgent - ALWAYS revert to user after presenting outputs
         if "UserFeedbackAgent" in agents:
-            # Add conditional handoffs from UserFeedbackAgent
+            # Primary handoff: Always return to user after presenting workflow outputs
+            agents["UserFeedbackAgent"].handoffs.set_after_work(
+                RevertToUserTarget()
+            )
+            business_logger.debug("🔗 [HANDOFFS] UserFeedbackAgent → RevertToUser (after presenting outputs)")
+            
+            # Add conditional handoffs that can override the after-work behavior
             handoff_conditions = []
             
-            # If API keys are needed, hand off to APIKeyAgent
+            # If API keys are needed, hand off to APIKeyAgent first
             if "APIKeyAgent" in agents:
                 handoff_conditions.append(
                     OnCondition(
                         target=AgentTarget(agents["APIKeyAgent"]),
-                        condition=StringLLMCondition(prompt="When API keys or authentication credentials are needed for the workflow to function. This includes any mention of requiring API access, authentication tokens, or service credentials.")
+                        condition=StringLLMCondition(prompt="The system should prompt for API key setup only when it is explicitly required based on the features included in the user's request, or when missing API credentials block the execution of those features. ")
                     )
                 )
-                business_logger.debug("🔗 [HANDOFFS] UserFeedbackAgent → APIKeyAgent (when API keys needed)")
+                business_logger.debug("🔗 [HANDOFFS] UserFeedbackAgent → APIKeyAgent (when API keys explicitly needed)")
             
-            # Default: return to user for approval/feedback
-            handoff_conditions.append(
-                OnCondition(
-                    target=RevertToUserTarget(),
-                    condition=StringLLMCondition(prompt="When all required information is collected and the workflow is ready for user approval, or when user input/feedback is needed.")
+            # If user wants to restart/modify workflow, go back to AgentsAgent
+            if "AgentsAgent" in agents:
+                handoff_conditions.append(
+                    OnCondition(
+                        target=AgentTarget(agents["AgentsAgent"]),
+                        condition=StringLLMCondition(prompt="When the user wants to restart the workflow generation, modify requirements, or start over with a different approach. This includes requests to change the workflow design or requirements.")
+                    )
                 )
-            )
+                business_logger.debug("🔗 [HANDOFFS] UserFeedbackAgent → AgentsAgent (when user wants to restart)")
             
-            agents["UserFeedbackAgent"].handoffs.add_llm_conditions(handoff_conditions)
-            business_logger.debug("🔗 [HANDOFFS] UserFeedbackAgent → APIKeyAgent (conditional) OR user (approval)")
+            # Add the conditional handoffs if any were defined
+            if handoff_conditions:
+                agents["UserFeedbackAgent"].handoffs.add_llm_conditions(handoff_conditions)
+                business_logger.debug(f"🔗 [HANDOFFS] UserFeedbackAgent configured with {len(handoff_conditions)} conditional handoffs")
 
         # Configure APIKeyAgent to return to UserFeedbackAgent after collecting keys
         if "APIKeyAgent" in agents and "UserFeedbackAgent" in agents:
@@ -114,27 +124,45 @@ def wire_handoffs(agents: dict):
 
         # Configure user decision points for web UI workflow control
         business_logger.info("🔗 [HANDOFFS] Configuring user decision points for web UI...")
-        if "user" in agents and "ContextVariablesAgent" in agents:
-            # Default handoff from user to the start of the workflow
+        if "user" in agents and "AgentsAgent" in agents:
+            # Default: Start workflow from the beginning when user provides input
             agents["user"].handoffs.set_after_work(
-                AgentTarget(agents["ContextVariablesAgent"])
+                AgentTarget(agents["AgentsAgent"])
             )
-            business_logger.debug("🔗 [HANDOFFS] User → ContextVariablesAgent (default workflow start)")
+            business_logger.debug("🔗 [HANDOFFS] User → AgentsAgent (default workflow start)")
             
-            # Conditional handoffs based on user web UI input
-            agents["user"].handoffs.add_llm_conditions([
+            # Conditional handoffs based on user intent
+            user_conditions = []
+            
+            # If user wants to restart or modify requirements
+            user_conditions.append(
                 OnCondition(
-                    target=AgentTarget(agents["ContextVariablesAgent"]),
-                    condition=StringLLMCondition(prompt="When the user wants to restart, revise, or create a new workflow from the beginning. This includes requests to modify the workflow requirements or start over.")
-                ),
+                    target=AgentTarget(agents["AgentsAgent"]),
+                    condition=StringLLMCondition(prompt="When the user wants to start a new workflow, modify requirements, restart the process, or change their original request. This includes phrases like 'start over', 'change', 'modify', 'new workflow', or providing different requirements.")
+                )
+            )
+            
+            # If user approves the workflow and wants to finish
+            user_conditions.append(
                 OnCondition(
                     target=TerminateTarget(),
-                    condition=StringLLMCondition(prompt="When the user is satisfied with the workflow, confirms approval, or wants to finish the conversation. This includes expressions of satisfaction, approval, or completion.")
+                    condition=StringLLMCondition(prompt="When the user explicitly approves the workflow, says they're satisfied, confirms completion, or clearly indicates they want to end the conversation. This includes phrases like 'looks good', 'approve', 'finished', 'done', 'thank you', or explicit completion statements.")
                 )
-            ])
-            business_logger.debug("🔗 [HANDOFFS] User web UI conditions: restart workflow OR approve/terminate")
+            )
+            
+            # If user has questions or wants to see something specific
+            if "UserFeedbackAgent" in agents:
+                user_conditions.append(
+                    OnCondition(
+                        target=AgentTarget(agents["UserFeedbackAgent"]),
+                        condition=StringLLMCondition(prompt="When the user has questions about the workflow, wants clarification, asks for explanations, or requests to see specific parts of the generated workflow without wanting to restart.")
+                    )
+                )
+            
+            agents["user"].handoffs.add_llm_conditions(user_conditions)
+            business_logger.debug(f"🔗 [HANDOFFS] User configured with {len(user_conditions)} conditional handoffs")
         else:
-            business_logger.warning("⚠️ [HANDOFFS] User or ContextVariablesAgent not found for decision points")
+            business_logger.warning("⚠️ [HANDOFFS] User or AgentsAgent not found for decision points")
 
         
         total_handoff_time = (time.time() - handoff_start) * 1000
