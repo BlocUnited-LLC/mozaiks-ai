@@ -99,11 +99,11 @@ The modular capability integrates seamlessly with the existing groupchat manager
 
 ```python
 # Old tightly-coupled approach
-token_manager = TokenManager(chat_id, enterprise_id, workflow_type, user_id)
+token_manager = TokenManager(chat_id, enterprise_id, workflow_name, user_id)
 budget_info = await token_manager.initialize_budget(user_id)
 
 # New modular approach
-budget_capability = get_budget_capability(chat_id, enterprise_id, workflow_type, user_id)
+budget_capability = get_budget_capability(chat_id, enterprise_id, workflow_name, user_id)
 budget_info = await budget_capability.initialize_budget()
 ```
 
@@ -145,7 +145,7 @@ budget_info = await budget_capability.initialize_budget()
 from core.capabilities import get_budget_capability
 
 # Get appropriate capability for current mode
-budget_capability = get_budget_capability(chat_id, enterprise_id, workflow_type, user_id)
+budget_capability = get_budget_capability(chat_id, enterprise_id, workflow_name, user_id)
 
 # Initialize budget (works in all modes)
 budget_info = await budget_capability.initialize_budget()

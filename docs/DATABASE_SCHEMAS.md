@@ -27,7 +27,7 @@ The system uses two main databases:
   "chat_id": "unique_chat_session_id",
   "enterprise_id": ObjectId("..."),
   "concept_id": ObjectId("..."),
-  "workflow_type": "generator|analyzer|concept_creation|ag2",
+  "workflow_name": "generator|analyzer|concept_creation|ag2",
   "user_id": "string_user_id",
   "created_at": ISODate("..."),
   "last_updated": ISODate("..."),
@@ -125,7 +125,7 @@ The system uses two main databases:
   // Additional context (kwargs)
   "model_used": "gpt-4o-mini",
   "agent_name": "APIKeyAgent",
-  "workflow_type": "generator"
+  "workflow_name": "generator"
 }
 ```
 
@@ -184,7 +184,7 @@ The system uses two main databases:
   "chat_id": "chat_identifier",
   "enterprise_id": ObjectId("..."),
   "concept_id": ObjectId("..."),
-  "workflow_type": "concept_creation",
+  "workflow_name": "concept_creation",
   "user_id": "user_id",
   "created_at": ISODate("..."),
   "last_updated": ISODate("..."),
@@ -277,7 +277,7 @@ The system uses two main databases:
   "chat_id": "chat_123",
   "enterprise_id": ObjectId("..."),
   "concept_id": ObjectId("..."),
-  "workflow_type": "concept_creation",
+  "workflow_name": "concept_creation",
   "user_id": "user_456",
   "created_at": ISODate("..."),
   "last_updated": ISODate("..."),
@@ -386,7 +386,7 @@ The system uses two main databases:
 
 - `enterprise_id`: Must be valid ObjectId or 24-character string
 - `chat_id`: Must be unique string identifier
-- `{workflow_type}_conversation`: Array of message objects with sender, content, timestamp, role, name
-- `{workflow_type}_status`: Integer (0 = in progress, 1 = completed) - used for resume logic
-- `{workflow_type}_state`: Chat metadata object with SessionID, AgentHistory, IterationCount, LastSpeaker, SessionTotals
+- `{workflow_name}_conversation`: Array of message objects with sender, content, timestamp, role, name
+- `{workflow_name}_status`: Integer (0 = in progress, 1 = completed) - used for resume logic
+- `{workflow_name}_state`: Chat metadata object with SessionID, AgentHistory, IterationCount, LastSpeaker, SessionTotals
 - Connection states: "active", "disconnected", "reconnected"

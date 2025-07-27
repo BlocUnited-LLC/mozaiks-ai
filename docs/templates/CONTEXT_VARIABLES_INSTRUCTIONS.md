@@ -119,7 +119,7 @@ def validate_context(context: {WORKFLOW_NAME}Context) -> List[str]:
 ## LLM Generation Prompt
 
 ```
-Create context variables for a {WORKFLOW_TYPE} workflow.
+Create context variables for a {workflow_name} workflow.
 
 Workflow Purpose: {PURPOSE_DESCRIPTION}
 Data Requirements: {DATA_FIELDS_NEEDED}

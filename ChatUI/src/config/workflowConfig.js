@@ -29,34 +29,34 @@ class WorkflowConfig {
         // For each workflow, fetch full configuration
         for (const workflow of workflows) {
           try {
-            const configResponse = await fetch(`/api/workflows/${workflow.workflow_type}/config`);
+            const configResponse = await fetch(`/api/workflows/${workflow.workflow_name}/config`);
             if (configResponse.ok) {
               const configData = await configResponse.json();
-              this.configs.set(workflow.workflow_type, configData.config);
+              this.configs.set(workflow.workflow_name, configData.config);
             } else {
               // Fallback to minimal structure
-              this.configs.set(workflow.workflow_type, {
-                workflow_name: workflow.workflow_type,
+              this.configs.set(workflow.workflow_name, {
+                workflow_name: workflow.workflow_name,
                 transport: workflow.transport || 'websocket',
                 human_in_the_loop: workflow.human_loop !== false
               });
             }
           } catch (configError) {
-            console.warn(`⚠️ Failed to fetch config for ${workflow.workflow_type}:`, configError);
+            console.warn(`⚠️ Failed to fetch config for ${workflow.workflow_name}:`, configError);
             // Fallback to minimal structure
-            this.configs.set(workflow.workflow_type, {
-              workflow_name: workflow.workflow_type,
+            this.configs.set(workflow.workflow_name, {
+              workflow_name: workflow.workflow_name,
               transport: workflow.transport || 'websocket',
               human_in_the_loop: workflow.human_loop !== false
             });
           }
         }
         
-        console.log('✅ Loaded workflow configs:', workflows.map(w => w.workflow_type));
+        console.log('✅ Loaded workflow configs:', workflows.map(w => w.workflow_name));
         
         // Set default workflow if we have any
         if (workflows.length > 0) {
-          this.defaultWorkflow = workflows[0].workflow_type;
+          this.defaultWorkflow = workflows[0].workflow_name;
           console.log('🎯 Default workflow set to:', this.defaultWorkflow);
         }
       } else {
@@ -93,39 +93,39 @@ class WorkflowConfig {
   /**
    * Get workflow configuration by type
    */
-  getWorkflowConfig(workflowType) {
-    return this.configs.get(workflowType) || null;
+  getWorkflowConfig(workflowname) {
+    return this.configs.get(workflowname) || null;
   }
 
   /**
    * Check if workflow has human in the loop
    */
-  hasHumanInTheLoop(workflowType) {
-    const config = this.configs.get(workflowType);
+  hasHumanInTheLoop(workflowname) {
+    const config = this.configs.get(workflowname);
     return config?.human_in_the_loop || false;
   }
 
   /**
    * Get inline component agents for workflow
    */
-  getInlineComponentAgents(workflowType) {
-    const config = this.configs.get(workflowType);
+  getInlineComponentAgents(workflowname) {
+    const config = this.configs.get(workflowname);
     return config?.inline_component_agents || [];
   }
 
   /**
    * Get artifact component agents for workflow
    */
-  getArtifactComponentAgents(workflowType) {
-    const config = this.configs.get(workflowType);
+  getArtifactComponentAgents(workflowname) {
+    const config = this.configs.get(workflowname);
     return config?.artifact_component_agents || [];
   }
 
   /**
    * Check if workflow has UserProxy component integration
    */
-  hasUserProxyComponent(workflowType) {
-    const config = this.configs.get(workflowType);
+  hasUserProxyComponent(workflowname) {
+    const config = this.configs.get(workflowname);
     // Check if any ui_capable_agents have UserProxy-related components
     return config?.ui_capable_agents?.some(agent => 
       agent.name?.toLowerCase().includes('user') ||
@@ -137,8 +137,8 @@ class WorkflowConfig {
   /**
    * Get UserProxy-related components for workflow
    */
-  getUserProxyComponents(workflowType) {
-    const config = this.configs.get(workflowType);
+  getUserProxyComponents(workflowname) {
+    const config = this.configs.get(workflowname);
     const userComponents = [];
     
     if (config?.ui_capable_agents) {
@@ -156,9 +156,9 @@ class WorkflowConfig {
   /**
    * Check if UserProxy needs special transport handling
    */
-  userProxyNeedsTransportHandling(workflowType) {
+  userProxyNeedsTransportHandling(workflowname) {
     // UserProxy with human_in_the_loop=true needs transport integration
-    return this.hasHumanInTheLoop(workflowType);
+    return this.hasHumanInTheLoop(workflowname);
   }
 }
 

@@ -281,20 +281,20 @@ class SimpleTransport:
             return True  # Show system messages
         
         # Get the workflow type for this chat session
-        workflow_type = None
+        workflow_name = None
         if chat_id and chat_id in self.connections:
-            workflow_type = self.connections[chat_id].get("workflow_type")
+            workflow_name = self.connections[chat_id].get("workflow_name")
         
         # If we have workflow type, use visual_agents filtering
-        if workflow_type:
-            visible_agents = workflow_config.get_visible_agents(workflow_type)
+        if workflow_name:
+            visible_agents = workflow_config.get_visible_agents(workflow_name)
             is_visible = agent_name in visible_agents
             
             if not is_visible:
-                logger.debug(f"🚫 Agent '{agent_name}' not in visual_agents for workflow '{workflow_type}' - filtering from UI")
+                logger.debug(f"🚫 Agent '{agent_name}' not in visual_agents for workflow '{workflow_name}' - filtering from UI")
                 return False
             else:
-                logger.debug(f"✅ Agent '{agent_name}' is in visual_agents for workflow '{workflow_type}' - showing in UI")
+                logger.debug(f"✅ Agent '{agent_name}' is in visual_agents for workflow '{workflow_name}' - showing in UI")
         
         return True
         
@@ -662,14 +662,14 @@ class SimpleTransport:
         websocket: WebSocket,
         chat_id: str,
         user_id: str,
-        workflow_type: str,
+        workflow_name: str,
         enterprise_id: Optional[str] = None
     ) -> None:
         """Handle WebSocket connection for real-time communication"""
         try:
             # Accept the WebSocket connection
             await websocket.accept()
-            logger.info(f"🔌 WebSocket connected for chat_id: {chat_id}, workflow: {workflow_type}")
+            logger.info(f"🔌 WebSocket connected for chat_id: {chat_id}, workflow: {workflow_name}")
             
             # Set enterprise context if provided
             if enterprise_id:
@@ -690,7 +690,7 @@ class SimpleTransport:
                 "data": {
                     "status": "connected",
                     "chat_id": chat_id,
-                    "workflow_type": workflow_type,
+                    "workflow_name": workflow_name,
                     "connection_type": "websocket"
                 },
                 "timestamp": datetime.utcnow().isoformat()
@@ -700,7 +700,7 @@ class SimpleTransport:
                 await self.handle_user_input_from_api(
                     chat_id=chat_id,
                     user_id=user_id,
-                    workflow_type=workflow_type,
+                    workflow_name=workflow_name,
                     message=None
                 )
             except Exception as e:
@@ -726,16 +726,16 @@ class SimpleTransport:
                             from core.workflow.init_registry import get_workflow_handler
                             
                             # Determine workflow type from message or use default
-                            workflow_type = message_data.get("workflow_type", "chat")
+                            workflow_name = message_data.get("workflow_name", "chat")
                             
                             # Process through workflow handler
-                            workflow_handler = get_workflow_handler(workflow_type)
+                            workflow_handler = get_workflow_handler(workflow_name)
                             if workflow_handler:
                                 try:
                                     result = await self.handle_user_input_from_api(
                                         chat_id=chat_id,
                                         user_id=user_id,
-                                        workflow_type=workflow_type,
+                                        workflow_name=workflow_name,
                                         message=user_input
                                     )
                                     
@@ -815,7 +815,7 @@ class SimpleTransport:
         self, 
         chat_id: str, 
         user_id: Optional[str], 
-        workflow_type: str, 
+        workflow_name: str, 
         message: Optional[str]
     ) -> Dict[str, Any]:
         """
@@ -835,7 +835,7 @@ class SimpleTransport:
                 )
             else:
                 # For auto-start without user input, just log
-                logger.info(f"🚀 Starting workflow '{workflow_type}' for {chat_id} without initial user message")
+                logger.info(f"🚀 Starting workflow '{workflow_name}' for {chat_id} without initial user message")
             
             # Create session if it doesn't exist, with resume capability
             if chat_id not in self.connections:
@@ -851,9 +851,9 @@ class SimpleTransport:
             
             # Integrate with actual workflow system
             if message:
-                logger.info(f"🚀 Starting workflow '{workflow_type}' for message: {message[:50]}...")
+                logger.info(f"🚀 Starting workflow '{workflow_name}' for message: {message[:50]}...")
             else:
-                logger.info(f"🚀 Starting workflow '{workflow_type}' with auto-start (no initial message)")
+                logger.info(f"🚀 Starting workflow '{workflow_name}' with auto-start (no initial message)")
             
             # Send status update
             await self.send_status(
@@ -865,9 +865,9 @@ class SimpleTransport:
             # Get the actual workflow handler and execute it
             from core.workflow.init_registry import get_workflow_handler
             
-            workflow_handler = get_workflow_handler(workflow_type)
+            workflow_handler = get_workflow_handler(workflow_name)
             if not workflow_handler:
-                error_msg = f"Workflow '{workflow_type}' not found in registry"
+                error_msg = f"Workflow '{workflow_name}' not found in registry"
                 logger.error(f"❌ {error_msg}")
                 await self.send_error(
                     error_msg,
@@ -877,7 +877,7 @@ class SimpleTransport:
                 return {
                     "status": "error",
                     "message": error_msg,
-                    "workflow_type": workflow_type
+                    "workflow_name": workflow_name
                 }
             
             # Execute the workflow with proper parameters
@@ -886,7 +886,7 @@ class SimpleTransport:
                 enterprise_id = getattr(self, 'current_enterprise_id', 'default')
                 
                 # Log workflow start to agent_chat.log
-                chat_logger.info(f"WORKFLOW_START | Chat: {chat_id} | Workflow: {workflow_type} | User: {user_id or 'unknown'} | HasMessage: {message is not None}")
+                chat_logger.info(f"WORKFLOW_START | Chat: {chat_id} | Workflow: {workflow_name} | User: {user_id or 'unknown'} | HasMessage: {message is not None}")
                 
                 result = await workflow_handler(
                     enterprise_id=enterprise_id,
@@ -895,10 +895,10 @@ class SimpleTransport:
                     initial_message=message
                 )
                 
-                logger.info(f"✅ Workflow '{workflow_type}' completed successfully")
+                logger.info(f"✅ Workflow '{workflow_name}' completed successfully")
                 
                 # Log workflow completion to agent_chat.log
-                chat_logger.info(f"WORKFLOW_COMPLETE | Chat: {chat_id} | Workflow: {workflow_type} | Result: {str(result)[:100] if result else 'None'}")
+                chat_logger.info(f"WORKFLOW_COMPLETE | Chat: {chat_id} | Workflow: {workflow_name} | Result: {str(result)[:100] if result else 'None'}")
                 
                 # Send completion status
                 await self.send_status(
@@ -909,7 +909,7 @@ class SimpleTransport:
                 
                 return {
                     "status": "processed",
-                    "workflow_type": workflow_type,
+                    "workflow_name": workflow_name,
                     "message_id": f"{chat_id}_{int(time.time())}",
                     "result": result if result else "completed"
                 }
@@ -919,7 +919,7 @@ class SimpleTransport:
                 logger.error(f"❌ {error_msg}", exc_info=True)
                 
                 # Log workflow error to agent_chat.log
-                chat_logger.error(f"WORKFLOW_ERROR | Chat: {chat_id} | Workflow: {workflow_type} | Error: {str(workflow_error)[:200]}")
+                chat_logger.error(f"WORKFLOW_ERROR | Chat: {chat_id} | Workflow: {workflow_name} | Error: {str(workflow_error)[:200]}")
                 
                 await self.send_error(
                     error_msg,
@@ -930,7 +930,7 @@ class SimpleTransport:
                 return {
                     "status": "error",
                     "message": error_msg,
-                    "workflow_type": workflow_type
+                    "workflow_name": workflow_name
                 }
             
         except Exception as e:
@@ -947,7 +947,7 @@ class SimpleTransport:
             return {
                 "status": "error", 
                 "message": error_msg,
-                "workflow_type": workflow_type
+                "workflow_name": workflow_name
             }
 
     # ==================================================================================

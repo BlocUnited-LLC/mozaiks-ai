@@ -19,7 +19,7 @@ function App() {
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/chat/:enterpriseId" element={<ChatPage />} />
           <Route path="/enterprise/:enterpriseId" element={<ChatPage />} />
-          <Route path="/enterprise/:enterpriseId/:workflowType" element={<ChatPage />} />
+          <Route path="/enterprise/:enterpriseId/:workflowname" element={<ChatPage />} />
           
           {/* Catch-all route redirects to main chat */}
           <Route path="*" element={<ChatPage />} />

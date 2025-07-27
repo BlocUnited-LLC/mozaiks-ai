@@ -7,14 +7,14 @@ export class ApiAdapter {
     throw new Error('sendMessage must be implemented');
   }
 
-  async sendMessageToWorkflow(message, enterpriseId, userId, workflowType = null, chatId = null) {
+  async sendMessageToWorkflow(message, enterpriseId, userId, workflowname = null, chatId = null) {
     // Use dynamic default workflow type
-    const actualWorkflowType = workflowType || workflowConfig.getDefaultWorkflow();
-    console.log(`Sending message to workflow: ${actualWorkflowType}`);
+    const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
+    console.log(`Sending message to workflow: ${actualworkflowname}`);
     throw new Error('sendMessageToWorkflow must be implemented');
   }
 
-  createWebSocketConnection(_enterpriseId, _userId, _callbacks, _workflowType = null, _chatId = null) {
+  createWebSocketConnection(_enterpriseId, _userId, _callbacks, _workflowname = null, _chatId = null) {
     throw new Error('createWebSocketConnection must be implemented');
   }
 
@@ -26,11 +26,11 @@ export class ApiAdapter {
     throw new Error('uploadFile must be implemented');
   }
 
-  async getWorkflowTransport(_workflowType) {
+  async getWorkflowTransport(_workflowname) {
     throw new Error('getWorkflowTransport must be implemented');
   }
 
-  async startChat(_enterpriseId, _workflowType, _userId) {
+  async startChat(_enterpriseId, _workflowname, _userId) {
     throw new Error('startChat must be implemented');
   }
 }
@@ -48,9 +48,9 @@ export class WebSocketApiAdapter extends ApiAdapter {
     return { success: true };
   }
 
-  async sendMessageToWorkflow(message, enterpriseId, userId, workflowType = null, chatId = null) {
+  async sendMessageToWorkflow(message, enterpriseId, userId, workflowname = null, chatId = null) {
     // Use dynamic default workflow type
-    const actualWorkflowType = workflowType || workflowConfig.getDefaultWorkflow();
+    const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     
     if (!chatId) {
       console.error('Chat ID is required for sending message to workflow');
@@ -63,7 +63,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           message, 
-          workflow_type: actualWorkflowType,
+          workflow_name: actualworkflowname,
           enterprise_id: enterpriseId,
           user_id: userId 
         })
@@ -83,8 +83,8 @@ export class WebSocketApiAdapter extends ApiAdapter {
     }
   }
 
-  createWebSocketConnection(enterpriseId, userId, callbacks = {}, workflowType = null, chatId = null) {
-    const actualWorkflowType = workflowType || workflowConfig.getDefaultWorkflow();
+  createWebSocketConnection(enterpriseId, userId, callbacks = {}, workflowname = null, chatId = null) {
+    const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     
     if (!chatId) {
       console.error('Chat ID is required for WebSocket connection');
@@ -92,7 +92,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
     }
     
     const wsBase = this.config.wsUrl || this.config.api?.wsUrl;
-    const wsUrl = `${wsBase}/ws/${actualWorkflowType}/${enterpriseId}/${chatId}/${userId}`;
+    const wsUrl = `${wsBase}/ws/${actualworkflowname}/${enterpriseId}/${chatId}/${userId}`;
     console.log(`🔗 Connecting to WebSocket: ${wsUrl}`);
     const socket = new WebSocket(wsUrl);
 
@@ -192,9 +192,9 @@ export class WebSocketApiAdapter extends ApiAdapter {
     return { success: false, error: 'Upload failed' };
   }
 
-  async getWorkflowTransport(workflowType) {
+  async getWorkflowTransport(workflowname) {
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/workflows/${workflowType}/transport`);
+      const response = await fetch(`${this.config.baseUrl}/api/workflows/${workflowname}/transport`);
       if (response.ok) {
         return await response.json();
       }
@@ -204,11 +204,11 @@ export class WebSocketApiAdapter extends ApiAdapter {
     return null;
   }
 
-  async startChat(enterpriseId, workflowType, userId) {
-    const actualWorkflowType = workflowType || workflowConfig.getDefaultWorkflow();
+  async startChat(enterpriseId, workflowname, userId) {
+    const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/chats/${enterpriseId}/${actualWorkflowType}/start`, {
+      const response = await fetch(`${this.config.baseUrl}/api/chats/${enterpriseId}/${actualworkflowname}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: userId })
@@ -255,9 +255,9 @@ export class RestApiAdapter extends ApiAdapter {
     return { success: false, error: 'Failed to send message' };
   }
 
-  async sendMessageToWorkflow(message, enterpriseId, userId, workflowType = null, chatId = null) {
+  async sendMessageToWorkflow(message, enterpriseId, userId, workflowname = null, chatId = null) {
     // Use dynamic default workflow type
-    const actualWorkflowType = workflowType || workflowConfig.getDefaultWorkflow();
+    const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     
     if (!chatId) {
       console.error('Chat ID is required for sending message to workflow');
@@ -270,7 +270,7 @@ export class RestApiAdapter extends ApiAdapter {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           message, 
-          workflow_type: actualWorkflowType,
+          workflow_name: actualworkflowname,
           enterprise_id: enterpriseId,
           user_id: userId 
         })
@@ -333,9 +333,9 @@ export class RestApiAdapter extends ApiAdapter {
     return { success: false, error: 'Upload failed' };
   }
 
-  async getWorkflowTransport(workflowType) {
+  async getWorkflowTransport(workflowname) {
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/workflows/${workflowType}/transport`);
+      const response = await fetch(`${this.config.baseUrl}/api/workflows/${workflowname}/transport`);
       if (response.ok) {
         return await response.json();
       }
@@ -345,11 +345,11 @@ export class RestApiAdapter extends ApiAdapter {
     return null;
   }
 
-  async startChat(enterpriseId, workflowType, userId) {
-    const actualWorkflowType = workflowType || workflowConfig.getDefaultWorkflow();
+  async startChat(enterpriseId, workflowname, userId) {
+    const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/chats/${enterpriseId}/${actualWorkflowType}/start`, {
+      const response = await fetch(`${this.config.baseUrl}/api/chats/${enterpriseId}/${actualworkflowname}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: userId })

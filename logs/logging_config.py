@@ -128,7 +128,7 @@ _token_kw       = ['token_tracking', 'TOKEN', 'cost', 'usage', 'openai', 'model_
 _component_kw   = ['component', 'manifest', 'artifact', 'inline', 'ui_component', 
                    'component_loading', 'workflow_component']
 _workflow_kw    = ['workflow', 'generator', 'orchestration', 'agent_handoff', 
-                   'workflow_execution', 'workflow_type']
+                   'workflow_execution', 'workflow_name']
 _event_kw       = ['simple_event', 'route_to_artifact', 'route_to_chat', 'ui_tool_action',
                    'event_processing', 'event_type']
 
@@ -311,13 +311,13 @@ def log_chat_interaction(
     chat_id: str,
     agent_name: str,
     message: str,
-    workflow_type: str,
+    workflow_name: str,
     level: str = "INFO",
 ) -> None:
     logger  = get_chat_logger("interaction")
     log_fn  = getattr(logger, level.lower())
     snippet = message[:200] + ("…" if len(message) > 200 else "")
-    log_fn("💬 [%s] %s | %s: %s", workflow_type, chat_id, agent_name, snippet)
+    log_fn("💬 [%s] %s | %s: %s", workflow_name, chat_id, agent_name, snippet)
 
 def log_business_event(
     *,
@@ -484,11 +484,11 @@ def get_transport_logger(transport_type: str | None = None, chat_id: str | None 
     ctx.update(context)
     return get_context_logger('transport', **ctx)
 
-def get_workflow_logger(workflow_type: str | None = None, chat_id: str | None = None, enterprise_id: str | None = None, **context):
+def get_workflow_logger(workflow_name: str | None = None, chat_id: str | None = None, enterprise_id: str | None = None, **context):
     """Get workflow-specific logger with context"""
     ctx = {}
-    if workflow_type:
-        ctx['workflow_type'] = workflow_type
+    if workflow_name:
+        ctx['workflow_name'] = workflow_name
     if chat_id:
         ctx['chat_id'] = chat_id
     if enterprise_id:
@@ -496,23 +496,23 @@ def get_workflow_logger(workflow_type: str | None = None, chat_id: str | None = 
     ctx.update(context)
     return get_context_logger('workflow', **ctx)
 
-def get_agent_logger(agent_name: str | None = None, workflow_type: str | None = None, **context):
+def get_agent_logger(agent_name: str | None = None, workflow_name: str | None = None, **context):
     """Get agent-specific logger with context"""
     ctx = {}
     if agent_name:
         ctx['agent_name'] = agent_name
-    if workflow_type:
-        ctx['workflow_type'] = workflow_type
+    if workflow_name:
+        ctx['workflow_name'] = workflow_name
     ctx.update(context)
     return get_context_logger('agent', **ctx)
 
-def get_component_logger(component_name: str | None = None, workflow_type: str | None = None, **context):
+def get_component_logger(component_name: str | None = None, workflow_name: str | None = None, **context):
     """Get UI component logger with context"""
     ctx = {}
     if component_name:
         ctx['component_name'] = component_name
-    if workflow_type:
-        ctx['workflow_type'] = workflow_type
+    if workflow_name:
+        ctx['workflow_name'] = workflow_name
     ctx.update(context)
     return get_context_logger('component', **ctx)
 

@@ -71,11 +71,11 @@ class ToolConfig:
 class WorkflowToolRegistry:
     """Central registry for workflow tools with timing control"""
     
-    def __init__(self, workflow_type: str):
-        self.workflow_type = workflow_type
+    def __init__(self, workflow_name: str):
+        self.workflow_name = workflow_name
         self.agent_tools: Dict[str, List[ToolConfig]] = {}
         self.lifecycle_tools: Dict[ToolTrigger, List[ToolConfig]] = {}
-        self.config_path = Path("workflows") / workflow_type / "workflow.json"
+        self.config_path = Path("workflows") / workflow_name / "workflow.json"
         
     def load_configuration(self):
         """Load tool configuration from workflow.json"""
@@ -113,7 +113,7 @@ class WorkflowToolRegistry:
                     self.lifecycle_tools[trigger_enum].append(tool)
                     logger.info(f"📌 Registered lifecycle tool '{tool_name}' for trigger '{trigger_value}'")
                     
-            logger.info(f"📋 Loaded configuration for workflow '{self.workflow_type}': {len(self.agent_tools)} agent mappings, {len(self.lifecycle_tools)} lifecycle triggers")
+            logger.info(f"📋 Loaded configuration for workflow '{self.workflow_name}': {len(self.agent_tools)} agent mappings, {len(self.lifecycle_tools)} lifecycle triggers")
             
         except Exception as e:
             logger.error(f"❌ Failed to load workflow configuration: {e}")

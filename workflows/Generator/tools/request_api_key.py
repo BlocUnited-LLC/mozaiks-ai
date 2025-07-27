@@ -22,7 +22,7 @@ async def emit_ui_tool_event(
     tool_id: str,
     payload: Dict[str, Any],
     event_id: Optional[str] = None,
-    workflow_type: str = "generator"
+    workflow_name: str = "generator"
 ) -> str:
     """
     Core function to emit UI tool events to the frontend.
@@ -45,7 +45,7 @@ async def emit_ui_tool_event(
         "type": "ui_tool_event",
         "toolId": tool_id,
         "eventId": event_id,
-        "workflowType": workflow_type,
+        "workflowname": workflow_name,
         "payload": payload,
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -100,7 +100,7 @@ async def request_api_key(
     label: Optional[str] = None,
     placeholder: Optional[str] = None,
     required: bool = True,
-    workflow_type: str = "generator"
+    workflow_name: str = "generator"
 ) -> Dict[str, Any]:
     """
     AG2 tool function to request an API key from the user via UI.
@@ -114,7 +114,7 @@ async def request_api_key(
         label: Custom label for the input field
         placeholder: Custom placeholder text
         required: Whether the API key is required
-        workflow_type: The workflow type requesting the key
+        workflow_name: The workflow type requesting the key
         
     Returns:
         Dict containing the API key response data
@@ -137,7 +137,7 @@ async def request_api_key(
     event_id = await emit_ui_tool_event(
         tool_id="agent_api_key_input",
         payload=payload,
-        workflow_type=workflow_type
+        workflow_name=workflow_name
     )
     
     # Wait for user response

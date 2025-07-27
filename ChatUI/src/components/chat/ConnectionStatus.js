@@ -10,7 +10,7 @@ function ConnectionStatus({
   transportType, 
   error, 
   onRetry, 
-  workflowType,
+  workflowName,
   className = '' 
 }) {
   const getStatusIcon = () => {
@@ -67,9 +67,6 @@ function ConnectionStatus({
           <span className="status-text">{getStatusText()}</span>
           {transportType && (
             <span className="transport-type">via {getTransportDisplay()}</span>
-          )}
-          {workflowType && (
-            <span className="workflow-type">({workflowType})</span>
           )}
         </div>
 

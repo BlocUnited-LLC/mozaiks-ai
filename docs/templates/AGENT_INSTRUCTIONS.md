@@ -235,7 +235,7 @@ Always include metadata and clear file descriptions.
 ## LLM Generation Prompt
 
 ```
-Create an agent for a {WORKFLOW_TYPE} workflow.
+Create an agent for a {workflow_name} workflow.
 
 Agent Role: {ROLE_DESCRIPTION}
 Capabilities Needed: {UI_CAPABILITIES}

@@ -653,7 +653,7 @@ class TestMyTool:
 ## LLM Generation Prompt
 
 ```
-Create a GroupchatTool for a {WORKFLOW_TYPE} workflow.
+Create a GroupchatTool for a {workflow_name} workflow.
 
 Tool Purpose: {TOOL_DESCRIPTION}
 Component Handlers: {COMPONENT_RESPONSE_TYPES}

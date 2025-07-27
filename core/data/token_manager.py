@@ -120,10 +120,10 @@ class TokenManager:
     4. finalize_conversation() - Complete workflow and handle token deduction
     """
 
-    def __init__(self, chat_id: str, enterprise_id: str, workflow_type: str, user_id: Optional[str] = None):
+    def __init__(self, chat_id: str, enterprise_id: str, workflow_name: str, user_id: Optional[str] = None):
         self.chat_id = chat_id
         self.enterprise_id = enterprise_id
-        self.workflow_type = workflow_type
+        self.workflow_name = workflow_name
         self.user_id = user_id
         
         # Core usage tracking (always tracked for analytics)
@@ -174,7 +174,7 @@ class TokenManager:
         log_business_event(
             event_type="token_manager_init",
             description=f"TokenManager initialized for chat {chat_id}",
-            context={"chat_id": self.chat_id, "workflow": self.workflow_type, "session_id": self.session_id},
+            context={"chat_id": self.chat_id, "workflow": self.workflow_name, "session_id": self.session_id},
         )
 
     def _get_app_id(self) -> str:
@@ -314,7 +314,7 @@ class TokenManager:
                     "is_free_trial": self.is_free_trial,
                     "available_tokens": self.available_tokens,
                     "chat_id": self.chat_id,
-                    "workflow_type": self.workflow_type
+                    "workflow_name": self.workflow_name
                 }
             )
             
@@ -577,7 +577,7 @@ class TokenManager:
             await mongodb_manager.save_session_usage(
                 chat_id=self.chat_id,
                 enterprise_id=self.enterprise_id,
-                workflow_type=self.workflow_type,
+                workflow_name=self.workflow_name,
                 session_data=session_data,
                 agents=agent_names
             )
@@ -982,7 +982,7 @@ class TokenManager:
                     "$set": {
                         "is_complete": True,
                         "completed_at": datetime.utcnow(),
-                        f"{self.workflow_type}_status": 1  # Complete status
+                        f"{self.workflow_name}_status": 1  # Complete status
                     }
                 }
             )
@@ -1011,7 +1011,7 @@ class TokenManager:
                         "enterprise_id": self.enterprise_id,
                         "trial_tokens_used": self.session_usage["total_tokens"],
                         "trial_cost_incurred": self.session_usage["total_cost"],
-                        "workflow_type": self.workflow_type
+                        "workflow_name": self.workflow_name
                     }
                 )
                 
@@ -1058,7 +1058,7 @@ class TokenManager:
                         "tokens_deducted": tokens_to_deduct,
                         "cost_deducted": cost_to_deduct,
                         "remaining_tokens": self.available_tokens,
-                        "workflow_type": self.workflow_type
+                        "workflow_name": self.workflow_name
                     }
                 )
                 
@@ -1088,7 +1088,7 @@ class TokenManager:
         return {
             "session_id": self.session_id,
             "chat_id": self.chat_id,
-            "workflow_type": self.workflow_type,
+            "workflow_name": self.workflow_name,
             "is_free_trial": self.is_free_trial,
             "available_tokens": self.available_tokens,
             "session_usage": self.session_usage,

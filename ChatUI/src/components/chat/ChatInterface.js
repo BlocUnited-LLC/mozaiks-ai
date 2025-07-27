@@ -32,7 +32,9 @@ const ModernChatInterface = ({
   onArtifactToggle,
   connectionStatus,
   transportType,
-  workflowType,
+  workflowName,
+  startupMode,
+  initialMessageToUser,
   onRetry
 }) => {
   const [message, setMessage] = useState('');
@@ -136,19 +138,33 @@ const ModernChatInterface = ({
           <div className="flex-1">
             <div className="cosmic-module-header">
               <span className="text-cyan-300">🚀</span>
-              Command Center Interface
+              {workflowName ? workflowName.charAt(0).toUpperCase() + workflowName.slice(1) : 'Command Center Interface'}
             </div>
-            {/* Phase Status */}
-            <div className="mt-2">
-              <div className="relative px-3 py-1.5 rounded-lg bg-gradient-to-r from-fuchsia-500/20 to-purple-500/20 border border-fuchsia-500/30 flex items-center justify-start space-x-2 backdrop-blur-sm w-fit">
-                <div className="absolute inset-0 bg-gradient-to-r from-fuchsia-500/10 to-purple-500/10 rounded-lg blur-sm"></div>
-                {/* Animated pulse dot - aligned to left */}
-                <div className="relative w-2 h-2 bg-fuchsia-400 rounded-full animate-pulse shadow-sm shadow-fuchsia-400/50 flex-shrink-0"></div>
-                <span className="relative text-fuchsia-300 text-xs font-semibold tracking-wide oxanium text-left">
-                  Phase 1: AI Setup
-                </span>
+            {/* Connection Status under workflow title */}
+            {connectionStatus && (
+              <div className="mt-1 w-fit">
+                <ConnectionStatus
+                  status={connectionStatus}
+                  transportType={transportType}
+                  workflowName={workflowName}
+                  onRetry={onRetry}
+                  className="text-xs"
+                />
               </div>
-            </div>
+            )}
+            {/* Initial Message - only show for UserDriven workflows and if message exists */}
+            {startupMode === 'UserDriven' && initialMessageToUser && (
+              <div className="mt-2 flex justify-center">
+                <div className="relative px-3 py-1.5 rounded-lg bg-gradient-to-r from-fuchsia-500/20 to-purple-500/20 border border-fuchsia-500/30 flex items-center justify-center space-x-2 backdrop-blur-sm max-w-md">
+                  <div className="absolute inset-0 bg-gradient-to-r from-fuchsia-500/10 to-purple-500/10 rounded-lg blur-sm"></div>
+                  {/* Animated pulse dot - aligned to left */}
+                  <div className="relative w-2 h-2 bg-fuchsia-400 rounded-full animate-pulse shadow-sm shadow-fuchsia-400/50 flex-shrink-0"></div>
+                  <span className="relative text-fuchsia-300 text-xs font-semibold tracking-wide oxanium text-center">
+                    {initialMessageToUser}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
           
           {/* Right side: Artifact Canvas Toggle Button and Connection Status */}
@@ -170,28 +186,17 @@ const ModernChatInterface = ({
                 */}
                 <button
                   onClick={onArtifactToggle}
-                  className="group relative p-2 rounded-lg bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-400/20 hover:border-cyan-400/40 transition-all duration-300 backdrop-blur-sm"
+                  className="group relative p-3 rounded-lg bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-400/20 hover:border-cyan-400/40 transition-all duration-300 backdrop-blur-sm"
                   title="Toggle Artifact Canvas"
                 >
                   <img 
                     src="/mozaik_logo.svg" 
-                    className="w-8 h-8 opacity-70 group-hover:opacity-100 transition-all duration-300 group-hover:scale-105" 
+                    className="w-10 h-10 opacity-70 group-hover:opacity-100 transition-all duration-300 group-hover:scale-105" 
                     alt="Artifact Canvas" 
                   />
                   <div className="absolute inset-0 bg-cyan-400/10 rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
                 </button>
               </>
-            )}
-            
-            {/* Connection Status - positioned under the Mozaik logo */}
-            {connectionStatus && (
-              <ConnectionStatus
-                status={connectionStatus}
-                transportType={transportType}
-                workflowType={workflowType}
-                onRetry={onRetry}
-                className="connection-status-compact"
-              />
             )}
           </div>
         </div>

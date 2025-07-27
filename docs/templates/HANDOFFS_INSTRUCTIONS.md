@@ -406,7 +406,7 @@ def content_needs_revision(context: WorkflowContext) -> bool:
 ## LLM Generation Prompt
 
 ```
-Create handoff logic for a {WORKFLOW_TYPE} workflow.
+Create handoff logic for a {workflow_name} workflow.
 
 Agents: {AGENT_LIST}
 Workflow Flow: {FLOW_DESCRIPTION}

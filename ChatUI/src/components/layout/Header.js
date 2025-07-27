@@ -3,10 +3,8 @@ import "./header-styles.css";
 
 const Header = ({ 
   user = null, 
-  onCommunityClick = () => {}, 
+  workflowName = null,
   onNotificationClick = () => {},
-  currentApp = "My Chat Assistant",
-  currentPhase = "Phase 1: AI Setup",
   onMyAppsClick = () => {},
   onDiscoverClick = () => {}
 }) => {
@@ -20,7 +18,7 @@ const Header = ({
   const currentUser = user || defaultUser;
   const [isProfileDropdownOpen, setIsProfileDropdownOpen] = useState(false);
   const [isNotificationDropdownOpen, setIsNotificationDropdownOpen] = useState(false);
-  const [notificationCount, setNotificationCount] = useState(3); // Mock notification count
+  const [notificationCount, setNotificationCount] = useState(3); // TODO: Mock notification count
   const [isScrolled, setIsScrolled] = useState(false);
   const dropdownRef = useRef(null);
 
@@ -118,20 +116,16 @@ const Header = ({
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
-              <span className="oxanium">My Apps</span>
+              <span className="oxanium">My Workflows</span>
             </button>
             
             <svg className="w-3 h-3 text-cyan-500/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
             
-            <span className="oxanium text-cyan-300">NeuroSync</span>
-            
-            <svg className="w-3 h-3 text-cyan-500/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-            
-            <span className="oxanium text-cyan-200 font-medium">Command Center Interface</span>
+            <span className="oxanium text-cyan-200 font-medium">
+              {workflowName ? workflowName.charAt(0).toUpperCase() + workflowName.slice(1) : 'Command Center Interface'}
+            </span>
           </div>
         </div>
 
@@ -286,7 +280,7 @@ const Header = ({
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
-            <span className="text-xs oxanium">Back to Control</span>
+            <span className="text-xs oxanium">Back to Workflows</span>
           </button>
           {/* Mobile Discover Button */}
           <button

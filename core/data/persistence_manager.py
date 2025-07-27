@@ -59,7 +59,7 @@ class PersistenceManager:
     # ==================================================================================
 
     async def update_workflow_status(self, chat_id: str, enterprise_id: Union[str, ObjectId], 
-                                   status: int, workflow_type: str = "default") -> bool:
+                                   status: int, workflow_name: str = "default") -> bool:
         """Update workflow status (replaces update_CreationChatStatus)"""
         try:
             eid = await self._validate_enterprise_exists(enterprise_id)
@@ -68,14 +68,14 @@ class PersistenceManager:
                 {"chat_id": chat_id, "enterprise_id": eid},
                 {
                     "$set": {
-                        f"{workflow_type}_status": status,
+                        f"{workflow_name}_status": status,
                         "last_updated": datetime.utcnow()
                     }
                 },
                 upsert=True
             )
             
-            logger.info(f"📊 Updated {workflow_type} status to {status} for chat {chat_id}")
+            logger.info(f"📊 Updated {workflow_name} status to {status} for chat {chat_id}")
             return True
             
         except Exception as e:
@@ -83,7 +83,7 @@ class PersistenceManager:
             return False
 
     async def update_conversation(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                                sender: str, content: str, workflow_type: str = "default") -> bool:
+                                sender: str, content: str, workflow_name: str = "default") -> bool:
         """Update conversation with new message (replaces update_ConceptCreationConvo)"""
         try:
             eid = await self._validate_enterprise_exists(enterprise_id)
@@ -103,13 +103,13 @@ class PersistenceManager:
             await self.workflows_collection.update_one(
                 {"chat_id": chat_id, "enterprise_id": eid},
                 {
-                    "$push": {f"{workflow_type}_conversation": message},
+                    "$push": {f"{workflow_name}_conversation": message},
                     "$set": {"last_updated": datetime.utcnow()}
                 },
                 upsert=True
             )
             
-            logger.info(f"💬 Added message from {sender} to {workflow_type} conversation")
+            logger.info(f"💬 Added message from {sender} to {workflow_name} conversation")
             return True
             
         except Exception as e:
@@ -117,7 +117,7 @@ class PersistenceManager:
             return False
 
     async def save_chat_state(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                            state_data: Dict[str, Any], workflow_type: str = "default") -> bool:
+                            state_data: Dict[str, Any], workflow_name: str = "default") -> bool:
         """Save current chat state (simplified from complex AG2 state)"""
         try:
             eid = await self._validate_enterprise_exists(enterprise_id)
@@ -137,14 +137,14 @@ class PersistenceManager:
                 {"chat_id": chat_id, "enterprise_id": eid},
                 {
                     "$set": {
-                        f"{workflow_type}_state": chat_state,
+                        f"{workflow_name}_state": chat_state,
                         "last_updated": datetime.utcnow()
                     }
                 },
                 upsert=True
             )
             
-            logger.info(f"💾 Saved chat state for {workflow_type} workflow")
+            logger.info(f"💾 Saved chat state for {workflow_name} workflow")
             return True
             
         except Exception as e:
@@ -152,18 +152,18 @@ class PersistenceManager:
             return False
 
     async def get_workflow_status(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                                workflow_type: str = "default") -> Optional[int]:
+                                workflow_name: str = "default") -> Optional[int]:
         """Get workflow status (replaces get_creation_chat_status)"""
         try:
             eid = await self._validate_enterprise_exists(enterprise_id)
             
             workflow = await self.workflows_collection.find_one(
                 {"chat_id": chat_id, "enterprise_id": eid},
-                {f"{workflow_type}_status": 1}
+                {f"{workflow_name}_status": 1}
             )
             
             if workflow:
-                return workflow.get(f"{workflow_type}_status", 0)
+                return workflow.get(f"{workflow_name}_status", 0)
             
             return 0
             
@@ -244,7 +244,7 @@ class PersistenceManager:
             return False
 
     async def display_token_usage(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                                workflow_type: str = "default") -> Dict[str, Any]:
+                                workflow_name: str = "default") -> Dict[str, Any]:
         """Display token usage statistics"""
         try:
             eid = await self._validate_enterprise_exists(enterprise_id)
@@ -280,7 +280,7 @@ class PersistenceManager:
             return {"total_tokens": 0, "total_cost": 0.0, "session_count": 0, "sessions": []}
 
     async def save_session_usage(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                               workflow_type: str, session_data: Dict[str, Any], 
+                               workflow_name: str, session_data: Dict[str, Any], 
                                agents: List[str]) -> bool:
         """
         NEW SCHEMA: Save session usage with per-agent tracking and workflow aggregates
@@ -308,7 +308,7 @@ class PersistenceManager:
                     session_totals.update(agent_data)
             
             # Update workflow chat state with new session
-            chat_state_field = f"{workflow_type}ChatState"
+            chat_state_field = f"{workflow_name}ChatState"
             session_path = f"{chat_state_field}.Sessions.{session_id}"
             
             # Step 1: Add/update this session
@@ -395,7 +395,7 @@ class PersistenceManager:
     # ==================================================================================
 
     async def finalize_conversation(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                                  final_status: int = 100, workflow_type: str = "default") -> bool:
+                                  final_status: int = 100, workflow_name: str = "default") -> bool:
         """Finalize conversation and mark as complete"""
         try:
             eid = await self._validate_enterprise_exists(enterprise_id)
@@ -404,7 +404,7 @@ class PersistenceManager:
                 {"chat_id": chat_id, "enterprise_id": eid},
                 {
                     "$set": {
-                        f"{workflow_type}_status": final_status,
+                        f"{workflow_name}_status": final_status,
                         "finalized_at": datetime.utcnow(),
                         "is_complete": True,
                         "last_updated": datetime.utcnow()
@@ -412,7 +412,7 @@ class PersistenceManager:
                 }
             )
             
-            logger.info(f"✅ Finalized {workflow_type} conversation with status {final_status}")
+            logger.info(f"✅ Finalized {workflow_name} conversation with status {final_status}")
             return True
             
         except Exception as e:
@@ -445,20 +445,20 @@ class PersistenceManager:
             return False
 
     async def send_chat_history(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                              workflow_type: str = "default", include_last: bool = True) -> List[Dict[str, Any]]:
+                              workflow_name: str = "default", include_last: bool = True) -> List[Dict[str, Any]]:
         """Get chat history for sending to client"""
         try:
             eid = await self._validate_enterprise_exists(enterprise_id)
             
             workflow = await self.workflows_collection.find_one(
                 {"chat_id": chat_id, "enterprise_id": eid},
-                {f"{workflow_type}_conversation": 1}
+                {f"{workflow_name}_conversation": 1}
             )
             
             if not workflow:
                 return []
             
-            conversation = workflow.get(f"{workflow_type}_conversation", [])
+            conversation = workflow.get(f"{workflow_name}_conversation", [])
             
             if not include_last and conversation:
                 conversation = conversation[:-1]
@@ -485,22 +485,22 @@ class PersistenceManager:
     # ==================================================================================
 
     async def can_resume_chat(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                            workflow_type: str = "default") -> bool:
+                            workflow_name: str = "default") -> bool:
         """Check if chat can be resumed (VE-style using status pattern)"""
         try:
             eid = await self._validate_enterprise_exists(enterprise_id)
             
             workflow = await self.workflows_collection.find_one(
                 {"chat_id": chat_id, "enterprise_id": eid},
-                {f"{workflow_type}_state": 1, f"{workflow_type}_status": 1, "is_complete": 1}
+                {f"{workflow_name}_state": 1, f"{workflow_name}_status": 1, "is_complete": 1}
             )
             
             if not workflow:
                 return False
             
             # VE pattern: Check status for resume logic (0 = can resume, 1+ = completed)
-            status = workflow.get(f"{workflow_type}_status", 0)
-            state = workflow.get(f"{workflow_type}_state", {})
+            status = workflow.get(f"{workflow_name}_status", 0)
+            state = workflow.get(f"{workflow_name}_state", {})
             is_complete = workflow.get("is_complete", False)
             
             # Can resume if status is 0 (in progress) and not marked complete
@@ -515,23 +515,23 @@ class PersistenceManager:
             return False
 
     async def resume_chat(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                        workflow_type: str = "default") -> Tuple[bool, Optional[Dict[str, Any]]]:
-        """Resume chat with VE-style state restoration using workflow_type"""
+                        workflow_name: str = "default") -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """Resume chat with VE-style state restoration using workflow_name"""
         try:
-            if not await self.can_resume_chat(chat_id, enterprise_id, workflow_type):
-                logger.info(f"❌ Cannot resume {workflow_type} chat {chat_id} - checking completion status")
+            if not await self.can_resume_chat(chat_id, enterprise_id, workflow_name):
+                logger.info(f"❌ Cannot resume {workflow_name} chat {chat_id} - checking completion status")
                 
                 # Check if workflow is already complete (VE pattern)
                 eid = await self._validate_enterprise_exists(enterprise_id)
                 workflow = await self.workflows_collection.find_one(
                     {"chat_id": chat_id, "enterprise_id": eid},
-                    {f"{workflow_type}_status": 1}
+                    {f"{workflow_name}_status": 1}
                 )
                 
                 if workflow:
-                    status = workflow.get(f"{workflow_type}_status", 0)
+                    status = workflow.get(f"{workflow_name}_status", 0)
                     if status >= 100:  # VE uses 100+ for completion
-                        logger.info(f"✅ {workflow_type.title()} workflow already completed with status {status}")
+                        logger.info(f"✅ {workflow_name.title()} workflow already completed with status {status}")
                         return False, {"already_complete": True, "status": status}
                 
                 return False, None
@@ -545,16 +545,16 @@ class PersistenceManager:
             if not workflow:
                 return False, None
             
-            # Get workflow-specific conversation history and state (using workflow_type)
-            conversation = workflow.get(f"{workflow_type}_conversation", [])
-            state = workflow.get(f"{workflow_type}_state", {})
-            status = workflow.get(f"{workflow_type}_status", 0)
+            # Get workflow-specific conversation history and state (using workflow_name)
+            conversation = workflow.get(f"{workflow_name}_conversation", [])
+            state = workflow.get(f"{workflow_name}_state", {})
+            status = workflow.get(f"{workflow_name}_status", 0)
             
             resume_data = {
                 "conversation": conversation,
                 "state": state,
                 "status": status,
-                "workflow_type": workflow_type,  # Include workflow_type in resume data
+                "workflow_name": workflow_name,  # Include workflow_name in resume data
                 "can_resume": True
             }
             
@@ -570,11 +570,11 @@ class PersistenceManager:
                 }
             )
             
-            logger.info(f"🔄 Resumed {workflow_type} chat {chat_id} with {len(conversation)} messages, status {status}")
+            logger.info(f"🔄 Resumed {workflow_name} chat {chat_id} with {len(conversation)} messages, status {status}")
             return True, resume_data
             
         except Exception as e:
-            logger.error(f"❌ Failed to resume {workflow_type} chat: {e}")
+            logger.error(f"❌ Failed to resume {workflow_name} chat: {e}")
             return False, None
 
     # ==================================================================================
@@ -671,7 +671,7 @@ class PersistenceManager:
             return None
 
     async def create_workflow_for_chat(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                                     concept_id: ObjectId, workflow_type: str,
+                                     concept_id: ObjectId, workflow_name: str,
                                      user_id: Optional[str] = None) -> Optional[ObjectId]:
         """Create new workflow with enhanced persistence structure"""
         try:
@@ -685,11 +685,11 @@ class PersistenceManager:
                 "chat_id": chat_id,
                 "enterprise_id": eid,
                 "concept_id": concept_id,
-                "workflow_type": workflow_type,
+                "workflow_name": workflow_name,
                 "user_id": user_id,
                 "created_at": datetime.utcnow(),
                 "last_updated": datetime.utcnow(),
-                f"{workflow_type}_state": {
+                f"{workflow_name}_state": {
                     "initialized": False,
                     "agents": [],
                     "current_speaker": None,
@@ -697,8 +697,8 @@ class PersistenceManager:
                     "iteration_count": 0,
                     "can_resume": True
                 },
-                f"{workflow_type}_conversation": [],
-                f"{workflow_type}_status": 0,
+                f"{workflow_name}_conversation": [],
+                f"{workflow_name}_status": 0,
                 "connection_state": "active",
                 "is_complete": False
             }

@@ -105,7 +105,7 @@ from core.data.token_manager import TokenManager
 token_manager = TokenManager(
     chat_id="unique_chat_id",
     enterprise_id="customer_enterprise_id", 
-    workflow_type="your_workflow_name",
+    workflow_name="your_workflow_name",
     user_id="optional_user_id"
 )
 

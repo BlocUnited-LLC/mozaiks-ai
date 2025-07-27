@@ -61,24 +61,24 @@ class DynamicArtifactManager {
 
   /**
    * Get artifact agent for current workflow
-   * @param {string} workflowType - The workflow type
+   * @param {string} workflowName - The workflow name
    * @returns {string|null} - The agent name that handles artifacts
    */
-  getArtifactAgent(workflowType) {
-    if (!workflowType) {
-      workflowType = workflowConfig.getDefaultWorkflow();
+  getArtifactAgent(workflowName) {
+    if (!workflowName) {
+      workflowName = workflowConfig.getDefaultWorkflow();
     }
-    return workflowConfig.getArtifactAgent(workflowType);
+    return workflowConfig.getArtifactAgent(workflowName);
   }
 
   /**
    * Check if message is from artifact agent
    * @param {Object} message - The chat message
-   * @param {string} workflowType - The workflow type
+   * @param {string} workflowName - The workflow name
    * @returns {boolean} - True if message is from artifact agent
    */
-  isFromArtifactAgent(message, workflowType) {
-    const artifactAgent = this.getArtifactAgent(workflowType);
+  isFromArtifactAgent(message, workflowName) {
+    const artifactAgent = this.getArtifactAgent(workflowName);
     return message.agentName === artifactAgent || message.sender === artifactAgent;
   }
 

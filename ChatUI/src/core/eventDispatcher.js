@@ -28,7 +28,7 @@ class EventDispatcher {
    */
   handleEvent(event, onResponse = null) {
     try {
-      const { toolId, payload = {}, eventId, workflowType } = event;
+      const { toolId, payload = {}, eventId, workflowName } = event;
 
       if (!toolId) {
         console.error('❌ EventDispatcher: Missing toolId in event', event);
@@ -52,7 +52,7 @@ class EventDispatcher {
         this.activeEvents.set(eventId, {
           toolId,
           payload,
-          workflowType,
+          workflowName,
           startTime: Date.now(),
           status: 'active'
         });
@@ -62,7 +62,7 @@ class EventDispatcher {
       this.eventHistory.push({
         toolId,
         eventId,
-        workflowType,
+        workflowName,
         timestamp: new Date().toISOString(),
         status: 'handled'
       });
@@ -90,7 +90,7 @@ class EventDispatcher {
         ...payload,
         toolId,
         eventId,
-        workflowType,
+        workflowName,
         metadata,
         onResponse: responseHandler,
       });

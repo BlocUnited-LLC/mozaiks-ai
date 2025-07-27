@@ -207,24 +207,24 @@ export class DynamicUIHandler {
   /**
    * Get workflow configuration from backend
    */
-  async getWorkflowConfig(workflowType = 'generator') {
-    const cacheKey = workflowType;
+  async getWorkflowConfig(workflowname = 'generator') {
+    const cacheKey = workflowname;
     
     if (this.workflowCache.has(cacheKey)) {
       return this.workflowCache.get(cacheKey);
     }
 
     try {
-      const response = await enterpriseApi.get(`/workflow/${workflowType}/config`);
+      const response = await enterpriseApi.get(`/workflow/${workflowname}/config`);
       const config = response.data;
       
       this.workflowCache.set(cacheKey, config);
-      console.log(`✅ Loaded workflow config for UI: ${workflowType}`);
+      console.log(`✅ Loaded workflow config for UI: ${workflowname}`);
       
       return config;
       
     } catch (error) {
-      console.error(`Failed to load workflow config: ${workflowType}`, error);
+      console.error(`Failed to load workflow config: ${workflowname}`, error);
       return { ui_capable_agents: [] };
     }
   }
@@ -232,9 +232,9 @@ export class DynamicUIHandler {
   /**
    * Get component definition from workflow config
    */
-  async getComponentDefinition(componentName, workflowType = 'generator') {
+  async getComponentDefinition(componentName, workflowname = 'generator') {
     try {
-      const config = await this.getWorkflowConfig(workflowType);
+      const config = await this.getWorkflowConfig(workflowname);
       
       // Search through ui_capable_agents for the component
       for (const agent of config.ui_capable_agents || []) {
@@ -248,7 +248,7 @@ export class DynamicUIHandler {
         }
       }
       
-      console.warn(`Component ${componentName} not found in workflow ${workflowType}`);
+      console.warn(`Component ${componentName} not found in workflow ${workflowname}`);
       return null;
       
     } catch (error) {
@@ -266,7 +266,7 @@ export class DynamicUIHandler {
     try {
       console.log('🎯 DynamicUIHandler: Processing UI tool event', eventData);
 
-      const { toolId, payload, eventId, workflowType } = eventData;
+      const { toolId, payload, eventId, workflowname } = eventData;
 
       if (!toolId) {
         console.error('❌ Missing toolId in UI tool event');
@@ -282,7 +282,7 @@ export class DynamicUIHandler {
             type: 'ui_tool_response',
             toolId,
             eventId,
-            workflowType,
+            workflowname,
             payload,
             response
           });

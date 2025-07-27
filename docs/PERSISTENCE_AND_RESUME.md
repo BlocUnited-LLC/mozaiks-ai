@@ -109,7 +109,7 @@ flowchart TD
   "enterprise_id": "enterprise_abc",
   "agent_configs": [...],
   "context_variables": {...},
-  "workflow_type": "Generator",
+  "workflow_name": "Generator",
   "last_updated": ISODate
 }
 ```

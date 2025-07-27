@@ -17,10 +17,10 @@ chat_logger = get_chat_logger("budget_capability")
 class BudgetCapability(ABC):
     """Abstract base class for budget management capabilities."""
     
-    def __init__(self, chat_id: str, enterprise_id: str, workflow_type: str, user_id: Optional[str] = None):
+    def __init__(self, chat_id: str, enterprise_id: str, workflow_name: str, user_id: Optional[str] = None):
         self.chat_id = chat_id
         self.enterprise_id = enterprise_id
-        self.workflow_type = workflow_type
+        self.workflow_name = workflow_name
         self.user_id = user_id
         self.enabled = True
     
@@ -62,8 +62,8 @@ class BudgetCapability(ABC):
 class CommercialBudgetCapability(BudgetCapability):
     """Commercial budget capability with full token management and free trials."""
     
-    def __init__(self, chat_id: str, enterprise_id: str, workflow_type: str, user_id: Optional[str] = None):
-        super().__init__(chat_id, enterprise_id, workflow_type, user_id)
+    def __init__(self, chat_id: str, enterprise_id: str, workflow_name: str, user_id: Optional[str] = None):
+        super().__init__(chat_id, enterprise_id, workflow_name, user_id)
         self.token_manager = None
         self.budget_info = {}
         
@@ -73,7 +73,7 @@ class CommercialBudgetCapability(BudgetCapability):
             # Import TokenManager only when commercial capability is used
             from ..data.token_manager import TokenManager
             
-            self.token_manager = TokenManager(self.chat_id, self.enterprise_id, self.workflow_type, self.user_id)
+            self.token_manager = TokenManager(self.chat_id, self.enterprise_id, self.workflow_name, self.user_id)
             self.budget_info = await self.token_manager.initialize_budget(self.user_id)
             
             chat_logger.info(f"💰 [COMMERCIAL] Budget initialized: {self.budget_info.get('budget_type', 'unknown')}")
@@ -222,7 +222,7 @@ class BudgetCapabilityFactory:
         mode: str,
         chat_id: str, 
         enterprise_id: str, 
-        workflow_type: str, 
+        workflow_name: str, 
         user_id: Optional[str] = None
     ) -> BudgetCapability:
         """Create budget capability based on mode.
@@ -231,14 +231,14 @@ class BudgetCapabilityFactory:
             mode: "commercial", "opensource", or "testing"
         """
         if mode == "commercial":
-            return CommercialBudgetCapability(chat_id, enterprise_id, workflow_type, user_id)
+            return CommercialBudgetCapability(chat_id, enterprise_id, workflow_name, user_id)
         elif mode == "opensource":
-            return OpenSourceBudgetCapability(chat_id, enterprise_id, workflow_type, user_id)
+            return OpenSourceBudgetCapability(chat_id, enterprise_id, workflow_name, user_id)
         elif mode == "testing":
-            return TestingBudgetCapability(chat_id, enterprise_id, workflow_type, user_id)
+            return TestingBudgetCapability(chat_id, enterprise_id, workflow_name, user_id)
         else:
             logger.warning(f"Unknown budget mode '{mode}', defaulting to testing")
-            return TestingBudgetCapability(chat_id, enterprise_id, workflow_type, user_id)
+            return TestingBudgetCapability(chat_id, enterprise_id, workflow_name, user_id)
 
 
 # Configuration - easily changeable for different deployment modes
@@ -247,11 +247,11 @@ from .config import get_budget_mode
 def get_budget_capability(
     chat_id: str, 
     enterprise_id: str, 
-    workflow_type: str, 
+    workflow_name: str, 
     user_id: Optional[str] = None
 ) -> BudgetCapability:
     """Get the appropriate budget capability for current configuration."""
     current_mode = get_budget_mode()
     return BudgetCapabilityFactory.create_capability(
-        current_mode, chat_id, enterprise_id, workflow_type, user_id
+        current_mode, chat_id, enterprise_id, workflow_name, user_id
     )

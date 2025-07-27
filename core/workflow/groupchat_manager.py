@@ -91,7 +91,7 @@ def create_core_response_tracking_hooks(
     budget_capability = None,
     agents = None,
     streaming_manager: Optional[AG2StreamingManager] = None,
-    workflow_type: str = "unknown",
+    workflow_name: str = "unknown",
     token_tracker = None
 ):
     """
@@ -104,7 +104,7 @@ def create_core_response_tracking_hooks(
         budget_capability: Modular budget capability for usage tracking
         agents: List of agents for token tracking
         streaming_manager: AG2 streaming manager for real-time updates
-        workflow_type: Type of workflow being executed
+        workflow_name: Type of workflow being executed
         token_tracker: AG2-native token tracker for usage monitoring
     """
 
@@ -281,7 +281,7 @@ async def _start_or_resume_group_chat(
     user_id: Optional[str] = None,
     initial_message: Optional[str] = None,
     max_turns: Optional[int] = None,
-    workflow_type: str = "unknown",
+    workflow_name: str = "unknown",
     context_variables: Optional[Any] = None,  # 🎯 ADD: ContextVariables for contextual UI agents
 ):
     """
@@ -296,25 +296,25 @@ async def _start_or_resume_group_chat(
     """
     
     # Start orchestration
-    chat_logger.info(f"Starting group chat orchestration for {workflow_type}")
+    chat_logger.info(f"Starting group chat orchestration for {workflow_name}")
     workflow_logger.info(f"Chat: {chat_id} | Enterprise: {enterprise_id}")
     
     orchestration_start_time = time.time()
     
-    # VE-style resume check using workflow_type
-    can_resume = await mongodb_manager.can_resume_chat(chat_id, enterprise_id, workflow_type)
+    # VE-style resume check using workflow_name
+    can_resume = await mongodb_manager.can_resume_chat(chat_id, enterprise_id, workflow_name)
     
     if can_resume:
-        chat_logger.info(f"🔄 Resumable {workflow_type} session found for {chat_id}")
+        chat_logger.info(f"🔄 Resumable {workflow_name} session found for {chat_id}")
         
-        # Load resume data with workflow_type
-        success, resume_data = await mongodb_manager.resume_chat(chat_id, enterprise_id, workflow_type)
+        # Load resume data with workflow_name
+        success, resume_data = await mongodb_manager.resume_chat(chat_id, enterprise_id, workflow_name)
         
         if success and resume_data:
             # Check if already complete (VE pattern)
             if resume_data.get("already_complete"):
                 status = resume_data.get("status", 0)
-                chat_logger.info(f"✅ {workflow_type.title()} workflow already completed with status {status}")
+                chat_logger.info(f"✅ {workflow_name.title()} workflow already completed with status {status}")
                 
                 # Send completion message to WebSocket if available (VE pattern)
                 if hasattr(manager, 'groupchat') and hasattr(manager.groupchat, 'agents'):
@@ -323,7 +323,7 @@ async def _start_or_resume_group_chat(
                     transport = SimpleTransport._get_instance()
                     if transport:
                         await transport.send_simple_text_message(
-                            f"{workflow_type.title()} workflow already completed successfully.",
+                            f"{workflow_name.title()} workflow already completed successfully.",
                             "system"
                         )
                 return
@@ -333,7 +333,7 @@ async def _start_or_resume_group_chat(
             state = resume_data.get("state", {})
             status = resume_data.get("status", 0)
             
-            chat_logger.info(f"🔄 Resuming {workflow_type} conversation with {len(conversation)} messages, status {status}")
+            chat_logger.info(f"🔄 Resuming {workflow_name} conversation with {len(conversation)} messages, status {status}")
             
             # Restore AG2 state if manager available
             if hasattr(manager, "groupchat") and conversation:
@@ -347,7 +347,7 @@ async def _start_or_resume_group_chat(
                     })
                 
                 manager.groupchat.messages = ag2_messages
-                chat_logger.info(f"✅ Restored {len(ag2_messages)} messages to {workflow_type} groupchat")
+                chat_logger.info(f"✅ Restored {len(ag2_messages)} messages to {workflow_name} groupchat")
                 
                 # Set current speaker if available (VE pattern)
                 current_speaker = state.get("current_speaker")
@@ -363,7 +363,7 @@ async def _start_or_resume_group_chat(
                 transport = SimpleTransport._get_instance()
                 if transport:
                     await transport.send_simple_text_message(
-                        f"Resuming {workflow_type} conversation from previous session...",
+                        f"Resuming {workflow_name} conversation from previous session...",
                         "system"
                     )
                 
@@ -374,22 +374,22 @@ async def _start_or_resume_group_chat(
                     await manager.a_run_group_chat()
                 
                 orchestration_time = (time.time() - orchestration_start_time) * 1000
-                chat_logger.info(f"🔄 {workflow_type.title()} resume completed in {orchestration_time:.2f}ms")
+                chat_logger.info(f"🔄 {workflow_name.title()} resume completed in {orchestration_time:.2f}ms")
                 
                 return  # Resume completed successfully
         else:
-            chat_logger.warning(f"❌ Resume failed for {workflow_type} workflow: {chat_id}")
+            chat_logger.warning(f"❌ Resume failed for {workflow_name} workflow: {chat_id}")
     
     # New session path (VE pattern - set status to 0 for new workflows)
-    chat_logger.info(f"🆕 Starting new {workflow_type} session for {chat_id}")
+    chat_logger.info(f"🆕 Starting new {workflow_name} session for {chat_id}")
     
     # Initialize workflow with status 0 (VE pattern)
-    await mongodb_manager.update_workflow_status(chat_id, enterprise_id, 0, workflow_type)
+    await mongodb_manager.update_workflow_status(chat_id, enterprise_id, 0, workflow_name)
     
     # Budget capability initialization
     from ..capabilities import get_budget_capability
     
-    budget_capability = get_budget_capability(chat_id, enterprise_id, workflow_type, user_id)
+    budget_capability = get_budget_capability(chat_id, enterprise_id, workflow_name, user_id)
     budget_info = await budget_capability.initialize_budget()
     
     # Extract token_manager if commercial mode
@@ -416,7 +416,7 @@ async def _start_or_resume_group_chat(
             from .tool_registry import WorkflowToolRegistry, ToolTrigger
             
             # Initialize tool registry for this workflow
-            tool_registry = WorkflowToolRegistry(workflow_type)
+            tool_registry = WorkflowToolRegistry(workflow_name)
             
             tool_registry.load_configuration()
             
@@ -472,12 +472,12 @@ async def _start_or_resume_group_chat(
             from .workflow_config import workflow_config
             
             # Get workflow configuration
-            config = workflow_config.get_config(workflow_type)
+            config = workflow_config.get_config(workflow_name)
             human_in_loop = config.get("human_in_the_loop", False)
             auto_start = config.get("auto_start", False)
             initiating_agent_name = config.get("initiating_agent", "user")
             
-            chat_logger.info(f"🎯 [CONFIG] Workflow '{workflow_type}' configuration:")
+            chat_logger.info(f"🎯 [CONFIG] Workflow '{workflow_name}' configuration:")
             chat_logger.info(f"   • human_in_the_loop: {human_in_loop}")
             chat_logger.info(f"   • auto_start: {auto_start}")
             chat_logger.info(f"   • initiating_agent: {initiating_agent_name}")
@@ -516,7 +516,7 @@ async def _start_or_resume_group_chat(
             # Note: UserProxyAgent may have already been created in orchestration phase for handoffs
             if human_in_loop and not has_user_proxy:
                 chat_logger.info(f"🚀 [AUTO-GEN] human_in_the_loop=true but no UserProxyAgent found in GroupChat")
-                chat_logger.info(f"🔧 [AUTO-GEN] Auto-generating UserProxyAgent for workflow '{workflow_type}'")
+                chat_logger.info(f"🔧 [AUTO-GEN] Auto-generating UserProxyAgent for workflow '{workflow_name}'")
                 
                 # ═══════════════════════════════════════════════════════════════════════════════════
                 # 🎯 CUSTOMIZATION POINT #1: UserProxyAgent Creation
@@ -525,8 +525,8 @@ async def _start_or_resume_group_chat(
                 # 📍 WHERE: Modify the UserProxyAgent creation below
                 # 
                 # 🔧 CUSTOMIZATION OPTIONS:
-                #   • Change agent name (e.g., f"{workflow_type}_user", "enterprise_user")
-                #   • Modify system_message based on workflow_type, enterprise_id, user_role
+                #   • Change agent name (e.g., f"{workflow_name}_user", "enterprise_user")
+                #   • Modify system_message based on workflow_name, enterprise_id, user_role
                 #   • Set different human_input_mode ("ALWAYS", "NEVER", "TERMINATE")
                 #   • Add code_execution_config for specific workflows
                 #   • Include custom llm_config for enterprise requirements
@@ -534,13 +534,13 @@ async def _start_or_resume_group_chat(
                 #
                 # 💡 ENTERPRISE EXAMPLES:
                 #   • if enterprise_id == "healthcare": system_message = "You are a healthcare..."
-                #   • if workflow_type == "legal": name = "legal_reviewer"
+                #   • if workflow_name == "legal": name = "legal_reviewer"
                 #   • if user_role == "admin": human_input_mode = "TERMINATE"
                 #
                 # 🏗️ WORKFLOW-SPECIFIC EXAMPLES:
-                #   • if workflow_type == "generator": system_message = "You are creating..."
-                #   • if workflow_type == "analyzer": code_execution_config = {"use_docker": True}
-                #   • if "secure" in workflow_type: add additional validation
+                #   • if workflow_name == "generator": system_message = "You are creating..."
+                #   • if workflow_name == "analyzer": code_execution_config = {"use_docker": True}
+                #   • if "secure" in workflow_name: add additional validation
                 #
                 # 📊 CONDITIONAL LOGIC SUGGESTIONS:
                 #   • Check config.get("user_expertise_level") for system_message complexity
@@ -606,7 +606,7 @@ async def _start_or_resume_group_chat(
                 #
                 # 💡 TOOL REGISTRATION EXAMPLES:
                 #   • auto_user_proxy.register_for_execution(name="custom_tool")(custom_function)
-                #   • Add workflow-specific tools based on workflow_type
+                #   • Add workflow-specific tools based on workflow_name
                 #   • Register enterprise tools based on enterprise_id
                 #
                 # 🏗️ SETUP EXAMPLES:
@@ -705,7 +705,7 @@ async def _start_or_resume_group_chat(
             chat_logger.info(f"🎯 [CONFIG] Final configuration: {config_type}")
                 
         except Exception as e:
-            chat_logger.error(f"❌ [CONFIG] Failed to configure workflow settings for '{workflow_type}': {e}")
+            chat_logger.error(f"❌ [CONFIG] Failed to configure workflow settings for '{workflow_name}': {e}")
             chat_logger.info("🔄 [CONFIG] Proceeding with default agent configuration")
 
     # ------------------------------------------------------------------
@@ -843,7 +843,7 @@ async def _start_or_resume_group_chat(
             budget_capability=budget_capability,
             agents=agents_list,
             streaming_manager=streaming_manager,
-            workflow_type=workflow_type,
+            workflow_name=workflow_name,
             token_tracker=token_tracker
         )
         chat_logger.debug(f"🔍 [HOOKS] Response tracking hooks enabled")
@@ -1013,7 +1013,7 @@ async def _start_or_resume_group_chat(
                 context={
                     "enterprise_id": enterprise_id,
                     "chat_id": chat_id,
-                    "workflow_type": workflow_type,
+                    "workflow_name": workflow_name,
                 },
             )
             
@@ -1025,7 +1025,7 @@ async def _start_or_resume_group_chat(
                     await mongodb_manager.save_chat_state(
                         chat_id=chat_id,
                         enterprise_id=enterprise_id,
-                        workflow_type=workflow_type,
+                        workflow_name=workflow_name,
                         state_data={
                             "groupchat_agents": [agent.name for agent in manager.groupchat.agents if hasattr(agent, 'name')],
                             "conversation_duration_ms": agent_response_time,
@@ -1109,7 +1109,7 @@ async def _start_or_resume_group_chat(
                     await mongodb_manager.save_chat_state(
                         chat_id=chat_id,
                         enterprise_id=enterprise_id,
-                        workflow_type=workflow_type,
+                        workflow_name=workflow_name,
                         state_data={
                             "groupchat_agents": [agent.name for agent in manager.groupchat.agents if hasattr(agent, 'name')],
                             "resume_duration_ms": agent_response_time,
@@ -1233,7 +1233,7 @@ async def _start_or_resume_group_chat(
 # ==============================================================================
 
 async def run_workflow_orchestration(
-    workflow_type: str,
+    workflow_name: str,
     llm_config: Dict[str, Any],
     enterprise_id: str,
     chat_id: str,
@@ -1261,7 +1261,7 @@ async def run_workflow_orchestration(
     - ManualPattern: Manual speaker selection
     
     Args:
-        workflow_type: Type of workflow (e.g., "generator", "analyzer")
+        workflow_name: Type of workflow (e.g., "generator", "analyzer")
         llm_config: LLM configuration
         enterprise_id: Enterprise identifier
         chat_id: Chat identifier
@@ -1276,22 +1276,22 @@ async def run_workflow_orchestration(
     from core.transport.simple_transport import SimpleTransport
     transport = SimpleTransport._get_instance()
     if not transport:
-        raise RuntimeError(f"SimpleTransport instance not available for {workflow_type} workflow")
+        raise RuntimeError(f"SimpleTransport instance not available for {workflow_name} workflow")
     
     if not agents_factory:
-        raise ValueError(f"agents_factory is required for {workflow_type} workflow")
+        raise ValueError(f"agents_factory is required for {workflow_name} workflow")
     
     start_time = time.time()
-    workflow_name_upper = workflow_type.upper()
+    workflow_name_upper = workflow_name.upper()
     
     # Initialize workflow-specific loggers
     from logs.logging_config import get_business_logger
-    business_logger = get_business_logger(f"{workflow_type}_orchestration")
+    business_logger = get_business_logger(f"{workflow_name}_orchestration")
     
     try:
         # Get workflow configuration
         from ..workflow.workflow_config import workflow_config
-        config = workflow_config.get_config(workflow_type)
+        config = workflow_config.get_config(workflow_name)
         max_turns = config.get("max_turns", 50)
         initiating_agent_name = config.get("initiating_agent", "UserProxyAgent")
         orchestration_pattern = config.get("orchestration_pattern", "AutoPattern")
@@ -1315,7 +1315,7 @@ async def run_workflow_orchestration(
         # Log accurate initial message information
         log_business_event(
             event_type=f"{workflow_name_upper}_WORKFLOW_STARTED",
-            description=f"{workflow_type} workflow orchestration initialized",
+            description=f"{workflow_name} workflow orchestration initialized",
             context={
                 "enterprise_id": enterprise_id,
                 "chat_id": chat_id,
@@ -1380,7 +1380,7 @@ async def run_workflow_orchestration(
         tools_start = time.time()
         business_logger.info("🔧 Registering tools using modular tool registry...")
         
-        tool_registry = WorkflowToolRegistry(workflow_type)
+        tool_registry = WorkflowToolRegistry(workflow_name)
         tool_registry.load_configuration()
         tool_registry.register_agent_tools(list(agents.values()))
         
@@ -1389,7 +1389,7 @@ async def run_workflow_orchestration(
             metric_name="modular_tools_registration_duration",
             value=tools_registration_time,
             unit="ms",
-            context={"workflow_type": workflow_type}
+            context={"workflow_name": workflow_name}
         )
         business_logger.info(f"✅ [{workflow_name_upper}] Modular tool registration completed")
 
@@ -1425,15 +1425,15 @@ async def run_workflow_orchestration(
         
         # Register handoffs for DefaultPattern if enabled
         if orchestration_pattern == "DefaultPattern" and initiate_handoffs and handoffs_factory:
-            business_logger.info(f"🔄 [{workflow_type}] Initializing handoffs for DefaultPattern orchestration")
+            business_logger.info(f"🔄 [{workflow_name}] Initializing handoffs for DefaultPattern orchestration")
             # Use handoffs factory to wire handoffs
             try:
                 handoffs_factory(agents)
-                business_logger.info(f"✅ [{workflow_type}] Handoffs registered successfully")
+                business_logger.info(f"✅ [{workflow_name}] Handoffs registered successfully")
             except Exception as e:
-                business_logger.warning(f"⚠️ [{workflow_type}] Handoffs registration failed: {e}")
+                business_logger.warning(f"⚠️ [{workflow_name}] Handoffs registration failed: {e}")
         elif orchestration_pattern == "DefaultPattern" and initiate_handoffs:
-            business_logger.info(f"🔄 [{workflow_type}] DefaultPattern orchestration enabled but no handoffs_factory provided")
+            business_logger.info(f"🔄 [{workflow_name}] DefaultPattern orchestration enabled but no handoffs_factory provided")
         
         # Create the GroupChatManager, which will also serve as the chat manager
         # The GroupChatManager is an agent and can be part of the groupchat agents list
@@ -1455,7 +1455,7 @@ async def run_workflow_orchestration(
             unit="ms",
             context={"enterprise_id": enterprise_id}
         )
-        business_logger.info(f"✅ [{workflow_type}] GroupChat and GroupChatManager created")
+        business_logger.info(f"✅ [{workflow_name}] GroupChat and GroupChatManager created")
 
         # 6. Always create UserProxyAgent (with startup_mode-based human_input_mode)
         # UserProxyAgent is always needed as the default initiating agent
@@ -1467,13 +1467,13 @@ async def run_workflow_orchestration(
             # Set human_input_mode based on startup_mode
             if startup_mode == "BackendOnly":
                 human_input_mode = "NEVER"
-                business_logger.info(f"🤖 [{workflow_type}] Creating UserProxyAgent with human_input_mode=NEVER (BackendOnly)")
+                business_logger.info(f"🤖 [{workflow_name}] Creating UserProxyAgent with human_input_mode=NEVER (BackendOnly)")
             elif startup_mode == "AgentDriven":
                 human_input_mode = "TERMINATE"  # Only when termination needed
-                business_logger.info(f"🤖 [{workflow_type}] Creating UserProxyAgent with human_input_mode=TERMINATE (AgentDriven)")
+                business_logger.info(f"🤖 [{workflow_name}] Creating UserProxyAgent with human_input_mode=TERMINATE (AgentDriven)")
             else:  # UserDriven (default)
                 human_input_mode = "ALWAYS"
-                business_logger.info(f"🤖 [{workflow_type}] Creating UserProxyAgent with human_input_mode=ALWAYS (UserDriven)")
+                business_logger.info(f"🤖 [{workflow_name}] Creating UserProxyAgent with human_input_mode=ALWAYS (UserDriven)")
             
             from autogen import UserProxyAgent
             
@@ -1487,7 +1487,7 @@ async def run_workflow_orchestration(
             
             # Add to agents dictionary
             agents["user"] = user_proxy_agent
-            business_logger.info(f"✅ [{workflow_type}] UserProxyAgent created with startup_mode={startup_mode}")
+            business_logger.info(f"✅ [{workflow_name}] UserProxyAgent created with startup_mode={startup_mode}")
 
         # 7. Wire handoffs (if handoffs factory provided)
         if handoffs_factory:
@@ -1519,7 +1519,7 @@ async def run_workflow_orchestration(
             user_id=user_id,
             initial_message=final_initial_message,
             max_turns=max_turns,
-            workflow_type=workflow_type,
+            workflow_name=workflow_name,
             context_variables=context
         )
         chat_time = (time.time() - chat_start) * 1000
@@ -1533,7 +1533,7 @@ async def run_workflow_orchestration(
         
         log_business_event(
             event_type=f"{workflow_name_upper}_WORKFLOW_COMPLETED",
-            description=f"{workflow_type} workflow orchestration completed successfully",
+            description=f"{workflow_name} workflow orchestration completed successfully",
             context={
                 "enterprise_id": enterprise_id,
                 "chat_id": chat_id,
@@ -1547,7 +1547,7 @@ async def run_workflow_orchestration(
         logger.error(f"❌ [{workflow_name_upper}] Workflow orchestration failed after {duration:.2f}s: {e}", exc_info=True)
         log_business_event(
             event_type=f"{workflow_name_upper}_WORKFLOW_FAILED",
-            description=f"{workflow_type} workflow orchestration failed",
+            description=f"{workflow_name} workflow orchestration failed",
             context={
                 "enterprise_id": enterprise_id,
                 "chat_id": chat_id,

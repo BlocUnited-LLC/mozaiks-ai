@@ -39,15 +39,15 @@ const ChatPage = () => {
   const [connectionInitialized, setConnectionInitialized] = useState(false); // Prevent duplicate connections
   const [workflowConfigLoaded, setWorkflowConfigLoaded] = useState(false); // Track workflow config loading
   const connectionInProgressRef = useRef(false); // Additional guard against React double-execution
-  const { enterpriseId, workflowType: urlWorkflowType } = useParams();
+  const { enterpriseId, workflowName: urlWorkflowName } = useParams();
   const { user, api, config } = useChatUI();
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
 
-  // Use workflowType from URL params first, then config, then discovery
+  // Use workflowName from URL params first, then config, then default to Generator
   const currentEnterpriseId = enterpriseId || config?.chat?.defaultEnterpriseId || '68542c1109381de738222350';
   const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
-  const defaultWorkflow = urlWorkflowType || config?.chat?.defaultWorkflow || null; // Let workflowConfig.getDefaultWorkflow() handle discovery
-  const [currentWorkflowType, setCurrentWorkflowType] = useState(defaultWorkflow?.toLowerCase() || null); // Dynamic workflow detection
+  const defaultWorkflow = urlWorkflowName || config?.chat?.defaultWorkflow || 'Generator'; // Default to Generator
+  const [currentWorkflowName, setCurrentWorkflowName] = useState(defaultWorkflow?.toLowerCase() || 'generator'); // Dynamic workflow detection
   
   // Dynamic UI updates state
   const [dynamicUIUpdates, setDynamicUIUpdates] = useState([]);
@@ -121,18 +121,18 @@ const ChatPage = () => {
         return; // Wait for config to load or skip if chat already exists
       }
 
-      const workflowType = urlWorkflowType || workflowConfig.getDefaultWorkflow();
-      const config = workflowConfig.getWorkflowConfig(workflowType);
+      const workflowName = urlWorkflowName || workflowConfig.getDefaultWorkflow() || 'Generator';
+      const config = workflowConfig.getWorkflowConfig(workflowName);
       
       // Check startup_mode to determine if WebSocket chat should start
       const startupMode = config?.startup_mode;
       const shouldStartWebSocket = startupMode === 'UserDriven' || startupMode === 'AgentDriven';
       
       if (shouldStartWebSocket) {
-        console.log(`🚀 Starting WebSocket chat for ${startupMode} workflow:`, workflowType);
+        console.log(`🚀 Starting WebSocket chat for ${startupMode} workflow:`, workflowName);
         
         try {
-          const result = await api.startChat(currentEnterpriseId, workflowType, currentUserId);
+          const result = await api.startChat(currentEnterpriseId, workflowName, currentUserId);
           
           if (result && result.chat_id) {
             console.log('✅ WebSocket chat created:', result.chat_id);
@@ -144,7 +144,7 @@ const ChatPage = () => {
           console.error('❌ WebSocket chat start failed:', error);
         }
       } else if (startupMode === 'BackendOnly') {
-        console.log('⚙️ Backend-only workflow - no WebSocket connection needed:', workflowType);
+        console.log('⚙️ Backend-only workflow - no WebSocket connection needed:', workflowName);
         // For backend-only workflows, we don't need WebSocket but could still initialize other components
       } else {
         console.log('⏳ Unknown startup_mode or waiting for workflow configuration...', startupMode);
@@ -152,7 +152,7 @@ const ChatPage = () => {
     };
 
     handleAutoStart();
-  }, [workflowConfigLoaded, currentChatId, urlWorkflowType, currentEnterpriseId, currentUserId, api]);
+  }, [workflowConfigLoaded, currentChatId, urlWorkflowName, currentEnterpriseId, currentUserId, api]);
 
   // Unified incoming message handler for WebSocket only
   const handleIncoming = useCallback((data) => {
@@ -481,7 +481,7 @@ const ChatPage = () => {
       setConnectionStatus('connecting');
       setTransportType('websocket');
 
-      const workflowType = urlWorkflowType || workflowConfig.getDefaultWorkflow();
+      const workflowName = urlWorkflowName || workflowConfig.getDefaultWorkflow() || 'Generator';
       
       const connection = api.createWebSocketConnection(
         currentEnterpriseId,
@@ -503,7 +503,7 @@ const ChatPage = () => {
             setConnectionStatus('disconnected');
           }
         },
-        workflowType,
+        workflowName,
         currentChatId // Pass the existing chat ID
       );
 
@@ -520,24 +520,24 @@ const ChatPage = () => {
     // Query the workflow transport type and use WebSocket connection
     const connectWithCorrectTransport = async () => {
       try {
-        // Use URL workflow type first, then fall back to dynamic discovery
-        const workflowType = urlWorkflowType || workflowConfig.getDefaultWorkflow();
-        console.log(`🎯 Using workflow type: ${workflowType} (from ${urlWorkflowType ? 'URL' : 'discovery'})`);
+        // Use URL workflow name first, then fall back to dynamic discovery or default
+        const workflowName = urlWorkflowName || workflowConfig.getDefaultWorkflow() || 'Generator';
+        console.log(`🎯 Using workflow name: ${workflowName} (from ${urlWorkflowName ? 'URL' : 'discovery/default'})`);
         
-        const transportInfo = await api.getWorkflowTransport(workflowType);
-        console.log('📡 Transport info for', workflowType, ':', transportInfo);
+        const transportInfo = await api.getWorkflowTransport(workflowName);
+        console.log('📡 Transport info for', workflowName, ':', transportInfo);
         
         // Always use WebSocket transport
-        console.log('Using WebSocket transport for', workflowType);
+        console.log('Using WebSocket transport for', workflowName);
         setTransportType('websocket');
-        setCurrentWorkflowType(workflowType);
+        setCurrentWorkflowName(workflowName);
         return connectWebSocket();
       } catch (error) {
         console.error('Error querying workflow transport:', error);
         // Fallback to WebSocket
-        const defaultWorkflow = workflowConfig.getDefaultWorkflow();
+        const defaultWorkflow = workflowConfig.getDefaultWorkflow() || 'Generator';
         setTransportType('websocket');
-        setCurrentWorkflowType(defaultWorkflow);
+        setCurrentWorkflowName(defaultWorkflow);
         return connectWebSocket();
       }
     };
@@ -558,7 +558,7 @@ const ChatPage = () => {
       // Reset the in-progress flag when component unmounts
       connectionInProgressRef.current = false;
     };
-  }, [api, currentEnterpriseId, currentUserId, handleIncoming, workflowConfigLoaded, currentChatId, connectionInitialized, urlWorkflowType, ws]);
+  }, [api, currentEnterpriseId, currentUserId, handleIncoming, workflowConfigLoaded, currentChatId, connectionInitialized, urlWorkflowName, ws]);
 
   // Retry connection function
   const retryConnection = useCallback(() => {
@@ -581,7 +581,7 @@ const ChatPage = () => {
     console.log('🚀 [SEND] Transport type:', transportType);
     console.log('🚀 [SEND] Enterprise ID:', currentEnterpriseId);
     console.log('🚀 [SEND] User ID:', currentUserId);
-    console.log('🚀 [SEND] Workflow type:', currentWorkflowType);
+    console.log('🚀 [SEND] Workflow name:', currentWorkflowName);
     
     // Create a properly structured user message
     const userMessage = {
@@ -609,7 +609,7 @@ const ChatPage = () => {
         messageContent.content, 
         currentEnterpriseId, 
         currentUserId, 
-        currentWorkflowType,
+        currentWorkflowName,
         currentChatId // Pass the chat ID
       );
       console.log('📤 [SEND] WebSocket send result:', success);
@@ -691,6 +691,7 @@ const ChatPage = () => {
       />
       <Header 
         user={user}
+        workflowName={currentWorkflowName}
         onMyAppsClick={handleMyAppsClick}
         onCommunityClick={handleCommunityClick}
         onNotificationClick={handleNotificationClick}
@@ -702,12 +703,6 @@ const ChatPage = () => {
         <div className={`flex flex-col md:flex-row flex-1 w-full min-h-0 overflow-hidden transition-all duration-300`}>
           {/* Chat Pane - 50% width when artifact is open, 100% when closed */}
           <div className={`flex flex-col px-4 flex-1 min-h-0 overflow-hidden transition-all duration-300 ${isSidePanelOpen ? 'md:w-1/2' : 'w-full'}`}>
-            {/* Dynamic UI Updates Debug (only show if there are recent updates) */}
-            {process.env.NODE_ENV === 'development' && dynamicUIUpdates.length > 0 && (
-              <div className="text-xs px-2 py-1 rounded mb-2 bg-blue-900/50 text-blue-300">
-                Recent UI Updates: {dynamicUIUpdates.length}
-              </div>
-            )}
             
             <ChatInterface 
               messages={messages} 
@@ -717,7 +712,9 @@ const ChatPage = () => {
               onArtifactToggle={toggleSidePanel}
               connectionStatus={connectionStatus}
               transportType={transportType}
-              workflowType={currentWorkflowType}
+              workflowName={currentWorkflowName}
+              startupMode={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.startup_mode}
+              initialMessageToUser={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.initial_message_to_user}
               onRetry={retryConnection}
             />
           </div>

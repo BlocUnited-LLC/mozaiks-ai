@@ -76,7 +76,7 @@ async def request_api_key(
     service: str,
     description: Optional[str] = None,
     required: bool = True,
-    workflow_type: str = "generator"
+    workflow_name: str = "generator"
 ) -> Dict[str, Any]:
     """
     Request an API key from the user via secure UI component.
@@ -85,7 +85,7 @@ async def request_api_key(
         service: The service name (e.g., 'openai', 'anthropic')
         description: Custom description for the user
         required: Whether the key is mandatory
-        workflow_type: Current workflow context
+        workflow_name: Current workflow context
         
     Returns:
         Dict containing api_key, service, and metadata
@@ -105,7 +105,7 @@ async def request_api_key(
         "type": "ui_tool_event",
         "toolId": "api_key_input",          # Maps to React component
         "eventId": event_id,                # Unique identifier
-        "workflowType": workflow_type,      # Context for frontend
+        "workflowname": workflow_name,      # Context for frontend
         "timestamp": datetime.utcnow().isoformat(),
         "payload": {
             "service": service,
@@ -256,7 +256,7 @@ export class EventDispatcher {
     }
     
     handleUiToolEvent(event) {
-        const { toolId, eventId, payload, workflowType } = event;
+        const { toolId, eventId, payload, workflowname } = event;
         
         // Get registered component
         const Component = getUiToolComponent(toolId);
@@ -269,7 +269,7 @@ export class EventDispatcher {
         this.activeEvents.set(eventId, {
             toolId,
             payload,
-            workflowType,
+            workflowname,
             startTime: Date.now()
         });
         
@@ -283,7 +283,7 @@ export class EventDispatcher {
         return React.createElement(Component, {
             ...payload,
             eventId,
-            workflowType,
+            workflowname,
             onResponse: handleResponse,
             onCancel: () => handleResponse({ success: false, cancelled: true })
         });
@@ -331,7 +331,7 @@ export default function AgentAPIKeyInput({
     inputType = "password",
     validationHint,
     eventId,
-    workflowType,
+    workflowname,
     onResponse,
     onCancel
 }) {
@@ -366,7 +366,7 @@ export default function AgentAPIKeyInput({
                     submittedAt: new Date().toISOString(),
                     validated: isValid,
                     keyLength: apiKey.length,
-                    workflowType: workflowType
+                    workflowname: workflowname
                 }
             };
             
@@ -439,7 +439,7 @@ export default function AgentAPIKeyInput({
             {process.env.NODE_ENV === 'development' && (
                 <div className="debug-info">
                     <small>Event ID: {eventId}</small>
-                    <small>Workflow: {workflowType}</small>
+                    <small>Workflow: {workflowname}</small>
                     <small>Valid: {isValid ? 'Yes' : 'No'}</small>
                 </div>
             )}

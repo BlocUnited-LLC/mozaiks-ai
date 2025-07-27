@@ -15,7 +15,7 @@ import React, { useState } from 'react';
 const AgentAPIKeyInput = ({ 
   toolId,
   eventId,
-  workflowType,
+  workflowName,
   onResponse,
   // Dynamic props from agent event payload
   payload = {},
@@ -75,7 +75,7 @@ const AgentAPIKeyInput = ({
           submissionTime: new Date().toISOString(),
           toolId,
           eventId,
-          workflowType
+          workflowName
         }
       };
 
@@ -117,7 +117,7 @@ const AgentAPIKeyInput = ({
           cancelTime: new Date().toISOString(),
           toolId,
           eventId,
-          workflowType
+          workflowName
         }
       };
 
@@ -216,7 +216,7 @@ const AgentAPIKeyInput = ({
       {/* Debug info (only in development) */}
       {process.env.NODE_ENV === 'development' && (
         <div className="debug-info mt-4 p-2 bg-gray-800 rounded text-xs text-gray-400">
-          <div>Tool: {toolId} | Event: {eventId} | Workflow: {workflowType}</div>
+          <div>Tool: {toolId} | Event: {eventId} | Workflow: {workflowName}</div>
           <div>Service: {config.service} | Required: {config.required.toString()} | Component: {componentId}</div>
         </div>
       )}

@@ -407,11 +407,11 @@ async def list_workflows():
         
         # Convert workflow names to full workflow objects
         workflows = []
-        for workflow_type in registered:
+        for workflow_name in registered:
             workflows.append({
-                "workflow_type": workflow_type,
-                "transport": get_workflow_transport(workflow_type),
-                "human_loop": workflow_human_loop(workflow_type)
+                "workflow_name": workflow_name,
+                "transport": get_workflow_transport(workflow_name),
+                "human_loop": workflow_human_loop(workflow_name)
             })
         
         response_time = (datetime.utcnow() - request_start).total_seconds() * 1000
@@ -434,25 +434,25 @@ async def list_workflows():
         logger.error(f"❌ Failed to list workflows: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve workflows")
 
-@app.get("/api/workflows/{workflow_type}/config")
-async def get_workflow_config(workflow_type: str):
+@app.get("/api/workflows/{workflow_name}/config")
+async def get_workflow_config(workflow_name: str):
     """Get full configuration for a specific workflow"""
     try:
         from core.workflow.workflow_config import workflow_config
         
-        config = workflow_config.get_config(workflow_type)
+        config = workflow_config.get_config(workflow_name)
         if not config:
-            raise HTTPException(status_code=404, detail=f"Workflow '{workflow_type}' not found")
+            raise HTTPException(status_code=404, detail=f"Workflow '{workflow_name}' not found")
             
         return {
-            "workflow_type": workflow_type,
+            "workflow_name": workflow_name,
             "config": config
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Failed to get workflow config for {workflow_type}: {e}")
+        logger.error(f"❌ Failed to get workflow config for {workflow_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve workflow config")
 
 @app.get("/api/chat/{chat_id}/messages")
@@ -477,7 +477,7 @@ async def get_chat_messages(chat_id: str, enterprise_id: str):
         # Use primary schema
         chat_history = chat_data.get("chat_history", [])
         chat_state = chat_data.get("chat_state", {})
-        workflow_type = chat_data.get("workflow_type", "unknown")
+        workflow_name = chat_data.get("workflow_name", "unknown")
         
         response_time = (datetime.utcnow() - request_start).total_seconds() * 1000
         log_performance_metric(
@@ -487,20 +487,20 @@ async def get_chat_messages(chat_id: str, enterprise_id: str):
             context={
                 "chat_id": chat_id,
                 "message_count": len(chat_history),
-                "workflow_type": workflow_type
+                "workflow_name": workflow_name
             }
         )
         
         chat_logger.debug(
             f"📨 Chat messages API - Chat: {chat_id}, Messages: {len(chat_history)}, "
-            f"Workflow: {workflow_type}"
+            f"Workflow: {workflow_name}"
         )
         
         return {
             "chat_id": chat_id,
             "message_count": len(chat_history),
             "messages": chat_history,
-            "workflow_type": workflow_type,
+            "workflow_name": workflow_name,
             "chat_state": chat_state  # Include current chat state info
         }
         
@@ -564,8 +564,8 @@ async def health_check():
         logger.error(f"❌ Health check failed: {e}")
         raise HTTPException(status_code=500, detail=f"Health check failed: {e}")
 
-@app.get("/api/chats/{enterprise_id}/{workflow_type}")
-async def list_chats(enterprise_id: str, workflow_type: str):
+@app.get("/api/chats/{enterprise_id}/{workflow_name}")
+async def list_chats(enterprise_id: str, workflow_name: str):
     """List recent chat IDs for a given enterprise and workflow"""
     try:
         # Convert to ObjectId if possible
@@ -575,18 +575,18 @@ async def list_chats(enterprise_id: str, workflow_type: str):
             eid = enterprise_id
         # Query workflows collection
         cursor = mongodb_manager.workflows_collection.find(
-            {"enterprise_id": eid, "workflow_type": workflow_type}
+            {"enterprise_id": eid, "workflow_name": workflow_name}
         ).sort("created_at", -1)
         docs = await cursor.to_list(length=20)
         chat_ids = [doc.get("chat_id") for doc in docs]
         return {"chat_ids": chat_ids}
     except Exception as e:
-        logger.error(f"❌ Failed to list chats for enterprise {enterprise_id}, workflow {workflow_type}: {e}")
+        logger.error(f"❌ Failed to list chats for enterprise {enterprise_id}, workflow {workflow_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list chats")
-@app.post("/api/chats/{enterprise_id}/{workflow_type}/start")
+@app.post("/api/chats/{enterprise_id}/{workflow_name}/start")
 async def start_chat(
     enterprise_id: str,
-    workflow_type: str,
+    workflow_name: str,
     payload: StartChatRequest,
 ):
     """Start a new chat session for the given enterprise and workflow"""
@@ -606,7 +606,7 @@ async def start_chat(
         chat_id=chat_id,
         enterprise_id=enterprise_id,
         concept_id=concept["_id"],
-        workflow_type=workflow_type,
+        workflow_name=workflow_name,
         user_id=payload.user_id
     )
     
@@ -616,10 +616,10 @@ async def start_chat(
     return {"chat_id": chat_id, "workflow_id": str(workflow_id)}
 
 
-@app.websocket("/ws/{workflow_type}/{enterprise_id}/{chat_id}/{user_id}")
+@app.websocket("/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}")
 async def websocket_endpoint(
     websocket: WebSocket,
-    workflow_type: str,
+    workflow_name: str,
     enterprise_id: str,
     chat_id: str,
     user_id: str,
@@ -629,13 +629,13 @@ async def websocket_endpoint(
         await websocket.close(code=1000, reason="Transport service not available")
         return
 
-    business_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_type}'")
+    business_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_name}'")
     
     await simple_transport.handle_websocket(
         websocket=websocket,
         chat_id=chat_id,
         user_id=user_id,
-        workflow_type=workflow_type,
+        workflow_name=workflow_name,
         enterprise_id=enterprise_id
     )
 
@@ -653,7 +653,7 @@ async def handle_user_input(
     try:
         data = await request.json()
         message = data.get("message")
-        workflow_type = data.get("workflow_type")  # No default, must be provided
+        workflow_name = data.get("workflow_name")  # No default, must be provided
         
         log_business_event(
             event_type="USER_INPUT_ENDPOINT_CALLED",
@@ -662,7 +662,7 @@ async def handle_user_input(
                 "enterprise_id": enterprise_id,
                 "chat_id": chat_id,
                 "user_id": user_id,
-                "workflow_type": workflow_type,
+                "workflow_name": workflow_name,
                 "message_length": len(message) if message else 0
             }
         )
@@ -673,7 +673,7 @@ async def handle_user_input(
         result = await simple_transport.handle_user_input_from_api(
             chat_id=chat_id, 
             user_id=user_id, 
-            workflow_type=workflow_type,
+            workflow_name=workflow_name,
             message=message
         )
         
@@ -734,37 +734,37 @@ async def submit_user_input_response(request: Request):
         logger.error(f"❌ Error submitting user input response: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to submit user input: {e}")
 
-@app.get("/api/workflows/{workflow_type}/transport")
-async def get_workflow_transport_info(workflow_type: str):
+@app.get("/api/workflows/{workflow_name}/transport")
+async def get_workflow_transport_info(workflow_name: str):
     """Get transport information for a specific workflow."""
-    transport = get_workflow_transport(workflow_type)
+    transport = get_workflow_transport(workflow_name)
     
     return {
-        "workflow_type": workflow_type,
+        "workflow_name": workflow_name,
         "transport": transport,
         "endpoints": {
-            "websocket": f"/ws/{workflow_type}/{{enterprise_id}}/{{chat_id}}/{{user_id}}",
+            "websocket": f"/ws/{workflow_name}/{{enterprise_id}}/{{chat_id}}/{{user_id}}",
             "input": f"/chat/{{enterprise_id}}/{{chat_id}}/{{user_id}}/input"
         }
     }
 
-@app.get("/api/workflows/{workflow_type}/tools")
-async def get_workflow_tools_info(workflow_type: str):
+@app.get("/api/workflows/{workflow_name}/tools")
+async def get_workflow_tools_info(workflow_name: str):
     """Get UI tools manifest for a specific workflow."""
-    tools = get_workflow_tools(workflow_type)
+    tools = get_workflow_tools(workflow_name)
     
     return {
-        "workflow_type": workflow_type,
+        "workflow_name": workflow_name,
         "tools": tools
     }
 
-@app.get("/api/workflows/{workflow_type}/ui-tools")
-async def get_workflow_ui_tools_manifest(workflow_type: str):
+@app.get("/api/workflows/{workflow_name}/ui-tools")
+async def get_workflow_ui_tools_manifest(workflow_name: str):
     """Get UI tools manifest with schemas for frontend development."""
     try:
-        # Get UI-specific tools (look for workflow_type + "_ui")
-        ui_workflow_type = f"{workflow_type}_ui"
-        ui_tools = get_workflow_tools(ui_workflow_type)
+        # Get UI-specific tools (look for workflow_name + "_ui")
+        ui_workflow_name = f"{workflow_name}_ui"
+        ui_tools = get_workflow_tools(ui_workflow_name)
         
         manifest = []
         
@@ -784,13 +784,13 @@ async def get_workflow_ui_tools_manifest(workflow_type: str):
                                     "toolId": tool_id,
                                     "description": tool_info.get("description", ""),
                                     "payloadSchema": tool_info.get("payloadSchema", {}),
-                                    "workflow": workflow_type
+                                    "workflow": workflow_name
                                 })
                 except Exception as e:
                     logger.debug(f"Could not extract module-level UI tool registry: {e}")
         
         return {
-            "workflow_type": workflow_type,
+            "workflow_name": workflow_name,
             "ui_tools_count": len(manifest),
             "ui_tools": manifest,
             "documentation": f"Each toolId must have a corresponding React component in the frontend. "
@@ -799,9 +799,9 @@ async def get_workflow_ui_tools_manifest(workflow_type: str):
         }
         
     except Exception as e:
-        logger.error(f"Error getting UI tools manifest for {workflow_type}: {e}")
+        logger.error(f"Error getting UI tools manifest for {workflow_name}: {e}")
         return {
-            "workflow_type": workflow_type,
+            "workflow_name": workflow_name,
             "ui_tools_count": 0,
             "ui_tools": [],
             "error": str(e)
@@ -829,7 +829,7 @@ async def get_user_token_balance(user_id: str, appid: str = "default"):
         # Try to get free trial status and free loops from TokenManager
         from core.data.token_manager import TokenManager
         # For this endpoint, we don't have chat_id or enterprise_id, so we use user_id as chat_id and 'default' as enterprise_id
-        token_manager = TokenManager(chat_id=user_id, enterprise_id="default", workflow_type="default", user_id=user_id)
+        token_manager = TokenManager(chat_id=user_id, enterprise_id="default", workflow_name="default", user_id=user_id)
         # Try to initialize budget to load free trial info
         try:
             import asyncio
@@ -903,8 +903,8 @@ async def get_workflow_configs():
         from core.workflow.workflow_config import workflow_config
         
         configs = {}
-        for workflow_type in workflow_config.get_all_workflow_types():
-            configs[workflow_type] = workflow_config.get_config(workflow_type)
+        for workflow_name in workflow_config.get_all_workflow_names():
+            configs[workflow_name] = workflow_config.get_config(workflow_name)
         
         log_business_event(
             event_type="WORKFLOW_CONFIGS_REQUESTED",

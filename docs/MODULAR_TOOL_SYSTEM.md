@@ -93,7 +93,7 @@ async def request_api_key(
     service: str,
     description: Optional[str] = None,
     required: bool = True,
-    workflow_type: str = "generator"
+    workflow_name: str = "generator"
 ) -> Dict[str, Any]:
     """Request an API key from the user via UI component.
     
@@ -109,7 +109,7 @@ async def request_api_key(
         "type": "ui_tool_event",
         "toolId": "api_key_input",
         "eventId": event_id,
-        "workflowType": workflow_type,
+        "workflowname": workflow_name,
         "payload": {
             "service": service,
             "label": f"{service.replace('_', ' ').title()} API Key",
@@ -150,12 +150,12 @@ from typing import Dict, List, Any
 class WorkflowToolRegistry:
     """Central registry for workflow tools with single-function architecture"""
     
-    def __init__(self, workflow_type: str):
-        self.workflow_type = workflow_type
+    def __init__(self, workflow_name: str):
+        self.workflow_name = workflow_name
         self.backend_tools: Dict[str, List[Dict]] = {}
         self.ui_tools: Dict[str, List[Dict]] = {} 
         self.lifecycle_tools: Dict[str, Dict] = {}
-        self.config_path = Path("workflows") / workflow_type / "workflow.json"
+        self.config_path = Path("workflows") / workflow_name / "workflow.json"
         
     def load_configuration(self):
         """Load tool configuration from workflow.json"""

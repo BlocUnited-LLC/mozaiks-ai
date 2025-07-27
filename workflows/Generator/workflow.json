@@ -3,7 +3,7 @@
   "max_turns": 25,
   "initiating_agent": "user",
   "human_in_the_loop": true,
-  "startup_mode": "UserDriven",
+  "startup_mode": "AgentDriven",
   "orchestration_pattern": "DefaultPattern",
   "initiate_handoffs": false,
   "initial_message_to_user": null,

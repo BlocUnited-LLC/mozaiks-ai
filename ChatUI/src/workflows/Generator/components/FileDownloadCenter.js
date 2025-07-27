@@ -16,7 +16,7 @@ const FileDownloadCenter = ({
   title = "Generated Files",
   toolId,
   eventId,
-  workflowType,
+  workflowName,
   onResponse,
   componentId = "FileDownloadCenter"
 }) => {
@@ -36,7 +36,7 @@ const FileDownloadCenter = ({
           downloadTime: new Date().toISOString(),
           toolId,
           eventId,
-          workflowType
+          workflowName
         }
       };
 
@@ -77,7 +77,7 @@ const FileDownloadCenter = ({
           downloadTime: new Date().toISOString(),
           toolId,
           eventId,
-          workflowType
+          workflowName
         }
       };
 
@@ -113,7 +113,7 @@ const FileDownloadCenter = ({
       onResponse({
         status: 'cancelled',
         action: 'cancel',
-        data: { toolId, eventId, workflowType }
+        data: { toolId, eventId, workflowName }
       });
     }
   };
@@ -182,7 +182,7 @@ const FileDownloadCenter = ({
       {/* Debug info (only in development) */}
       {process.env.NODE_ENV === 'development' && (
         <div className="debug-info mt-4 p-2 bg-gray-800 rounded text-xs text-gray-400">
-          <div>Tool: {toolId} | Event: {eventId} | Workflow: {workflowType}</div>
+          <div>Tool: {toolId} | Event: {eventId} | Workflow: {workflowName}</div>
           <div>Files: {files.length} | Component: {componentId}</div>
         </div>
       )}
