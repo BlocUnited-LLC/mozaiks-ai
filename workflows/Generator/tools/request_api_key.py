@@ -57,7 +57,7 @@ async def emit_ui_tool_event(
         # Send the UI tool event through the transport system
         await transport.send_tool_event(
             tool_id=tool_id,
-            payload=payload,
+            payload=ui_tool_event,
             display="inline"
         )
         

@@ -283,6 +283,7 @@ export class DynamicUIHandler {
             toolId,
             eventId,
             workflowType,
+            payload,
             response
           });
         }

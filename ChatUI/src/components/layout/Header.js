@@ -33,6 +33,16 @@ const Header = ({
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // Mock notification count updates (can be replaced with real notification system)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Simulate notification count changes based on activity
+      setNotificationCount(prev => Math.max(0, prev + Math.floor(Math.random() * 3) - 1));
+    }, 30000); // Update every 30 seconds
+    
+    return () => clearInterval(interval);
+  }, []);
+
   const toggleProfileDropdown = () => {
     setIsProfileDropdownOpen(!isProfileDropdownOpen);
     if (isNotificationDropdownOpen) {
@@ -54,10 +64,6 @@ const Header = ({
 
   const handleDiscoverClick = () => {
     onDiscoverClick();
-  };
-
-  const handleCommunityClick = () => {
-    onCommunityClick();
   };
 
   return (

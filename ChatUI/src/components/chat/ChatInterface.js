@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import ChatMessage from "./ChatMessage";
 import LoadingSpinner from "../../utils/LoadingSpinner";
+import ConnectionStatus from "./ConnectionStatus";
 import { useNavigate, useParams } from "react-router-dom";
 import UIToolRenderer from "../ui/UIToolRenderer";
 
@@ -23,7 +24,17 @@ const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse }) => {
   );
 });
 
-const ModernChatInterface = ({ messages, onSendMessage, loading, onAgentAction, onArtifactToggle }) => {
+const ModernChatInterface = ({ 
+  messages, 
+  onSendMessage, 
+  loading, 
+  onAgentAction, 
+  onArtifactToggle,
+  connectionStatus,
+  transportType,
+  workflowType,
+  onRetry
+}) => {
   const [message, setMessage] = useState('');
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
   const chatEndRef = useRef(null);
@@ -122,14 +133,14 @@ const ModernChatInterface = ({ messages, onSendMessage, loading, onAgentAction, 
       {/* Fixed Command Center Header - Never moves */}
       <div className="flex-shrink-0 px-4 py-3 border-b border-cyan-400/20 bg-gradient-to-r from-cyan-500/5 to-purple-500/5 backdrop-blur-xl shadow-lg rounded-2xl mx-2 mt-2 mb-1">
         <div className="flex items-center justify-between">
-          <div>
+          <div className="flex-1">
             <div className="cosmic-module-header">
               <span className="text-cyan-300">🚀</span>
               Command Center Interface
             </div>
-            {/* Phase Status - positioned top left under Command Center */}
-            <div className="mt-2 flex items-start">
-              <div className="relative px-3 py-1.5 rounded-lg bg-gradient-to-r from-fuchsia-500/20 to-purple-500/20 border border-fuchsia-500/30 flex items-center justify-start space-x-2 backdrop-blur-sm">
+            {/* Phase Status */}
+            <div className="mt-2">
+              <div className="relative px-3 py-1.5 rounded-lg bg-gradient-to-r from-fuchsia-500/20 to-purple-500/20 border border-fuchsia-500/30 flex items-center justify-start space-x-2 backdrop-blur-sm w-fit">
                 <div className="absolute inset-0 bg-gradient-to-r from-fuchsia-500/10 to-purple-500/10 rounded-lg blur-sm"></div>
                 {/* Animated pulse dot - aligned to left */}
                 <div className="relative w-2 h-2 bg-fuchsia-400 rounded-full animate-pulse shadow-sm shadow-fuchsia-400/50 flex-shrink-0"></div>
@@ -140,35 +151,49 @@ const ModernChatInterface = ({ messages, onSendMessage, loading, onAgentAction, 
             </div>
           </div>
           
-          {/* Artifact Canvas Toggle Button */}
-          {onArtifactToggle && (
-            <>
-              {/* 
-                ARTIFACT TRIGGER LOGIC:
-                The button below manually triggers the artifact panel visibility via the `onArtifactToggle` prop,
-                which is connected to the `toggleSidePanel` function in `ChatPage.js`.
+          {/* Right side: Artifact Canvas Toggle Button and Connection Status */}
+          <div className="flex flex-col items-end gap-2">
+            {/* Artifact Canvas Toggle Button */}
+            {onArtifactToggle && (
+              <>
+                {/* 
+                  ARTIFACT TRIGGER LOGIC:
+                  The button below manually triggers the artifact panel visibility via the `onArtifactToggle` prop,
+                  which is connected to the `toggleSidePanel` function in `ChatPage.js`.
 
-                FUTURE ENHANCEMENT:
-                To make the artifact panel appear automatically based on an agent's output,
-                you would call the `onArtifactToggle` function programmatically. This could be done
-                by listening for a specific type of agent message in `ChatPage.js` and then
-                calling `toggleSidePanel()` when that message is received. This is the central
-                point for controlling the artifact panel's state.
-              */}
-              <button
-                onClick={onArtifactToggle}
-                className="group relative p-2 rounded-lg bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-400/20 hover:border-cyan-400/40 transition-all duration-300 backdrop-blur-sm"
-                title="Toggle Artifact Canvas"
-              >
-                <img 
-                  src="/mozaik_logo.svg" 
-                  className="w-8 h-8 opacity-70 group-hover:opacity-100 transition-all duration-300 group-hover:scale-105" 
-                  alt="Artifact Canvas" 
-                />
-                <div className="absolute inset-0 bg-cyan-400/10 rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
-              </button>
-            </>
-          )}
+                  FUTURE ENHANCEMENT:
+                  To make the artifact panel appear automatically based on an agent's output,
+                  you would call the `onArtifactToggle` function programmatically. This could be done
+                  by listening for a specific type of agent message in `ChatPage.js` and then
+                  calling `toggleSidePanel()` when that message is received. This is the central
+                  point for controlling the artifact panel's state.
+                */}
+                <button
+                  onClick={onArtifactToggle}
+                  className="group relative p-2 rounded-lg bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-400/20 hover:border-cyan-400/40 transition-all duration-300 backdrop-blur-sm"
+                  title="Toggle Artifact Canvas"
+                >
+                  <img 
+                    src="/mozaik_logo.svg" 
+                    className="w-8 h-8 opacity-70 group-hover:opacity-100 transition-all duration-300 group-hover:scale-105" 
+                    alt="Artifact Canvas" 
+                  />
+                  <div className="absolute inset-0 bg-cyan-400/10 rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
+                </button>
+              </>
+            )}
+            
+            {/* Connection Status - positioned under the Mozaik logo */}
+            {connectionStatus && (
+              <ConnectionStatus
+                status={connectionStatus}
+                transportType={transportType}
+                workflowType={workflowType}
+                onRetry={onRetry}
+                className="connection-status-compact"
+              />
+            )}
+          </div>
         </div>
       </div>
       

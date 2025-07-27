@@ -616,9 +616,9 @@ class SimpleTransport:
                     if "websocket" in connection_data:
                         try:
                             websocket = connection_data["websocket"]
-                            # Note: WebSocket.close() is synchronous in FastAPI
-                            # The actual cleanup happens in the WebSocket handler's finally block
-                            logger.debug(f"🔌 Marked WebSocket for cleanup: {connection_id}")
+                            # Close the WebSocket connection (sync in FastAPI)
+                            websocket.close()
+                            logger.debug(f"🔌 Closed WebSocket connection: {connection_id}")
                         except Exception as e:
                             logger.warning(f"⚠️ Error during WebSocket cleanup for {connection_id}: {e}")
                         finally:

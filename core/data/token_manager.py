@@ -779,18 +779,34 @@ class TokenManager:
                 "is_free_trial": False
             }
             
-            # Log budget transition without database update for now
-            # TODO: Add budget field updates when PersistenceManager supports it
-            
-            log_business_event(
-                event_type="billing_transition_persisted",
-                description="Successfully transitioned from free trial to token-based billing",
-                context={
-                    "chat_id": self.chat_id,
-                    "new_budget_type": budget_data["budget_type"],
-                    "token_balance": self.token_balance
-                }
-            )
+            # Update budget fields in the database using PersistenceManager
+            try:
+                await self.mongodb_manager.enterprises_collection.update_one(
+                    {"_id": self.enterprise_id},
+                    {"$set": {
+                        "free_trial": False,
+                        "budget_type": budget_data["budget_type"],
+                        "token_balance": self.token_balance,
+                        "budget_transitioned_at": datetime.utcnow()
+                    }}
+                )
+                log_business_event(
+                    event_type="billing_transition_persisted",
+                    description="Successfully transitioned from free trial to token-based billing and updated budget fields",
+                    context={
+                        "chat_id": self.chat_id,
+                        "new_budget_type": budget_data["budget_type"],
+                        "token_balance": self.token_balance
+                    }
+                )
+            except Exception as db_exc:
+                logger.error(f"Failed to update budget fields in DB: {db_exc}")
+                log_business_event(
+                    event_type="billing_transition_db_failed",
+                    description=f"Error updating budget fields in DB: {db_exc}",
+                    context={"chat_id": self.chat_id},
+                    level="ERROR"
+                )
             
         except Exception as e:
             logger.error(f"Failed to persist billing transition for chat {self.chat_id}: {e}")
@@ -919,11 +935,17 @@ class TokenManager:
             # Get observability data for technical tracking
             observability_summary = self.observability.get_session_summary()
             
+            # Include observability data in usage tracking
+            enhanced_usage_data = {
+                **turn_usage,
+                "observability_summary": observability_summary
+            }
+            
             await mongodb_manager.update_token_usage(
                 chat_id=self.chat_id,
                 enterprise_id=self.enterprise_id,
                 session_id=turn_usage.get("session_id", str(uuid.uuid4())),
-                usage_data=turn_usage
+                usage_data=enhanced_usage_data
             )
             
             token_logger.debug(f"[PERSISTENCE] Saved comprehensive usage data for chat {self.chat_id[:8]}")

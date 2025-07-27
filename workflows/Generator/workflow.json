@@ -1,5 +1,4 @@
 {
-  "_comment": "Frontend Integration: UI tools emit events that render React components via transport layer",
   "workflow_name": "Generator",
   "max_turns": 25,
   "initiating_agent": "user",
@@ -8,7 +7,7 @@
   "orchestration_pattern": "DefaultPattern",
   "initiate_handoffs": false,
   "initial_message_to_user": null,
-  "initial_message": null,
+  "initial_message": "Based on the concept overview in the context variables, please begin by analyzing what types of agents will be needed for this application. Define the agent architecture first, then we'll create the context variables based on those agent requirements.",
   
   "visual_agents": [
     "APIKeyAgent",

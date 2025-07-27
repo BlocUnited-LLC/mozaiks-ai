@@ -152,7 +152,7 @@ const ChatPage = () => {
     };
 
     handleAutoStart();
-  }, [workflowConfigLoaded, currentChatId, urlWorkflowType, currentEnterpriseId, currentUserId]);
+  }, [workflowConfigLoaded, currentChatId, urlWorkflowType, currentEnterpriseId, currentUserId, api]);
 
   // Unified incoming message handler for WebSocket only
   const handleIncoming = useCallback((data) => {
@@ -203,7 +203,7 @@ const ChatPage = () => {
       case 'UI_TOOL_EVENT':
         console.log('🎯 UI Tool Event received:', data);
         // Handle UI tool events from the backend (DYNAMIC_UI_COMPLETE_GUIDE.md specification)
-        handleUIToolEvent(data);
+        dynamicUIHandler.processUIEvent(data);
         return;
         
       case 'simple_text':
@@ -440,7 +440,7 @@ const ChatPage = () => {
       };
       setMessagesWithLogging(prev => [...prev, newMessage]);
     }
-  }, []);
+  }, [messages.length, setMessagesWithLogging]);
 
   // Connect to streaming when API becomes available and chat ID exists
   useEffect(() => {
@@ -508,9 +508,11 @@ const ChatPage = () => {
       );
 
       setWs(connection);
+      console.log('🔌 WebSocket connection established:', ws ? 'Active' : 'Inactive');
       return () => {
         if (connection) {
           connection.close();
+          console.log('🔌 WebSocket connection closed');
         }
       };
     };
@@ -523,6 +525,7 @@ const ChatPage = () => {
         console.log(`🎯 Using workflow type: ${workflowType} (from ${urlWorkflowType ? 'URL' : 'discovery'})`);
         
         const transportInfo = await api.getWorkflowTransport(workflowType);
+        console.log('📡 Transport info for', workflowType, ':', transportInfo);
         
         // Always use WebSocket transport
         console.log('Using WebSocket transport for', workflowType);
@@ -537,8 +540,6 @@ const ChatPage = () => {
         setCurrentWorkflowType(defaultWorkflow);
         return connectWebSocket();
       }
-      
-      return () => {}; // Return empty cleanup function if no connection is made
     };
     
     // Execute the async function and handle cleanup
@@ -557,7 +558,22 @@ const ChatPage = () => {
       // Reset the in-progress flag when component unmounts
       connectionInProgressRef.current = false;
     };
-  }, [api, currentEnterpriseId, currentUserId, handleIncoming, workflowConfigLoaded, currentChatId]); // Include currentChatId
+  }, [api, currentEnterpriseId, currentUserId, handleIncoming, workflowConfigLoaded, currentChatId, connectionInitialized, urlWorkflowType, ws]);
+
+  // Retry connection function
+  const retryConnection = useCallback(() => {
+    console.log('🔄 Retrying connection...');
+    setConnectionInitialized(false);
+    connectionInProgressRef.current = false;
+    setConnectionStatus('disconnected');
+    
+    // Trigger reconnection by setting up the connection again
+    setTimeout(() => {
+      if (currentChatId && workflowConfigLoaded) {
+        setConnectionStatus('connecting');
+      }
+    }, 1000);
+  }, [currentChatId, workflowConfigLoaded]);
 
   const sendMessage = async (messageContent) => {
     console.log('🚀 [SEND] Sending message:', messageContent);
@@ -666,37 +682,6 @@ const ChatPage = () => {
     setIsSidePanelOpen(!isSidePanelOpen);
   };
 
-  // Handle UI tool events from backend (dynamic UI system)
-  const handleUIToolEvent = useCallback((eventData) => {
-    console.log('🎯 Processing UI tool event:', eventData);
-    
-    // Extract UI tool event data (following ag2_dynamicUI.md specification)
-    const uiToolEvent = eventData.data || eventData;
-    
-    if (!uiToolEvent.toolId) {
-      console.error('❌ UI tool event missing toolId:', uiToolEvent);
-      return;
-    }
-    
-    console.log(`🔧 UI Tool Event: ${uiToolEvent.toolId} (${uiToolEvent.eventId})`);
-    
-    // Create a chat message with UI tool event attached
-    const messageWithUITool = {
-      id: uiToolEvent.eventId || Date.now().toString(),
-      sender: 'agent',
-      agentName: eventData.agent_name || 'Agent',
-      content: `UI Tool: ${uiToolEvent.toolId}`, // Minimal text content
-      uiToolEvent: uiToolEvent, // Attach the UI tool event data
-      timestamp: Date.now(),
-      isStreaming: false
-    };
-    
-    // Add to messages so ChatInterface can render the UI tool component
-    setMessagesWithLogging(prev => [...prev, messageWithUITool]);
-    
-    console.log('✅ Added UI tool event to messages:', messageWithUITool);
-  }, [setMessagesWithLogging]);
-
   return (
     <div className="flex flex-col h-screen overflow-hidden relative">
       <img
@@ -717,12 +702,23 @@ const ChatPage = () => {
         <div className={`flex flex-col md:flex-row flex-1 w-full min-h-0 overflow-hidden transition-all duration-300`}>
           {/* Chat Pane - 50% width when artifact is open, 100% when closed */}
           <div className={`flex flex-col px-4 flex-1 min-h-0 overflow-hidden transition-all duration-300 ${isSidePanelOpen ? 'md:w-1/2' : 'w-full'}`}>
+            {/* Dynamic UI Updates Debug (only show if there are recent updates) */}
+            {process.env.NODE_ENV === 'development' && dynamicUIUpdates.length > 0 && (
+              <div className="text-xs px-2 py-1 rounded mb-2 bg-blue-900/50 text-blue-300">
+                Recent UI Updates: {dynamicUIUpdates.length}
+              </div>
+            )}
+            
             <ChatInterface 
               messages={messages} 
               onSendMessage={sendMessage} 
               loading={loading}
               onAgentAction={handleAgentAction}
               onArtifactToggle={toggleSidePanel}
+              connectionStatus={connectionStatus}
+              transportType={transportType}
+              workflowType={currentWorkflowType}
+              onRetry={retryConnection}
             />
           </div>
           

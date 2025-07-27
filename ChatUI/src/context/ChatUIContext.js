@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import services from '../services';
 import config from '../config';
 // Import workflow registry for UI tool registration
-import { workflowsInitialized } from '../workflows';
+import { workflowsInitialized as workflowsInitPromise } from '../workflows';
 
 const ChatUIContext = createContext(null);
 
@@ -34,7 +34,7 @@ export const ChatUIProvider = ({
       try {
         // Initialize workflow registry first (UI tools need to be registered)
         console.log('🔧 Initializing workflow registry...');
-        await workflowsInitialized;
+        await workflowsInitPromise;
         setWorkflowsInitialized(true);
         console.log('✅ Workflow registry initialized');
 
@@ -62,6 +62,15 @@ export const ChatUIProvider = ({
         // Initialize the workflow registry (includes agent system functionality)
         try {
           console.log('🚀 Agent system replaced by workflow registry...');
+          
+          // Wait for workflows to be properly initialized (workflowsInitPromise is a Promise)
+          try {
+            await workflowsInitPromise;
+            console.log('✅ Workflows are initialized and ready');
+          } catch (workflowError) {
+            console.warn('⚠️ Workflows not yet initialized, proceeding with caution:', workflowError);
+          }
+          
           // Agent system functionality is now handled by workflow registration
           setAgentSystemInitialized(true);
           console.log('✅ Workflow-based agent system ready');
@@ -81,7 +90,7 @@ export const ChatUIProvider = ({
     };
 
     initializeServices();
-  }, [authAdapter, apiAdapter, onReady]);
+  }, [authAdapter, apiAdapter, onReady, workflowsInitPromise]);
 
   useEffect(() => {
     // Agents are auto-discovered through the workflow system

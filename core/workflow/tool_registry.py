@@ -242,7 +242,12 @@ class WorkflowToolRegistry:
                         result = await function() if inspect.iscoroutinefunction(function) else function()
                 else:
                     result = await function() if inspect.iscoroutinefunction(function) else function()
-                logger.info(f"✅ Executed lifecycle tool '{function.__name__}' for trigger '{trigger}'")
+                
+                # Log the result if available
+                if result is not None:
+                    logger.info(f"✅ Executed lifecycle tool '{function.__name__}' for trigger '{trigger}': {result}")
+                else:
+                    logger.info(f"✅ Executed lifecycle tool '{function.__name__}' for trigger '{trigger}'")
             except Exception as e:
                 logger.error(f"❌ Failed to execute lifecycle tool '{tool.path}': {e}")
 

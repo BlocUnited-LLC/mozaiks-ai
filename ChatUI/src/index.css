@@ -882,3 +882,179 @@
   bottom: 0;
   box-shadow: -2px 0 5px rgba(0, 0, 0, 0.5);
 }
+
+/* Connection Status Component Styles */
+.connection-status {
+  font-family: 'Oxanium', monospace;
+  font-size: 0.75rem;
+  border-radius: 0.375rem;
+  padding: 0.5rem;
+  margin-bottom: 0.5rem;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(6, 182, 212, 0.2);
+  transition: all 0.3s ease;
+}
+
+.connection-status.connected {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.3);
+  color: rgb(34, 197, 94);
+}
+
+.connection-status.connecting,
+.connection-status.reconnecting {
+  background: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.3);
+  color: rgb(251, 191, 36);
+  animation: pulse 2s infinite;
+}
+
+.connection-status.disconnected {
+  background: rgba(156, 163, 175, 0.1);
+  border-color: rgba(156, 163, 175, 0.3);
+  color: rgb(156, 163, 175);
+}
+
+.connection-status.error {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: rgb(239, 68, 68);
+}
+
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.status-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.status-icon {
+  font-size: 0.875rem;
+}
+
+.status-text {
+  font-weight: 600;
+}
+
+.transport-type,
+.workflow-type {
+  font-size: 0.65rem;
+  opacity: 0.7;
+  font-weight: 400;
+}
+
+.retry-button {
+  background: rgba(6, 182, 212, 0.2);
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  color: rgb(6, 182, 212);
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.65rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.retry-button:hover {
+  background: rgba(6, 182, 212, 0.3);
+  border-color: rgba(6, 182, 212, 0.5);
+}
+
+.error-details {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.65rem;
+}
+
+.error-stack {
+  margin-top: 0.5rem;
+  font-size: 0.55rem;
+}
+
+.error-stack pre {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.connection-quality {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.quality-bars {
+  display: flex;
+  gap: 2px;
+  align-items: end;
+}
+
+.quality-bars .bar {
+  width: 3px;
+  height: 8px;
+  background: rgba(156, 163, 175, 0.3);
+  border-radius: 1px;
+}
+
+.quality-bars .bar.active {
+  background: rgb(34, 197, 94);
+  box-shadow: 0 0 3px rgba(34, 197, 94, 0.5);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Compact Connection Status for Command Center Header */
+.connection-status-compact {
+  padding: 0.375rem 0.75rem;
+  margin-bottom: 0;
+  font-size: 0.65rem;
+  border-radius: 0.5rem;
+}
+
+.connection-status-compact .status-main {
+  gap: 0.375rem;
+}
+
+.connection-status-compact .status-icon {
+  font-size: 0.75rem;
+}
+
+.connection-status-compact .status-text {
+  font-weight: 500;
+}
+
+.connection-status-compact .transport-type,
+.connection-status-compact .workflow-type {
+  font-size: 0.6rem;
+}
+
+.connection-status-compact .retry-button {
+  padding: 0.125rem 0.375rem;
+  font-size: 0.6rem;
+  border-radius: 0.25rem;
+}
+
+.connection-status-compact .error-details {
+  margin-top: 0.25rem;
+  padding-top: 0.25rem;
+}
+
+.connection-status-compact .error-message {
+  font-size: 0.6rem;
+}

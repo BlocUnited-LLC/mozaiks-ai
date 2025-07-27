@@ -822,19 +822,44 @@ async def get_user_token_balance(user_id: str, appid: str = "default"):
             description=f"Token balance requested for user {user_id}, app {appid}"
         )
         
+
         # Use the mock function (or could be real API call)
         result = _mock_get_remaining(user_id, appid)
-        
+
+        # Try to get free trial status and free loops from TokenManager
+        from core.data.token_manager import TokenManager
+        # For this endpoint, we don't have chat_id or enterprise_id, so we use user_id as chat_id and 'default' as enterprise_id
+        token_manager = TokenManager(chat_id=user_id, enterprise_id="default", workflow_type="default", user_id=user_id)
+        # Try to initialize budget to load free trial info
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If already running (e.g. in FastAPI), use create_task and await
+                budget_info = await token_manager.initialize_budget(user_id=user_id)
+            else:
+                budget_info = loop.run_until_complete(token_manager.initialize_budget(user_id=user_id))
+            
+            # Log budget initialization result
+            logger.debug(f"Budget initialized for user {user_id}: {budget_info}")
+            
+            is_free_trial = token_manager.is_free_trial
+            free_loops_remaining = getattr(token_manager, 'free_loops_remaining', None)
+        except Exception as e:
+            logger.warning(f"Failed to initialize TokenManager for user {user_id}: {e}")
+            is_free_trial = False
+            free_loops_remaining = None
+
         # Map the response to client expectations
         response = {
             "balance": result.get("remaining", 0),
             "remaining": result.get("remaining", 0),  # Also provide as 'remaining'
             "user_id": user_id,
             "app_id": appid,
-            "is_free_trial": False,  # TODO: Integrate with actual TokenManager logic
-            "free_loops_remaining": None
+            "is_free_trial": is_free_trial,
+            "free_loops_remaining": free_loops_remaining
         }
-        
+
         business_logger.info(f"Token balance retrieved for user {user_id}: {response['balance']} tokens")
         return response
         

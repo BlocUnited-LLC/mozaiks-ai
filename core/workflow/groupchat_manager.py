@@ -236,7 +236,10 @@ def create_core_response_tracking_hooks(
                     try:
                         if budget_capability and hasattr(budget_capability, 'update_usage'):
                             usage_result = await budget_capability.update_usage(agents)
-                            chat_logger.debug(f"🪙 [BUDGET] Updated usage for {sender_name} via {budget_capability.__class__.__name__}")
+                            if usage_result:
+                                chat_logger.debug(f"🪙 [BUDGET] Updated usage for {sender_name}: {usage_result}")
+                            else:
+                                chat_logger.debug(f"🪙 [BUDGET] Updated usage for {sender_name} via {budget_capability.__class__.__name__}")
                     except Exception as e:
                         chat_logger.error(f"❌ [BUDGET] Failed to update usage for {sender_name}: {e}")
                 
@@ -391,6 +394,8 @@ async def _start_or_resume_group_chat(
     
     # Extract token_manager if commercial mode
     token_manager = getattr(budget_capability, 'token_manager', None)
+    if token_manager:
+        chat_logger.debug(f"🪙 [BUDGET] Token manager available: {type(token_manager).__name__}")
     
     # Initialize AG2-native token tracking for observability
     token_tracker = get_token_tracker(chat_id, enterprise_id, user_id or "unknown")
@@ -830,18 +835,18 @@ async def _start_or_resume_group_chat(
         #   • Custom hooks: See AG2 documentation for custom hook patterns
         # ═══════════════════════════════════════════════════════════════════════════════════
         
-        # Create response tracking hooks (currently disabled for stability)
-        # TODO: Re-enable once hook functionality is fully tested
-        # before_reply_hook, before_send_hook = create_core_response_tracking_hooks(
-        #     tracker=response_tracker,
-        #     chat_id=chat_id,
-        #     enterprise_id=enterprise_id,
-        #     budget_capability=budget_capability,
-        #     agents=agents_list,
-        #     streaming_manager=streaming_manager,
-        #     workflow_type=workflow_type,
-        #     token_tracker=token_tracker
-        # )
+        # Create response tracking hooks
+        before_reply_hook, before_send_hook = create_core_response_tracking_hooks(
+            tracker=response_tracker,
+            chat_id=chat_id,
+            enterprise_id=enterprise_id,
+            budget_capability=budget_capability,
+            agents=agents_list,
+            streaming_manager=streaming_manager,
+            workflow_type=workflow_type,
+            token_tracker=token_tracker
+        )
+        chat_logger.debug(f"🔍 [HOOKS] Response tracking hooks enabled")
         # NOTE: before_reply_hook and before_send_hook are set by lifecycle hooks above (if tool registry exists)
         # Only override to None if no lifecycle hooks were created
         if not hasattr(manager, "_tool_registry"):
@@ -948,6 +953,7 @@ async def _start_or_resume_group_chat(
                     }
                     manager.chat_messages[agent].append(emergency_msg)
                     emergency_fixes_applied += 1
+                    chat_logger.debug(f"🚨 [EMERGENCY] Added safety message for agent: {agent_name}")
                 
                 # Ensure _oai_messages exists for each agent
                 if not hasattr(manager, '_oai_messages'):
@@ -1000,7 +1006,18 @@ async def _start_or_resume_group_chat(
                 },
             )
             
-            chat_logger.info(f"✅ [ORCHESTRATION] Agent conversation completed in {agent_response_time:.2f}ms")
+            log_performance_metric(
+                metric_name="total_orchestration_duration",
+                value=orchestration_total_time,
+                unit="ms",
+                context={
+                    "enterprise_id": enterprise_id,
+                    "chat_id": chat_id,
+                    "workflow_type": workflow_type,
+                },
+            )
+            
+            chat_logger.info(f"✅ [ORCHESTRATION] Agent conversation completed in {agent_response_time:.2f}ms (total: {orchestration_total_time:.2f}ms)")
             
             # Save conversation state to database
             try:
@@ -1268,9 +1285,8 @@ async def run_workflow_orchestration(
     workflow_name_upper = workflow_type.upper()
     
     # Initialize workflow-specific loggers
-    from logs.logging_config import get_business_logger, get_performance_logger
+    from logs.logging_config import get_business_logger
     business_logger = get_business_logger(f"{workflow_type}_orchestration")
-    performance_logger = get_performance_logger(f"{workflow_type}_orchestration")
     
     try:
         # Get workflow configuration
