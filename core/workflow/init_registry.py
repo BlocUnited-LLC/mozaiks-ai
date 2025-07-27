@@ -2,7 +2,7 @@
 # FILE: init_registry.py
 # DESCRIPTION: Central registry for workflows and tools - workflow agnostic
 # ==============================================================================
-from typing import Dict, Callable, Awaitable, Any, List
+from typing import Dict, Callable, Awaitable, Any, List, Optional
 import logging
 from pathlib import Path
 from core.transport.ag2_iostream import AG2StreamingManager
@@ -10,8 +10,7 @@ from core.transport.ag2_iostream import AG2StreamingManager
 # Import enhanced logging for workflows
 from logs.logging_config import (
     get_workflow_logger,
-    log_business_event,
-    log_performance_metric
+    log_business_event
 )
 
 # Use workflow logger for registry operations
@@ -21,7 +20,7 @@ logger = get_workflow_logger(workflow_type="registry")
 _WORKFLOW_HANDLERS: Dict[str, Callable[..., Awaitable[Any]]] = {}
 _WORKFLOW_METADATA: Dict[str, Dict[str, Any]] = {}
 _WORKFLOW_TOOLS: Dict[str, List[Callable]] = {}  # Tools per workflow
-_WORKFLOW_TRANSPORTS: Dict[str, str] = {}  # Transport type per workflow (sse, websocket)
+_WORKFLOW_TRANSPORTS: Dict[str, str] = {}  # Transport type per workflow (websocket only)
 _INITIALIZERS: List[Callable[[], Awaitable[None]]] = []
 
 def initialize_workflow_components(workflow_type: str, workflow_name: str, base_dir: Path) -> List[str]:
@@ -84,13 +83,13 @@ def add_initialization_coroutine(coro: Callable[[], Awaitable[None]]) -> Callabl
     logger.debug(f"Registered initializer: {coro.__name__}")
     return coro
 
-def register_workflow(workflow_type: str, human_loop: bool = False, transport: str = "sse", auto_init_components: bool = True):
+def register_workflow(workflow_type: str, human_loop: bool = False, transport: str = "websocket", auto_init_components: bool = False):
     """Register a complete workflow handler with transport specification
     
     Args:
         workflow_type: Unique identifier for the workflow
         human_loop: Whether workflow requires human interaction
-        transport: Transport type - "sse" or "websocket"
+        transport: Transport type - "websocket" only
         auto_init_components: Whether to automatically initialize UI components for this workflow
     """
     def decorator(handler_func):
@@ -104,12 +103,10 @@ def register_workflow(workflow_type: str, human_loop: bool = False, transport: s
         
         # Auto-initialize component manifests if enabled
         if auto_init_components:
-            try:
-                base_dir = Path(__file__).parent.parent.parent  # Get to project root
-                created_files = initialize_workflow_components(workflow_type, workflow_type, base_dir)
-                logger.info(f"🎨 Auto-initialized {len(created_files)} component manifests for {workflow_type}")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to auto-initialize components for {workflow_type}: {e}")
+            # Component system is now event-driven via ui_tools → transport layer
+            logger.info(f"🎨 Event-driven UI system active for {workflow_type} (no manifest initialization needed)")
+        else:
+            logger.info(f"🎨 Auto-initialized 0 component manifests for {workflow_type}")
         
         logger.info(f"✅ Registered workflow: {workflow_type} (human_loop={human_loop}, transport={transport})")
         return handler_func
@@ -149,12 +146,12 @@ def get_registered_workflows() -> List[str]:
     return list(_WORKFLOW_HANDLERS.keys())
     
 def get_workflow_transport(workflow_type: str) -> str:
-    """Get the preferred transport for a workflow (sse or websocket)"""
-    return _WORKFLOW_TRANSPORTS.get(workflow_type, "sse")
+    """Get the preferred transport for a workflow (websocket only)"""
+    return _WORKFLOW_TRANSPORTS.get(workflow_type, "websocket")
 
 def get_workflows_by_transport() -> Dict[str, List[str]]:
     """Get workflows grouped by their transport type"""
-    transport_groups = {"sse": [], "websocket": []}
+    transport_groups = {"websocket": []}
     for workflow, transport in _WORKFLOW_TRANSPORTS.items():
         if transport in transport_groups:
             transport_groups[transport].append(workflow)
@@ -185,7 +182,7 @@ def workflow_status_summary() -> Dict[str, Any]:
         "workflows_with_tools": get_workflows_with_tools(),
         "total_tools": sum(len(tools) for tools in _WORKFLOW_TOOLS.values()),
         "initialization_coroutines": len(_INITIALIZERS),
-        "summary": f"{len(_WORKFLOW_HANDLERS)} workflows ({len(transport_groups['sse'])} SSE, {len(transport_groups['websocket'])} WebSocket), {sum(len(tools) for tools in _WORKFLOW_TOOLS.values())} total tools"
+        "summary": f"{len(_WORKFLOW_HANDLERS)} workflows ({len(transport_groups['websocket'])} WebSocket), {sum(len(tools) for tools in _WORKFLOW_TOOLS.values())} total tools"
     }
 
 async def run_workflow_with_streaming(
@@ -194,11 +191,10 @@ async def run_workflow_with_streaming(
     chat_id: str, 
     user_id: str, 
     initial_message: str, 
-    communication_channel,
     streaming_speed: str = "fast"
 ) -> Any:
     """
-    Enhanced workflow runner with AG2 token streaming support.
+    Enhanced workflow runner with AG2 token streaming support using SimpleTransport singleton.
     
     This function integrates the new AG2StreamingIOStream with any workflow handler.
     """
@@ -207,8 +203,14 @@ async def run_workflow_with_streaming(
     if not handler:
         raise ValueError(f"No handler registered for workflow type: {workflow_type}")
     
+    # Get SimpleTransport singleton for communication
+    from core.transport.simple_transport import SimpleTransport
+    transport = SimpleTransport._get_instance()
+    if not transport:
+        raise RuntimeError(f"SimpleTransport instance not available for {workflow_type} workflow")
+    
     # Set up AG2 streaming
-    streaming_manager = AG2StreamingManager(communication_channel, chat_id, enterprise_id)
+    streaming_manager = AG2StreamingManager(chat_id, enterprise_id)
     streaming_manager.setup_streaming(streaming_speed=streaming_speed)
     
     try:
@@ -219,8 +221,7 @@ async def run_workflow_with_streaming(
             enterprise_id=enterprise_id,
             chat_id=chat_id,
             user_id=user_id,
-            initial_message=initial_message,
-            communication_channel=communication_channel
+            initial_message=initial_message
         )
         
         logger.info(f"✅ Completed {workflow_type} workflow with streaming")
@@ -230,3 +231,145 @@ async def run_workflow_with_streaming(
         # Always restore the original IOStream
         streaming_manager.restore_original_iostream()
         logger.debug("🔄 AG2 IOStream restored")
+
+# ==============================================================================
+# AUTO-DISCOVERY SYSTEM - Eliminates need for workflow-specific initializer.py files
+# ==============================================================================
+
+def auto_discover_and_register_workflows():
+    """
+    Auto-discover all workflows from workflow.json files and register them.
+    This eliminates the need for individual initializer.py files in each workflow.
+    """
+    import json
+    import importlib
+    from pathlib import Path
+    
+    workflows_dir = Path(__file__).parent.parent.parent / "workflows"
+    if not workflows_dir.exists():
+        logger.warning(f"Workflows directory not found: {workflows_dir}")
+        return
+    
+    registered_count = 0
+    
+    # Scan all workflow directories
+    for workflow_dir in workflows_dir.iterdir():
+        if not workflow_dir.is_dir() or workflow_dir.name.startswith('.'):
+            continue
+            
+        workflow_json = workflow_dir / "workflow.json"
+        if not workflow_json.exists():
+            continue
+            
+        try:
+            # Load workflow configuration
+            with open(workflow_json, 'r') as f:
+                config = json.load(f)
+            
+            workflow_type = workflow_dir.name.lower()
+            
+            # Auto-discover agent factory
+            agents_factory = None
+            try:
+                agents_module = importlib.import_module(f"workflows.{workflow_type.title()}.Agents")
+                agents_factory = getattr(agents_module, "define_agents", None)
+            except (ImportError, AttributeError) as e:
+                logger.warning(f"Could not import agents for {workflow_type}: {e}")
+            
+            # Auto-discover context factory  
+            context_factory = None
+            try:
+                context_module = importlib.import_module(f"workflows.{workflow_type.title()}.ContextVariables")
+                context_factory = getattr(context_module, "get_context", None)
+            except (ImportError, AttributeError) as e:
+                logger.warning(f"Could not import context for {workflow_type}: {e}")
+            
+            # Create auto-generated workflow handler
+            def create_workflow_handler(wf_type, agents_fact, context_fact):
+                async def workflow_handler(enterprise_id: str, chat_id: str, user_id: Optional[str] = None, initial_message: Optional[str] = None):
+                    from core.workflow.groupchat_manager import run_workflow_orchestration
+                    from core.transport.simple_transport import SimpleTransport
+                    
+                    # Get LLM config from transport
+                    transport = SimpleTransport._get_instance()
+                    if not transport:
+                        raise RuntimeError(f"SimpleTransport instance not available for {wf_type}")
+                    
+                    llm_config = transport.default_llm_config
+                    if not llm_config:
+                        raise ValueError(f"No LLM config available for {wf_type}")
+                    
+                    # Call workflow orchestration with auto-discovered factories
+                    return await run_workflow_orchestration(
+                        workflow_type=wf_type,
+                        llm_config=llm_config,
+                        enterprise_id=enterprise_id,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        initial_message=initial_message,
+                        agents_factory=agents_fact,
+                        context_factory=context_fact
+                    )
+                return workflow_handler
+            
+            # Register the auto-generated workflow
+            workflow_handler = create_workflow_handler(workflow_type, agents_factory, context_factory)
+            
+            # Extract configuration from workflow.json
+            human_loop = config.get("human_in_the_loop", False)
+            
+            # Register using the decorator pattern
+            register_workflow(
+                workflow_type=workflow_type,
+                human_loop=human_loop,
+                transport="websocket",
+                auto_init_components=True
+            )(workflow_handler)
+            
+            # Also register a startup initialization coroutine for tool discovery
+            def create_startup_handler(wf_type):
+                async def startup_handler():
+                    from core.workflow.tool_registry import WorkflowToolRegistry
+                    from logs.logging_config import log_business_event
+                    
+                    try:
+                        # Pre-discover tools for group chat initialization
+                        tool_registry = WorkflowToolRegistry(wf_type)
+                        tool_registry.load_configuration()
+                        
+                        log_business_event(
+                            event_type=f"{wf_type.upper()}_AUTO_STARTUP_COMPLETED",
+                            description=f"Auto-discovered {wf_type} workflow initialization completed"
+                        )
+                        
+                        logger.info(f"🔧 Auto-initialized tools for workflow: {wf_type}")
+                        
+                    except Exception as e:
+                        log_business_event(
+                            event_type=f"{wf_type.upper()}_AUTO_STARTUP_FAILED", 
+                            description=f"Auto-discovered {wf_type} workflow initialization failed",
+                            context={"error": str(e)},
+                            level="ERROR"
+                        )
+                        logger.error(f"❌ Auto-initialization failed for {wf_type}: {e}")
+                        raise
+                        
+                return startup_handler
+            
+            # Register the startup handler
+            startup_handler = create_startup_handler(workflow_type)
+            add_initialization_coroutine(startup_handler)
+            
+            logger.info(f"🤖 Auto-registered workflow: {workflow_type} from {workflow_json}")
+            registered_count += 1
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to auto-register workflow {workflow_dir.name}: {e}")
+    
+    logger.info(f"🎯 Auto-discovery complete: {registered_count} workflows registered")
+
+# Auto-discover and register workflows on module import
+try:
+    auto_discover_and_register_workflows()
+except Exception as e:
+    logger.error(f"❌ Auto-discovery failed: {e}")

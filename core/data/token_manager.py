@@ -12,16 +12,20 @@ USE_MOCK_API = True  # Set to False when ready to use real Tokens API
 
 # Mock user data for testing - replace with real API calls
 MOCK_TOKEN_BALANCES = {
-    "user123": 100000,     # Increased for testing - was 1000, reduced to 454 through usage
-    "user456": 50000, 
-    "user789": 5000,       # Low balance for testing warnings  
-    "user0001": 150000,    # High balance user
-    "test_user": 200000,   # Test user for groupchat testing
-}
+    "user123": 100000,    "user456": 50000, 
+    "user789": 5000,    "user0001": 150000,    "test_user": 200000,}
 
 MOCK_APP_IDS = {
     "default": "app_12345",
     "enterprise_test": "app_67890"
+}
+
+# Mock enterprise data for testing free trial logic
+MOCK_ENTERPRISE_DATA = {
+    "enterprise_new": {"free_trial": True, "available_tokens": 0},
+    "enterprise_trial_ended": {"free_trial": False, "available_tokens": 50000},
+    "enterprise_no_tokens": {"free_trial": False, "available_tokens": 0},
+    "test_enterprise": {"free_trial": True, "available_tokens": 0}
 }
 
 def _mock_consume_tokens(user_id: str, app_id: str, amount: int) -> dict:
@@ -52,6 +56,14 @@ def _mock_consume_tokens(user_id: str, app_id: str, amount: int) -> dict:
         "app_id": app_id
     }
 
+def _mock_get_enterprise_data(enterprise_id: str) -> dict:
+    """Mock function to get enterprise free trial status and token balance"""
+    return MOCK_ENTERPRISE_DATA.get(enterprise_id, {"free_trial": True, "available_tokens": 0})
+
+class InsufficientTokensError(Exception):
+    """Raised when user has insufficient tokens for workflow execution"""
+    pass
+
 def _mock_get_remaining(user_id: str, app_id: str) -> dict:
     """Mock function for GET /api/Tokens/{userId}/remaining"""
     if user_id in MOCK_TOKEN_BALANCES:
@@ -77,7 +89,10 @@ from typing import Dict, List, Any, Optional, Tuple
 
 from autogen import Agent, gather_usage_summary
 
-from core.data.persistence_manager import persistence_manager as mongodb_manager
+from core.data.persistence_manager import PersistenceManager
+
+# Create instance for database operations
+mongodb_manager = PersistenceManager()
 from core.monitoring.observability import AG2ObservabilityManager
 from core.capabilities.config import get_free_trial_config
 from logs.logging_config import get_business_logger, get_performance_logger, get_token_manager_logger, log_business_event, log_performance_metric
@@ -90,39 +105,65 @@ logger = logging.getLogger(__name__)
 
 class TokenManager:
     """
-    A centralized manager for user budgets, token balances, and business logic
-    for all agent-based workflows. Handles free trials, paid accounts, and
-    budget enforcement. Integrates with AG2ObservabilityManager for technical
-    token tracking and usage monitoring.
+    Simplified token-based usage system with free trial support.
+    
+    Core Principles:
+    - Always tracks token usage for analytics
+    - Free trial: tracks but doesn't deduct tokens from balance
+    - Post-trial: deducts tokens from available_tokens balance
+    - Simple error when balance insufficient: "You're out of tokens. Please top up your account."
+    
+    Usage Pattern:
+    1. initialize_budget() - Load enterprise trial status and token balance
+    2. update_usage() - Track token consumption during workflow execution
+    3. check_token_balance() - Validate sufficient tokens before expensive operations
+    4. finalize_conversation() - Complete workflow and handle token deduction
     """
 
     def __init__(self, chat_id: str, enterprise_id: str, workflow_type: str, user_id: Optional[str] = None):
         self.chat_id = chat_id
         self.enterprise_id = enterprise_id
         self.workflow_type = workflow_type
-        self.user_id = user_id  # Store user_id for API calls
+        self.user_id = user_id
+        
+        # Core usage tracking (always tracked for analytics)
+        self.session_usage = {
+            "total_prompt_tokens": 0,
+            "total_completion_tokens": 0,
+            "total_tokens": 0,
+            "total_cost": 0.0,
+            "agents": {}
+        }
+        
+        # Simple billing flags
+        self.is_free_trial = None  # Will be loaded from enterprise data
+        self.available_tokens = 0  # Will be loaded from enterprise balance
+        
+        # Session tracking
         self.session_id = str(uuid.uuid4())
-
-        # Initialize AG2 observability manager for technical token tracking
-        self.observability = AG2ObservabilityManager(chat_id, enterprise_id)
-
-        # Business logic state tracking (separate from technical tracking)
-        self.business_usage: Dict[str, Any] = {
+        self.workflow_finalized = False
+        
+        # Remove complex logic - keep simple
+        self.termination_triggered = False
+        self.termination_reason = None
+        
+        # Business usage tracking (simplified)
+        self.business_usage = {
             "total_tokens_billed": 0,
             "total_cost_billed": 0.0,
             "api_calls_made": 0,
-            "api_tokens_consumed": 0,
+            "api_tokens_consumed": 0
         }
-        self.session_history: List[Dict[str, Any]] = []
-        self.termination_triggered = False
-        self.termination_reason: Optional[str] = None
-
-        # Budget limits and trial state
-        self.token_balance: int = 0
-        self.free_loops_remaining: Optional[int] = None
-        self.is_free_trial: bool = False
-        self.cost_limit: float = 5.0  # Default cost limit
-        self.turn_limit: Optional[int] = 20  # Default turn limit (None = unlimited)
+        
+        # Initialize observability and persistence
+        from core.monitoring.observability import AG2ObservabilityManager
+        self.observability = AG2ObservabilityManager(self.chat_id, self.enterprise_id)
+        
+        # Session tracking (simplified)
+        self.session_history = []
+        
+        # Use instance
+        self.mongodb_manager = mongodb_manager
         
         # Loop and user interaction tracking
         self.current_loop: int = 0  # Track which loop we're in (completed user feedback cycles)
@@ -223,178 +264,240 @@ class TokenManager:
 
     async def initialize_budget(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Initialize budget for a new chat. Determines if it's a free trial or paid account.
-        Returns the budget configuration that was set up.
+        Load enterprise token balance and free trial status.
+        Simple initialization - no complex tier logic.
         """
         if user_id:
             self.user_id = user_id
             
         try:
-            # Check if this is the first workflow for this enterprise
-            count = await mongodb_manager.workflows_collection.count_documents({
-                "enterprise_id": mongodb_manager._ensure_object_id(self.enterprise_id, "enterprise_id")
-            })
-
-            # Always fetch token balance for tracking purposes
-            if self.user_id:
-                self.token_balance = await self._fetch_token_balance(self.user_id)
+            # Load enterprise data (mock or real API)
+            if USE_MOCK_API:
+                enterprise_data = _mock_get_enterprise_data(str(self.enterprise_id))
+                self.is_free_trial = enterprise_data.get("free_trial", True)
+                self.available_tokens = enterprise_data.get("available_tokens", 0)
             else:
-                self.token_balance = 0
-
-            if count == 0:
-                # First workflow - grant free trial but still track tokens
-                trial_config = get_free_trial_config()
-                self.free_loops_remaining = trial_config["loops"]
-                self.is_free_trial = True
-                self.turn_limit = trial_config["turn_limit"]  # Limited turns for free trial
-                
-                log_business_event(
-                    event_type="free_trial_granted",
-                    description="First workflow → 3 free loops granted (tokens tracked but not consumed)",
-                    context={
-                        "chat_id": self.chat_id, 
-                        "enterprise_id": self.enterprise_id,
-                        "token_balance": self.token_balance,
-                        "user_id": self.user_id
-                    }
-                )
-                
-                budget_data = {
-                    "budget_type": "free_trial",
-                    "free_loops_remaining": self.free_loops_remaining,
-                    "token_balance": self.token_balance,  # Track but don't consume during trial
-                    "turn_limit": self.turn_limit
-                }
-            else:
-                # Check if user has exhausted free trial but still has tokens
-                # Look for any previous workflows to see if they've used free trial
-                previous_workflows = await mongodb_manager.workflows_collection.find_one({
-                    "enterprise_id": mongodb_manager._ensure_object_id(self.enterprise_id, "enterprise_id"),
-                    "budget_type": "free_trial"
+                # Load from database in real implementation
+                enterprise_doc = await mongodb_manager.enterprises_collection.find_one({
+                    "_id": mongodb_manager._ensure_object_id(self.enterprise_id, "enterprise_id")
                 })
                 
-                if previous_workflows:
-                    # User has used free trial before, now use token balance
-                    self.is_free_trial = False
-                    self.free_loops_remaining = None
-                    self.turn_limit = None  # No turn limit for paid users
+                if not enterprise_doc:
+                    # New enterprise - start with free trial
+                    self.is_free_trial = True
+                    self.available_tokens = 0
                     
-                    log_business_event(
-                        event_type="token_billing_active",
-                        description=f"Post-trial: Using token balance billing ({self.token_balance} tokens)",
-                        context={
-                            "chat_id": self.chat_id, 
-                            "user_id": self.user_id, 
-                            "balance": self.token_balance,
-                            "low_balance_warning": self.token_balance < 100
-                        }
+                    # Initialize enterprise record
+                    await mongodb_manager.enterprises_collection.update_one(
+                        {"_id": mongodb_manager._ensure_object_id(self.enterprise_id, "enterprise_id")},
+                        {
+                            "$set": {
+                                "free_trial": True,
+                                "available_tokens": 0,
+                                "total_tokens_used": 0,
+                                "total_cost_incurred": 0.0,
+                                "created_at": datetime.utcnow()
+                            }
+                        },
+                        upsert=True
                     )
-                    
-                    budget_data = {
-                        "budget_type": "paid_tokens",
-                        "token_balance": self.token_balance,
-                        "free_loops_remaining": None,
-                        "turn_limit": self.turn_limit,
-                        "low_balance_warning": self.token_balance < 100
-                    }
                 else:
-                    # Existing enterprise but no previous free trial workflows
-                    # This could be a paid account or enterprise setup
-                    self.is_free_trial = False
-                    self.free_loops_remaining = None
-                    self.turn_limit = None
-                    
-                    budget_data = {
-                        "budget_type": "paid_tokens" if self.token_balance > 0 else "no_budget",
-                        "token_balance": self.token_balance,
-                        "free_loops_remaining": None,
-                        "turn_limit": self.turn_limit,
-                        "low_balance_warning": self.token_balance < 100
-                    }
-
-            # Update database with budget configuration
-            await mongodb_manager.update_budget_fields(self.chat_id, self.enterprise_id, budget_data)
-            return budget_data
-
-        except Exception as e:
-            logger.error(f"Failed to initialize budget for chat {self.chat_id}: {e}")
+                    # Existing enterprise - load current status
+                    self.is_free_trial = enterprise_doc.get("free_trial", False)
+                    self.available_tokens = enterprise_doc.get("available_tokens", 0)
+            
             log_business_event(
-                event_type="budget_init_failed",
-                description=f"Budget initialization error: {e}",
-                context={"chat_id": self.chat_id},
-                level="ERROR"
+                event_type="budget_initialized",
+                description=f"Budget initialized for enterprise {self.enterprise_id}",
+                context={
+                    "enterprise_id": self.enterprise_id,
+                    "is_free_trial": self.is_free_trial,
+                    "available_tokens": self.available_tokens,
+                    "chat_id": self.chat_id,
+                    "workflow_type": self.workflow_type
+                }
             )
-            # Default to no budget on error
+            
             return {
-                "budget_type": "error",
-                "token_balance": 0,
-                "free_loops_remaining": None
+                "success": True,
+                "is_free_trial": self.is_free_trial,
+                "available_tokens": self.available_tokens,
+                "session_id": self.session_id
             }
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize budget for enterprise {self.enterprise_id}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def check_token_balance(self, estimated_tokens: int = 0) -> Tuple[bool, Optional[str]]:
+        """
+        Check if user has sufficient tokens for continued execution.
+        
+        - Free trial: Always return True (no deduction)
+        - Post-trial: Check available_tokens balance
+        """
+        if self.is_free_trial:
+            return True, None
+        
+        if self.available_tokens <= 0:
+            return False, "You're out of tokens. Please top up your account."
+        
+        if estimated_tokens > 0 and self.available_tokens < estimated_tokens:
+            return False, f"Insufficient tokens. Need {estimated_tokens}, have {self.available_tokens}. Please top up your account."
+        
+        return True, None
 
     async def update_usage(self, agents: List[Agent]) -> Dict[str, Any]:
         """
-        Updates token usage using AG2ObservabilityManager for technical tracking
-        and handles business logic for token consumption and budget enforcement.
-        Consumes tokens via API for non-free-trial users.
+        CENTRALIZED TOKEN TRACKING LOGIC
+        
+        Extracts per-agent usage from AG2 and creates structured session data.
+        Uses PersistenceManager for database storage with new schema:
+        - Per-agent tracking within sessions
+        - Workflow aggregates across all sessions
+        - Clean separation: TokenManager=logic, PersistenceManager=storage
         """
         start_time = datetime.utcnow()
         
-        # Use direct AG2 gather_usage_summary approach (like working VE version)
+        # Use direct AG2 gather_usage_summary approach
         agent_summary = gather_usage_summary(agents)
         
-        # Calculate session usage (following working VE pattern)
-        session_PromptTokens = 0
-        session_CompletionTokens = 0
-        session_TotalTokens = 0
-        session_TotalCost = 0.0
-
-        # Process usage_including_cached_inference like the working version
-        for Model_name, Model_data in agent_summary.get("usage_including_cached_inference", {}).items():
-            if Model_name != 'total_cost':
-                session_PromptTokens += Model_data.get('prompt_tokens', 0)
-                session_CompletionTokens += Model_data.get('completion_tokens', 0) 
-                session_TotalTokens += Model_data.get('total_tokens', 0)
-                session_TotalCost += Model_data.get('cost', 0.0)
-
-        # Prepare turn usage data
+        # ====================================================================
+        # EXTRACT PER-AGENT USAGE (New Schema)
+        # ====================================================================
+        agent_names = [agent.name for agent in agents if hasattr(agent, 'name')]
+        session_data = {
+            "session_id": self.session_id,
+            "PromptTokens": 0,
+            "CompletionTokens": 0,
+            "TotalCost": 0.0,
+            "agents": {}  # Per-agent tracking
+        }
+        
+        # Extract per-agent usage from AG2 client usage data
+        for agent in agents:
+            if not hasattr(agent, 'name'):
+                continue
+                
+            agent_name = agent.name
+            agent_data = {
+                f"{agent_name}_PromptTokens": 0,
+                f"{agent_name}_CompletionTokens": 0,
+                f"{agent_name}_PromptCost": 0.0,
+                f"{agent_name}_CompletionCost": 0.0,
+                f"{agent_name}_TotalCost": 0.0
+            }
+            
+            # Extract usage from agent's client if available
+            # Note: AG2 agents may have different client structures
+            client = None
+            if hasattr(agent, 'client'):
+                client = getattr(agent, 'client', None)
+            elif hasattr(agent, '_client'):
+                client = getattr(agent, '_client', None)
+            elif hasattr(agent, 'llm_config'):
+                # Try to get client from config
+                llm_config = getattr(agent, 'llm_config', {})
+                if isinstance(llm_config, dict):
+                    client = llm_config.get('client')
+            
+            if client and hasattr(client, 'get_usage'):
+                try:
+                    # Get usage for this specific agent's client
+                    client_usage = client.get_usage()
+                    if client_usage:
+                        # Extract token counts and costs
+                        agent_prompt = client_usage.get('prompt_tokens', 0)
+                        agent_completion = client_usage.get('completion_tokens', 0)
+                        agent_cost = client_usage.get('cost', 0.0)
+                        
+                        # Calculate cost breakdown (if not provided)
+                        if agent_cost > 0 and (agent_prompt + agent_completion) > 0:
+                            # Estimate prompt vs completion cost (rough 1:2 ratio typical)
+                            total_tokens = agent_prompt + agent_completion
+                            prompt_ratio = agent_prompt / total_tokens if total_tokens > 0 else 0.5
+                            completion_ratio = agent_completion / total_tokens if total_tokens > 0 else 0.5
+                            
+                            agent_data[f"{agent_name}_PromptTokens"] = agent_prompt
+                            agent_data[f"{agent_name}_CompletionTokens"] = agent_completion
+                            agent_data[f"{agent_name}_PromptCost"] = agent_cost * prompt_ratio
+                            agent_data[f"{agent_name}_CompletionCost"] = agent_cost * completion_ratio
+                            agent_data[f"{agent_name}_TotalCost"] = agent_cost
+                            
+                            # Add to session totals
+                            session_data["PromptTokens"] += agent_prompt
+                            session_data["CompletionTokens"] += agent_completion
+                            session_data["TotalCost"] += agent_cost
+                            
+                except Exception as e:
+                    token_logger.warning(f"Failed to extract usage for agent {agent_name}: {e}")
+            
+            # Store agent data in session (even if zero - for complete tracking)
+            session_data["agents"][agent_name] = agent_data
+        
+        # ====================================================================
+        # FALLBACK: Use AG2 aggregate if per-agent extraction fails
+        # ====================================================================
+        if session_data["PromptTokens"] == 0 and session_data["CompletionTokens"] == 0:
+            # Fall back to AG2 aggregate usage
+            for Model_name, Model_data in agent_summary.get("usage_including_cached_inference", {}).items():
+                if Model_name != 'total_cost':
+                    session_data["PromptTokens"] += Model_data.get('prompt_tokens', 0)
+                    session_data["CompletionTokens"] += Model_data.get('completion_tokens', 0)
+                    session_data["TotalCost"] += Model_data.get('cost', 0.0)
+            
+            token_logger.info(f"Using AG2 aggregate fallback: {session_data['PromptTokens']} tokens")
+        
+        # ====================================================================
+        # PREPARE TURN USAGE DATA (For business logic)
+        # ====================================================================
         turn_usage = {
-            "total_tokens": session_TotalTokens,
-            "prompt_tokens": session_PromptTokens,
-            "completion_tokens": session_CompletionTokens,
-            "total_cost": session_TotalCost,
+            "total_tokens": session_data["PromptTokens"] + session_data["CompletionTokens"],
+            "prompt_tokens": session_data["PromptTokens"],
+            "completion_tokens": session_data["CompletionTokens"], 
+            "total_cost": session_data["TotalCost"],
             "models_used": list(agent_summary.get("models", {}).keys()),
-            "cached_tokens": 0,  # Could calculate if needed
             "timestamp": start_time.isoformat(),
+            "session_data": session_data,  # Include full session data for persistence
             "ag2_usage_summary": agent_summary  # Store full AG2 response for debugging
         }
 
+        # ====================================================================
+        # BUSINESS LOGIC & LOGGING (Updated for new schema)
+        # ====================================================================
+        total_tokens = turn_usage["total_tokens"]
+        total_cost = turn_usage["total_cost"]
+        
         # Log the usage calculation
-        token_logger.info(f"[USAGE] Chat: {self.chat_id[:8]} | Tokens: {session_TotalTokens} | Cost: ${session_TotalCost:.4f}")
-        token_logger.debug(f"[DETAIL] Prompt: {session_PromptTokens}, Completion: {session_CompletionTokens}")
+        token_logger.info(f"[USAGE] Chat: {self.chat_id[:8]} | Tokens: {total_tokens} | Cost: ${total_cost:.4f}")
+        token_logger.debug(f"[DETAIL] Prompt: {session_data['PromptTokens']}, Completion: {session_data['CompletionTokens']}")
 
         # Skip if no usage
-        if session_TotalTokens == 0 and session_TotalCost == 0.0:
+        if total_tokens == 0 and total_cost == 0.0:
             token_logger.info(f"[SKIP] No usage or cost incurred for chat {self.chat_id[:8]}")
             return turn_usage
 
         # Update business usage tracking (what we bill for)
-        self.business_usage["total_tokens_billed"] += session_TotalTokens
-        self.business_usage["total_cost_billed"] += session_TotalCost
+        self.business_usage["total_tokens_billed"] += total_tokens
+        self.business_usage["total_cost_billed"] += total_cost
         
         # Log to consolidated token tracking log with clear categorization
-        token_logger.info(f"[BILLING] Usage Update | Chat: {self.chat_id[:8]} | Tokens: {session_TotalTokens} | Cost: ${session_TotalCost:.4f}")
+        token_logger.info(f"[BILLING] Usage Update | Chat: {self.chat_id[:8]} | Tokens: {total_tokens} | Cost: ${total_cost:.4f}")
         token_logger.debug(f"[CUMULATIVE] Total Billed: {self.business_usage['total_tokens_billed']} tokens | ${self.business_usage['total_cost_billed']:.4f}")
         
+        # ====================================================================
+        # TOKEN CONSUMPTION (API Integration)
+        # ====================================================================
         # Handle token consumption based on trial status
-        if not self.is_free_trial and self.user_id and session_TotalTokens > 0:
+        if not self.is_free_trial and self.user_id and total_tokens > 0:
             # Actually consume tokens via API for non-free-trial users
-            consume_result = await self._consume_tokens_api(self.user_id, session_TotalTokens)
+            consume_result = await self._consume_tokens_api(self.user_id, total_tokens)
             
             if consume_result.get("success", False):
                 # Update local balance with API response
                 self.token_balance = consume_result.get("remaining", self.token_balance)
                 self.business_usage["api_calls_made"] += 1
-                self.business_usage["api_tokens_consumed"] += session_TotalTokens
+                self.business_usage["api_tokens_consumed"] += total_tokens
                 
                 # IMPORTANT: Reset agent usage counters after successful billing
                 # This prevents cumulative token counting in subsequent turns
@@ -402,18 +505,18 @@ class TokenManager:
                     from core.monitoring.observability import get_observer
                     observer = get_observer(self.chat_id, self.enterprise_id)
                     observer.reset_agent_usage(agents)
-                    token_logger.debug(f"[BILLING] Reset agent usage counters after billing {session_TotalTokens} tokens")
+                    token_logger.debug(f"[BILLING] Reset agent usage counters after billing {total_tokens} tokens")
                 except Exception as reset_error:
                     token_logger.warning(f"[BILLING] Failed to reset agent usage: {reset_error}")
                 
-                token_logger.info(f"[API_SUCCESS] User: {self.user_id} | Consumed: {session_TotalTokens} | Balance: {self.token_balance}")
+                token_logger.info(f"[API_SUCCESS] User: {self.user_id} | Consumed: {total_tokens} | Balance: {self.token_balance}")
                 
                 log_business_event(
                     event_type="tokens_consumed_via_api",
-                    description=f"Tokens consumed via API: {session_TotalTokens}, Balance: {self.token_balance}",
+                    description=f"Tokens consumed via API: {total_tokens}, Balance: {self.token_balance}",
                     context={
                         "chat_id": self.chat_id,
-                        "tokens_used": session_TotalTokens,
+                        "tokens_used": total_tokens,
                         "remaining_balance": self.token_balance,
                         "api_response": consume_result,
                         "technical_usage": agent_summary
@@ -421,14 +524,14 @@ class TokenManager:
                 )
             else:
                 # API consumption failed - handle error
-                token_logger.error(f"[API_FAILURE] User: {self.user_id} | Requested: {turn_usage['total_tokens']} | Error: {consume_result.get('error')}")
+                token_logger.error(f"[API_FAILURE] User: {self.user_id} | Requested: {total_tokens} | Error: {consume_result.get('error')}")
                 logger.error(f"Failed to consume tokens via API: {consume_result}")
                 log_business_event(
                     event_type="token_consumption_failed",
                     description=f"API token consumption failed: {consume_result.get('error', 'Unknown error')}",
                     context={
                         "chat_id": self.chat_id,
-                        "tokens_requested": session_TotalTokens,
+                        "tokens_requested": total_tokens,
                         "api_response": consume_result
                     },
                     level="ERROR"
@@ -439,52 +542,96 @@ class TokenManager:
                 self.termination_triggered = True
         else:
             # For free trial users, track usage but don't consume tokens
-            token_logger.info(f"[FREE_TRIAL] Chat: {self.chat_id[:8]} | Tokens: {session_TotalTokens} (tracked) | Loops Left: {self.free_loops_remaining}")
+            token_logger.info(f"[FREE_TRIAL] Chat: {self.chat_id[:8]} | Tokens: {total_tokens} (tracked) | Loops Left: {self.free_loops_remaining}")
             
             # Reset agent usage counters for free trial users too
             try:
                 from core.monitoring.observability import get_observer
                 observer = get_observer(self.chat_id, self.enterprise_id)
                 observer.reset_agent_usage(agents)
-                token_logger.debug(f"[FREE_TRIAL] Reset agent usage counters after tracking {session_TotalTokens} tokens")
+                token_logger.debug(f"[FREE_TRIAL] Reset agent usage counters after tracking {total_tokens} tokens")
             except Exception as reset_error:
                 token_logger.warning(f"[FREE_TRIAL] Failed to reset agent usage: {reset_error}")
             
             log_business_event(
                 event_type="tokens_tracked_not_consumed",
-                description=f"Free trial: {session_TotalTokens} tokens tracked but not consumed",
+                description=f"Free trial - tokens tracked but not consumed: {total_tokens}",
                 context={
                     "chat_id": self.chat_id,
-                    "tokens_tracked": session_TotalTokens,
-                    "free_loops_remaining": self.free_loops_remaining,
-                    "technical_usage": agent_summary
+                    "tokens_tracked": total_tokens,
+                    "free_loops_remaining": self.free_loops_remaining
                 }
             )
         
+        # ====================================================================
+        # PERSISTENCE (Use PersistenceManager for new schema)
+        # ====================================================================
         # Increment turn count for limit enforcement
         current_turn = self.increment_turn_count()
         turn_usage["turn_number"] = current_turn
         
         self.session_history.append(turn_usage)
 
-        # Save using clean schema only (phasing out comprehensive persistence)
+        # Save using PersistenceManager with new schema
         try:
-            # mongodb_manager is already imported at the top as persistence_manager alias
-            await mongodb_manager.save_token_usage(
+            await mongodb_manager.save_session_usage(
                 chat_id=self.chat_id,
-                enterprise_id=self.enterprise_id, 
-                session_id=getattr(self, 'session_id', self.chat_id),
-                total_tokens=session_TotalTokens,
-                prompt_tokens=session_PromptTokens,
-                completion_tokens=session_CompletionTokens,
-                total_cost=session_TotalCost,
-                turn_number=current_turn
+                enterprise_id=self.enterprise_id,
+                workflow_type=self.workflow_type,
+                session_data=session_data,
+                agents=agent_names
             )
-            token_logger.info(f"[CLEAN_DB] Saved clean token usage for chat {self.chat_id[:8]} | Turn: {current_turn}")
+            token_logger.debug(f"[PERSISTENCE] Saved session usage to new schema")
         except Exception as e:
-            token_logger.error(f"[CLEAN_DB] Failed to save clean token usage: {e}")
+            token_logger.error(f"[PERSISTENCE] Failed to save session usage: {e}")
 
         return turn_usage
+
+    def extract_per_agent_usage(self, agents: List[Any]) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract per-agent token usage from AG2 agents for centralized tracking.
+        This is the main method for getting detailed agent breakdowns.
+        
+        Args:
+            agents: List of AG2 agents from workflow
+            
+        Returns:
+            Dict mapping agent names to their usage data
+        """
+        per_agent_usage = {}
+        
+        for agent in agents:
+            try:
+                agent_name = getattr(agent, 'name', 'Unknown_Agent')
+                client = getattr(agent, 'client', None)
+                
+                if client and hasattr(client, 'usage_summary'):
+                    usage = client.usage_summary
+                    per_agent_usage[agent_name] = {
+                        "PromptTokens": usage.get("prompt_tokens", 0),
+                        "CompletionTokens": usage.get("completion_tokens", 0),
+                        "TotalTokens": usage.get("total_tokens", 0),
+                        "TotalCost": usage.get("total_cost", 0.0)
+                    }
+                else:
+                    # Fallback for agents without client usage
+                    per_agent_usage[agent_name] = {
+                        "PromptTokens": 0,
+                        "CompletionTokens": 0,
+                        "TotalTokens": 0,
+                        "TotalCost": 0.0
+                    }
+                    
+            except Exception as e:
+                token_logger.warning(f"Failed to extract usage for agent {getattr(agent, 'name', 'Unknown')}: {e}")
+                per_agent_usage[getattr(agent, 'name', 'Unknown_Agent')] = {
+                    "PromptTokens": 0,
+                    "CompletionTokens": 0,
+                    "TotalTokens": 0,
+                    "TotalCost": 0.0
+                }
+        
+        return per_agent_usage
 
     async def consume_free_loop(self) -> bool:
         """
@@ -495,19 +642,17 @@ class TokenManager:
             return False
 
         try:
-            # Atomically decrement in database
-            remaining = await mongodb_manager.decrement_free_loops(self.chat_id, self.enterprise_id)
-            
-            if remaining is not None:
-                self.free_loops_remaining = remaining
+            # Simple decrement for free trial tracking
+            if self.free_loops_remaining > 0:
+                self.free_loops_remaining -= 1
                 self.current_loop += 1  # Increment completed loops counter
                 
                 log_business_event(
                     event_type="free_loop_consumed",
-                    description=f"Free loop consumed. Loop #{self.current_loop} completed. Remaining: {remaining}",
+                    description=f"Free loop consumed. Loop #{self.current_loop} completed. Remaining: {self.free_loops_remaining}",
                     context={
                         "chat_id": self.chat_id, 
-                        "remaining": remaining,
+                        "remaining": self.free_loops_remaining,
                         "loops_completed": self.current_loop
                     }
                 )
@@ -634,7 +779,8 @@ class TokenManager:
                 "is_free_trial": False
             }
             
-            await mongodb_manager.update_budget_fields(self.chat_id, self.enterprise_id, budget_data)
+            # Log budget transition without database update for now
+            # TODO: Add budget field updates when PersistenceManager supports it
             
             log_business_event(
                 event_type="billing_transition_persisted",
@@ -776,9 +922,8 @@ class TokenManager:
             await mongodb_manager.update_token_usage(
                 chat_id=self.chat_id,
                 enterprise_id=self.enterprise_id,
-                session_usage=turn_usage,
-                business_usage=self.business_usage,
-                observability_data=observability_summary
+                session_id=turn_usage.get("session_id", str(uuid.uuid4())),
+                usage_data=turn_usage
             )
             
             token_logger.debug(f"[PERSISTENCE] Saved comprehensive usage data for chat {self.chat_id[:8]}")
@@ -793,6 +938,141 @@ class TokenManager:
                 level="ERROR"
             )
 
+    async def finalize_conversation(self) -> Dict[str, Any]:
+        """
+        Finalize the workflow conversation and handle token deduction.
+        
+        - Mark workflow as complete
+        - If free trial: end trial and transition to paid model
+        - If post-trial: deduct tokens from available balance
+        """
+        if self.workflow_finalized:
+            return {"success": False, "reason": "Workflow already finalized"}
+        
+        try:
+            # Mark workflow as complete in database
+            await mongodb_manager.workflows_collection.update_one(
+                {
+                    "chat_id": self.chat_id,
+                    "enterprise_id": mongodb_manager._ensure_object_id(self.enterprise_id, "enterprise_id")
+                },
+                {
+                    "$set": {
+                        "is_complete": True,
+                        "completed_at": datetime.utcnow(),
+                        f"{self.workflow_type}_status": 1  # Complete status
+                    }
+                }
+            )
+            
+            # Handle token deduction based on trial status
+            if self.is_free_trial:
+                # End free trial and transition to paid model
+                await mongodb_manager.enterprises_collection.update_one(
+                    {"_id": mongodb_manager._ensure_object_id(self.enterprise_id, "enterprise_id")},
+                    {
+                        "$set": {
+                            "free_trial": False,
+                            "trial_ended_at": datetime.utcnow()
+                        },
+                        "$inc": {
+                            "total_tokens_used": self.session_usage["total_tokens"],
+                            "total_cost_incurred": self.session_usage["total_cost"]
+                        }
+                    }
+                )
+                
+                log_business_event(
+                    event_type="free_trial_ended",
+                    description=f"Free trial ended for enterprise {self.enterprise_id}",
+                    context={
+                        "enterprise_id": self.enterprise_id,
+                        "trial_tokens_used": self.session_usage["total_tokens"],
+                        "trial_cost_incurred": self.session_usage["total_cost"],
+                        "workflow_type": self.workflow_type
+                    }
+                )
+                
+                self.workflow_finalized = True
+                return {
+                    "success": True,
+                    "trial_ended": True,
+                    "tokens_used_in_trial": self.session_usage["total_tokens"],
+                    "cost_incurred_in_trial": self.session_usage["total_cost"],
+                    "message": "Free trial completed! Please add tokens to your account to continue using workflows."
+                }
+                
+            else:
+                # Post-trial: Deduct tokens from available balance
+                tokens_to_deduct = self.session_usage["total_tokens"]
+                cost_to_deduct = self.session_usage["total_cost"]
+                
+                # Check if sufficient balance
+                if self.available_tokens < tokens_to_deduct:
+                    raise InsufficientTokensError(
+                        f"Insufficient tokens to complete workflow. Need {tokens_to_deduct}, have {self.available_tokens}"
+                    )
+                
+                # Deduct from enterprise balance
+                await mongodb_manager.enterprises_collection.update_one(
+                    {"_id": mongodb_manager._ensure_object_id(self.enterprise_id, "enterprise_id")},
+                    {
+                        "$inc": {
+                            "available_tokens": -tokens_to_deduct,
+                            "total_tokens_used": tokens_to_deduct,
+                            "total_cost_incurred": cost_to_deduct
+                        }
+                    }
+                )
+                
+                # Update local balance
+                self.available_tokens -= tokens_to_deduct
+                
+                log_business_event(
+                    event_type="tokens_deducted",
+                    description=f"Tokens deducted for completed workflow",
+                    context={
+                        "enterprise_id": self.enterprise_id,
+                        "tokens_deducted": tokens_to_deduct,
+                        "cost_deducted": cost_to_deduct,
+                        "remaining_tokens": self.available_tokens,
+                        "workflow_type": self.workflow_type
+                    }
+                )
+                
+                self.workflow_finalized = True
+                return {
+                    "success": True,
+                    "tokens_deducted": tokens_to_deduct,
+                    "cost_deducted": cost_to_deduct,
+                    "remaining_tokens": self.available_tokens,
+                    "workflow_complete": True
+                }
+                
+        except InsufficientTokensError as e:
+            logger.warning(f"Insufficient tokens for enterprise {self.enterprise_id}: {e}")
+            return {
+                "success": False,
+                "error": "insufficient_tokens",
+                "message": str(e)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to finalize conversation for {self.chat_id}: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_usage_summary(self) -> Dict[str, Any]:
+        """Get current session usage summary"""
+        return {
+            "session_id": self.session_id,
+            "chat_id": self.chat_id,
+            "workflow_type": self.workflow_type,
+            "is_free_trial": self.is_free_trial,
+            "available_tokens": self.available_tokens,
+            "session_usage": self.session_usage,
+            "workflow_finalized": self.workflow_finalized
+        }
+
     def get_summary(self) -> Dict[str, Any]:
         """
         Returns a summary of the current token usage and budget state.
@@ -801,14 +1081,12 @@ class TokenManager:
             "chat_id": self.chat_id,
             "session_id": self.session_id,
             "user_id": self.user_id,
-            "business_usage": self.business_usage,  # Business billing data
+            "session_usage": self.session_usage,  # Simplified usage tracking
             "technical_usage": self.observability.get_session_summary(),  # Technical AG2 data
             "budget_info": {
                 "is_free_trial": self.is_free_trial,
-                "free_loops_remaining": self.free_loops_remaining,
-                "token_balance": self.token_balance,
-                "cost_limit": self.cost_limit,
-                "turn_limit": self.turn_limit
+                "available_tokens": self.available_tokens,
+                "workflow_finalized": self.workflow_finalized
             },
             "turns_taken": len(self.session_history),
             "termination_status": {

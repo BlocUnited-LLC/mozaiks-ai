@@ -149,7 +149,6 @@ The context adjustment system allows UI components to automatically update AG2 C
   "ui_capable_agents": [
     {
       "name": "YourAgent",
-      // "context_adjustment": true,  // ← DEPRECATED - No longer needed
       "components": [...]
     }
   ]

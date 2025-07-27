@@ -26,14 +26,31 @@ class WorkflowConfig {
         
         console.log('🔍 Raw workflow data from backend:', data);
         
-        // Convert from workflow list to config format
-        workflows.forEach(workflow => {
-          this.configs.set(workflow.workflow_type, {
-            workflow_name: workflow.workflow_type,
-            transport: workflow.transport || 'sse',
-            human_in_the_loop: workflow.human_loop !== false
-          });
-        });
+        // For each workflow, fetch full configuration
+        for (const workflow of workflows) {
+          try {
+            const configResponse = await fetch(`/api/workflows/${workflow.workflow_type}/config`);
+            if (configResponse.ok) {
+              const configData = await configResponse.json();
+              this.configs.set(workflow.workflow_type, configData.config);
+            } else {
+              // Fallback to minimal structure
+              this.configs.set(workflow.workflow_type, {
+                workflow_name: workflow.workflow_type,
+                transport: workflow.transport || 'websocket',
+                human_in_the_loop: workflow.human_loop !== false
+              });
+            }
+          } catch (configError) {
+            console.warn(`⚠️ Failed to fetch config for ${workflow.workflow_type}:`, configError);
+            // Fallback to minimal structure
+            this.configs.set(workflow.workflow_type, {
+              workflow_name: workflow.workflow_type,
+              transport: workflow.transport || 'websocket',
+              human_in_the_loop: workflow.human_loop !== false
+            });
+          }
+        }
         
         console.log('✅ Loaded workflow configs:', workflows.map(w => w.workflow_type));
         
@@ -71,6 +88,13 @@ class WorkflowConfig {
     // If no workflows discovered, let backend handle this
     console.warn('⚠️ No workflows discovered, backend should provide default');
     return null;
+  }
+
+  /**
+   * Get workflow configuration by type
+   */
+  getWorkflowConfig(workflowType) {
+    return this.configs.get(workflowType) || null;
   }
 
   /**

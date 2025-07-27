@@ -25,7 +25,7 @@ CHAT_LOG_FILE        = LOGS_DIR / "agent_chat.log"
 BUSINESS_LOG_FILE    = LOGS_DIR / "business_logic.log"
 ERROR_LOG_FILE       = LOGS_DIR / "errors.log"
 PERFORMANCE_LOG_FILE = LOGS_DIR / "performance.log"
-SSE_LOG_FILE         = LOGS_DIR / "sse.log"
+WEBSOCKET_LOG_FILE    = LOGS_DIR / "websocket.log"
 TOKEN_LOG_FILE       = LOGS_DIR / "token_tracking.log"
 LLM_LOG_FILE         = LOGS_DIR / "llm_operations.log"
 SECURITY_LOG_FILE    = LOGS_DIR / "security.log"
@@ -122,8 +122,8 @@ _business_kw    = ['business.', 'database', 'mongodb', 'workflow', 'generator', 
                    'file_manager', 'observability']          # ← ADDED so YAML exporter logs appear
 _perf_kw        = ['duration', 'time', 'performance', 'tokens', 'cost',
                    'usage', 'efficiency', 'memory', 'timeout', 'metrics']
-_sse_kw         = ['sse', 'event', 'stream', 'websocket', 'transport', 'connection', 
-                   'transport_manager', 'communication_channel', 'simple_event']
+_websocket_kw   = ['websocket', 'ws', 'socket', 'transport', 'connection',
+                   'transport_manager', 'simple_event']
 _token_kw       = ['token_tracking', 'TOKEN', 'cost', 'usage', 'openai', 'model_usage']
 _component_kw   = ['component', 'manifest', 'artifact', 'inline', 'ui_component', 
                    'component_loading', 'workflow_component']
@@ -136,7 +136,7 @@ ChatLogFilter       = lambda: KeywordFilter(_chat_kw, exclude_keywords=_business
 BusinessLogicFilter = lambda: KeywordFilter(_business_kw)
 PerformanceFilter   = lambda: KeywordFilter(_perf_kw)
 ErrorFilter         = lambda: KeywordFilter([], min_level=logging.WARNING)
-SSEFilter           = lambda: KeywordFilter(_sse_kw)
+WebSocketFilter     = lambda: KeywordFilter(_websocket_kw)
 TokenFilter         = lambda: KeywordFilter(_token_kw)
 ComponentFilter     = lambda: KeywordFilter(_component_kw)
 WorkflowFilter      = lambda: KeywordFilter(_workflow_kw)
@@ -167,6 +167,9 @@ def _make_handler(
         h.addFilter(log_filter)
     return h
 
+# Global flag to prevent duplicate logging setup
+_logging_initialized = False
+
 # ----------------------------------------------------------------------
 # Public configuration function
 # ----------------------------------------------------------------------
@@ -181,7 +184,16 @@ def setup_logging(
     """
     Configure root logger with five rotating file handlers + console,
     using DRY factories and generic filters.
+    Prevents duplicate initialization with global flag.
     """
+    global _logging_initialized
+    
+    # Prevent duplicate logging setup
+    if _logging_initialized:
+        return
+        
+    _logging_initialized = True
+    
     root = logging.getLogger()
     root.handlers.clear()           # nuke any prior config (uvicorn etc.)
     root.setLevel(logging.DEBUG)    # capture *everything*; handlers filter
@@ -207,7 +219,7 @@ def setup_logging(
         (BUSINESS_LOG_FILE,    getattr(logging, business_level.upper()),      BusinessLogicFilter()),
         (ERROR_LOG_FILE,       logging.WARNING,                               ErrorFilter()),
         (PERFORMANCE_LOG_FILE, logging.INFO,                                  PerformanceFilter()),
-        (SSE_LOG_FILE,         logging.INFO,                                  SSEFilter()),
+        (WEBSOCKET_LOG_FILE,   logging.INFO,                                  WebSocketFilter()),
         (TOKEN_LOG_FILE,       logging.INFO,                                  TokenFilter()),
         (COMPONENT_LOG_FILE,   logging.DEBUG,                                 ComponentFilter()),
         (WORKFLOW_LOG_FILE,    logging.DEBUG,                                 WorkflowFilter()),
@@ -250,12 +262,17 @@ def setup_logging(
     logger.info("🏢 Business logs:    %s", BUSINESS_LOG_FILE)
     logger.info("❌ Error logs:       %s", ERROR_LOG_FILE)
     logger.info("⚡ Performance logs: %s", PERFORMANCE_LOG_FILE)
-    logger.info("📡 SSE logs:         %s", SSE_LOG_FILE)
+    logger.info("📡 WebSocket logs:   %s", WEBSOCKET_LOG_FILE)
     logger.info("💰 Token logs:       %s", TOKEN_LOG_FILE)
     logger.info("🧩 Component logs:   %s", COMPONENT_LOG_FILE)
     logger.info("🔄 Workflow logs:    %s", WORKFLOW_LOG_FILE)
     logger.info("📧 Event logs:       %s", EVENT_LOG_FILE)
 
+
+def reset_logging_state():
+    """Reset logging initialization state for testing purposes"""
+    global _logging_initialized
+    _logging_initialized = False
 # ----------------------------------------------------------------------
 # Convenience helpers
 # ----------------------------------------------------------------------
@@ -395,11 +412,6 @@ def setup_logger(name: str, level: str = "INFO") -> logging.Logger:
     logger.addHandler(business_handler)
     
     return logger
-
-# Legacy compatibility function
-def get_logger(name: str) -> logging.Logger:
-    """Legacy function for backward compatibility"""
-    return setup_logger(name)
 
 # Global logger instances for commonly used modules
 core_logger = setup_logger("core")

@@ -6,18 +6,19 @@
 /**
  * Dynamic UI Handler
  * Processes backend UI events and triggers appropriate frontend updates
- * Bridges transport system with dynamic component system
+ * Bridges transport system with event dispatcher and UI tool registry
  */
 
 import { enterpriseApi } from '../adapters/api';
-import { DynamicArtifactManager } from '../modules/Chat/utils/DynamicArtifactManager';
+import { DynamicArtifactManager } from '../utils/DynamicArtifactManager';
+import { handleEvent } from './eventDispatcher';
 
 export class DynamicUIHandler {
   constructor() {
     this.artifactManager = new DynamicArtifactManager();
     this.eventHandlers = new Map();
     this.uiUpdateCallbacks = new Set();
-    this.workflowCache = new Map(); // Add workflow cache
+    this.workflowCache = new Map();
     this.setupDefaultHandlers();
   }
 
@@ -25,13 +26,9 @@ export class DynamicUIHandler {
    * Setup default event handlers for backend UI events
    */
   setupDefaultHandlers() {
-    // Artifact routing events
-    this.registerHandler('route_to_artifact', this.handleArtifactRoute.bind(this));
-    this.registerHandler('ROUTE_TO_ARTIFACT', this.handleArtifactRoute.bind(this));
-    
-    // UI tool action events
-    this.registerHandler('ui_tool_action', this.handleUIToolAction.bind(this));
-    this.registerHandler('UI_TOOL_ACTION', this.handleUIToolAction.bind(this));
+    // UI tool events (NEW - uses event dispatcher)
+    this.registerHandler('ui_tool', this.handleUIToolEvent.bind(this));
+    this.registerHandler('UI_TOOL', this.handleUIToolEvent.bind(this));
     
     // Component update events
     this.registerHandler('component_update', this.handleComponentUpdate.bind(this));
@@ -41,7 +38,7 @@ export class DynamicUIHandler {
     this.registerHandler('status', this.handleStatusUpdate.bind(this));
     this.registerHandler('STATUS', this.handleStatusUpdate.bind(this));
     
-    console.log('✅ Dynamic UI Handler initialized with default event handlers');
+    console.log('✅ Dynamic UI Handler initialized with workflow-agnostic event handlers');
   }
 
   /**
@@ -256,6 +253,56 @@ export class DynamicUIHandler {
       
     } catch (error) {
       console.error(`Failed to get component definition: ${componentName}`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Handle UI tool events using the event dispatcher (NEW PATTERN)
+   * @param {Object} eventData - Event data from backend
+   * @param {Function} responseCallback - Callback to send response to backend
+   */
+  async handleUIToolEvent(eventData, responseCallback) {
+    try {
+      console.log('🎯 DynamicUIHandler: Processing UI tool event', eventData);
+
+      const { toolId, payload, eventId, workflowType } = eventData;
+
+      if (!toolId) {
+        console.error('❌ Missing toolId in UI tool event');
+        return null;
+      }
+
+      // Create response handler that sends data back to backend
+      const onResponse = async (response) => {
+        console.log(`📤 DynamicUIHandler: Sending UI tool response for ${toolId}`, response);
+        
+        if (responseCallback) {
+          await responseCallback({
+            type: 'ui_tool_response',
+            toolId,
+            eventId,
+            workflowType,
+            response
+          });
+        }
+      };
+
+      // Use the event dispatcher to handle the event
+      const renderedComponent = handleEvent(eventData, onResponse);
+
+      // Notify UI callbacks about the component
+      this.notifyUICallbacks({
+        type: 'ui_tool_component',
+        toolId,
+        component: renderedComponent,
+        eventData
+      });
+
+      return renderedComponent;
+
+    } catch (error) {
+      console.error('❌ DynamicUIHandler: Error handling UI tool event', error);
       return null;
     }
   }

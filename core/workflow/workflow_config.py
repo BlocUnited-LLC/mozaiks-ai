@@ -9,12 +9,25 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Global registry to prevent duplicate loading
+_global_configs = {}
+_configs_loaded = False
+
 class WorkflowConfig:
-    """Dynamic workflow configuration loader"""
+    """Dynamic workflow configuration loader with singleton pattern"""
     
     def __init__(self):
-        self._configs = {}
-        self._load_all_workflows()
+        global _global_configs, _configs_loaded
+        
+        if _configs_loaded:
+            # Use cached configs instead of reloading
+            self._configs = _global_configs
+        else:
+            self._configs = {}
+            self._load_all_workflows()
+            # Cache the configs globally
+            _global_configs = self._configs.copy()
+            _configs_loaded = True
     
     def _load_all_workflows(self):
         """Load all workflow.json files from workflows directory"""
@@ -84,16 +97,25 @@ class WorkflowConfig:
         config = self.get_config(workflow_type)
         visible_agents = []
         
+        # Check for explicit visual_agents configuration first
+        visual_agents = config.get("visual_agents")
+        if visual_agents:
+            visible_agents.extend(visual_agents)
+            logger.debug(f"Using explicit visual_agents for {workflow_type}: {visual_agents}")
+        else:
+            # Fallback to the old logic if visual_agents not specified
+            # All ui_capable_agents are automatically visible
+            ui_agents = config.get("ui_capable_agents", [])
+            for agent in ui_agents:
+                agent_name = agent.get("name")
+                if agent_name and agent_name not in visible_agents:
+                    visible_agents.append(agent_name)
+            
+            logger.debug(f"Using ui_capable_agents as visual agents for {workflow_type}: {visible_agents}")
+        
         # Auto-include user if human_in_the_loop is true
         if config.get("human_in_the_loop", False):
             visible_agents.append("user")
-        
-        # All ui_capable_agents are automatically visible
-        ui_agents = config.get("ui_capable_agents", [])
-        for agent in ui_agents:
-            agent_name = agent.get("name")
-            if agent_name and agent_name not in visible_agents:
-                visible_agents.append(agent_name)
         
         return visible_agents
     
@@ -268,9 +290,25 @@ class WorkflowConfig:
     
     def reload_all_workflows(self):
         """Reload all workflow configurations from disk"""
+        global _global_configs, _configs_loaded
+        
         self._configs.clear()
+        _global_configs.clear()
+        _configs_loaded = False
+        
+        # Reload fresh
         self._load_all_workflows()
+        _global_configs = self._configs.copy()
+        _configs_loaded = True
+        
         logger.info("🔄 Reloaded all workflow configurations")
+    
+    @classmethod
+    def reset_global_state(cls):
+        """Reset global state for testing purposes"""
+        global _global_configs, _configs_loaded
+        _global_configs.clear()
+        _configs_loaded = False
     
     def get_ui_capable_agents(self, workflow_type: str) -> List[Dict[str, Any]]:
         """Get ui_capable_agents for a workflow type"""

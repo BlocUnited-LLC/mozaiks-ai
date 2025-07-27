@@ -6,21 +6,19 @@
 import time
 import logging
 import asyncio
+import inspect
+import uuid
 from typing import Optional, Any, TYPE_CHECKING, List, Dict
 from datetime import datetime
+from collections import defaultdict
 
-if TYPE_CHECKING:
-    from ..events.simple_protocols import SimpleCommunicationChannel as CommunicationChannel
+from ..data.persistence_manager import PersistenceManager
 
-from ..data.persistence_manager import persistence_manager as mongodb_manager
-from ..ui.simple_ui_tools import (
-    route_to_inline_component, 
-    route_to_artifact_component, 
-    send_ui_tool_action,
-    set_communication_channel
-)
+# Initialize persistence manager
+mongodb_manager = PersistenceManager()
 from ..monitoring.observability import get_observer, get_token_tracker
 from ..transport.ag2_iostream import AG2StreamingManager
+from .tool_registry import WorkflowToolRegistry, ToolTrigger
 from logs.logging_config import (
     get_chat_logger,
     log_business_event,
@@ -35,9 +33,17 @@ agent_logger = get_agent_logger("groupchat_manager")
 workflow_logger = get_workflow_logger("groupchat")
 logger = logging.getLogger(__name__)
 
-# Add debug logger for function calling issues
+# Performance-focused logging - minimal overhead
 function_call_logger = logging.getLogger("ag2_function_call_debug")
-function_call_logger.setLevel(logging.DEBUG)
+function_call_logger.setLevel(logging.ERROR)  # Only log critical errors
+
+# Keep minimal deep logging for critical debugging when needed
+deep_logger = logging.getLogger("ag2_deep_debug")
+deep_logger.setLevel(logging.WARNING)  # Only warnings and errors
+
+# Agent lifecycle logging for tool registration
+agent_lifecycle_logger = logging.getLogger("ag2_agent_lifecycle")
+agent_lifecycle_logger.setLevel(logging.INFO)  # Keep tool registration info
 
 # ---------------------------------------------------------------------------
 # Core-level agent response-time tracking
@@ -80,7 +86,6 @@ class AgentResponseTimeTracker:
 
 def create_core_response_tracking_hooks(
     tracker: AgentResponseTimeTracker, 
-    communication_channel: Optional['CommunicationChannel'] = None, 
     chat_id: str = "", 
     enterprise_id: str = "", 
     budget_capability = None,
@@ -94,7 +99,6 @@ def create_core_response_tracking_hooks(
     
     Args:
         tracker: Agent response time tracker
-        communication_channel: Unified transport channel (SSE or WebSocket) implementing CommunicationChannel protocol
         chat_id: Chat identifier
         enterprise_id: Enterprise identifier
         budget_capability: Modular budget capability for usage tracking
@@ -117,6 +121,14 @@ def create_core_response_tracking_hooks(
         # AG2 expects messages parameter and accepts additional kwargs
         # Simple logging without agent context for now
         chat_logger.debug("🔄 [CORE] Processing messages before reply")
+        
+        # Safety check: ensure all messages have valid content
+        if isinstance(messages, list):
+            for i, msg in enumerate(messages):
+                if isinstance(msg, dict) and msg.get('content') is None:
+                    messages[i]['content'] = "[No content provided]"
+                    chat_logger.warning(f"⚠️ [CORE] Fixed None content in message {i}")
+        
         return messages
 
     def before_send_hook(message, sender=None, recipient=None, silent=None, **kwargs):
@@ -135,10 +147,20 @@ def create_core_response_tracking_hooks(
         
         if isinstance(message, dict):
             message_content = message.get('content', str(message))
+            # Safety check: ensure content is not None
+            if message_content is None:
+                message_content = "[No content provided]"
+                message['content'] = message_content
+                chat_logger.warning(f"⚠️ [CORE] Fixed None content from {sender_name}")
         elif isinstance(message, str):
             message_content = message
         else:
             message_content = str(message)
+            
+        # Final safety check for None content
+        if message_content is None:
+            message_content = "[No content provided]"
+            chat_logger.warning(f"⚠️ [CORE] Prevented None message from {sender_name}")
             
         chat_logger.debug(f"📤 [CORE] Processing message before send from {sender_name}")
         
@@ -163,7 +185,7 @@ def create_core_response_tracking_hooks(
             else:
                 chat_logger.debug(f"🔇 [FILTERING] Skipping internal message from {sender_name}")
         
-        # === MESSAGE VISIBILITY FILTERING (Legacy approach - keeping for fallback) ===
+        # === MESSAGE VISIBILITY FILTERING ===
         # This was the old approach trying to send events directly, keeping as backup
         try:
             # Simple visibility check - default to visible unless clearly internal
@@ -199,66 +221,10 @@ def create_core_response_tracking_hooks(
             # Log message metadata
             chat_logger.debug(f"📊 [META] Length: {len(message_content)} chars | Type: {type(message).__name__}")
         
-        # NOTE: Streaming is now handled automatically via the IOStream + mark_content_for_streaming approach
-        # No need for complex async event handling here
-        should_show_in_ui = False
-        routing_agent = None
-        
-        if communication_channel and message_content and sender_name != 'unknown':
-            try:
-                from .workflow_config import workflow_config
-                import asyncio
-                
-                # Check if this sender is a frontend agent
-                chat_pane_agents = workflow_config.get_chat_pane_agents(workflow_type)
-                artifact_agents = workflow_config.get_artifact_agents(workflow_type)
-                
-                if sender_name in chat_pane_agents:
-                    should_show_in_ui = True
-                    routing_agent = "chat_pane"
-                elif sender_name in artifact_agents:
-                    should_show_in_ui = True
-                    routing_agent = "artifact"
-                else:
-                    # This is a backend agent - don't show in UI at all
-                    chat_logger.debug(f"🔇 [BACKEND] {sender_name} output filtered (backend agent)")
-                    should_show_in_ui = False
-                
-                # Only send to UI if this is a frontend agent
-                if should_show_in_ui and len(message_content.strip()) > 20:
-                    async def route_content():
-                        try:
-                            if routing_agent == "chat_pane":
-                                await route_to_inline_component(
-                                    content=message_content,
-                                    component_name="ChatMessage"
-                                )
-                                chat_logger.info(f"💬 [FRONTEND] {sender_name} → Chat Pane")
-                            elif routing_agent == "artifact":
-                                await route_to_artifact_component(
-                                    title=f"Output from {sender_name}",
-                                    content=message_content,
-                                    component_name="ArtifactDisplay",
-                                    category="agent_output"
-                                )
-                                chat_logger.info(f"📋 [FRONTEND] {sender_name} → Artifact Panel")
-                        except Exception as e:
-                            chat_logger.error(f"❌ [UI] Routing failed for {sender_name}: {e}")
-                    
-                    # Create task to run the routing
-                    loop = asyncio.get_event_loop()
-                    loop.create_task(route_content())
-                    
-            except Exception as e:
-                chat_logger.error(f"❌ [UI] Error setting up agent filtering: {e}")
-        
-        # Log backend agent activity (but don't send to UI)
-        if not should_show_in_ui and sender_name != 'unknown':
-            summary = message_content[:100] + '...' if len(message_content) > 100 else message_content
-            chat_logger.info(f"🔧 [BACKEND] {sender_name} (hidden): {summary}")
+        # NOTE: UI routing is now handled by individual tools (api_manager.py, file_manager.py)
+        # Tools emit UI events directly via emit_ui_tool_event() when needed
         
         # Continue with normal message processing (MongoDB save, token tracking, etc.)
-        # This ensures backend agents are still logged and tracked, just not shown in UI
         
         # BUDGET CAPABILITY USAGE TRACKING: Update usage via modular capability
         # This works with any budget mode (commercial, opensource, testing)
@@ -302,78 +268,9 @@ def create_core_response_tracking_hooks(
 # ---------------------------------------------------------------------------
 # Group Chat Hook Manager for dynamic tool registration
 # ---------------------------------------------------------------------------
-class GroupChatHookManager:
-    """Wrapper to add dynamic hook registration capabilities to AG2 GroupChatManager."""
-    
-    def __init__(self, group_chat_manager: Any, chat_id: str, enterprise_id: str):
-        self.group_chat_manager = group_chat_manager
-        self.chat_id = chat_id
-        self.enterprise_id = enterprise_id
-        self.registered_hooks = {
-            "after_each_agent": [],
-            "on_end": [],
-            "on_start": []
-        }
-        self.agent_specific_hooks = {}
-        
-    def register_hook(self, hook_type: str, hook_func):
-        """Register a hook for group chat events."""
-        if hook_type in self.registered_hooks:
-            self.registered_hooks[hook_type].append(hook_func)
-            chat_logger.info(f"🪝 [CORE] Registered {hook_type} hook")
-        else:
-            chat_logger.warning(f"⚠️ [CORE] Unknown hook type: {hook_type}")
-            
-    def register_agent_hook(self, agent_name: str, hook_func):
-        """Register a hook for a specific agent."""
-        if agent_name not in self.agent_specific_hooks:
-            self.agent_specific_hooks[agent_name] = []
-        self.agent_specific_hooks[agent_name].append(hook_func)
-        chat_logger.info(f"🪝 [CORE] Registered agent-specific hook for {agent_name}")
-        
-    def trigger_after_each_agent(self, message_history):
-        """Trigger after_each_agent hooks."""
-        for hook_func in self.registered_hooks.get("after_each_agent", []):
-            try:
-                hook_func(self.group_chat_manager, message_history)
-            except Exception as e:
-                logger.error(f"Error in after_each_agent hook: {e}")
-                
-        # Check for agent-specific hooks
-        if message_history:
-            last_message = message_history[-1]
-            sender = last_message.get("sender") if isinstance(last_message, dict) else getattr(last_message, "sender", None)
-            if sender and sender in self.agent_specific_hooks:
-                for hook_func in self.agent_specific_hooks[sender]:
-                    try:
-                        hook_func(self.group_chat_manager, message_history)
-                    except Exception as e:
-                        logger.error(f"Error in agent-specific hook for {sender}: {e}")
-                        
-    def trigger_on_end(self, message_history):
-        """Trigger on_end hooks."""
-        for hook_func in self.registered_hooks.get("on_end", []):
-            try:
-                hook_func(self.group_chat_manager, message_history)
-            except Exception as e:
-                logger.error(f"Error in on_end hook: {e}")
-                
-    def trigger_on_start(self, message_history):
-        """Trigger on_start hooks."""
-        for hook_func in self.registered_hooks.get("on_start", []):
-            try:
-                hook_func(self.group_chat_manager, message_history)
-            except Exception as e:
-                logger.error(f"Error in on_start hook: {e}")
-                
-    def __getattr__(self, name):
-        """Delegate unknown attributes to the underlying group_chat_manager."""
-        return getattr(self.group_chat_manager, name)
-
-# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
-async def start_or_resume_group_chat(
+async def _start_or_resume_group_chat(
     manager: Any,
     initiating_agent: Any,
     chat_id: str,
@@ -382,191 +279,180 @@ async def start_or_resume_group_chat(
     initial_message: Optional[str] = None,
     max_turns: Optional[int] = None,
     workflow_type: str = "unknown",
-    communication_channel: Optional['CommunicationChannel'] = None,
     context_variables: Optional[Any] = None,  # 🎯 ADD: ContextVariables for contextual UI agents
 ):
     """
     Starts a new group chat or resumes an existing one with unified transport support.
     
     This function now uses the centralized AG2ResumeManager for proper state persistence
-    and restoration across all transport types (SSE, WebSocket, SimpleTransport).
+    and restoration across all transport types (WebSocket, SimpleTransport).
     
     Key features:
     - Official AG2 resume patterns implementation
     - Transport-agnostic persistence
-    - Proper frontend state restoration
-    - Connection state tracking
     """
     
-    # ------------------------------------------------------------------
-    # Check for resumable session (simplified - no centralized manager needed)
-    # ------------------------------------------------------------------
-    prev_state = await mongodb_manager.load_chat_state(chat_id, enterprise_id)
-    can_resume = prev_state is not None and prev_state.get("ag2_groupchat_state", {}).get("messages", [])
+    # Start orchestration
+    chat_logger.info(f"Starting group chat orchestration for {workflow_type}")
+    workflow_logger.info(f"Chat: {chat_id} | Enterprise: {enterprise_id}")
+    
+    orchestration_start_time = time.time()
+    
+    # VE-style resume check using workflow_type
+    can_resume = await mongodb_manager.can_resume_chat(chat_id, enterprise_id, workflow_type)
     
     if can_resume:
-        chat_logger.info(f"📥 Resumable session found for {chat_id}")
+        chat_logger.info(f"🔄 Resumable {workflow_type} session found for {chat_id}")
         
-        # Simple resume logic - restore messages to groupchat
-        if hasattr(manager, "groupchat") and prev_state:
-            ag2_state = prev_state.get("ag2_groupchat_state", {})
-            messages = ag2_state.get("messages", [])
+        # Load resume data with workflow_type
+        success, resume_data = await mongodb_manager.resume_chat(chat_id, enterprise_id, workflow_type)
+        
+        if success and resume_data:
+            # Check if already complete (VE pattern)
+            if resume_data.get("already_complete"):
+                status = resume_data.get("status", 0)
+                chat_logger.info(f"✅ {workflow_type.title()} workflow already completed with status {status}")
+                
+                # Send completion message to WebSocket if available (VE pattern)
+                if hasattr(manager, 'groupchat') and hasattr(manager.groupchat, 'agents'):
+                    # Find transport for WebSocket communication
+                    from core.transport.simple_transport import SimpleTransport
+                    transport = SimpleTransport._get_instance()
+                    if transport:
+                        await transport.send_simple_text_message(
+                            f"{workflow_type.title()} workflow already completed successfully.",
+                            "system"
+                        )
+                return
             
-            if messages:
-                manager.groupchat.messages = messages.copy()
-                chat_logger.info(f"✅ Restored {len(messages)} messages to groupchat")
+            # Resume active conversation (VE pattern)
+            conversation = resume_data.get("conversation", [])
+            state = resume_data.get("state", {})
+            status = resume_data.get("status", 0)
+            
+            chat_logger.info(f"🔄 Resuming {workflow_type} conversation with {len(conversation)} messages, status {status}")
+            
+            # Restore AG2 state if manager available
+            if hasattr(manager, "groupchat") and conversation:
+                # Convert conversation back to AG2 messages format
+                ag2_messages = []
+                for msg in conversation:
+                    ag2_messages.append({
+                        "content": msg.get("content", ""),
+                        "role": "assistant",
+                        "name": msg.get("sender", "unknown")
+                    })
                 
-                # Send state restoration to frontend if communication channel available
-                if communication_channel:
-                    try:
-                        await communication_channel.send_event(
-                            event_type="messages_snapshot",
-                            data={
-                                "messages": messages,
-                                "message_count": len(messages),
-                                "chat_id": chat_id
-                            }
-                        )
-                        
-                        await communication_channel.send_event(
-                            event_type="connection_restored",
-                            data={
-                                "chat_id": chat_id,
-                                "enterprise_id": enterprise_id,
-                                "message_count": len(messages),
-                                "restored_at": datetime.utcnow().isoformat()
-                            }
-                        )
-                        chat_logger.info(f"📡 Sent restoration events to frontend")
-                    except Exception as e:
-                        chat_logger.warning(f"⚠️ Failed to send restoration events: {e}")
+                manager.groupchat.messages = ag2_messages
+                chat_logger.info(f"✅ Restored {len(ag2_messages)} messages to {workflow_type} groupchat")
                 
-                # Continue with resumed session
+                # Set current speaker if available (VE pattern)
+                current_speaker = state.get("current_speaker")
+                if current_speaker and hasattr(manager.groupchat, '_last_speaker_name'):
+                    manager.groupchat._last_speaker_name = current_speaker
+                    chat_logger.info(f"🎭 Restored last speaker: {current_speaker}")
+                
+                # Resume with WebSocket consideration (VE pattern)
                 determined_max_turns = max_turns or None
+                
+                # Send resume notification to WebSocket (VE pattern)
+                from core.transport.simple_transport import SimpleTransport
+                transport = SimpleTransport._get_instance()
+                if transport:
+                    await transport.send_simple_text_message(
+                        f"Resuming {workflow_type} conversation from previous session...",
+                        "system"
+                    )
+                
+                # Continue conversation
                 if determined_max_turns:
                     await manager.a_run_group_chat(max_turns=determined_max_turns)
                 else:
                     await manager.a_run_group_chat()
                 
+                orchestration_time = (time.time() - orchestration_start_time) * 1000
+                chat_logger.info(f"🔄 {workflow_type.title()} resume completed in {orchestration_time:.2f}ms")
+                
                 return  # Resume completed successfully
-    else:
-        chat_logger.info(f"🆕 Starting new session for {chat_id}")
+        else:
+            chat_logger.warning(f"❌ Resume failed for {workflow_type} workflow: {chat_id}")
     
-    # ------------------------------------------------------------------
-    # Continue with original new session logic
-    # ------------------------------------------------------------------
+    # New session path (VE pattern - set status to 0 for new workflows)
+    chat_logger.info(f"🆕 Starting new {workflow_type} session for {chat_id}")
     
-    # ------------------------------------------------------------------
-    # Initialize Budget Capability (Modular Design)
-    # ------------------------------------------------------------------
-    # Use modular budget capability - easily switchable between:
+    # Initialize workflow with status 0 (VE pattern)
+    await mongodb_manager.update_workflow_status(chat_id, enterprise_id, 0, workflow_type)
+    
+    # Budget capability initialization
     from ..capabilities import get_budget_capability
     
     budget_capability = get_budget_capability(chat_id, enterprise_id, workflow_type, user_id)
     budget_info = await budget_capability.initialize_budget()
     
-    # Legacy compatibility - extract token_manager if commercial mode
+    # Extract token_manager if commercial mode
     token_manager = getattr(budget_capability, 'token_manager', None)
     
     # Initialize AG2-native token tracking for observability
     token_tracker = get_token_tracker(chat_id, enterprise_id, user_id or "unknown")
     
-    chat_logger.info(f"💰 [BUDGET] Capability initialized: {budget_info.get('budget_type', 'unknown')}")
-    chat_logger.info(f"📊 [BUDGET] AG2-native token tracking initialized for observability")
+    chat_logger.info(f"Budget capability initialized: {budget_info.get('budget_type', 'unknown')}")
     if budget_info.get('is_free_trial'):
-        chat_logger.info(f"🆓 [BUDGET] Free trial: {budget_info.get('free_loops_remaining', 0)} loops remaining")
+        chat_logger.info(f"Free trial: {budget_info.get('free_loops_remaining', 0)} loops remaining")
     else:
-        chat_logger.info(f"💳 [BUDGET] Mode: {budget_info.get('budget_type', 'unknown')}")
+        chat_logger.info(f"Mode: {budget_info.get('budget_type', 'unknown')}")
 
-    # ------------------------------------------------------------------
-    # Initialize UI routing with communication channel
-    # ------------------------------------------------------------------
-    if communication_channel:
-        set_communication_channel(communication_channel)
-        chat_logger.info("🎯 [CORE] UI routing communication channel initialized")
-
-    # ------------------------------------------------------------------
-    # Dynamic Tool Registration System
-    # Automatically discovers and registers tools from active workflow
-    # ------------------------------------------------------------------
+    # Tool registration system
     if (
         hasattr(manager, "register_for_execution")
         and not getattr(manager, "_workflow_tools_registered", False)
     ):
         try:
-            # Import the dynamic tool discovery system
-            from .tool_registry import discover_and_register_workflow_tools
+            # Import our new modular tool registry
+            from .tool_registry import WorkflowToolRegistry, ToolTrigger
             
-            # Register workflow-specific tools dynamically
-            agents_dict = {}
-            if hasattr(manager, "groupchat") and hasattr(manager.groupchat, "agents"):
-                agents_dict = {agent.name: agent for agent in manager.groupchat.agents}
+            # Initialize tool registry for this workflow
+            tool_registry = WorkflowToolRegistry(workflow_type)
             
-            registered_tools = await discover_and_register_workflow_tools(
-                manager=manager,
-                workflow_type=workflow_type,
-                chat_id=chat_id,
-                enterprise_id=enterprise_id,
-                agents=agents_dict
+            tool_registry.load_configuration()
+            
+            # Execute pre-groupchat lifecycle tools
+            await tool_registry.execute_lifecycle_tools(
+                ToolTrigger.BEFORE_GROUPCHAT_START,
+                {"chat_id": chat_id, "enterprise_id": enterprise_id, "user_id": user_id}
             )
             
+            # Register agent tools automatically from JSON configuration
+            if hasattr(manager, "groupchat") and hasattr(manager.groupchat, "agents"):
+                agents_list = manager.groupchat.agents
+                
+                tool_registry.register_agent_tools(agents_list)
+                
+                # Store registry for lifecycle management
+                setattr(manager, "_tool_registry", tool_registry)
+                
+                registered_count = sum(len(tools) for tools in tool_registry.agent_tools.values())
+                agent_lifecycle_logger.info(f"Tool registration complete: {registered_count} total tools registered")
+                
+                # Log basic agent tool registration status
+                for agent in agents_list:
+                    tool_info = tool_registry.get_agent_tool_info(agent)
+                    if tool_info['has_registered_tools']:
+                        agent_lifecycle_logger.info(f"Agent '{tool_info['agent_name']}': tools registered")
+                
+                chat_logger.info(f"Tool registration complete: {registered_count} agent tools from workflow.json")
+            else:
+                workflow_logger.warning("No agents found for tool registration")
+            
             setattr(manager, "_workflow_tools_registered", True)
-            chat_logger.info(f"🔧 [CORE] Dynamically registered {len(registered_tools)} workflow tools: {registered_tools}")
             
         except Exception as e:
-            chat_logger.error(f"❌ [CORE] Failed to register workflow tools: {e}")
-            # Fallback to core tools only - maintain workflow agnostic design
-            chat_logger.info("🔄 [CORE] Attempting fallback to core tools only...")
-            
-            try:
-                from .tool_registry import register_core_tools_only
-                core_tools = register_core_tools_only(manager)
-                setattr(manager, "_core_tools_registered", True)
-                chat_logger.info(f"🔧 [CORE] Registered {len(core_tools)} core tools as fallback")
-            except Exception as final_error:
-                chat_logger.error(f"❌ [CORE] Core tool registration failed: {final_error}")
-                chat_logger.warning("⚠️ [CORE] Proceeding without tool registration - tools will need to be manually registered")
-
-    # ------------------------------------------------------------------
-    # Register simplified UI routing tools for chat/artifact panel routing
-    # IMPORTANT: These tools are registered for execution only, NOT for LLM access
-    # to avoid triggering AG2's function calling pathway that causes IndexError.
-    # ------------------------------------------------------------------
-    if (
-        hasattr(manager, "register_for_execution")
-        and not getattr(manager, "_ui_routing_tools_registered", False)
-    ):
-        try:
-            # Register inline component routing tool (execution only)
-            manager.register_for_execution(name="route_to_inline_component")(route_to_inline_component)
-            
-            # Register artifact component routing tool (execution only)
-            manager.register_for_execution(name="route_to_artifact_component")(route_to_artifact_component)
-            
-            # Register UI context tools for AG2 ContextVariables
-            try:
-                # Import workflow-specific context tools
-                from workflows.Generator.ContextVariables import (
-                    get_ui_context_summary,
-                    check_component_state
-                )
-                
-                manager.register_for_execution(name="get_ui_context_summary")(get_ui_context_summary)
-                
-                manager.register_for_execution(name="check_component_state")(check_component_state)
-                
-                chat_logger.info("🎯 [CORE] AG2 UI context tools registered (get_ui_context_summary, check_component_state)")
-            except ImportError as e:
-                chat_logger.warning(f"⚠️ [CORE] Workflow context tools not available: {e}")
-            
-            # Register UI tool action (execution only)
-            manager.register_for_execution(name="send_ui_tool_action")(send_ui_tool_action)
-            
-            setattr(manager, "_ui_routing_tools_registered", True)
-            chat_logger.info("🔧 [CORE] UI routing tools registered for execution only (no LLM access)")
-            chat_logger.info("🎯 [CORE] Auto-routing enabled - all agent messages will be routed to appropriate UI components")
-        except Exception as e:
-            chat_logger.error(f"❌ [CORE] Failed to register UI routing tools: {e}")
+            workflow_logger.error(f"Tool registration failed: {e}")
+            chat_logger.error(f"Failed to register workflow tools: {e}")
+            # Fallback to minimal core functionality
+            chat_logger.warning("Proceeding without advanced tool registration")
+            setattr(manager, "_workflow_tools_registered", True)
+    else:
+        logger.debug("Tool registration skipped (already registered or not supported)")
 
     # ------------------------------------------------------------------
     # Unified Workflow Configuration Logic (Human-in-the-Loop + Auto-Start)
@@ -595,7 +481,7 @@ async def start_or_resume_group_chat(
             # Auto-Generate UserProxyAgent (if needed)
             # ------------------------------------------------------------------
             
-            # Check if UserProxyAgent already exists
+            # Check if UserProxyAgent already exists in GroupChat
             has_user_proxy = False
             user_proxy_agent = None
             
@@ -617,18 +503,15 @@ async def start_or_resume_group_chat(
                     
                     chat_logger.info(f"✅ [CONFIG] {agent.name} configured: {original_mode} → {agent.human_input_mode}")
                     
-                    # Note: The transport method (communication_channel vs terminal) doesn't affect 
-                    # when AutoGen agents ask for input - it only affects how that input is delivered
-                    if communication_channel:
-                        chat_logger.debug(f"🌐 [CONFIG] Using web transport - user input will be routed via communication_channel")
-                    else:
-                        chat_logger.debug(f"🖥️ [CONFIG] Using terminal transport - user input will be prompted directly")
+                    # Note: User input is now handled via WebSocket transport
+                    chat_logger.debug(f"🌐 [CONFIG] User input will be routed via WebSocket transport")
                     break
             
             # AUTO-GENERATION LOGIC: Create UserProxyAgent if needed
+            # Note: UserProxyAgent may have already been created in orchestration phase for handoffs
             if human_in_loop and not has_user_proxy:
-                chat_logger.info(f"🚀 [AUTO-GEN] human_in_the_loop=true but no UserProxyAgent found")
-                chat_logger.info(f"� [AUTO-GEN] Auto-generating UserProxyAgent for workflow '{workflow_type}'")
+                chat_logger.info(f"🚀 [AUTO-GEN] human_in_the_loop=true but no UserProxyAgent found in GroupChat")
+                chat_logger.info(f"🔧 [AUTO-GEN] Auto-generating UserProxyAgent for workflow '{workflow_type}'")
                 
                 # ═══════════════════════════════════════════════════════════════════════════════════
                 # 🎯 CUSTOMIZATION POINT #1: UserProxyAgent Creation
@@ -736,14 +619,14 @@ async def start_or_resume_group_chat(
                 # 
                 # The auto-generated UserProxy automatically integrates with the transport layer:
                 # • AG2's native human_input_mode="ALWAYS" triggers input requests
-                # • CommunicationChannel handles transport-agnostic user input (SSE/WebSocket)
+                # • CommunicationChannel handles transport-agnostic user input (WebSocket)
                 # • No custom a_get_human_input() override needed - AG2 handles it natively
                 # • IOStream automatically streams UserProxy responses to frontend
                 # 
                 # 🔧 HOW IT WORKS:
                 # 1. UserProxy calls AG2's native input system when human_input_mode="ALWAYS"
-                # 2. Transport layer (ag2_websocket_adapter/ag2_sse_adapter) handles user input
-                # 3. Frontend sends user input via WebSocket/SSE message
+                # 2. Transport layer (ag2_websocket_adapter) handles user input
+                # 3. Frontend sends user input via WebSocket message
                 # 4. Backend routes input back to waiting UserProxy agent
                 # 5. UserProxy continues conversation with user input
                 # 
@@ -754,8 +637,8 @@ async def start_or_resume_group_chat(
                 # • Special UI components only needed for complex user tools
                 # ═══════════════════════════════════════════════════════════════════════════════════
                 
-                chat_logger.info(f"🔗 [AUTO-GEN] UserProxy transport integration: CommunicationChannel-ready")
-                chat_logger.info(f"📡 [AUTO-GEN] User input will be handled via {communication_channel.__class__.__name__ if communication_channel else 'terminal'}")
+                chat_logger.info(f"🔗 [AUTO-GEN] UserProxy transport integration: WebSocket-ready")
+                chat_logger.info(f"📡 [AUTO-GEN] User input will be handled via WebSocket transport")
                 
                 
             elif not human_in_loop:
@@ -781,7 +664,7 @@ async def start_or_resume_group_chat(
                 else:
                     chat_logger.info(f"✅ [VALIDATION] UserProxyAgent configuration is consistent with workflow settings")
                     
-                # Log initiating agent compatibility
+                # Log initiating agent information
                 if initiating_agent_name.lower() in ['user', 'userproxy'] and proxy_name.lower() in ['user', 'userproxy']:
                     if auto_start:
                         chat_logger.warning(f"⚠️ [VALIDATION] Potential auto-start issue: initiating_agent='{initiating_agent_name}' with auto_start=true")
@@ -821,12 +704,62 @@ async def start_or_resume_group_chat(
             chat_logger.info("🔄 [CONFIG] Proceeding with default agent configuration")
 
     # ------------------------------------------------------------------
-    # Existing logic (unchanged except for minimal variable renames)
+    # Existing logic
     # ------------------------------------------------------------------
     before_reply_hook   = None
     before_send_hook    = None
     streaming_manager   = None  # Initialize to avoid UnboundLocalError in finally block
     chat_start          = time.time()
+
+    # Initialize lifecycle tool hooks if we have a tool registry
+    if hasattr(manager, "_tool_registry"):
+        tool_registry = getattr(manager, "_tool_registry")
+        
+        # Create hooks that call lifecycle tools
+        async def lifecycle_before_reply_hook(sender, messages, recipient, silent):
+            """Hook that triggers before_agent_speaks lifecycle tools"""
+            try:
+                # Execute lifecycle tools that expect AG2 hook parameters
+                tools = tool_registry.get_lifecycle_tools(ToolTrigger.BEFORE_AGENT_SPEAKS)
+                for tool in tools:
+                    try:
+                        function = tool.load_function()
+                        # Call with AG2 hook signature (sender, messages, recipient, silent)
+                        if asyncio.iscoroutinefunction(function):
+                            await function(sender, messages, recipient, silent)
+                        else:
+                            function(sender, messages, recipient, silent)
+                        logger.debug(f"✅ Executed lifecycle tool '{function.__name__}' for before_agent_speaks")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to execute lifecycle tool '{tool.path}': {e}")
+            except Exception as e:
+                logger.error(f"❌ Error executing before_agent_speaks lifecycle tools: {e}")
+            return messages
+            
+        async def lifecycle_before_send_hook(sender, message, recipient, silent):
+            """Hook that triggers after_agent_speaks lifecycle tools"""
+            try:
+                # Execute lifecycle tools that expect AG2 hook parameters
+                tools = tool_registry.get_lifecycle_tools(ToolTrigger.AFTER_AGENT_SPEAKS)
+                for tool in tools:
+                    try:
+                        function = tool.load_function()
+                        # Call with AG2 hook signature (sender, message, recipient, silent)
+                        if asyncio.iscoroutinefunction(function):
+                            await function(sender, message, recipient, silent)
+                        else:
+                            function(sender, message, recipient, silent)
+                        logger.debug(f"✅ Executed lifecycle tool '{function.__name__}' for after_agent_speaks")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to execute lifecycle tool '{tool.path}': {e}")
+            except Exception as e:
+                logger.error(f"❌ Error executing after_agent_speaks lifecycle tools: {e}")
+            return message
+        
+        # Set the hooks to enable lifecycle tools
+        before_reply_hook = lifecycle_before_reply_hook
+        before_send_hook = lifecycle_before_send_hook
+        chat_logger.info("🎯 [CORE] Lifecycle tool hooks enabled for agent communication tracking")
 
     try:
         if not initiating_agent:
@@ -855,91 +788,86 @@ async def start_or_resume_group_chat(
         # Get agents list for token tracking
         agents_list = getattr(manager.groupchat, "agents", []) if hasattr(manager, "groupchat") else []
         
-        # 🔍 DEBUG: Log agent configurations to understand function calling
+        # 📊 Clean summary of tool registration status (always enabled)
         if hasattr(manager, "groupchat") and hasattr(manager.groupchat, "agents"):
-            function_call_logger.error("🔍 [DEBUG] Analyzing agent configurations for function calling:")
-            for i, agent in enumerate(manager.groupchat.agents):
-                agent_name = getattr(agent, 'name', f'Agent_{i}')
-                
-                # Check if agent has function calling enabled
-                has_llm_config = hasattr(agent, 'llm_config') and agent.llm_config
-                has_registered_tools = hasattr(agent, '_function_map') and agent._function_map
-                has_tools_config = hasattr(agent, 'llm_config') and agent.llm_config and isinstance(agent.llm_config, dict) and ('tools' in agent.llm_config or 'functions' in agent.llm_config)
-                
-                function_call_logger.error(f"🔍 [DEBUG] Agent '{agent_name}':")
-                function_call_logger.error(f"  • has_llm_config: {has_llm_config}")
-                function_call_logger.error(f"  • has_registered_tools: {has_registered_tools}")
-                function_call_logger.error(f"  • has_tools_config: {has_tools_config}")
-                
-                if has_llm_config and isinstance(agent.llm_config, dict):
-                    config_keys = list(agent.llm_config.keys())
-                    function_call_logger.error(f"  • llm_config keys: {config_keys}")
-                    
-                    if 'tools' in agent.llm_config:
-                        tools_count = len(agent.llm_config['tools']) if isinstance(agent.llm_config['tools'], list) else 'not_list'
-                        function_call_logger.error(f"  • tools count: {tools_count}")
-                        
-                    if 'functions' in agent.llm_config:
-                        functions_count = len(agent.llm_config['functions']) if isinstance(agent.llm_config['functions'], list) else 'not_list'
-                        function_call_logger.error(f"  • functions count: {functions_count}")
-                        
-                    if 'tool_choice' in agent.llm_config:
-                        function_call_logger.error(f"  • tool_choice: {agent.llm_config['tool_choice']}")
-                        
-                if has_registered_tools:
-                    registered_tool_names = list(agent._function_map.keys())
-                    function_call_logger.error(f"  • registered tools: {registered_tool_names}")
-                    
-                # Check reply function list
-                if hasattr(agent, '_reply_func_list'):
-                    reply_funcs = []
-                    for func in agent._reply_func_list:
-                        try:
-                            if isinstance(func, dict) and 'function' in func:
-                                reply_funcs.append(func['function'].__name__)
-                            elif callable(func):
-                                reply_funcs.append(func.__name__)
-                            else:
-                                reply_funcs.append(str(func))
-                        except Exception as e:
-                            reply_funcs.append(f"<error: {e}>")
-                    function_call_logger.error(f"  • reply functions: {reply_funcs}")
-                    
-                    # Check if function_call_reply is in the list
-                    has_function_call_reply = any('function_call' in func_name for func_name in reply_funcs)
-                    function_call_logger.error(f"  • has function_call_reply: {has_function_call_reply}")
-                    
-                function_call_logger.error(f"  • agent type: {type(agent).__name__}")
-                function_call_logger.error("")
+            agents_with_tools = 0
+            total_tools = 0
+            for agent in manager.groupchat.agents:
+                if hasattr(agent, '_function_map') and agent._function_map:
+                    agents_with_tools += 1
+                    total_tools += len(agent._function_map)
+            
+            chat_logger.info(f"Tool registration summary: {agents_with_tools}/{len(manager.groupchat.agents)} agents have tools ({total_tools} total)")
         
         # Create AG2 streaming manager for real-time streaming
-        streaming_manager = None
-        if communication_channel:
-            streaming_manager = AG2StreamingManager(communication_channel, chat_id, enterprise_id)
-            # Attach IOStream to all agents for real-time streaming
-            if agents_list:
-                streaming_manager.attach_to_agents(agents_list)
-                chat_logger.info(f"📡 [CORE] AG2 IOStream attached to {len(agents_list)} agents")
+        # This captures agent output and sends it to WebSocket via SimpleTransport
+        streaming_manager = AG2StreamingManager(chat_id, enterprise_id)
+        streaming_manager.setup_streaming()  # Sets up global IOStream, no need to store return value
         
-        before_reply_hook, before_send_hook = create_core_response_tracking_hooks(
-            tracker=response_tracker,
-            communication_channel=communication_channel,
-            chat_id=chat_id,
-            enterprise_id=enterprise_id,
-            budget_capability=budget_capability,
-            agents=agents_list,
-            streaming_manager=streaming_manager,
-            workflow_type=workflow_type,
-            token_tracker=token_tracker
-        )
-
+        # ═══════════════════════════════════════════════════════════════════════════════════
+        # 🎯 HOOK REGISTRATION: Response Time Tracking Hooks
+        # ═══════════════════════════════════════════════════════════════════════════════════
+        # 
+        # ⚠️ CRITICAL: AG2 Hook Registration Best Practices
+        # 
+        # 🚨 NEVER DO THIS:
+        #   agent.register_hook("process_all_messages_before_reply", None)  # ❌ CRASHES!
+        #   agent.register_hook("process_message_before_send", None)        # ❌ CRASHES!
+        # 
+        # ✅ ALWAYS DO THIS:
+        #   1. Create actual hook functions FIRST
+        #   2. ONLY register non-None hooks
+        #   3. Always validate hook functions exist before registration
+        # 
+        # 🔧 PROPER PATTERN:
+        #   hook_func = create_some_hook()
+        #   if hook_func is not None:  # ✅ Validate before registering
+        #       agent.register_hook("hook_name", hook_func)
+        # 
+        # 📚 HOOK DOCUMENTATION:
+        #   • process_all_messages_before_reply: Called before agent generates reply
+        #   • process_message_before_send: Called before agent sends message
+        #   • Custom hooks: See AG2 documentation for custom hook patterns
+        # ═══════════════════════════════════════════════════════════════════════════════════
+        
+        # Create response tracking hooks (currently disabled for stability)
+        # TODO: Re-enable once hook functionality is fully tested
+        # before_reply_hook, before_send_hook = create_core_response_tracking_hooks(
+        #     tracker=response_tracker,
+        #     chat_id=chat_id,
+        #     enterprise_id=enterprise_id,
+        #     budget_capability=budget_capability,
+        #     agents=agents_list,
+        #     streaming_manager=streaming_manager,
+        #     workflow_type=workflow_type,
+        #     token_tracker=token_tracker
+        # )
+        # NOTE: before_reply_hook and before_send_hook are set by lifecycle hooks above (if tool registry exists)
+        # Only override to None if no lifecycle hooks were created
+        if not hasattr(manager, "_tool_registry"):
+            before_reply_hook = None
+            before_send_hook = None
+        
+        # Hook registration with proper validation
         if hasattr(manager, "groupchat") and hasattr(manager.groupchat, "agents"):
-            for agent in manager.groupchat.agents:
-                if hasattr(agent, "register_hook"):
-                    agent.register_hook("process_all_messages_before_reply", before_reply_hook)
-                    agent.register_hook("process_message_before_send",       before_send_hook)
-                    chat_logger.debug(f"🎯 [CORE] Response time tracking enabled for {agent.name}")
-            chat_logger.info("🎯 [CORE] Core-level response time tracking enabled for all agents")
+            if before_reply_hook is not None and before_send_hook is not None:
+                # ✅ SAFE: Register lifecycle tools or response tracking hooks
+                for agent in manager.groupchat.agents:
+                    if hasattr(agent, "register_hook"):
+                        agent.register_hook("process_all_messages_before_reply", before_reply_hook)
+                        agent.register_hook("process_message_before_send", before_send_hook)
+                        chat_logger.debug(f"🎯 [CORE] AG2 hooks enabled for {agent.name}")
+                
+                # Determine what type of hooks were registered
+                if hasattr(manager, "_tool_registry"):
+                    chat_logger.info("🎯 [CORE] Lifecycle tool hooks enabled for agent communication tracking")
+                else:
+                    chat_logger.info("🎯 [CORE] Core-level response time tracking enabled for all agents")
+            else:
+                # ✅ SAFE: Skip registration when hooks are None
+                chat_logger.info("🔧 [CORE] AG2 hooks disabled - no lifecycle tools or response tracking")
+        else:
+            chat_logger.warning("⚠️ [CORE] Cannot register hooks - manager missing groupchat or agents")
 
         determined_max_turns = None
         # Get turn limit from budget capability
@@ -974,14 +902,9 @@ async def start_or_resume_group_chat(
                 except Exception as e:
                     chat_logger.error(f"❌ [CORE] Error triggering on_start hooks: {e}")
             
-            # Ensure we have a valid initial message
-            safe_initial_message = initial_message or "Start the workflow"
-            if not isinstance(safe_initial_message, str) or not safe_initial_message.strip():
-                safe_initial_message = "Start the workflow"
-            
-            initiate_kwargs = {
-                "recipient": initiating_agent,
-                "message":   safe_initial_message,
+            # The initiate_kwargs for the chat. The recipient is passed positionally.
+            initiate_kwargs: Dict[str, Any] = {
+                "message": initial_message,
             }
             if determined_max_turns:
                 initiate_kwargs["max_turns"] = determined_max_turns
@@ -993,68 +916,135 @@ async def start_or_resume_group_chat(
             else:
                 chat_logger.debug(f"🤖 [CORE] No ContextVariables provided - UI context adjustment disabled")
 
-            chat_logger.info(f"🚀 [CORE] Initiating chat with message: '{safe_initial_message}'")
+            chat_logger.info(f"🚀 [CORE] Initiating chat with message: '{initial_message}'")
             
             # Safety check: Ensure all agents have proper initialization
             if hasattr(manager, "groupchat") and hasattr(manager.groupchat, "agents"):
-                for agent in manager.groupchat.agents:
-                    if not hasattr(agent, 'chat_messages'):
-                        agent.chat_messages = {}
-                    # Ensure each agent has an empty message list for other agents if needed
-                    for other_agent in manager.groupchat.agents:
-                        if other_agent != agent and other_agent not in agent.chat_messages:
-                            agent.chat_messages[other_agent] = []
-                chat_logger.info(f"🔧 [CORE] Initialized chat_messages for {len(manager.groupchat.agents)} agents")
-            
+                # Message state initialization handled by AG2 internally
+                logger.debug("AG2 will handle message state initialization internally")
+
+            # Start agent conversation
             agent_start_time = time.time()
-            chat_logger.info("⏱️ [CORE] Starting agent conversation...")
+            chat_logger.info("Starting agent conversation...")
             
-            # 🔍 DEBUG: Add detailed logging around initiate_chat call
-            function_call_logger.error("🔍 [DEBUG] About to call manager.a_initiate_chat")
-            function_call_logger.error(f"  • manager type: {type(manager)}")
-            function_call_logger.error(f"  • manager has tools: {hasattr(manager, '_function_map') and bool(manager._function_map)}")
-            function_call_logger.error(f"  • manager llm_config: {getattr(manager, 'llm_config', 'No llm_config')}")
-            function_call_logger.error(f"  • initiate_kwargs: {initiate_kwargs}")
+            # Pre-initiation summary
+            agent_count = len(manager.groupchat.agents) if hasattr(manager, 'groupchat') else 0
+            chat_logger.info(f"Starting conversation: {initiating_agent.name} → {agent_count} agents (max_turns: {determined_max_turns})")
+            
+            # � EMERGENCY MESSAGE INITIALIZATION: Prevents IndexError in AG2
+            # This ensures all agents have proper message state before AG2 processes them
+            emergency_fixes_applied = 0
+            for agent in manager.groupchat.agents:
+                agent_name = getattr(agent, 'name', 'UNNAMED')
+                
+                # Ensure chat_messages exists for each agent
+                if agent not in manager.chat_messages or not manager.chat_messages[agent]:
+                    if agent not in manager.chat_messages:
+                        manager.chat_messages[agent] = []
+                    emergency_msg = {
+                        "role": "user",
+                        "content": initial_message or "Start the workflow",
+                        "name": "emergency_safety"
+                    }
+                    manager.chat_messages[agent].append(emergency_msg)
+                    emergency_fixes_applied += 1
+                
+                # Ensure _oai_messages exists for each agent
+                if not hasattr(manager, '_oai_messages'):
+                    from collections import defaultdict
+                    manager._oai_messages = defaultdict(list)
+                
+                if agent not in manager._oai_messages or not manager._oai_messages[agent]:
+                    if agent not in manager._oai_messages:
+                        manager._oai_messages[agent] = []
+                    emergency_msg = {
+                        "role": "user",
+                        "content": initial_message or "Start the workflow",
+                        "name": "emergency_safety"
+                    }
+                    manager._oai_messages[agent].append(emergency_msg)
+                    emergency_fixes_applied += 1
+            
+            if emergency_fixes_applied > 0:
+                chat_logger.info(f"� [CORE] Applied {emergency_fixes_applied} message initialization fixes")
 
             try:
-                # SIMPLIFIED ROBUST APPROACH:
-                # Just pass the message directly to a_initiate_chat as intended by AG2.
-                # The previous attempt to manually queue messages was causing the IndexError.
+                # Start the agent conversation
+                await initiating_agent.a_initiate_chat(
+                    recipient=manager,
+                    message=initial_message,
+                    max_turns=determined_max_turns
+                )
                 
-                chat_logger.info(f"📨 [CORE] Starting chat with message: '{safe_initial_message}'")
-                # 🔍 DEBUG: Add detailed logging around initiate_chat call
-                function_call_logger.error("🔍 [DEBUG] About to call manager.a_initiate_chat")
-                function_call_logger.error(f"  • manager type: {type(manager)}")
-                function_call_logger.error(f"  • manager has tools: {hasattr(manager, '_function_map') and bool(manager._function_map)}")
-                function_call_logger.error(f"  • manager llm_config: {getattr(manager, 'llm_config', 'No llm_config')}")
-                function_call_logger.error(f"  • initiate_kwargs: {initiate_kwargs}")
-
-                try:
-                    await manager.a_initiate_chat(**initiate_kwargs)
-                except Exception as e:
-                    function_call_logger.error(f"🚨 [CRITICAL] manager.a_initiate_chat failed: {e}")
-                    function_call_logger.error(f"  • Exception type: {type(e)}")
-                    raise
-
+                chat_logger.info(f"✅ [CORE] Agent conversation completed successfully")
+                
             except Exception as e:
-                function_call_logger.error(f"🚨 [CRITICAL] manager.a_initiate_chat failed: {e}")
-                function_call_logger.error(f"  • Exception type: {type(e)}")
+                chat_logger.error(f"❌ [CORE] Agent conversation failed: {e}")
+                deep_logger.error(f"🔬 [DEEP-LOG] Exception type: {type(e).__name__}")
+                deep_logger.error(f"🔬 [DEEP-LOG] Exception details: {str(e)}")
                 raise
 
+            # Performance metrics
             agent_response_time = (time.time() - agent_start_time) * 1000
+            orchestration_total_time = (time.time() - orchestration_start_time) * 1000
+            
             log_performance_metric(
                 metric_name="agent_conversation_duration",
                 value=agent_response_time,
                 unit="ms",
                 context={
                     "enterprise_id": enterprise_id,
-                    "chat_id":       chat_id,
+                    "chat_id": chat_id,
                     "initiating_agent": initiating_agent.name,
-                    "max_turns":     determined_max_turns,
+                    "max_turns": str(determined_max_turns),
                 },
             )
-            chat_logger.info(f"✅ [CORE] Agent conversation completed in {agent_response_time:.2f}ms")
-
+            
+            chat_logger.info(f"✅ [ORCHESTRATION] Agent conversation completed in {agent_response_time:.2f}ms")
+            
+            # Save conversation state to database
+            try:
+                if hasattr(manager, 'groupchat'):
+                    await mongodb_manager.save_chat_state(
+                        chat_id=chat_id,
+                        enterprise_id=enterprise_id,
+                        workflow_type=workflow_type,
+                        state_data={
+                            "groupchat_agents": [agent.name for agent in manager.groupchat.agents if hasattr(agent, 'name')],
+                            "conversation_duration_ms": agent_response_time,
+                            "max_turns_used": determined_max_turns
+                        }
+                    )
+                    chat_logger.info(f"💾 [PERSISTENCE] Conversation state saved to database")
+                    
+                    # Save token usage if tracker has data
+                    if token_tracker:
+                        try:
+                            # Get usage data from agents
+                            agents_list = manager.groupchat.agents if hasattr(manager.groupchat, 'agents') else []
+                            session_usage = token_tracker.get_usage_for_business_logic(agents_list)
+                            
+                            if session_usage and session_usage.get('total_tokens', 0) > 0:
+                                await mongodb_manager.update_token_usage(
+                                    chat_id=chat_id,
+                                    enterprise_id=enterprise_id,
+                                    session_id=session_usage.get('session_id', str(uuid.uuid4())),
+                                    usage_data={
+                                        **session_usage,
+                                        "total_turns": len(manager.groupchat.messages) if hasattr(manager.groupchat, 'messages') else 0,
+                                        "conversation_duration_ms": agent_response_time
+                                    }
+                                )
+                                chat_logger.info(f"💰 [TOKEN-USAGE] Token usage saved: {session_usage.get('total_tokens', 0)} tokens, ${session_usage.get('total_cost', 0.0):.4f}")
+                            else:
+                                chat_logger.info(f"💰 [TOKEN-USAGE] No token usage data to save (0 tokens)")
+                        except Exception as token_e:
+                            chat_logger.error(f"❌ [TOKEN-USAGE] Failed to save token usage: {token_e}")
+                else:
+                    chat_logger.warning(f"⚠️ [PERSISTENCE] No groupchat found to save")
+            except Exception as e:
+                chat_logger.error(f"❌ [PERSISTENCE] Failed to save conversation state: {e}")
+            
             # Complete user feedback loop if applicable
             if budget_capability and budget_capability.is_enabled() and initial_message is not None:
                 try:
@@ -1072,33 +1062,7 @@ async def start_or_resume_group_chat(
                 transport_type="unified"
             )
 
-            # Replay state to client on reconnect (unified for both SSE and WebSocket)
-            if communication_channel is not None and prev_state:
-                try:
-                    # Send complete state snapshot for client UI restoration
-                    await communication_channel.send_event("state_snapshot", prev_state.get("session_state", {}))
-                    
-                    # Send messages snapshot for chat history restoration  
-                    if prior_messages:
-                        await communication_channel.send_event("messages_snapshot", prior_messages)
-                        chat_logger.info(f"📡 [CORE] Replayed {len(prior_messages)} messages to reconnected client")
-                    
-                    # Send connection status event
-                    await communication_channel.send_event(
-                        event_type="connection_restored",
-                        data={
-                            "chat_id": chat_id,
-                            "enterprise_id": enterprise_id,
-                            "message_count": len(prior_messages),
-                            "workflow_type": workflow_type,
-                            "reconnected_at": datetime.utcnow().isoformat()
-                        }
-                    )
-                    
-                    chat_logger.info(f"✅ [CORE] Chat state restored for reconnected client")
-                    
-                except Exception as e:
-                    chat_logger.error(f"❌ [CORE] Failed to replay state on reconnect: {e}")
+            # State restoration is now handled by the frontend via WebSocket transport
 
             # Trigger on_start hooks if this is the first resume after restart
             # (on_start hooks should only fire once per chat lifecycle)
@@ -1121,6 +1085,27 @@ async def start_or_resume_group_chat(
             await manager.a_run_group_chat(**resume_kwargs)
 
             agent_response_time = (time.time() - agent_start_time) * 1000
+            
+            # Save resumed conversation state to database
+            try:
+                if hasattr(manager, 'groupchat'):
+                    await mongodb_manager.save_chat_state(
+                        chat_id=chat_id,
+                        enterprise_id=enterprise_id,
+                        workflow_type=workflow_type,
+                        state_data={
+                            "groupchat_agents": [agent.name for agent in manager.groupchat.agents if hasattr(agent, 'name')],
+                            "resume_duration_ms": agent_response_time,
+                            "max_turns_used": determined_max_turns,
+                            "was_resumed": True
+                        }
+                    )
+                    chat_logger.info(f"💾 [PERSISTENCE] Resumed conversation state saved to database")
+                else:
+                    chat_logger.warning(f"⚠️ [PERSISTENCE] No groupchat found to save on resume")
+            except Exception as e:
+                chat_logger.error(f"❌ [PERSISTENCE] Failed to save resumed conversation state: {e}")
+            
             log_performance_metric(
                 metric_name="agent_resume_duration",
                 value=agent_response_time,
@@ -1145,20 +1130,70 @@ async def start_or_resume_group_chat(
         raise
 
     finally:
+        # Execute end-of-chat lifecycle tools
+        if hasattr(manager, "_tool_registry"):
+            try:
+                from .tool_registry import ToolTrigger
+                tool_registry = getattr(manager, "_tool_registry")
+                await tool_registry.execute_lifecycle_tools(
+                    ToolTrigger.END_OF_CHAT,
+                    {
+                        "chat_id": chat_id, 
+                        "enterprise_id": enterprise_id,
+                        "user_id": user_id,
+                        "final_state": "completed"
+                    }
+                )
+                chat_logger.info("🏁 [MODULAR] End-of-chat lifecycle tools executed")
+            except Exception as e:
+                chat_logger.error(f"❌ [MODULAR] Failed to execute end-of-chat tools: {e}")
+        
         # Clean up IOStream if it was set up
         if streaming_manager:
             try:
-                streaming_manager.restore_iostream()
+                streaming_manager.restore_original_iostream()
                 chat_logger.info("🧹 [CORE] AG2 IOStream restored")
             except Exception as e:
                 logger.error(f"❌ [CORE] Error restoring IOStream: {e}")
         
-        if before_reply_hook and before_send_hook and hasattr(manager, "groupchat") and hasattr(manager.groupchat, "agents"):
+        # ═══════════════════════════════════════════════════════════════════════════════════
+        # 🎯 HOOK SETUP: Proper Hook Unregistration
+        # ═══════════════════════════════════════════════════════════════════════════════════
+        # 
+        # ⚠️ CRITICAL: AG2 Hook Cleanup Best Practices
+        # 
+        # 🚨 NEVER DO THIS:
+        #   agent.unregister_hook("hook_name", None)  # ❌ May cause issues!
+        # 
+        # ✅ ALWAYS DO THIS:
+        #   1. Only unregister hooks that were actually registered
+        #   2. Validate hooks exist before unregistering
+        #   3. Use proper exception handling during cleanup
+        # 
+        # 🔧 PROPER CLEANUP PATTERN:
+        #   if hook_func is not None and hasattr(agent, "unregister_hook"):
+        #       try:
+        #           agent.unregister_hook("hook_name", hook_func)
+        #       except Exception as e:
+        #           logger.warning(f"Hook cleanup failed: {e}")
+        # ═══════════════════════════════════════════════════════════════════════════════════
+        
+        # Clean up response tracking hooks (only if they were registered)
+        if (before_reply_hook is not None and before_send_hook is not None and 
+            hasattr(manager, "groupchat") and hasattr(manager.groupchat, "agents")):
+            
             for agent in manager.groupchat.agents:
                 if hasattr(agent, "unregister_hook"):
-                    agent.unregister_hook("process_all_messages_before_reply", before_reply_hook)
-                    agent.unregister_hook("process_message_before_send",       before_send_hook)
-                    chat_logger.debug(f"🧹 [CORE] Response time tracking disabled for {agent.name}")
+                    try:
+                        agent.unregister_hook("process_all_messages_before_reply", before_reply_hook)
+                        agent.unregister_hook("process_message_before_send", before_send_hook)
+                        chat_logger.debug(f"🧹 [CORE] Response hooks cleaned up for {agent.name}")
+                    except Exception as e:
+                        chat_logger.warning(f"⚠️ [CORE] Hook cleanup failed for {agent.name}: {e}")
+            
+            chat_logger.info("🧹 [CORE] Response tracking hooks cleaned up")
+        else:
+            chat_logger.debug("🧹 [CORE] No hooks to clean up (hooks were None or not registered)")
 
         chat_time = (time.time() - chat_start) * 1000
         log_performance_metric(
@@ -1172,6 +1207,9 @@ async def start_or_resume_group_chat(
             description="Core groupchat start/resume completed",
             context={"enterprise_id": enterprise_id, "chat_id": chat_id, "duration_ms": chat_time},
         )
+        
+        chat_logger.info(f"🎉 [ORCHESTRATION] Group chat orchestration completed successfully")
+        chat_logger.info(f"📊 [ORCHESTRATION] Total execution time: {chat_time:.2f}ms")
 
 # ==============================================================================
 # WORKFLOW ORCHESTRATION FUNCTIONS
@@ -1184,7 +1222,6 @@ async def run_workflow_orchestration(
     chat_id: str,
     user_id: Optional[str] = None,
     initial_message: Optional[str] = None,
-    communication_channel: Any = None,
     agents_factory: Optional[Any] = None,
     context_factory: Optional[Any] = None,
     handoffs_factory: Optional[Any] = None
@@ -1194,10 +1231,17 @@ async def run_workflow_orchestration(
     
     This eliminates repetitive code from OrchestrationPattern.py files by standardizing:
     - Tool discovery and registration  
-    - GroupChat/GroupChatManager creation
+    - GroupChat/GroupChatManager creation with configurable orchestration patterns
     - Agent setup and configuration
     - Performance logging and metrics
     - Error handling patterns
+    
+    ORCHESTRATION PATTERNS SUPPORTED:
+    - DefaultPattern: Uses "auto" speaker selection with optional handoffs
+    - AutoPattern: Uses "auto" speaker selection without handoffs
+    - RoundRobinPattern: Sequential agent rotation
+    - RandomPattern: Random agent selection
+    - ManualPattern: Manual speaker selection
     
     Args:
         workflow_type: Type of workflow (e.g., "generator", "analyzer")
@@ -1206,14 +1250,16 @@ async def run_workflow_orchestration(
         chat_id: Chat identifier
         user_id: User identifier (optional)
         initial_message: Initial message (optional)
-        communication_channel: Unified transport channel
         agents_factory: Function to create agents - must return Dict[str, Agent]
         context_factory: Function to get context - must return context object
         handoffs_factory: Function to wire handoffs - takes agents dict
     """
     
-    if not communication_channel:
-        raise ValueError(f"communication_channel is required for {workflow_type} workflow")
+    # SimpleTransport singleton is used for all communication
+    from core.transport.simple_transport import SimpleTransport
+    transport = SimpleTransport._get_instance()
+    if not transport:
+        raise RuntimeError(f"SimpleTransport instance not available for {workflow_type} workflow")
     
     if not agents_factory:
         raise ValueError(f"agents_factory is required for {workflow_type} workflow")
@@ -1226,23 +1272,47 @@ async def run_workflow_orchestration(
     business_logger = get_business_logger(f"{workflow_type}_orchestration")
     performance_logger = get_performance_logger(f"{workflow_type}_orchestration")
     
-    log_business_event(
-        event_type=f"{workflow_name_upper}_WORKFLOW_STARTED",
-        description=f"{workflow_type} workflow orchestration initialized",
-        context={
-            "enterprise_id": enterprise_id,
-            "chat_id": chat_id,
-            "user_id": user_id,
-            "initial_message_provided": initial_message is not None
-        }
-    )
-    
     try:
         # Get workflow configuration
         from ..workflow.workflow_config import workflow_config
         config = workflow_config.get_config(workflow_type)
         max_turns = config.get("max_turns", 50)
         initiating_agent_name = config.get("initiating_agent", "UserProxyAgent")
+        orchestration_pattern = config.get("orchestration_pattern", "AutoPattern")
+        initiate_handoffs = config.get("initiate_handoffs", True)
+        
+        business_logger.info(f"🚀 [{workflow_name_upper}] Starting workflow orchestration:")
+        business_logger.info(f"   • max_turns: {max_turns}")
+        business_logger.info(f"   • orchestration_pattern: {orchestration_pattern}")
+        business_logger.info(f"   • initiate_handoffs: {initiate_handoffs}")
+
+        # Determine final initial message early for accurate logging
+        final_initial_message = (
+            config.get("initial_message") or 
+            initial_message
+        )
+        
+        # If still no message, provide a generic fallback
+        if not final_initial_message:
+            final_initial_message = "You have been tasked with an assignment. Please proceed per your instructions in your system message within the context of the context_variables."
+        
+        # Log accurate initial message information
+        log_business_event(
+            event_type=f"{workflow_name_upper}_WORKFLOW_STARTED",
+            description=f"{workflow_type} workflow orchestration initialized",
+            context={
+                "enterprise_id": enterprise_id,
+                "chat_id": chat_id,
+                "user_id": user_id,
+                "final_message_determined": True,
+                "final_message_source": (
+                    "workflow_json_initial" if config.get("initial_message") else
+                    "user_provided" if initial_message else
+                    "fallback_default"
+                ),
+                "final_message_preview": final_initial_message[:100] + "..." if len(final_initial_message) > 100 else final_initial_message
+            }
+        )
         
         business_logger.info(f"🚀 [{workflow_name_upper}] Starting workflow orchestration (max_turns: {max_turns})")
 
@@ -1275,41 +1345,11 @@ async def run_workflow_orchestration(
             context = context_factory(concept_data)
             business_logger.debug(f"✅ Context variables: {list(context.data.keys()) if hasattr(context, 'data') else 'unknown'}")
 
-        # 3. Dynamic Tool Discovery and Registration
-        business_logger.info("🔍 Discovering and registering tools...")
-        tools_start = time.time()
-        
-        from ..workflow.tool_loader import (
-            load_tools_from_workflow,
-            register_agent_tools,
-            register_lifecycle_hooks,
-            add_debug_logging_to_agents
-        )
-        
-        # Load tools from workflow.json
-        tools_data = load_tools_from_workflow(workflow_type)
-        agent_tools = tools_data.get("agent_tools", [])
-        lifecycle_hooks = tools_data.get("lifecycle_hooks", [])
-        
-        business_logger.info(f"📦 [{workflow_name_upper}] Loaded {len(agent_tools)} agent tools, {len(lifecycle_hooks)} lifecycle hooks")
-        
-        tools_discovery_time = (time.time() - tools_start) * 1000
-        log_performance_metric(
-            metric_name="tools_discovery_duration",
-            value=tools_discovery_time,
-            unit="ms",
-            context={
-                "agent_tools_count": len(agent_tools),
-                "lifecycle_hooks_count": len(lifecycle_hooks),
-                "workflow_type": workflow_type
-            }
-        )
-
-        # 4. Define agents using provided factory
+        # 3. Define agents using provided factory
         agents_start = time.time()
         business_logger.debug(f"🤖 [{workflow_name_upper}] Defining agents...")
         
-        agents = await agents_factory(base_llm_config=llm_config)
+        agents = await agents_factory()
         
         agents_build_time = (time.time() - agents_start) * 1000
         log_performance_metric(
@@ -1320,25 +1360,78 @@ async def run_workflow_orchestration(
         )
         business_logger.info(f"✅ [{workflow_name_upper}] Agents defined: {len(agents)} total")
 
-        # 5. Create GroupChatManager using AG2 directly
+        # 4. Register tools using modular tool registry
+        tools_start = time.time()
+        business_logger.info("🔧 Registering tools using modular tool registry...")
+        
+        tool_registry = WorkflowToolRegistry(workflow_type)
+        tool_registry.load_configuration()
+        tool_registry.register_agent_tools(list(agents.values()))
+        
+        tools_registration_time = (time.time() - tools_start) * 1000
+        log_performance_metric(
+            metric_name="modular_tools_registration_duration",
+            value=tools_registration_time,
+            unit="ms",
+            context={"workflow_type": workflow_type}
+        )
+        business_logger.info(f"✅ [{workflow_name_upper}] Modular tool registration completed")
+
+        # 5. Create GroupChatManager using AG2 directly with orchestration pattern
         groupchat_manager_start = time.time()
         business_logger.debug(f"⚙️ [{workflow_name_upper}] Creating GroupChat and GroupChatManager...")
         
         from autogen import GroupChat, GroupChatManager
         
-        # Create the GroupChat with configurable max_round
+        # Map orchestration patterns to AG2 speaker selection methods
+        if orchestration_pattern == "DefaultPattern":
+            speaker_selection_method = "auto"           # Uses handoffs + auto selection
+        elif orchestration_pattern == "AutoPattern":
+            speaker_selection_method = "auto"           # Auto selection without handoffs
+        elif orchestration_pattern == "RoundRobinPattern":
+            speaker_selection_method = "round_robin"    # Sequential agent rotation
+        elif orchestration_pattern == "RandomPattern":
+            speaker_selection_method = "random"         # Random agent selection
+        elif orchestration_pattern == "ManualPattern":
+            speaker_selection_method = "manual"         # Manual speaker selection
+        else:
+            speaker_selection_method = "auto"           # Default fallback
+        
+        business_logger.info(f"🎯 [{workflow_name_upper}] Orchestration: {orchestration_pattern} → speaker_selection: {speaker_selection_method}")
+        
+        # Create the GroupChat with pattern-based configuration
         groupchat = GroupChat(
             agents=list(agents.values()),
             messages=[],
-            max_round=max_turns
+            max_round=max_turns,
+            speaker_selection_method=speaker_selection_method
         )
         
-        # Create the GroupChatManager
-        group_chat_manager = GroupChatManager(
+        # Register handoffs for DefaultPattern if enabled
+        if orchestration_pattern == "DefaultPattern" and initiate_handoffs and handoffs_factory:
+            business_logger.info(f"🔄 [{workflow_type}] Initializing handoffs for DefaultPattern orchestration")
+            # Use handoffs factory to wire handoffs
+            try:
+                handoffs_factory(agents)
+                business_logger.info(f"✅ [{workflow_type}] Handoffs registered successfully")
+            except Exception as e:
+                business_logger.warning(f"⚠️ [{workflow_type}] Handoffs registration failed: {e}")
+        elif orchestration_pattern == "DefaultPattern" and initiate_handoffs:
+            business_logger.info(f"🔄 [{workflow_type}] DefaultPattern orchestration enabled but no handoffs_factory provided")
+        
+        # Create the GroupChatManager, which will also serve as the chat manager
+        # The GroupChatManager is an agent and can be part of the groupchat agents list
+        manager = GroupChatManager(
             groupchat=groupchat, 
             llm_config=llm_config
         )
         
+        # Add the manager to the list of agents if it's not already there
+        # This allows the manager to participate or be addressed in the conversation
+        if manager not in groupchat.agents:
+            groupchat.agents.append(manager)
+            business_logger.info(f"✅ [{workflow_name_upper}] GroupChatManager added to the agent list.")
+
         groupchat_manager_time = (time.time() - groupchat_manager_start) * 1000
         log_performance_metric(
             metric_name="groupchat_manager_creation_duration",
@@ -1346,29 +1439,39 @@ async def run_workflow_orchestration(
             unit="ms",
             context={"enterprise_id": enterprise_id}
         )
-        business_logger.info(f"✅ [{workflow_name_upper}] GroupChat and GroupChatManager created")
+        business_logger.info(f"✅ [{workflow_type}] GroupChat and GroupChatManager created")
 
-        # 6. Register discovered tools dynamically
-        tools_registration_start = time.time()
+        # 6. Always create UserProxyAgent (with startup_mode-based human_input_mode)
+        # UserProxyAgent is always needed as the default initiating agent
+        user_proxy_exists = any(agent.name == "user" for agent in agents.values() if hasattr(agent, 'name'))
         
-        # Register agent tools and lifecycle hooks
-        register_agent_tools(agents, agent_tools, workflow_type)
-        register_lifecycle_hooks(agents, lifecycle_hooks, workflow_type)
-        
-        # Add comprehensive debug logging
-        add_debug_logging_to_agents(agents, workflow_type)
-        
-        tools_registration_time = (time.time() - tools_registration_start) * 1000
-        log_performance_metric(
-            metric_name="tools_registration_duration",
-            value=tools_registration_time,
-            unit="ms",
-            context={
-                "agent_tools_registered": len(agent_tools),
-                "lifecycle_hooks_registered": len(lifecycle_hooks)
-            }
-        )
-        business_logger.info(f"✅ [{workflow_name_upper}] Tools registered: {len(agent_tools)} agent tools, {len(lifecycle_hooks)} lifecycle hooks")
+        if not user_proxy_exists:
+            startup_mode = config.get("startup_mode", "UserDriven")  # UserDriven, AgentDriven, BackendOnly
+            
+            # Set human_input_mode based on startup_mode
+            if startup_mode == "BackendOnly":
+                human_input_mode = "NEVER"
+                business_logger.info(f"🤖 [{workflow_type}] Creating UserProxyAgent with human_input_mode=NEVER (BackendOnly)")
+            elif startup_mode == "AgentDriven":
+                human_input_mode = "TERMINATE"  # Only when termination needed
+                business_logger.info(f"🤖 [{workflow_type}] Creating UserProxyAgent with human_input_mode=TERMINATE (AgentDriven)")
+            else:  # UserDriven (default)
+                human_input_mode = "ALWAYS"
+                business_logger.info(f"🤖 [{workflow_type}] Creating UserProxyAgent with human_input_mode=ALWAYS (UserDriven)")
+            
+            from autogen import UserProxyAgent
+            
+            user_proxy_agent = UserProxyAgent(
+                name="user",
+                human_input_mode=human_input_mode,
+                code_execution_config=False,
+                system_message="You are a user interacting with a multi-agent workflow system. Provide input, feedback, and guidance as needed.",
+                llm_config=False,
+            )
+            
+            # Add to agents dictionary
+            agents["user"] = user_proxy_agent
+            business_logger.info(f"✅ [{workflow_type}] UserProxyAgent created with startup_mode={startup_mode}")
 
         # 7. Wire handoffs (if handoffs factory provided)
         if handoffs_factory:
@@ -1376,38 +1479,24 @@ async def run_workflow_orchestration(
             handoffs_factory(agents)
             business_logger.info(f"✅ [{workflow_name_upper}] Handoffs wired")
 
-        # 8. Determine initial message from workflow.json or use provided
-        # Support both legacy 'initial_message' and new 'initial_message_to_groupchat'
-        final_initial_message = (
-            config.get("initial_message_to_groupchat") or 
-            config.get("initial_message") or 
-            initial_message
-        )
-        
-        # If still no message, provide a generic fallback
-        if not final_initial_message:
-            final_initial_message = "You have been tasked with an assignment. Please proceed per your instructions in your system message within the context of the context_variables."
-        
+        # 8. Get initiating agent and start chat
         # Get initiating agent
         initiating_agent = agents.get(initiating_agent_name)
         if not initiating_agent:
             raise ValueError(f"Critical: {initiating_agent_name} not found, cannot initiate workflow.")
         
         # Log the approach
-        if config.get("initial_message_to_groupchat"):
-            business_logger.info(f"🎯 [{workflow_name_upper}] Starting with {initiating_agent_name} (workflow-specific groupchat message)")
-        elif config.get("initial_message"):
-            business_logger.info(f"🎯 [{workflow_name_upper}] Starting with {initiating_agent_name} (legacy initial_message)")
+        if config.get("initial_message"):
+            business_logger.info(f"🎯 [{workflow_name_upper}] Starting with {initiating_agent_name} (workflow initial_message)")
         elif initial_message:
             business_logger.info(f"🎯 [{workflow_name_upper}] Starting with {initiating_agent_name} (user-provided message)")
         else:
             business_logger.info(f"🎯 [{workflow_name_upper}] Starting with {initiating_agent_name} (generic fallback prompt)")
 
-        # 9. Start or resume chat
+        # 9. Start or resume chat (single entry point)
         chat_start = time.time()
-        
-        await start_or_resume_group_chat(
-            manager=group_chat_manager,
+        await _start_or_resume_group_chat(
+            manager=manager,
             initiating_agent=initiating_agent,
             chat_id=chat_id,
             enterprise_id=enterprise_id,
@@ -1415,19 +1504,15 @@ async def run_workflow_orchestration(
             initial_message=final_initial_message,
             max_turns=max_turns,
             workflow_type=workflow_type,
-            communication_channel=communication_channel,
             context_variables=context
         )
-        
         chat_time = (time.time() - chat_start) * 1000
-        
         log_performance_metric(
             metric_name="groupchat_execution_duration",
             value=chat_time,
             unit="ms",
             context={"enterprise_id": enterprise_id, "chat_id": chat_id}
         )
-        
         business_logger.info(f"🎉 [{workflow_name_upper}] Workflow completed in {chat_time:.2f}ms")
         
         log_business_event(
@@ -1463,64 +1548,3 @@ async def run_workflow_orchestration(
 # =============================================================================
 # END WORKFLOW ORCHESTRATION FUNCTIONS  
 # =============================================================================
-
-# ==============================================================================
-# FRONTEND/BACKEND AGENT ARCHITECTURE
-# ==============================================================================
-# 
-# Clean separation between frontend agents (visible to users) and backend agents:
-#
-# Configuration in workflow.json:
-# {
-#   "chat_pane_agents": ["UserAgent", "ConversationAgent"],
-#   "artifact_agents": ["ArtifactAgent1", "ArtifactAgent2"]
-# }
-#
-# Agent Behavior:
-# ✅ FRONTEND AGENTS (specified in arrays):
-#   - chat_pane_agents → Messages appear in ChatPane component
-#   - artifact_agents → Output creates Artifact panels
-#   - All sent via SSE/WebSocket to UI
-#
-# 🔇 BACKEND AGENTS (all others):
-#   - Never sent to UI - completely filtered out
-#   - Still logged and tracked in MongoDB
-#   - Still participate in agent conversations
-#   - Work behind the scenes for coordination/analysis
-# ==============================================================================
-
-def create_enhanced_group_chat_manager(group_chat_manager: Any, chat_id: str, enterprise_id: str) -> GroupChatHookManager:
-    """Create an enhanced group chat manager with dynamic hook registration."""
-    return GroupChatHookManager(group_chat_manager, chat_id, enterprise_id)
-
-def get_frontend_agents(workflow_type: str) -> List[str]:
-    """
-    Get all frontend agents for a workflow.
-    
-    Returns:
-        List[str]: All agents that appear in UI (chat + artifact agents)
-    """
-    try:
-        from .workflow_config import workflow_config
-        return workflow_config.get_frontend_agents(workflow_type)
-    except Exception as e:
-        logger.error(f"Failed to get frontend agents for {workflow_type}: {e}")
-        return []
-
-def is_frontend_agent(agent_name: str, workflow_type: str) -> bool:
-    """
-    Check if an agent should appear in the frontend UI.
-    
-    Args:
-        agent_name: Name of the agent to check
-        workflow_type: Type of workflow
-        
-    Returns:
-        bool: True if agent should appear in UI, False if backend-only
-    """
-    try:
-        from .workflow_config import workflow_config
-        return workflow_config.is_frontend_agent(agent_name, workflow_type)
-    except Exception as e:
-        logger.error(f"Failed to check frontend agent {agent_name} for {workflow_type}: {e}")
-        return False

@@ -1,10 +1,10 @@
 /**
  * React Hook for Dynamic Component Loading
- * Uses the new registry-based component system
+ * Uses the UI Tool Registry system
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { getComponent } from '../agents/components';
+import { getUiToolComponent, getToolMetadata } from '../core/uiToolRegistry';
 
 /**
  * Hook for loading components dynamically from active workflow
@@ -27,14 +27,14 @@ export function useDynamicComponent(componentName, options = {}) {
     setError(null);
 
     try {
-      // Use workflow-aware component loading
-      const loadedComponent = await getComponent(componentName);
+      // Use UI Tool Registry for component loading
+      const loadedComponent = getUiToolComponent(componentName);
       if (!loadedComponent) {
-        throw new Error(`Component ${componentName} not found in active workflow`);
+        throw new Error(`Component ${componentName} not found in UI Tool Registry`);
       }
 
       setComponent(loadedComponent);
-      setMetadata({ name: componentName, source: 'workflow' });
+      setMetadata(getToolMetadata(componentName) || { name: componentName, source: 'ui-tool-registry' });
 
     } catch (err) {
       console.error(`Failed to load component ${componentName}:`, err);

@@ -79,20 +79,19 @@ async def make_llm_config(
     stream: bool = False,
     extra_config: Optional[Dict[str, Any]] = None
 ) -> Tuple[OpenAIWrapper, Dict[str, Any]]:
-    """Create LLM configuration with optional structured output"""
+    """Create LLM configuration with optional structured output and streaming"""
     config_list = await _load_raw_config_list()
     
     for cfg in config_list:
         if response_format:
             cfg["response_format"] = response_format
-        # Note: stream parameter is not supported in AutoGen's LLM config validation
-        # if stream:
-        #     cfg["stream"] = True
+        # Note: AG2 streaming is handled by IOStream, not by config_list stream parameter
         if extra_config:
             cfg.update(extra_config)
     
     for i, cfg in enumerate(config_list, start=1):
-        redacted = {**cfg, "api_key": "***REDACTED***"}
+        redacted = {**cfg}
+        redacted["api_key"] = "***REDACTED***"
         if "response_format" in redacted:
             redacted["response_format"] = cfg["response_format"].__name__
         logger.info(f"[LLM CONFIG #{i}] {redacted}")
@@ -105,6 +104,12 @@ async def make_llm_config(
         "cache_seed": 153,
         "config_list": config_list
     }
+    
+    if stream:
+        logger.info("🎯 AG2 streaming will be handled by IOStream (not config_list)")
+    else:
+        logger.info("🎯 AG2 streaming disabled")
+    
     logger.info("LLM runtime config initialized successfully.")
     
     return client, llm_config

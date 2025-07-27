@@ -5,7 +5,7 @@
 
 from typing import Dict, Any
 
-def log_agent_state_update(
+async def log_agent_state_update(
     agent,
     messages
 ) -> Any:

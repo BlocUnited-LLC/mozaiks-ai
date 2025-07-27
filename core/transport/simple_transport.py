@@ -16,63 +16,20 @@ import time
 from autogen import Agent, GroupChatManager
 from autogen.agentchat.groupchat import GroupChat
 
+# Import workflow configuration for agent visibility filtering
+from core.workflow.workflow_config import workflow_config
+
 # Logging setup
 logger = logging.getLogger(__name__)
 
 # Import chat logger for agent message tracking
-from logs.logging_config import get_chat_logger, setup_logging
+from logs.logging_config import get_chat_logger
 
-# Ensure logging is set up and create our chat loggers
-try:
-    setup_logging()
-except:
-    pass  # Logging may already be set up
-
+# Get our chat logger (logging setup happens in main app)
 chat_logger = get_chat_logger("agent_messages")  # Specific logger for agent messages
 
 # ==================================================================================
 # COMMUNICATION CHANNEL WRAPPER
-# ==================================================================================
-
-class SimpleCommunicationChannelWrapper:
-    """Wrapper class for AG2 communication channel integration"""
-    
-    def __init__(self, transport_instance, chat_id: str):
-        self.transport = transport_instance
-        self.chat_id = chat_id
-        
-    async def send_message(self, message: str, agent_name: Optional[str] = None):
-        """Send a message through the transport layer"""
-        await self.transport.stream_message_to_user(self.chat_id, message, agent_name)
-        
-    async def send_event(self, event_type: str, data: dict, agent_name: Optional[str] = None):
-        """Send an event through the transport layer SSE system"""
-        # Create event data structure
-        event_data = {
-            "type": event_type,
-            "data": data,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        # Use the internal broadcast method
-        await self.transport._broadcast_to_sse(event_data, self.chat_id)
-        
-    async def get_user_input(self, prompt: Optional[str] = None) -> str:
-        """Get user input through the transport layer"""
-        # This would integrate with the user input collection system
-        import time
-        input_request_id = f"{self.chat_id}_{int(time.time())}"
-        
-        # Send user input request via SSE
-        event_data = {
-            "type": "user_input_request",
-            "data": {"request_id": input_request_id, "prompt": prompt or "Please provide input:"},
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        await self.transport._broadcast_to_sse(event_data, self.chat_id)
-        
-        # Wait for user response
-        return await SimpleTransport.wait_for_user_input(input_request_id)
-
 # ==================================================================================
 # MESSAGE FILTERING
 # ==================================================================================
@@ -238,9 +195,6 @@ class SimpleTransport:
         self.message_filter = MessageFilter()
         self.persistence = PersistenceManager()
         
-        # Store SSE event queues for broadcasting
-        self.sse_queues: Dict[str, asyncio.Queue] = {}
-        
         # User input collection mechanism
         self.pending_input_requests: Dict[str, asyncio.Future] = {}
         
@@ -263,12 +217,15 @@ class SimpleTransport:
     # ==================================================================================
     
     @classmethod
-    async def wait_for_user_input(cls, input_request_id: str, timeout: int = 300) -> str:
+    async def wait_for_user_input(cls, input_request_id: str) -> str:
         """
-        Wait for user input response for a specific input request.
+        Wait indefinitely for user input response for a specific input request.
         
         This is called by AG2StreamingIOStream when agents request user input.
         The frontend will call submit_user_input() to provide the response.
+        
+        No timeout - like ChatGPT, we wait indefinitely. Users can resume conversations
+        using the AG2 resume functionality if they leave and come back.
         """
         # Access the singleton instance
         instance = cls._get_instance()
@@ -280,11 +237,8 @@ class SimpleTransport:
             instance.pending_input_requests[input_request_id] = asyncio.Future()
         
         try:
-            # Wait for the user input with timeout
-            user_input = await asyncio.wait_for(
-                instance.pending_input_requests[input_request_id],
-                timeout=timeout
-            )
+            # Wait indefinitely for user input - no timeout
+            user_input = await instance.pending_input_requests[input_request_id]
             return user_input
         finally:
             # Clean up the pending request
@@ -321,9 +275,27 @@ class SimpleTransport:
         """Set this instance as the singleton"""
         SimpleTransport._instance = self
         
-    def should_show_to_user(self, message: str, agent_name: Optional[str]) -> bool:
+    def should_show_to_user(self, agent_name: Optional[str], chat_id: Optional[str] = None) -> bool:
         """Check if a message should be shown to the user interface"""
-        # For now, show all messages - can be enhanced with filtering logic
+        if not agent_name:
+            return True  # Show system messages
+        
+        # Get the workflow type for this chat session
+        workflow_type = None
+        if chat_id and chat_id in self.connections:
+            workflow_type = self.connections[chat_id].get("workflow_type")
+        
+        # If we have workflow type, use visual_agents filtering
+        if workflow_type:
+            visible_agents = workflow_config.get_visible_agents(workflow_type)
+            is_visible = agent_name in visible_agents
+            
+            if not is_visible:
+                logger.debug(f"🚫 Agent '{agent_name}' not in visual_agents for workflow '{workflow_type}' - filtering from UI")
+                return False
+            else:
+                logger.debug(f"✅ Agent '{agent_name}' is in visual_agents for workflow '{workflow_type}' - showing in UI")
+        
         return True
         
     def format_agent_name(self, agent_name: Optional[str]) -> str:
@@ -342,7 +314,7 @@ class SimpleTransport:
         logger.debug(f"🏢 Enterprise context set to: {enterprise_id}")
     
     def get_enterprise_context(self) -> str:
-        """Get the current enterprise context, defaulting to 'default' for backwards compatibility"""
+        """Get the current enterprise context"""
         return getattr(self, 'current_enterprise_id', 'default')
     
     # ==================================================================================
@@ -358,12 +330,12 @@ class SimpleTransport:
         metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """
-        Send messages to UI via SSE broadcast.
+        Send messages to UI via WebSocket broadcast.
         """
         
         # For simple strings, apply traditional filtering
         if isinstance(message, str):
-            if not self.should_show_to_user(message, agent_name):
+            if not self.should_show_to_user(agent_name, chat_id):
                 logger.debug(f"🚫 Filtered message from {agent_name}: {message[:50]}...")
                 return
         
@@ -389,46 +361,40 @@ class SimpleTransport:
             "timestamp": datetime.utcnow().isoformat()
         }
         
-        # Broadcast to all SSE connections or specific chat
-        await self._broadcast_to_sse(event_data, chat_id)
+        # Broadcast to WebSocket connections only
+        await self._broadcast_to_websockets(event_data, chat_id)
         
         logger.info(f"📤 {formatted_agent}: {str(message)[:100]}...")
         
-    async def _broadcast_to_sse(self, event_data: Dict[str, Any], target_chat_id: Optional[str] = None) -> None:
-        """Broadcast event to SSE connections and WebSocket connections"""
+    async def _broadcast_to_websockets(self, event_data: Dict[str, Any], target_chat_id: Optional[str] = None) -> None:
+        """Broadcast event to WebSocket connections only"""
         try:
             if target_chat_id:
-                # Send to specific chat's SSE queue
-                if target_chat_id in self.sse_queues:
-                    await self.sse_queues[target_chat_id].put(event_data)
-                    logger.debug(f"📡 Broadcasted to SSE queue for chat {target_chat_id}")
-                
-                # Also send to WebSocket if connected
+                # Send to specific chat's WebSocket
                 if target_chat_id in self.connections:
                     connection_data = self.connections[target_chat_id]
                     if "websocket" in connection_data and connection_data.get("active", False):
                         try:
                             websocket = connection_data["websocket"]
-                            await websocket.send_text(f"data: {json.dumps(event_data)}")
+                            # Send raw JSON for WebSocket clients to parse directly
+                            await websocket.send_text(json.dumps(event_data))
                             logger.debug(f"📡 Broadcasted to WebSocket for chat {target_chat_id}")
                         except Exception as ws_error:
                             logger.warning(f"⚠️ Failed to send to WebSocket {target_chat_id}: {ws_error}")
                             # Mark WebSocket as inactive if send fails
                             connection_data["active"] = False
-                            if "websocket" in connection_data:
-                                del connection_data["websocket"]
+                            connection_data.pop("websocket", None)
                 
             else:
-                # Broadcast to all SSE connections
-                for chat_id, queue in self.sse_queues.items():
-                    await queue.put(event_data)
-                
                 # Broadcast to all WebSocket connections
+                websocket_count = 0
                 for chat_id, connection_data in self.connections.items():
                     if "websocket" in connection_data and connection_data.get("active", False):
                         try:
                             websocket = connection_data["websocket"]
-                            await websocket.send_text(f"data: {json.dumps(event_data)}")
+                            # Send raw JSON for WebSocket clients to parse directly
+                            await websocket.send_text(json.dumps(event_data))
+                            websocket_count += 1
                         except Exception as ws_error:
                             logger.warning(f"⚠️ Failed to send to WebSocket {chat_id}: {ws_error}")
                             # Mark WebSocket as inactive if send fails
@@ -436,7 +402,7 @@ class SimpleTransport:
                             if "websocket" in connection_data:
                                 del connection_data["websocket"]
                 
-                logger.debug(f"📡 Broadcasted to {len(self.sse_queues)} SSE connections and WebSocket connections")
+                logger.debug(f"📡 Broadcasted to {websocket_count} WebSocket connections")
                 
         except Exception as e:
             logger.error(f"❌ Failed to broadcast event: {e}")
@@ -447,7 +413,7 @@ class SimpleTransport:
         error_code: str = "GENERAL_ERROR",
         chat_id: Optional[str] = None
     ) -> None:
-        """Send error message to UI via SSE"""
+        """Send error message to UI via WebSocket"""
         event_data = {
             "type": "error",
             "data": {
@@ -458,7 +424,7 @@ class SimpleTransport:
             "timestamp": datetime.utcnow().isoformat()
         }
         
-        await self._broadcast_to_sse(event_data, chat_id)
+        await self._broadcast_to_websockets(event_data, chat_id)
         logger.error(f"❌ Error: {error_message}")
         
     async def send_status(
@@ -467,7 +433,7 @@ class SimpleTransport:
         status_type: str = "info",
         chat_id: Optional[str] = None
     ) -> None:
-        """Send status update to UI via SSE"""
+        """Send status update to UI via WebSocket"""
         event_data = {
             "type": "status",
             "data": {
@@ -478,7 +444,7 @@ class SimpleTransport:
             "timestamp": datetime.utcnow().isoformat()
         }
         
-        await self._broadcast_to_sse(event_data, chat_id)
+        await self._broadcast_to_websockets(event_data, chat_id)
         logger.info(f"ℹ️ Status: {status_message}")
     
     # ==================================================================================
@@ -523,13 +489,15 @@ class SimpleTransport:
                 chat_id
             )
             
-            # Send message history for UI restoration
-            await self.send_event(
+            # Send message history for UI restoration using tool event
+            await self.send_tool_event(
                 "messages_restored",
                 {
                     "messages": groupchat.messages,
                     "count": len(groupchat.messages)
-                }
+                },
+                "inline",
+                chat_id
             )
         
         return success, error
@@ -658,10 +626,6 @@ class SimpleTransport:
                     
                     logger.info(f"🔌 Disconnected connection: {connection_id}")
             
-            # Clear all SSE queues
-            self.sse_queues.clear()
-            logger.debug("🧹 Cleared all SSE event queues")
-            
             # Clear active connections
             self.active_connections.clear()
             self.connections.clear()
@@ -674,7 +638,7 @@ class SimpleTransport:
     def get_connection_info(self) -> Dict[str, int]:
         """Get information about active connections"""
         try:
-            sse_count = 0
+            websocket_count = 0
             websocket_count = 0
             
             # Count active connections by type
@@ -682,135 +646,16 @@ class SimpleTransport:
                 if connection_data.get("active", False):
                     if "websocket" in connection_data:
                         websocket_count += 1
-                    else:
-                        # SSE connections don't store websocket object
-                        sse_count += 1
             
-            # Also count SSE queues as active SSE connections
-            sse_queue_count = len(self.sse_queues)
-            if sse_queue_count > sse_count:
-                sse_count = sse_queue_count
-            
-            total_count = sse_count + websocket_count
+            total_count = websocket_count
             
             return {
-                "sse_connections": sse_count,
                 "websocket_connections": websocket_count,
                 "total_connections": total_count
             }
         except Exception as e:
             logger.error(f"❌ Error getting connection info: {e}")
-            return {"sse_connections": 0, "websocket_connections": 0, "total_connections": 0}
-    
-    async def create_sse_stream(
-        self,
-        chat_id: str,
-        user_id: str,
-        workflow_type: str,
-        enterprise_id: Optional[str] = None
-    ) -> StreamingResponse:
-        """Create Server-Sent Events stream for real-time communication"""
-        try:
-            logger.info(f"🔌 Creating SSE stream for chat_id: {chat_id}, workflow: {workflow_type}")
-            
-            # Set enterprise context if provided
-            if enterprise_id:
-                self.set_enterprise_context(enterprise_id)
-            
-            # Create session if it doesn't exist
-            if chat_id not in self.connections:
-                # Use provided enterprise_id or get from context
-                effective_enterprise_id = enterprise_id or self.get_enterprise_context()
-                await self.create_session(chat_id, effective_enterprise_id, check_resume=True)
-                
-                # Auto-start workflow if it's configured for auto-start
-                # Let the workflow handle its own initialization (no fake user message)
-                logger.info(f"🚀 Auto-starting workflow '{workflow_type}' for new session {chat_id}")
-                welcome_result = await self.handle_user_input_from_api(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    workflow_type=workflow_type,
-                    message=None  # Let workflow handle initialization with null initial_message
-                )
-                logger.info(f"✅ Auto-start completed for {chat_id}: {welcome_result.get('status', 'unknown')}")
-            
-            async def event_generator():
-                """Generate SSE events following the documented event types"""
-                try:
-                    # Create event queue for this connection
-                    event_queue = asyncio.Queue()
-                    self.sse_queues[chat_id] = event_queue
-                    
-                    # Send initial connection event
-                    connection_event = {
-                        "type": "status",
-                        "data": {
-                            "status": "connected",
-                            "chat_id": chat_id,
-                            "workflow_type": workflow_type
-                        },
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                    yield f"data: {json.dumps(connection_event)}\n\n"
-                    
-                    # Listen for events from the queue and send heartbeats
-                    last_heartbeat = time.time()
-                    while chat_id in self.connections and self.connections[chat_id].get("active", False):
-                        try:
-                            # Check for new events (non-blocking)
-                            event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
-                            yield f"data: {json.dumps(event)}\n\n"
-                            last_heartbeat = time.time()
-                        except asyncio.TimeoutError:
-                            # Send heartbeat every 30 seconds
-                            if time.time() - last_heartbeat > 30:
-                                heartbeat_event = {
-                                    "type": "status",
-                                    "data": {
-                                        "status": "heartbeat",
-                                        "timestamp": datetime.utcnow().isoformat()
-                                    },
-                                    "timestamp": datetime.utcnow().isoformat()
-                                }
-                                yield f"data: {json.dumps(heartbeat_event)}\n\n"
-                                last_heartbeat = time.time()
-                        
-                except asyncio.CancelledError:
-                    logger.info(f"🔌 SSE stream cancelled for {chat_id}")
-                except Exception as e:
-                    logger.error(f"❌ SSE stream error for {chat_id}: {e}")
-                    # Send error event before closing
-                    error_event = {
-                        "type": "error",
-                        "data": {
-                            "error": str(e),
-                            "error_code": "SSE_STREAM_ERROR"
-                        },
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                    yield f"data: {json.dumps(error_event)}\n\n"
-                finally:
-                    # Cleanup connection and queue
-                    if chat_id in self.connections:
-                        self.connections[chat_id]["active"] = False
-                    if chat_id in self.sse_queues:
-                        del self.sse_queues[chat_id]
-                    logger.info(f"🔌 SSE stream ended for {chat_id}")
-            
-            return StreamingResponse(
-                event_generator(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Headers": "Cache-Control"
-                }
-            )
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to create SSE stream: {e}")
-            raise
+            return {"websocket_connections": 0, "total_connections": 0}
     
     async def handle_websocket(
         self,
@@ -839,10 +684,6 @@ class SimpleTransport:
             self.connections[chat_id]["websocket"] = websocket
             self.connections[chat_id]["active"] = True
             
-            # Create an event queue for this WebSocket connection to support unified broadcasting
-            if chat_id not in self.sse_queues:
-                self.sse_queues[chat_id] = asyncio.Queue()
-            
             # Send initial connection event
             await websocket.send_text(json.dumps({
                 "type": "status",
@@ -854,6 +695,16 @@ class SimpleTransport:
                 },
                 "timestamp": datetime.utcnow().isoformat()
             }))
+            # Auto-start workflow execution if configured (no initial user message)
+            try:
+                await self.handle_user_input_from_api(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    workflow_type=workflow_type,
+                    message=None
+                )
+            except Exception as e:
+                logger.error(f"❌ Auto-start workflow failed for {chat_id}: {e}")
             
             try:
                 while True:
@@ -865,11 +716,11 @@ class SimpleTransport:
                         user_input = message_data.get("message", "")
                         if user_input.strip():
                             # Send user message to UI following your event system
-                            await self.send_event("chat_message", {
-                                "message": user_input,
-                                "agent_name": "User",
-                                "chat_id": chat_id
-                            })
+                            await self.send_chat_message(
+                                user_input,
+                                "User", 
+                                chat_id
+                            )
                             
                             # Process message through workflow system
                             from core.workflow.init_registry import get_workflow_handler
@@ -908,58 +759,32 @@ class SimpleTransport:
                                     "timestamp": datetime.utcnow().isoformat()
                                 }))
                     
-                    elif message_data.get("type") == "component_action":
-                        # Handle component action for AG2 ContextVariables
-                        component_id = message_data.get("component_id")  # Changed from agent_name.component_name
-                        action_type = message_data.get("action_type")    # Changed from component_name
-                        action_data = message_data.get("action_data", {})
+                    elif message_data.get("type") == "user_input_response":
+                        # Handle user input response for AG2 IOStream
+                        input_request_id = message_data.get("input_request_id")
+                        user_input = message_data.get("user_input", "")
                         
-                        logger.info(f"📋 Received component action: {component_id} -> {action_type}")
-                        
-                        try:
-                            # Get the active workflow's context update tool
-                            from workflows.Generator.ContextVariables import update_context_from_ui
-                            
-                            # Get current context variables from active session
-                            context_variables = None
-                            if chat_id in self.connections and "context" in self.connections[chat_id]:
-                                context_variables = self.connections[chat_id]["context"]
-                            
-                            # Call AG2 tool directly
-                            if context_variables:
-                                result = update_context_from_ui(
-                                    component_id=component_id,
-                                    action_type=action_type,
-                                    action_data=action_data,
-                                    context_variables=context_variables
-                                )
-                                
-                                logger.info(f"✅ Context updated via AG2 tool: {result}")
-                                
-                                # Send acknowledgment back to frontend
+                        if input_request_id:
+                            success = await self.submit_user_input(input_request_id, user_input)
+                            if success:
+                                logger.info(f"✅ User input submitted for request {input_request_id}")
                                 await websocket.send_text(json.dumps({
-                                    "type": "component_action_response",
+                                    "type": "user_input_response_ack",
                                     "status": "success",
-                                    "result": result,
+                                    "input_request_id": input_request_id,
                                     "timestamp": datetime.utcnow().isoformat()
                                 }))
                             else:
-                                logger.warning(f"⚠️ No context variables found for chat {chat_id}")
+                                logger.warning(f"⚠️ Failed to submit user input for request {input_request_id}")
                                 await websocket.send_text(json.dumps({
-                                    "type": "component_action_response", 
-                                    "status": "warning",
-                                    "message": "No context variables available",
+                                    "type": "user_input_response_ack",
+                                    "status": "error",
+                                    "input_request_id": input_request_id,
+                                    "message": "Input request not found or already completed",
                                     "timestamp": datetime.utcnow().isoformat()
                                 }))
-                                
-                        except Exception as action_error:
-                            logger.error(f"❌ Component action failed: {action_error}")
-                            await websocket.send_text(json.dumps({
-                                "type": "component_action_response",
-                                "status": "error", 
-                                "error": str(action_error),
-                                "timestamp": datetime.utcnow().isoformat()
-                            }))
+                        else:
+                            logger.warning("⚠️ User input response missing input_request_id")
                     
                     elif message_data.get("type") == "ping":
                         # Respond to ping with pong
@@ -974,19 +799,11 @@ class SimpleTransport:
         except Exception as e:
             logger.error(f"❌ Failed to handle WebSocket: {e}")
         finally:
-            # Cleanup connection and queues
+            # Cleanup connection
             if chat_id in self.connections:
                 self.connections[chat_id]["active"] = False
                 if "websocket" in self.connections[chat_id]:
                     del self.connections[chat_id]["websocket"]
-            
-            # Clean up SSE queue if no other connections are using it
-            if chat_id in self.sse_queues:
-                # Only remove the queue if there's no active SSE connection
-                connection_data = self.connections.get(chat_id, {})
-                if not connection_data.get("active", False):
-                    del self.sse_queues[chat_id]
-                    logger.debug(f"🧹 Cleaned up SSE queue for {chat_id}")
             
             logger.info(f"🔌 WebSocket disconnected for {chat_id}")
 
@@ -1011,18 +828,18 @@ class SimpleTransport:
         try:
             # Only send user message event if there's an actual message
             if message is not None:
-                await self.send_event("chat_message", {
-                    "message": message,
-                    "agent_name": "User", 
-                    "chat_id": chat_id
-                })
+                await self.send_chat_message(
+                    message,
+                    "User", 
+                    chat_id
+                )
             else:
                 # For auto-start without user input, just log
                 logger.info(f"🚀 Starting workflow '{workflow_type}' for {chat_id} without initial user message")
             
             # Create session if it doesn't exist, with resume capability
             if chat_id not in self.connections:
-                # Extract enterprise_id from context or use default for backwards compatibility
+                # Extract enterprise_id from context or use default
                 enterprise_id = getattr(self, 'current_enterprise_id', 'default')
                 
                 session_info = await self.create_session(
@@ -1032,9 +849,6 @@ class SimpleTransport:
                 )
                 logger.info(f"🆕 Created session for API input: {session_info['session_type']}")
             
-            # Create communication channel wrapper following the documented pattern
-            communication_channel = SimpleCommunicationChannelWrapper(self, chat_id)
-            
             # Integrate with actual workflow system
             if message:
                 logger.info(f"🚀 Starting workflow '{workflow_type}' for message: {message[:50]}...")
@@ -1042,11 +856,11 @@ class SimpleTransport:
                 logger.info(f"🚀 Starting workflow '{workflow_type}' with auto-start (no initial message)")
             
             # Send status update
-            await self.send_event("status", {
-                "status": "processing",
-                "workflow_type": workflow_type,
-                "chat_id": chat_id
-            })
+            await self.send_status(
+                "processing",
+                "info",
+                chat_id
+            )
             
             # Get the actual workflow handler and execute it
             from core.workflow.init_registry import get_workflow_handler
@@ -1055,11 +869,11 @@ class SimpleTransport:
             if not workflow_handler:
                 error_msg = f"Workflow '{workflow_type}' not found in registry"
                 logger.error(f"❌ {error_msg}")
-                await self.send_event("error", {
-                    "error": error_msg,
-                    "error_code": "WORKFLOW_NOT_FOUND",
-                    "chat_id": chat_id
-                })
+                await self.send_error(
+                    error_msg,
+                    "WORKFLOW_NOT_FOUND",
+                    chat_id
+                )
                 return {
                     "status": "error",
                     "message": error_msg,
@@ -1068,7 +882,7 @@ class SimpleTransport:
             
             # Execute the workflow with proper parameters
             try:
-                # Extract enterprise_id from context or use default for backwards compatibility
+                # Extract enterprise_id from context or use default
                 enterprise_id = getattr(self, 'current_enterprise_id', 'default')
                 
                 # Log workflow start to agent_chat.log
@@ -1078,8 +892,7 @@ class SimpleTransport:
                     enterprise_id=enterprise_id,
                     chat_id=chat_id,
                     user_id=user_id or "unknown",
-                    initial_message=message,
-                    communication_channel=communication_channel
+                    initial_message=message
                 )
                 
                 logger.info(f"✅ Workflow '{workflow_type}' completed successfully")
@@ -1088,11 +901,11 @@ class SimpleTransport:
                 chat_logger.info(f"WORKFLOW_COMPLETE | Chat: {chat_id} | Workflow: {workflow_type} | Result: {str(result)[:100] if result else 'None'}")
                 
                 # Send completion status
-                await self.send_event("status", {
-                    "status": "completed",
-                    "workflow_type": workflow_type,
-                    "chat_id": chat_id
-                })
+                await self.send_status(
+                    "completed",
+                    "info",
+                    chat_id
+                )
                 
                 return {
                     "status": "processed",
@@ -1108,11 +921,11 @@ class SimpleTransport:
                 # Log workflow error to agent_chat.log
                 chat_logger.error(f"WORKFLOW_ERROR | Chat: {chat_id} | Workflow: {workflow_type} | Error: {str(workflow_error)[:200]}")
                 
-                await self.send_event("error", {
-                    "error": error_msg,
-                    "error_code": "WORKFLOW_EXECUTION_ERROR",
-                    "chat_id": chat_id
-                })
+                await self.send_error(
+                    error_msg,
+                    "WORKFLOW_EXECUTION_ERROR",
+                    chat_id
+                )
                 
                 return {
                     "status": "error",
@@ -1125,11 +938,11 @@ class SimpleTransport:
             logger.error(f"❌ API workflow execution failed: {e}", exc_info=True)
             
             # Send error event following the documented event system
-            await self.send_event("error", {
-                "error": error_msg,
-                "error_code": "API_PROCESSING_ERROR",
-                "chat_id": chat_id
-            })
+            await self.send_error(
+                error_msg,
+                "API_PROCESSING_ERROR",
+                chat_id
+            )
             
             return {
                 "status": "error", 
@@ -1138,70 +951,146 @@ class SimpleTransport:
             }
 
     # ==================================================================================
-    # PROTOCOL COMPATIBILITY METHODS
+    # SIMPLIFIED EVENT API - WEBSOCKET ONLY
     # ==================================================================================
     
-    async def send_event(self, event_type: str, data: Any, agent_name: Optional[str] = None) -> None:
-        """Send event (for protocol compatibility)"""
-        if event_type == "chat_message":
-            message = data.get("message", str(data)) if isinstance(data, dict) else str(data)
-            chat_id = data.get("chat_id") if isinstance(data, dict) else None
-            
-            # Log chat messages to agent_chat.log
-            formatted_agent = self.format_agent_name(agent_name)
-            if message and formatted_agent:
-                chat_logger.info(f"EVENT_MESSAGE | Chat: {chat_id or 'unknown'} | Agent: {formatted_agent} | Message: {str(message)[:200]}{'...' if len(str(message)) > 200 else ''}")
-            
-            await self.send_to_ui(message, agent_name, "chat_message", chat_id)
-        elif event_type == "error":
-            error_msg = data.get("error", str(data)) if isinstance(data, dict) else str(data)
-            await self.send_error(error_msg)
-        elif event_type == "status":
-            status_msg = data.get("status", str(data)) if isinstance(data, dict) else str(data)
-            await self.send_status(status_msg)
-        elif event_type == "route_to_chat":
-            # Support for inline UI components
-            await self.send_ui_event("route_to_chat", data)
-        elif event_type == "route_to_artifact":
-            # Support for artifact UI components  
-            await self.send_ui_event("route_to_artifact", data)
-        elif event_type == "ui_tool_action":
-            # Support for UI tool interactions
-            await self.send_ui_event("ui_tool_action", data)
-        else:
-            logger.info(f"📤 Event: {event_type} - {data}")
+    async def send_chat_message(
+        self, 
+        message: str, 
+        agent_name: Optional[str] = None, 
+        chat_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Send chat message to user interface"""
+        await self.send_to_ui(message, agent_name, "chat_message", chat_id, metadata)
     
-    async def send_custom_event(self, event_name: str, data: Any, chat_id: Optional[str] = None) -> None:
-        """Send custom event"""
-        logger.info(f"📤 Custom Event: {event_name} - {data}")
-
-    async def send_ui_event(self, event_type: str, data: Dict[str, Any]) -> None:
+    async def send_simple_text_message(self, content: str, chat_id: Optional[str] = None, agent_name: Optional[str] = None) -> None:
         """
-        Send UI events for dynamic component routing - PRODUCTION READY.
-        Supports route_to_chat, route_to_artifact, ui_tool_action
+        Send simple text message using AG2's official approach with agent context.
+        Based on: https://docs.ag2.ai/latest/docs/_blogs/2025-01-10-WebSockets/
         """
-        logger.info(f"🎯 UI Event: {event_type} - Component: {data.get('component_name', 'unknown')}")
+        if chat_id and chat_id in self.connections:
+            connection_data = self.connections[chat_id]
+            if "websocket" in connection_data and connection_data.get("active", False):
+                try:
+                    websocket = connection_data["websocket"]
+                    
+                    # For AG2 simple text approach, we can send structured data as JSON
+                    # The frontend will parse it and handle display accordingly
+                    message_data = {
+                        "type": "simple_text",
+                        "content": content,
+                        "agent_name": agent_name or "Agent",
+                        "timestamp": asyncio.get_event_loop().time(),
+                        "chat_id": chat_id
+                    }
+                    
+                    # Send as JSON for proper parsing
+                    await websocket.send_text(json.dumps(message_data))
+                    logger.debug(f"📤 Simple text sent to {chat_id} from {agent_name}: {content[:100]}...")
+                except Exception as ws_error:
+                    logger.warning(f"⚠️ Failed to send simple text to {chat_id}: {ws_error}")
+    
+    async def send_tool_event(
+        self, 
+        tool_id: str, 
+        payload: Dict[str, Any], 
+        display: str = "inline",
+        chat_id: Optional[str] = None
+    ) -> None:
+        """
+        Send tool UI event with clear routing.
         
-        # Production implementation: Create proper event and send to UI
+        Args:
+            tool_id: Unique identifier for the tool/component
+            payload: Tool-specific data
+            display: "inline" (in chat) or "artifact" (side panel)
+            chat_id: Target chat ID
+        """
         event_data = {
-            "type": event_type,
-            "data": data,
+            "type": "ui_tool",
+            "data": {
+                "toolId": tool_id,
+                "payload": payload,
+                "display": display,
+                "chat_id": chat_id
+            },
             "timestamp": datetime.utcnow().isoformat()
         }
         
-        # Broadcast to SSE connections
-        chat_id = data.get('chat_id')
-        await self._broadcast_to_sse(event_data, chat_id)
+        await self._broadcast_to_websockets(event_data, chat_id)
         
-        # Send to UI immediately - this is production behavior
-        if event_type == "route_to_chat":
-            logger.info(f"📱 Routing to inline component: {data.get('component_name')}")
-        elif event_type == "route_to_artifact":
-            logger.info(f"🗂️ Creating artifact component: {data.get('component_name')} - {data.get('title', 'No title')}")
-        elif event_type == "ui_tool_action":
-            logger.info(f"🔧 UI Tool Action: {data.get('tool_id')} - {data.get('action_type')}")
+        display_location = "inline chat" if display == "inline" else "artifact panel"
+        logger.info(f"� Tool Event: {tool_id} → {display_location}")
+    
+    async def send_backend_notification(
+        self, 
+        action: str, 
+        status: str, 
+        data: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Send backend-only notification (not for chat UI).
+        Used for system events, saves, etc.
+        """
+        logger.info(f"� Backend Action: {action} → {status}")
+        if data:
+            logger.debug(f"   Data: {data}")
+    
+    # ==================================================================================
+    # UI TOOL RESPONSE COLLECTION (For Dynamic UI System)
+    # ==================================================================================
+    
+    @classmethod
+    async def wait_for_ui_tool_response(cls, event_id: str) -> Dict[str, Any]:
+        """
+        Wait indefinitely for UI tool response for a specific event.
         
-        # This is where the actual transport would send the event to frontend
-        # The event_data is properly formatted for frontend consumption
+        This is called by UI tool functions when they emit events and need responses.
+        The frontend will call submit_ui_tool_response() to provide the response.
+        No timeout - like ChatGPT, users can take their time to interact with UI components.
+        """
+        # Access the singleton instance
+        instance = cls._get_instance()
+        if not instance:
+            raise RuntimeError("SimpleTransport instance not available")
+            
+        if not hasattr(instance, 'pending_ui_tool_responses'):
+            instance.pending_ui_tool_responses = {}
+            
+        if event_id not in instance.pending_ui_tool_responses:
+            # Create a future to wait for the response
+            instance.pending_ui_tool_responses[event_id] = asyncio.Future()
+        
+        try:
+            # Wait indefinitely for the UI tool response - no timeout
+            response = await instance.pending_ui_tool_responses[event_id]
+            return response
+        finally:
+            # Clean up the pending response
+            if event_id in instance.pending_ui_tool_responses:
+                del instance.pending_ui_tool_responses[event_id]
+    
+    async def submit_ui_tool_response(self, event_id: str, response_data: Dict[str, Any]) -> bool:
+        """
+        Submit UI tool response for a pending event.
+        
+        This method is called by the API endpoint when the frontend submits UI tool responses.
+        """
+        if not hasattr(self, 'pending_ui_tool_responses'):
+            self.pending_ui_tool_responses = {}
+            
+        if event_id in self.pending_ui_tool_responses:
+            future = self.pending_ui_tool_responses[event_id]
+            if not future.done():
+                future.set_result(response_data)
+                logger.info(f"✅ [UI_TOOL] Submitted UI tool response for event {event_id}")
+                return True
+            else:
+                logger.warning(f"⚠️ [UI_TOOL] Event {event_id} already completed")
+                return False
+        else:
+            logger.warning(f"⚠️ [UI_TOOL] No pending UI tool response found for {event_id}")
+            return False
 
 

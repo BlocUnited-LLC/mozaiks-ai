@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import services from '../services';
 import config from '../config';
-import { initializeAgentSystem } from '../agents';
+// Import workflow registry for UI tool registration
+import { workflowsInitialized } from '../workflows';
 
 const ChatUIContext = createContext(null);
 
@@ -26,10 +27,17 @@ export const ChatUIProvider = ({
   const [authAdapterInstance, setAuthAdapterInstance] = useState(null);
   const [apiAdapterInstance, setApiAdapterInstance] = useState(null);
   const [agentSystemInitialized, setAgentSystemInitialized] = useState(false);
+  const [workflowsInitialized, setWorkflowsInitialized] = useState(false);
 
   useEffect(() => {
     const initializeServices = async () => {
       try {
+        // Initialize workflow registry first (UI tools need to be registered)
+        console.log('🔧 Initializing workflow registry...');
+        await workflowsInitialized;
+        setWorkflowsInitialized(true);
+        console.log('✅ Workflow registry initialized');
+
         // Initialize services with custom adapters
         services.initialize({ authAdapter, apiAdapter });
 
@@ -51,12 +59,12 @@ export const ChatUIProvider = ({
           });
         }
 
-        // Initialize the agent system
+        // Initialize the workflow registry (includes agent system functionality)
         try {
-          console.log('🚀 Initializing agent system...');
-          await initializeAgentSystem();
+          console.log('🚀 Agent system replaced by workflow registry...');
+          // Agent system functionality is now handled by workflow registration
           setAgentSystemInitialized(true);
-          console.log('✅ Agent system initialized');
+          console.log('✅ Workflow-based agent system ready');
         } catch (error) {
           console.error('❌ Failed to initialize agent system:', error);
           // Continue loading even if agent system fails
@@ -89,8 +97,9 @@ export const ChatUIProvider = ({
     loading,
     initialized,
 
-    // Agent system state
+    // System state
     agentSystemInitialized,
+    workflowsInitialized,
 
     // Configuration
     config: config.getConfig(),

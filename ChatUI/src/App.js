@@ -1,7 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ChatUIProvider } from './context/ChatUIContext';
-import ChatPage from './modules/Chat/pages/ChatPage';
+import ChatPage from './pages/ChatPage';
 import './styles/TransportAwareChat.css';
 
 // Unified ChatUI App - Transport-agnostic chat with Simple Events integration

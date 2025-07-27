@@ -1,92 +1,79 @@
 {
+  "_comment": "Frontend Integration: UI tools emit events that render React components via transport layer",
   "workflow_name": "Generator",
   "max_turns": 25,
-  "initiating_agent": "AgentsAgent",
+  "initiating_agent": "user",
   "human_in_the_loop": true,
-  "auto_start": true,
-  "transport": "sse",
+  "startup_mode": "UserDriven",
+  "orchestration_pattern": "DefaultPattern",
+  "initiate_handoffs": false,
   "initial_message_to_user": null,
-  "initial_message_to_groupchat": "Based on the concept overview in the context variables, please begin by analyzing what types of agents will be needed for this application. Define the agent architecture first, then we'll create the context variables based on those agent requirements.",
-  "ui_capable_agents": [
-    {
-      "name": "UserFeedbackAgent",
-      "role": "user_feedback_manager",
-      "capabilities": ["chat", "artifacts"],
-      "components": [
-        {
-          "name": "FileDownloadCenter",
-          "type": "artifact",
-          "description": "Download generated files",
-          "actions": ["download", "download_all"],
-          "backend_handler": "file_manager.handle_download"
-        }
-      ]
-    },
-    {
-      "name": "APIKeyAgent",
-      "role": "api_credential_manager",
-      "capabilities": ["chat", "inline_components"],
-      "components": [
-        {
-          "name": "AgentAPIKeyInput",
-          "type": "inline",
-          "description": "Secure API key collection",
-          "actions": ["submit", "cancel"],
-          "backend_handler": "api_manager.store_api_key"
-        }
-      ]
-    }
+  "initial_message": null,
+  
+  "visual_agents": [
+    "APIKeyAgent",
+    "UserFeedbackAgent"
   ],
-  "tools": {
-    "agent_tools": [
+  
+  "backend_tools": {
+    "ALL_AGENTS": [
       {
-        "name": "echo_all",
-        "module": "workflows.Generator.tools.echo_all",
-        "function": "echo",
-        "apply_to": "all",
-        "description": "Simple echo tool that is registered for every agent"
-      },
-      {
-        "name": "echo_ctx_only",
-        "module": "workflows.Generator.tools.echo_ctx_only",
-        "function": "echo_context", 
-        "apply_to": ["ContextVariablesAgent"],
-        "description": "Echo tool registered only for ContextVariablesAgent"
+        "path": "workflows.Generator.tools.echo_all.echo",
+        "description": "Echo tool available to all agents"
       }
     ],
-    "lifecycle_hooks": [
+    "ContextVariablesAgent": [
       {
-        "name": "agent_state_logger",
-        "module": "workflows.Generator.tools.agent_state_logger",
-        "function": "log_agent_state_update",
-        "trigger": "update_agent_state",
-        "apply_to": "all",
-        "description": "Logs when any agent updates its state before replying"
-      },
-      {
-        "name": "message_sender_tracker",
-        "module": "workflows.Generator.tools.message_sender_tracker", 
-        "function": "track_message_sending",
-        "trigger": "process_message_before_send",
-        "apply_to": "all",
-        "description": "Tracks when any agent is about to send a message"
-      },
-      {
-        "name": "conversation_analyzer",
-        "module": "workflows.Generator.tools.conversation_analyzer",
-        "function": "analyze_full_conversation",
-        "trigger": "process_all_messages_before_reply",
-        "apply_to": "all", 
-        "description": "Analyzes the full conversation before any agent replies"
-      },
-      {
-        "name": "latest_message_inspector",
-        "module": "workflows.Generator.tools.latest_message_inspector",
-        "function": "inspect_latest_message",
-        "trigger": "process_last_received_message",
-        "apply_to": "all",
-        "description": "Inspects the latest message received by any agent"
+        "path": "workflows.Generator.tools.echo_ctx_only.echo_context",
+        "description": "Context echo tool for context validation"
       }
     ]
+  },
+  "ui_tools": {
+    "APIKeyAgent": [
+      {
+        "path": "workflows.Generator.tools.request_api_key.request_api_key",
+        "tool_id": "api_key_input",
+        "display": "inline",
+        "description": "Request API key from user - uses transport.send_tool_event()"
+      },
+      {
+        "path": "workflows.Generator.tools.store_api_key.store_api_key",
+        "tool_id": "api_key_storage", 
+        "display": "inline",
+        "description": "Store API key received from UI response"
+      }
+    ],
+    "UserFeedbackAgent": [
+      {
+        "path": "workflows.Generator.tools.request_file_download.request_file_download",
+        "tool_id": "file_download_center",
+        "display": "artifact",
+        "description": "Request file download - renders in artifact panel"
+      },
+      {
+        "path": "workflows.Generator.tools.handle_file_download.handle_file_download",
+        "tool_id": "file_download_handler",
+        "display": "artifact", 
+        "description": "Handle file download response from UI"
+      }
+    ]
+  },
+  "lifecycle_tools": {
+    "agent_state_logger": {
+      "path": "workflows.Generator.tools.agent_state_logger.log_agent_state_update",
+      "description": "Log when agents update their state before replying",
+      "lifecycle_event": "before_agent_speaks"
+    },
+    "message_sender_tracker": {
+      "path": "workflows.Generator.tools.message_sender_tracker.track_message_sending",
+      "description": "Track message sending between agents", 
+      "lifecycle_event": "after_agent_speaks"
+    },
+    "latest_message_inspector": {
+      "path": "workflows.Generator.tools.latest_message_inspector.inspect_latest_message",
+      "description": "Inspect latest message received by agents",
+      "lifecycle_event": "on_user_input"
+    }
   }
 }

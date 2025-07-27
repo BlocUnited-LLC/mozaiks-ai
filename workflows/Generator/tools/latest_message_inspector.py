@@ -5,7 +5,7 @@
 
 from typing import Dict, Any
 
-def inspect_latest_message(
+async def inspect_latest_message(
     message
 ):
     """AG2 Hook: Inspects the latest message received by any agent.

@@ -23,8 +23,11 @@ from pydantic import BaseModel
 from core.core_config import make_streaming_config, get_mongo_client
 from core.transport.simple_transport import SimpleTransport
 from core.workflow.init_registry import get_initialization_coroutines, get_registered_workflows, workflow_status_summary, get_workflow_transport, get_workflow_tools, workflow_human_loop
-from core.data.persistence_manager import persistence_manager as mongodb_manager
+from core.data.persistence_manager import PersistenceManager
 from core.data.token_manager import _mock_get_remaining, _mock_consume_tokens
+
+# Initialize persistence manager
+mongodb_manager = PersistenceManager()
 
 # Request model for starting a chat session
 class StartChatRequest(BaseModel):
@@ -143,9 +146,9 @@ async def startup():
             unit="ms"
         )
 
-        # Initialize unified registry
+        # Component system is now event-driven - no registration needed
         registry_start = datetime.utcnow()
-        business_logger.info("🎯 Component registry initialization skipped (simplified system)")
+        business_logger.info("🎯 Component system: Event-driven (ui_tools → transport.send_tool_event() → React)")
         
         registry_time = (datetime.utcnow() - registry_start).total_seconds() * 1000
         log_performance_metric(
@@ -391,7 +394,7 @@ async def _import_workflow_modules():
     )
 
 # ============================================================================
-# API ENDPOINTS (SSE and workflow handling)
+# API ENDPOINTS (WebSocket and workflow handling)
 # ============================================================================
 
 @app.get("/api/workflows")
@@ -431,6 +434,27 @@ async def list_workflows():
         logger.error(f"❌ Failed to list workflows: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve workflows")
 
+@app.get("/api/workflows/{workflow_type}/config")
+async def get_workflow_config(workflow_type: str):
+    """Get full configuration for a specific workflow"""
+    try:
+        from core.workflow.workflow_config import workflow_config
+        
+        config = workflow_config.get_config(workflow_type)
+        if not config:
+            raise HTTPException(status_code=404, detail=f"Workflow '{workflow_type}' not found")
+            
+        return {
+            "workflow_type": workflow_type,
+            "config": config
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to get workflow config for {workflow_type}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve workflow config")
+
 @app.get("/api/chat/{chat_id}/messages")
 async def get_chat_messages(chat_id: str, enterprise_id: str):
     """Get messages from a chat for debugging"""
@@ -450,7 +474,7 @@ async def get_chat_messages(chat_id: str, enterprise_id: str):
             )
             raise HTTPException(status_code=404, detail="Chat not found")
         
-        # Use new primary schema instead of deprecated session_state
+        # Use primary schema
         chat_history = chat_data.get("chat_history", [])
         chat_state = chat_data.get("chat_state", {})
         workflow_type = chat_data.get("workflow_type", "unknown")
@@ -502,7 +526,7 @@ async def health_check():
         
         # Get active connections from simple transport
         connection_info = simple_transport.get_connection_info() if simple_transport else {
-            "sse_connections": 0, "websocket_connections": 0, "total_connections": 0
+            "websocket_connections": 0, "total_connections": 0
         }
 
         # Calculate health check time
@@ -592,35 +616,6 @@ async def start_chat(
     return {"chat_id": chat_id, "workflow_id": str(workflow_id)}
 
 
-@app.get("/sse/{workflow_type}/{enterprise_id}/{chat_id}/{user_id}")
-async def sse_endpoint(
-    workflow_type: str,
-    enterprise_id: str,
-    chat_id: str,
-    user_id: str,
-):
-    """SSE endpoint to stream agent responses."""
-    if not simple_transport:
-        raise HTTPException(status_code=503, detail="Transport service is not available.")
-
-    # Check if this workflow uses SSE transport
-    transport = get_workflow_transport(workflow_type)
-    if transport != "sse":
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Workflow '{workflow_type}' uses {transport} transport, not SSE. Use the appropriate endpoint."
-        )
-
-    connection_id = f"{enterprise_id}_{chat_id}_{user_id}"
-    business_logger.info(f"🔌 New SSE connection: {connection_id} for workflow '{workflow_type}'")
-    
-    return await simple_transport.create_sse_stream(
-        chat_id=chat_id,
-        user_id=user_id,
-        workflow_type=workflow_type,
-        enterprise_id=enterprise_id
-    )
-
 @app.websocket("/ws/{workflow_type}/{enterprise_id}/{chat_id}/{user_id}")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -632,15 +627,6 @@ async def websocket_endpoint(
     """WebSocket endpoint for real-time agent communication."""
     if not simple_transport:
         await websocket.close(code=1000, reason="Transport service not available")
-        return
-
-    # Check if this workflow uses WebSocket transport
-    transport = get_workflow_transport(workflow_type)
-    if transport != "websocket":
-        await websocket.close(
-            code=1000, 
-            reason=f"Workflow '{workflow_type}' uses {transport} transport, not WebSocket"
-        )
         return
 
     business_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_type}'")
@@ -711,7 +697,7 @@ async def submit_user_input_response(request: Request):
     API endpoint for submitting user input responses.
     
     This endpoint is called by the frontend when a user responds to a user input request
-    sent via SSE from AG2 agents.
+    sent via WebSocket from AG2 agents.
     """
     if not simple_transport:
         raise HTTPException(status_code=503, detail="Transport service is not available.")
@@ -757,8 +743,7 @@ async def get_workflow_transport_info(workflow_type: str):
         "workflow_type": workflow_type,
         "transport": transport,
         "endpoints": {
-            "sse": f"/sse/{workflow_type}/{{enterprise_id}}/{{chat_id}}/{{user_id}}" if transport == "sse" else None,
-            "websocket": f"/ws/{workflow_type}/{{enterprise_id}}/{{chat_id}}/{{user_id}}" if transport == "websocket" else None,
+            "websocket": f"/ws/{workflow_type}/{{enterprise_id}}/{{chat_id}}/{{user_id}}",
             "input": f"/chat/{{enterprise_id}}/{{chat_id}}/{{user_id}}/input"
         }
     }
@@ -914,7 +899,7 @@ async def handle_component_action(
     enterprise_id: str,
     chat_id: str,
 ):
-    """Endpoint to receive component actions for AG2 ContextVariables (SSE support)."""
+    """Endpoint to receive component actions for AG2 ContextVariables (WebSocket support)."""
     if not simple_transport:
         raise HTTPException(status_code=503, detail="Transport service is not available.")
 
@@ -941,50 +926,86 @@ async def handle_component_action(
         logger.info(f"📋 Received component action via HTTP: {component_id} -> {action_type}")
 
         try:
-            # Same logic as WebSocket - call AG2 tool directly
-            from workflows.Generator.ContextVariables import update_context_from_ui
+            # Component actions are now handled by AG2 tools via the workflow system
+            # The ContextVariablesAgent in the Generator workflow handles context updates
+            logger.info(f"📋 Component action received via HTTP: {component_id} -> {action_type}")
             
-            # Get current context variables from active session
-            context_variables = None
-            if chat_id in simple_transport.connections and "context" in simple_transport.connections[chat_id]:
-                context_variables = simple_transport.connections[chat_id]["context"]
+            # Send this action as a tool event to the active workflow
+            await simple_transport.send_tool_event(
+                tool_id=component_id,
+                payload={
+                    "action_type": action_type,
+                    "action_data": action_data,
+                    "source": "http_endpoint"
+                },
+                display="inline",
+                chat_id=chat_id
+            )
             
-            # Call AG2 tool directly
-            if context_variables:
-                result = update_context_from_ui(
-                    component_id=component_id,
-                    action_type=action_type,
-                    action_data=action_data,
-                    context_variables=context_variables
-                )
-                
-                logger.info(f"✅ Context updated via AG2 tool (HTTP): {result}")
-                
-                log_business_event(
-                    event_type="COMPONENT_ACTION_PROCESSED",
-                    description=f"Component action processed successfully for chat {chat_id}",
-                    context={"result": result}
-                )
-                
-                return {
-                    "status": "success",
-                    "result": result,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-            else:
-                logger.warning(f"⚠️ No context variables found for chat {chat_id}")
-                return {
-                    "status": "warning",
-                    "message": "No context variables available",
-                    "timestamp": datetime.utcnow().isoformat()
-                }
+            logger.info(f"✅ Component action forwarded to AG2 workflow via tool event")
+            
+            log_business_event(
+                event_type="COMPONENT_ACTION_PROCESSED",
+                description=f"Component action processed successfully for chat {chat_id}",
+                context={"forwarded_to_workflow": True}
+            )
+            
+            return {
+                "status": "success",
+                "message": "Component action forwarded to workflow",
+                "timestamp": datetime.utcnow().isoformat()
+            }
                 
         except Exception as action_error:
-            logger.error(f"❌ Component action failed (HTTP): {action_error}")
-            raise HTTPException(status_code=500, detail=f"Component action failed: {action_error}")
+            logger.error(f"❌ Component action forwarding failed (HTTP): {action_error}")
+            raise HTTPException(status_code=500, detail=f"Component action forwarding failed: {action_error}")
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")
     except Exception as e:
         logger.error(f"❌ Error handling component action for chat {chat_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process component action: {e}")
+
+@app.post("/api/ui-tool/submit")
+async def submit_ui_tool_response(request: Request):
+    """
+    API endpoint for submitting UI tool responses.
+    
+    This endpoint is called by the frontend when a user interacts with UI tool components
+    (like AgentAPIKeyInput or FileDownloadCenter) and submits responses.
+    """
+    if not simple_transport:
+        raise HTTPException(status_code=503, detail="Transport service is not available.")
+
+    try:
+        data = await request.json()
+        event_id = data.get("event_id")
+        response_data = data.get("response_data")
+        
+        if not event_id:
+            raise HTTPException(status_code=400, detail="'event_id' field is required.")
+        if not response_data:
+            raise HTTPException(status_code=400, detail="'response_data' field is required.")
+        
+        # Submit the UI tool response to the transport layer
+        success = await simple_transport.submit_ui_tool_response(event_id, response_data)
+        
+        if success:
+            log_business_event(
+                event_type="UI_TOOL_RESPONSE_SUBMITTED",
+                description=f"UI tool response submitted for event {event_id}",
+                context={
+                    "event_id": event_id,
+                    "response_status": response_data.get("status", "unknown"),
+                    "tool_id": response_data.get("data", {}).get("toolId", "unknown")
+                }
+            )
+            return {"status": "success", "message": "UI tool response submitted successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="UI tool event not found or already completed")
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+    except Exception as e:
+        logger.error(f"❌ Error submitting UI tool response: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to submit UI tool response: {e}")

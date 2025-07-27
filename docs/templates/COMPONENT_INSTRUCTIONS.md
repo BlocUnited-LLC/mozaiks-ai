@@ -721,6 +721,5 @@ const AgentAPIKeyInput = ({ onAction, service, agentId, ...props }) => {
 
 ### Requirements for Context Adjustment
 
-1. **DEPRECATED**: Old system required `"context_adjustment": true` in workflow.json - **NO LONGER NEEDED**
-2. **Structured Actions**: Use consistent action `type` and `data` structure
-3. **Agent ID**: Include `agentId` for proper context routing
+1. **Structured Actions**: Use consistent action `type` and `data` structure
+2. **Agent ID**: Include `agentId` for proper context routing

@@ -40,20 +40,20 @@ class ChatUIServices {
 
   createApiAdapter(customAdapter) {
     if (customAdapter) return customAdapter;
+    const apiConfig = config.get('api');
+    const hasWs = apiConfig.wsUrl;
+    const hasHttp = apiConfig.baseUrl;
 
-    // Use REST API adapter for real backend connection
-    // Check if we have a base URL configured
-    if (config.get('api.baseUrl')) {
-      return new RestApiAdapter(config.get('api'));
+    // Prefer WebSocket adapter when wsUrl is configured
+    if (hasWs) {
+      return new WebSocketApiAdapter(apiConfig);
     }
-
-    // Check if WebSocket is available
-    if (config.get('api.wsUrl')) {
-      return new WebSocketApiAdapter(config.get('api'));
+    // Fallback to REST adapter when HTTP baseUrl is configured
+    if (hasHttp) {
+      return new RestApiAdapter(apiConfig);
     }
-
-    // Fallback to REST API
-    return new RestApiAdapter(config.get('api'));
+    // Default fallback
+    return new RestApiAdapter(apiConfig);
   }
 
   getAuthAdapter() {

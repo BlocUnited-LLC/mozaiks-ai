@@ -18,10 +18,6 @@ export class ApiAdapter {
     throw new Error('createWebSocketConnection must be implemented');
   }
 
-  async createSSEConnection(_enterpriseId, _userId, _callbacks) {
-    throw new Error('createSSEConnection must be implemented');
-  }
-
   async getMessageHistory(_enterpriseId, _userId) {
     throw new Error('getMessageHistory must be implemented');
   }
@@ -32,6 +28,10 @@ export class ApiAdapter {
 
   async getWorkflowTransport(_workflowType) {
     throw new Error('getWorkflowTransport must be implemented');
+  }
+
+  async startChat(_enterpriseId, _workflowType, _userId) {
+    throw new Error('startChat must be implemented');
   }
 }
 
@@ -91,7 +91,8 @@ export class WebSocketApiAdapter extends ApiAdapter {
       return null;
     }
     
-    const wsUrl = `${this.config.api.wsUrl}/ws/${actualWorkflowType}/${enterpriseId}/${chatId}/${userId}`;
+    const wsBase = this.config.wsUrl || this.config.api?.wsUrl;
+    const wsUrl = `${wsBase}/ws/${actualWorkflowType}/${enterpriseId}/${chatId}/${userId}`;
     console.log(`🔗 Connecting to WebSocket: ${wsUrl}`);
     const socket = new WebSocket(wsUrl);
 
@@ -102,10 +103,33 @@ export class WebSocketApiAdapter extends ApiAdapter {
 
     socket.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
-        if (callbacks.onMessage) callbacks.onMessage(data);
+        // First try to parse as JSON (for complex messages)
+        let data = JSON.parse(event.data);
+        
+        // Handle structured AG2 simple text messages
+        if (data.type === 'simple_text') {
+          // Pass along with agent context (reduce logging noise)
+          if (callbacks.onMessage) callbacks.onMessage({
+            type: 'simple_text',
+            content: data.content,
+            agent_name: data.agent_name,
+            timestamp: data.timestamp,
+            chat_id: data.chat_id
+          });
+        } else {
+          // Handle other JSON message types
+          if (callbacks.onMessage) callbacks.onMessage(data);
+        }
       } catch (error) {
-        console.error('Failed to parse WebSocket message:', error);
+        // If JSON parsing fails, treat as simple text (AG2 official approach)        
+        // Handle as simple text message following AG2 official pattern
+        if (callbacks.onMessage && typeof event.data === 'string' && event.data.trim()) {
+          callbacks.onMessage({
+            type: 'simple_text',
+            content: event.data,
+            timestamp: Date.now()
+          });
+        }
       }
     };
 
@@ -130,63 +154,6 @@ export class WebSocketApiAdapter extends ApiAdapter {
       },
       close: () => socket.close()
     };
-  }
-
-  async createSSEConnection(enterpriseId, userId, callbacks = {}) {
-    try {
-      const workflowType = workflowConfig.getDefaultWorkflow();
-      
-      // First, create a chat session
-      const chatResponse = await fetch(`${this.config.baseUrl}/api/chats/${enterpriseId}/${workflowType}/start`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ user_id: userId })
-      });
-      
-      if (!chatResponse.ok) {
-        throw new Error(`Failed to create chat session: ${chatResponse.status}`);
-      }
-      
-      const { chat_id } = await chatResponse.json();
-      console.log(`🆔 Created chat session: ${chat_id}`);
-      
-      const sseUrl = `${this.config.baseUrl}/sse/${workflowType}/${enterpriseId}/${chat_id}/${userId}`;
-      console.log(`🔗 Connecting to SSE: ${sseUrl}`);
-      
-      const eventSource = new EventSource(sseUrl);
-      
-      eventSource.onopen = () => {
-        console.log("✅ SSE connection established");
-        if (callbacks.onOpen) callbacks.onOpen();
-      };
-      
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          console.log("📨 SSE message received:", data);
-          if (callbacks.onMessage) callbacks.onMessage(data);
-        } catch (error) {
-          console.error('Failed to parse SSE message:', error);
-        }
-      };
-      
-      eventSource.onerror = (error) => {
-        console.error("❌ SSE error:", error);
-        if (callbacks.onError) callbacks.onError(error);
-      };
-      
-      return {
-        eventSource,
-        chatId: chat_id,
-        close: () => eventSource.close()
-      };
-    } catch (error) {
-      console.error("❌ Failed to create SSE connection:", error);
-      if (callbacks.onError) callbacks.onError(error);
-      throw error;
-    }
   }
 
   async getMessageHistory(enterpriseId, userId) {
@@ -235,6 +202,30 @@ export class WebSocketApiAdapter extends ApiAdapter {
       console.error('Failed to get workflow transport:', error);
     }
     return null;
+  }
+
+  async startChat(enterpriseId, workflowType, userId) {
+    const actualWorkflowType = workflowType || workflowConfig.getDefaultWorkflow();
+    
+    try {
+      const response = await fetch(`${this.config.baseUrl}/api/chats/${enterpriseId}/${actualWorkflowType}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('✅ Chat started:', result);
+        return result;
+      } else {
+        console.error('Failed to start chat:', response.status, response.statusText);
+        return { success: false, error: `HTTP ${response.status}` };
+      }
+    } catch (error) {
+      console.error('Failed to start chat:', error);
+      return { success: false, error: error.message };
+    }
   }
 }
 
@@ -305,93 +296,6 @@ export class RestApiAdapter extends ApiAdapter {
     return null;
   }
 
-  async createSSEConnection(enterpriseId, userId, callbacks = {}) {
-    try {
-      const workflowType = workflowConfig.getDefaultWorkflow();
-      
-      // Create a unique key for this chat session
-      const sessionKey = `${enterpriseId}:${userId}:${workflowType}`;
-      
-      // Check if we already have an active session for this combination
-      if (this.activeChatSessions.has(sessionKey)) {
-        const existingSession = this.activeChatSessions.get(sessionKey);
-        // Return existing session if it's still valid and not closed
-        if (existingSession && existingSession.eventSource && existingSession.eventSource.readyState !== EventSource.CLOSED) {
-          console.log(`♻️ Reusing existing chat session for ${sessionKey}`);
-          return existingSession;
-        } else {
-          // Clean up dead session
-          console.log(`🗑️ Cleaning up dead session for ${sessionKey}`);
-          this.activeChatSessions.delete(sessionKey);
-        }
-      }
-      
-      // First, create a chat session
-      const chatResponse = await fetch(`${this.config.baseUrl}/api/chats/${enterpriseId}/${workflowType}/start`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ user_id: userId })
-      });
-      
-      if (!chatResponse.ok) {
-        throw new Error(`Failed to create chat session: ${chatResponse.status}`);
-      }
-      
-      const { chat_id } = await chatResponse.json();
-      console.log(`🆔 Created chat session: ${chat_id}`);
-      
-      const sseUrl = `${this.config.baseUrl}/sse/${workflowType}/${enterpriseId}/${chat_id}/${userId}`;
-      console.log(`🔗 Connecting to SSE: ${sseUrl}`);
-      
-      const eventSource = new EventSource(sseUrl);
-      
-      eventSource.onopen = () => {
-        console.log("✅ SSE connection established");
-        if (callbacks.onOpen) callbacks.onOpen();
-      };
-      
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          console.log("📨 SSE message received:", data);
-          if (callbacks.onMessage) callbacks.onMessage(data);
-        } catch (error) {
-          console.error('Failed to parse SSE message:', error);
-        }
-      };
-      
-      eventSource.onerror = (error) => {
-        console.error("❌ SSE error:", error);
-        // Clean up session on error
-        this.activeChatSessions.delete(sessionKey);
-        if (callbacks.onError) callbacks.onError(error);
-        eventSource.close(); // Ensure the connection is closed on error
-      };
-      
-      const sessionObject = {
-        eventSource,
-        chatId: chat_id,
-        close: () => {
-          eventSource.close();
-          this.activeChatSessions.delete(sessionKey);
-          console.log(`🚪 Closed and cleaned up session for ${sessionKey}`);
-        }
-      };
-      
-      // Store the active session
-      this.activeChatSessions.set(sessionKey, sessionObject);
-      console.log(`📝 Stored chat session: ${sessionKey} -> ${chat_id}`);
-      
-      return sessionObject;
-    } catch (error) {
-      console.error("❌ Failed to create SSE connection:", error);
-      if (callbacks.onError) callbacks.onError(error);
-      throw error;
-    }
-  }
-
   async getMessageHistory(enterpriseId, userId) {
     try {
       const response = await fetch(
@@ -439,6 +343,30 @@ export class RestApiAdapter extends ApiAdapter {
       console.error('Failed to get workflow transport:', error);
     }
     return null;
+  }
+
+  async startChat(enterpriseId, workflowType, userId) {
+    const actualWorkflowType = workflowType || workflowConfig.getDefaultWorkflow();
+    
+    try {
+      const response = await fetch(`${this.config.baseUrl}/api/chats/${enterpriseId}/${actualWorkflowType}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('✅ Chat started:', result);
+        return result;
+      } else {
+        console.error('Failed to start chat:', response.status, response.statusText);
+        return { success: false, error: `HTTP ${response.status}` };
+      }
+    } catch (error) {
+      console.error('Failed to start chat:', error);
+      return { success: false, error: error.message };
+    }
   }
 }
 

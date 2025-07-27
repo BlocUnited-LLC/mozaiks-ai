@@ -44,6 +44,13 @@ def wire_handoffs(agents: dict):
     try:
         business_logger.info("🔗 [HANDOFFS] Configuring AG2-style handoffs...")
         
+        # Configure ContextAgent to hand off to AgentsAgent when done (linear start)
+        if "ContextAgent" in agents and "AgentsAgent" in agents:
+            agents["ContextAgent"].handoffs.set_after_work(
+                AgentTarget(agents["AgentsAgent"])
+            )
+            business_logger.debug("🔗 [HANDOFFS] ContextAgent → AgentsAgent (after work)")
+        
         # Configure AgentsAgent to hand off to ContextVariablesAgent when done
         if "AgentsAgent" in agents and "ContextVariablesAgent" in agents:
             agents["AgentsAgent"].handoffs.set_after_work(
@@ -51,12 +58,19 @@ def wire_handoffs(agents: dict):
             )
             business_logger.debug("🔗 [HANDOFFS] AgentsAgent → ContextVariablesAgent (after work)")
         
-        # Configure ContextVariablesAgent to hand off to HandoffsAgent when done
-        if "ContextVariablesAgent" in agents and "HandoffsAgent" in agents:
+        # Configure ContextVariablesAgent to hand off to OrchestratorAgent when done
+        if "ContextVariablesAgent" in agents and "OrchestratorAgent" in agents:
             agents["ContextVariablesAgent"].handoffs.set_after_work(
+                AgentTarget(agents["OrchestratorAgent"])
+            )
+            business_logger.debug("🔗 [HANDOFFS] ContextVariablesAgent → OrchestratorAgent (after work)")
+        
+        # Configure OrchestratorAgent to hand off to HandoffsAgent when done  
+        if "OrchestratorAgent" in agents and "HandoffsAgent" in agents:
+            agents["OrchestratorAgent"].handoffs.set_after_work(
                 AgentTarget(agents["HandoffsAgent"])
             )
-            business_logger.debug("🔗 [HANDOFFS] ContextVariablesAgent → HandoffsAgent (after work)")
+            business_logger.debug("🔗 [HANDOFFS] OrchestratorAgent → HandoffsAgent (after work)")
         
         # Configure HandoffsAgent to hand off to HooksAgent when done
         if "HandoffsAgent" in agents and "HooksAgent" in agents:
@@ -65,19 +79,12 @@ def wire_handoffs(agents: dict):
             )
             business_logger.debug("🔗 [HANDOFFS] HandoffsAgent → HooksAgent (after work)")
         
-        # Configure HooksAgent to hand off to OrchestratorAgent when done
-        if "HooksAgent" in agents and "OrchestratorAgent" in agents:
+        # Configure HooksAgent to hand off to UserFeedbackAgent when done
+        if "HooksAgent" in agents and "UserFeedbackAgent" in agents:
             agents["HooksAgent"].handoffs.set_after_work(
-                AgentTarget(agents["OrchestratorAgent"])
-            )
-            business_logger.debug("🔗 [HANDOFFS] HooksAgent → OrchestratorAgent (after work)")
-
-        # Configure OrchestratorAgent to hand off to UserFeedbackAgent when done
-        if "OrchestratorAgent" in agents and "UserFeedbackAgent" in agents:
-            agents["OrchestratorAgent"].handoffs.set_after_work(
                 AgentTarget(agents["UserFeedbackAgent"])
             )
-            business_logger.debug("🔗 [HANDOFFS] OrchestratorAgent → UserFeedbackAgent (after work)")
+            business_logger.debug("🔗 [HANDOFFS] HooksAgent → UserFeedbackAgent (after work)")
 
         # Configure UserFeedbackAgent - ALWAYS revert to user after presenting outputs
         if "UserFeedbackAgent" in agents:
@@ -124,12 +131,12 @@ def wire_handoffs(agents: dict):
 
         # Configure user decision points for web UI workflow control
         business_logger.info("🔗 [HANDOFFS] Configuring user decision points for web UI...")
-        if "user" in agents and "AgentsAgent" in agents:
+        if "user" in agents and "ContextAgent" in agents:
             # Default: Start workflow from the beginning when user provides input
             agents["user"].handoffs.set_after_work(
-                AgentTarget(agents["AgentsAgent"])
+                AgentTarget(agents["ContextAgent"])
             )
-            business_logger.debug("🔗 [HANDOFFS] User → AgentsAgent (default workflow start)")
+            business_logger.debug("🔗 [HANDOFFS] User → ContextAgent (default workflow start)")
             
             # Conditional handoffs based on user intent
             user_conditions = []
@@ -137,7 +144,7 @@ def wire_handoffs(agents: dict):
             # If user wants to restart or modify requirements
             user_conditions.append(
                 OnCondition(
-                    target=AgentTarget(agents["AgentsAgent"]),
+                    target=AgentTarget(agents["ContextAgent"]),
                     condition=StringLLMCondition(prompt="When the user wants to start a new workflow, modify requirements, restart the process, or change their original request. This includes phrases like 'start over', 'change', 'modify', 'new workflow', or providing different requirements.")
                 )
             )
@@ -162,7 +169,7 @@ def wire_handoffs(agents: dict):
             agents["user"].handoffs.add_llm_conditions(user_conditions)
             business_logger.debug(f"🔗 [HANDOFFS] User configured with {len(user_conditions)} conditional handoffs")
         else:
-            business_logger.warning("⚠️ [HANDOFFS] User or AgentsAgent not found for decision points")
+            business_logger.warning("⚠️ [HANDOFFS] User or ContextAgent not found for decision points")
 
         
         total_handoff_time = (time.time() - handoff_start) * 1000
