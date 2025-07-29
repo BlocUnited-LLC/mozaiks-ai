@@ -35,6 +35,14 @@ class PersistenceManager:
         self.concepts_collection = self.db2['Concepts']
         self.workflows_collection = self.db2['Workflows']
         self.usage_tracking_collection = self.db2['UsageTracking']
+        # Token management collections
+        self.user_tokens_collection = self.db2['UserTokens']
+        self.token_usage_collection = self.db2['TokenUsage']
+        # Performance analytics collections
+        self.performance_metrics_collection = self.db2['PerformanceMetrics']
+        self.workflow_averages_collection = self.db2['WorkflowAverages']
+        self.workflow_performance_collection = self.db2['WorkflowPerformance']
+    
 
     def _ensure_object_id(self, id_value: Union[str, ObjectId], field_name: str = "ID") -> ObjectId:
         """Convert string to ObjectId or validate existing ObjectId"""
@@ -170,225 +178,6 @@ class PersistenceManager:
         except Exception as e:
             logger.error(f"❌ Failed to get workflow status: {e}")
             return 0
-
-    # ==================================================================================
-    # TOKEN USAGE & COST TRACKING (VE Style)
-    # ==================================================================================
-
-    async def calculate_and_update_usage(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                                       session_id: str, agent_summary: Dict[str, Any]) -> Dict[str, Any]:
-        """Calculate token usage from agent summary"""
-        try:
-            session_data = {
-                'PromptTokens': 0,
-                'CompletionTokens': 0,
-                'TotalTokens': 0,
-                'TotalCost': 0.0
-            }
-            
-            # Calculate from agent usage summary
-            for model_name, model_data in agent_summary.get("usage_including_cached_inference", {}).items():
-                if model_name != 'total_cost':
-                    session_data['PromptTokens'] += model_data.get('prompt_tokens', 0)
-                    session_data['CompletionTokens'] += model_data.get('completion_tokens', 0)
-                    session_data['TotalTokens'] += model_data.get('total_tokens', 0)
-                    session_data['TotalCost'] += model_data.get('cost', 0.0)
-            
-            # Update database with usage
-            await self.update_database_usage(
-                chat_id, enterprise_id, session_id,
-                session_data['PromptTokens'],
-                session_data['CompletionTokens'], 
-                session_data['TotalTokens'],
-                session_data['TotalCost']
-            )
-            
-            return session_data
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to calculate usage: {e}")
-            return {'PromptTokens': 0, 'CompletionTokens': 0, 'TotalTokens': 0, 'TotalCost': 0.0}
-
-    async def update_database_usage(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                                  session_id: str, prompt_tokens: int, completion_tokens: int,
-                                  total_tokens: int, total_cost: float) -> bool:
-        """Update token usage in database and modify enterprise balance"""
-        try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
-            
-            # Insert usage tracking record
-            usage_record = {
-                "chat_id": chat_id,
-                "enterprise_id": eid,
-                "session_id": session_id,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-                "total_cost": total_cost,
-                "timestamp": datetime.utcnow()
-            }
-            
-            await self.usage_tracking_collection.insert_one(usage_record)
-            
-            # Update enterprise token balance
-            await self.enterprises_collection.update_one(
-                {"_id": eid},
-                {"$inc": {"tokenBalance": -total_cost}}
-            )
-            
-            logger.info(f"💰 Updated usage: {total_tokens} tokens, ${total_cost:.4f} cost")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to update database usage: {e}")
-            return False
-
-    async def display_token_usage(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                                workflow_name: str = "default") -> Dict[str, Any]:
-        """Display token usage statistics"""
-        try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
-            
-            # Get usage for this chat
-            usage_cursor = self.usage_tracking_collection.find(
-                {"chat_id": chat_id, "enterprise_id": eid}
-            ).sort("timestamp", -1)
-            
-            total_usage = {
-                "total_tokens": 0,
-                "total_cost": 0.0,
-                "session_count": 0,
-                "sessions": []
-            }
-            
-            async for record in usage_cursor:
-                total_usage["total_tokens"] += record.get("total_tokens", 0)
-                total_usage["total_cost"] += record.get("total_cost", 0.0)
-                total_usage["session_count"] += 1
-                total_usage["sessions"].append({
-                    "session_id": record.get("session_id"),
-                    "tokens": record.get("total_tokens", 0),
-                    "cost": record.get("total_cost", 0.0),
-                    "timestamp": record.get("timestamp")
-                })
-            
-            logger.info(f"📊 Usage Summary - Tokens: {total_usage['total_tokens']}, Cost: ${total_usage['total_cost']:.4f}")
-            return total_usage
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to display token usage: {e}")
-            return {"total_tokens": 0, "total_cost": 0.0, "session_count": 0, "sessions": []}
-
-    async def save_session_usage(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                               workflow_name: str, session_data: Dict[str, Any], 
-                               agents: List[str]) -> bool:
-        """
-        NEW SCHEMA: Save session usage with per-agent tracking and workflow aggregates
-        
-        Implements the centralized schema:
-        - Sessions with per-agent token/cost breakdown  
-        - WorkflowTokenUsage aggregates across all sessions
-        - Clean workflow-agnostic storage pattern
-        """
-        try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
-            
-            # Extract session data
-            session_id = session_data["session_id"]
-            session_totals = {
-                "PromptTokens": session_data["PromptTokens"],
-                "CompletionTokens": session_data["CompletionTokens"], 
-                "TotalCost": session_data["TotalCost"]
-            }
-            
-            # Add per-agent data to session
-            for agent_name in agents:
-                if agent_name in session_data.get("agents", {}):
-                    agent_data = session_data["agents"][agent_name]
-                    session_totals.update(agent_data)
-            
-            # Update workflow chat state with new session
-            chat_state_field = f"{workflow_name}ChatState"
-            session_path = f"{chat_state_field}.Sessions.{session_id}"
-            
-            # Step 1: Add/update this session
-            await self.workflows_collection.update_one(
-                {"chat_id": chat_id, "enterprise_id": eid},
-                {
-                    "$set": {
-                        f"{session_path}": session_totals,
-                        "last_updated": datetime.utcnow()
-                    }
-                },
-                upsert=True
-            )
-            
-            # Step 2: Calculate and update workflow aggregates
-            # Get all sessions for this workflow to calculate totals
-            workflow_doc = await self.workflows_collection.find_one(
-                {"chat_id": chat_id, "enterprise_id": eid},
-                {f"{chat_state_field}.Sessions": 1}
-            )
-            
-            if workflow_doc and chat_state_field in workflow_doc:
-                sessions = workflow_doc[chat_state_field].get("Sessions", {})
-                
-                # Calculate workflow-wide aggregates
-                workflow_totals = {
-                    "TotalPromptTokens": 0,
-                    "TotalCompletionTokens": 0,
-                    "TotalCost": 0.0
-                }
-                
-                # Per-agent workflow totals
-                agent_totals = {}
-                for agent_name in agents:
-                    agent_totals[f"{agent_name}_TotalPromptTokens"] = 0
-                    agent_totals[f"{agent_name}_TotalCompletionTokens"] = 0
-                    agent_totals[f"{agent_name}_TotalPromptCost"] = 0.0
-                    agent_totals[f"{agent_name}_TotalCompletionCost"] = 0.0
-                    agent_totals[f"{agent_name}_TotalCost"] = 0.0
-                
-                # Sum across all sessions
-                for session_data_item in sessions.values():
-                    workflow_totals["TotalPromptTokens"] += session_data_item.get("PromptTokens", 0)
-                    workflow_totals["TotalCompletionTokens"] += session_data_item.get("CompletionTokens", 0)
-                    workflow_totals["TotalCost"] += session_data_item.get("TotalCost", 0.0)
-                    
-                    # Sum per-agent totals
-                    for agent_name in agents:
-                        agent_totals[f"{agent_name}_TotalPromptTokens"] += session_data_item.get(f"{agent_name}_PromptTokens", 0)
-                        agent_totals[f"{agent_name}_TotalCompletionTokens"] += session_data_item.get(f"{agent_name}_CompletionTokens", 0)
-                        agent_totals[f"{agent_name}_TotalPromptCost"] += session_data_item.get(f"{agent_name}_PromptCost", 0.0)
-                        agent_totals[f"{agent_name}_TotalCompletionCost"] += session_data_item.get(f"{agent_name}_CompletionCost", 0.0)
-                        agent_totals[f"{agent_name}_TotalCost"] += session_data_item.get(f"{agent_name}_TotalCost", 0.0)
-                
-                # Combine workflow totals with agent totals
-                workflow_usage = {**workflow_totals, **agent_totals}
-                
-                # Step 3: Update WorkflowTokenUsage aggregates
-                await self.workflows_collection.update_one(
-                    {"chat_id": chat_id, "enterprise_id": eid},
-                    {
-                        "$set": {
-                            f"{chat_state_field}.WorkflowTokenUsage": workflow_usage,
-                            "last_updated": datetime.utcnow()
-                        }
-                    }
-                )
-                
-                logger.info(f"💰 NEW SCHEMA: Saved session {session_id} + updated workflow aggregates")
-                logger.debug(f"Session: {session_totals['PromptTokens']}+{session_totals['CompletionTokens']} tokens, ${session_totals['TotalCost']:.4f}")
-                logger.debug(f"Workflow Total: {workflow_usage['TotalPromptTokens']}+{workflow_usage['TotalCompletionTokens']} tokens, ${workflow_usage['TotalCost']:.4f}")
-                
-                return True
-            else:
-                logger.warning(f"Could not find workflow document for aggregate calculation")
-                return False
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to save session usage (new schema): {e}")
-            return False
 
     # ==================================================================================
     # RESUME & LIFECYCLE MANAGEMENT (VE Style)
@@ -634,20 +423,6 @@ class PersistenceManager:
             logger.error(f"❌ Failed to update connection state: {e}")
             return False
 
-    async def update_token_usage(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                               session_id: str, usage_data: Dict[str, Any]) -> bool:
-        """Update token usage (compatibility method)"""
-        try:
-            return await self.update_database_usage(
-                chat_id, enterprise_id, session_id,
-                usage_data.get('prompt_tokens', 0),
-                usage_data.get('completion_tokens', 0),
-                usage_data.get('total_tokens', 0),
-                usage_data.get('total_cost', 0.0)
-            )
-        except Exception as e:
-            logger.error(f"❌ Failed to update token usage: {e}")
-            return False
 
     # ==================================================================================
     # MINIMAL CONVENIENCE METHODS (For shared_app integration only)
@@ -657,18 +432,6 @@ class PersistenceManager:
         """Load chat state for shared_app compatibility"""
         success, data = await self.resume_chat(chat_id, enterprise_id)
         return data if success else None
-
-    async def find_latest_concept_for_enterprise(self, enterprise_id: Union[str, ObjectId]) -> Optional[Dict[str, Any]]:
-        """Find the latest concept for an enterprise"""
-        try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
-            return await self.concepts_collection.find_one(
-                {"enterprise_id": str(eid)},
-                sort=[("ConceptCode", -1)]
-            )
-        except Exception as e:
-            logger.error(f"❌ Failed to find latest concept: {e}")
-            return None
 
     async def create_workflow_for_chat(self, chat_id: str, enterprise_id: Union[str, ObjectId],
                                      concept_id: ObjectId, workflow_name: str,
@@ -710,3 +473,763 @@ class PersistenceManager:
         except Exception as e:
             logger.error(f"❌ Failed to create workflow: {e}")
             return None
+
+    # ==================================================================================
+    # CONCEPT MANAGEMENT (NOTE: This is only for Mozaiks)
+    # ==================================================================================
+
+    async def find_latest_concept_for_enterprise(self, enterprise_id: Union[str, ObjectId]) -> Optional[Dict[str, Any]]:
+        """Find the latest concept for an enterprise"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            return await self.concepts_collection.find_one(
+                {"enterprise_id": str(eid)},
+                sort=[("ConceptCode", -1)]
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to find latest concept: {e}")
+            return None
+
+    # ==================================================================================
+    # TOKEN MANAGEMENT & ANALYTICS
+    # ==================================================================================
+
+    async def get_user_token_data(self, user_id: str, enterprise_id: Union[str, ObjectId]) -> Optional[Dict[str, Any]]:
+        """Get user token data for TokenManager integration"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            user_tokens = await self.user_tokens_collection.find_one({
+                "user_id": user_id,
+                "enterprise_id": eid
+            })
+            
+            if not user_tokens:
+                # Create default user token record
+                default_data = {
+                    "user_id": user_id,
+                    "enterprise_id": eid,
+                    "free_trial": True,
+                    "available_tokens": 0,
+                    "available_trial_tokens": 1000,  # Default trial tokens
+                    "created_at": datetime.utcnow(),
+                    "last_updated": datetime.utcnow(),
+                    "trial_started_at": datetime.utcnow()
+                }
+                
+                await self.user_tokens_collection.insert_one(default_data)
+                logger.info(f"🆕 Created new user token record for {user_id}")
+                return default_data
+            
+            return user_tokens
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get user token data: {e}")
+            return None
+
+    async def update_user_tokens(self, user_id: str, enterprise_id: Union[str, ObjectId],
+                               available_tokens: int, available_trial_tokens: int,
+                               free_trial: Optional[bool] = None) -> bool:
+        """Update user token balances"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            update_doc = {
+                "available_tokens": available_tokens,
+                "available_trial_tokens": available_trial_tokens,
+                "last_updated": datetime.utcnow()
+            }
+            
+            if free_trial is not None:
+                update_doc["free_trial"] = free_trial
+            
+            result = await self.user_tokens_collection.update_one(
+                {"user_id": user_id, "enterprise_id": eid},
+                {"$set": update_doc},
+                upsert=True
+            )
+            
+            logger.info(f"💰 Updated tokens for {user_id}: {available_tokens} regular, {available_trial_tokens} trial")
+            return result.acknowledged
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to update user tokens: {e}")
+            return False
+
+    async def log_token_usage(self, user_id: str, enterprise_id: Union[str, ObjectId],
+                            chat_id: str, workflow_name: str, session_id: str,
+                            tokens_used: int, trial_tokens_used: int = 0,
+                            token_type: str = "gpt-4", cost_usd: float = 0.0,
+                            agent_breakdown: Optional[Dict[str, int]] = None) -> bool:
+        """Log token usage for analytics and tracking"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            usage_record = {
+                "user_id": user_id,
+                "enterprise_id": eid,
+                "chat_id": chat_id,
+                "workflow_name": workflow_name,
+                "session_id": session_id,
+                "tokens_used": tokens_used,
+                "trial_tokens_used": trial_tokens_used,
+                "token_type": token_type,
+                "cost_usd": cost_usd,
+                "timestamp": datetime.utcnow(),
+                "agent_breakdown": agent_breakdown or {}
+            }
+            
+            await self.token_usage_collection.insert_one(usage_record)
+            logger.info(f"📊 Logged token usage: {tokens_used} tokens for {workflow_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to log token usage: {e}")
+            return False
+
+    # ==================================================================================
+    # PERFORMANCE ANALYTICS & TRACKING
+    # ==================================================================================
+
+    async def log_performance_metrics(self, workflow_name: str, enterprise_id: Union[str, ObjectId],
+                                    user_id: str, chat_id: str, session_id: str,
+                                    agent_metrics: Dict[str, Any],
+                                    session_metrics: Dict[str, Any]) -> bool:
+        """Log detailed performance metrics for workflow analysis"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            performance_doc = {
+                "workflow_name": workflow_name,
+                "enterprise_id": eid,
+                "user_id": user_id,
+                "chat_id": chat_id,
+                "session_id": session_id,
+                "timestamp": datetime.utcnow(),
+                
+                # Agent-level metrics
+                "agent_metrics": agent_metrics,  # Contains per-agent response times, message counts, etc.
+                
+                # Session-level metrics
+                "session_duration_seconds": session_metrics.get("session_duration_seconds", 0),
+                "total_messages": session_metrics.get("total_messages", 0),
+                "avg_agent_response_time_ms": session_metrics.get("avg_agent_response_time_ms", 0),
+                "avg_token_calc_time_ms": session_metrics.get("avg_token_calc_time_ms", 0),
+                "total_tokens": session_metrics.get("total_tokens", 0),
+                "total_cost": session_metrics.get("total_cost", 0.0),
+                
+                # Performance indicators
+                "agents_used": list(agent_metrics.keys()) if agent_metrics else [],
+                "agent_count": len(agent_metrics) if agent_metrics else 0
+            }
+            
+            await self.performance_metrics_collection.insert_one(performance_doc)
+            
+            # Update workflow averages asynchronously
+            await self._update_workflow_averages(workflow_name, enterprise_id, performance_doc)
+            
+            logger.info(f"📊 Logged performance metrics for workflow: {workflow_name} | Session: {session_id[:8]}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to log performance metrics: {e}")
+            return False
+
+    async def _update_workflow_averages(self, workflow_name: str, enterprise_id: Union[str, ObjectId],
+                                      performance_doc: Dict[str, Any]) -> None:
+        """Update running averages for workflow performance"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            # Check if averages document exists
+            averages_doc = await self.workflow_averages_collection.find_one({
+                "workflow_name": workflow_name,
+                "enterprise_id": eid
+            })
+            
+            if not averages_doc:
+                # Create new averages document
+                new_doc = {
+                    "workflow_name": workflow_name,
+                    "enterprise_id": eid,
+                    "created_at": datetime.utcnow(),
+                    "last_updated": datetime.utcnow(),
+                    "session_count": 1,
+                    "total_users": [performance_doc["user_id"]],  # Use list instead of set
+                    
+                    # Running averages
+                    "avg_session_duration_seconds": performance_doc.get("session_duration_seconds", 0),
+                    "avg_messages_per_session": performance_doc.get("total_messages", 0),
+                    "avg_agent_response_time_ms": performance_doc.get("avg_agent_response_time_ms", 0),
+                    "avg_token_calc_time_ms": performance_doc.get("avg_token_calc_time_ms", 0),
+                    "avg_tokens_per_session": performance_doc.get("total_tokens", 0),
+                    "avg_cost_per_session": performance_doc.get("total_cost", 0.0),
+                    "avg_agents_per_session": performance_doc.get("agent_count", 0),
+                    
+                    # Agent-specific averages
+                    "agent_averages": {}
+                }
+                
+                # Add agent-specific metrics
+                for agent_name, agent_data in (performance_doc.get("agent_metrics", {})).items():
+                    new_doc["agent_averages"][agent_name] = {
+                        "appearances": 1,
+                        "avg_response_time_ms": agent_data.get("avg_response_time_ms", 0),
+                        "avg_messages_per_session": agent_data.get("message_count", 0),
+                        "avg_tokens_per_session": agent_data.get("total_tokens", 0)
+                    }
+                
+                await self.workflow_averages_collection.insert_one(new_doc)
+                
+            else:
+                # Update existing averages using incremental averaging
+                session_count = averages_doc["session_count"] + 1
+                
+                update_doc = {
+                    "$set": {
+                        "last_updated": datetime.utcnow(),
+                        "session_count": session_count,
+                        
+                        # Update running averages
+                        "avg_session_duration_seconds": self._update_running_average(
+                            averages_doc.get("avg_session_duration_seconds", 0),
+                            performance_doc.get("session_duration_seconds", 0),
+                            session_count
+                        ),
+                        "avg_messages_per_session": self._update_running_average(
+                            averages_doc.get("avg_messages_per_session", 0),
+                            performance_doc.get("total_messages", 0),
+                            session_count
+                        ),
+                        "avg_agent_response_time_ms": self._update_running_average(
+                            averages_doc.get("avg_agent_response_time_ms", 0),
+                            performance_doc.get("avg_agent_response_time_ms", 0),
+                            session_count
+                        ),
+                        "avg_token_calc_time_ms": self._update_running_average(
+                            averages_doc.get("avg_token_calc_time_ms", 0),
+                            performance_doc.get("avg_token_calc_time_ms", 0),
+                            session_count
+                        ),
+                        "avg_tokens_per_session": self._update_running_average(
+                            averages_doc.get("avg_tokens_per_session", 0),
+                            performance_doc.get("total_tokens", 0),
+                            session_count
+                        ),
+                        "avg_cost_per_session": self._update_running_average(
+                            averages_doc.get("avg_cost_per_session", 0),
+                            performance_doc.get("total_cost", 0.0),
+                            session_count
+                        ),
+                        "avg_agents_per_session": self._update_running_average(
+                            averages_doc.get("avg_agents_per_session", 0),
+                            performance_doc.get("agent_count", 0),
+                            session_count
+                        )
+                    },
+                    "$addToSet": {
+                        "total_users": performance_doc["user_id"]
+                    }
+                }
+                
+                # Update agent-specific averages
+                agent_averages = averages_doc.get("agent_averages", {})
+                for agent_name, agent_data in (performance_doc.get("agent_metrics", {})).items():
+                    if agent_name in agent_averages:
+                        # Update existing agent averages
+                        agent_appearances = agent_averages[agent_name]["appearances"] + 1
+                        agent_averages[agent_name] = {
+                            "appearances": agent_appearances,
+                            "avg_response_time_ms": self._update_running_average(
+                                agent_averages[agent_name].get("avg_response_time_ms", 0),
+                                agent_data.get("avg_response_time_ms", 0),
+                                agent_appearances
+                            ),
+                            "avg_messages_per_session": self._update_running_average(
+                                agent_averages[agent_name].get("avg_messages_per_session", 0),
+                                agent_data.get("message_count", 0),
+                                agent_appearances
+                            ),
+                            "avg_tokens_per_session": self._update_running_average(
+                                agent_averages[agent_name].get("avg_tokens_per_session", 0),
+                                agent_data.get("total_tokens", 0),
+                                agent_appearances
+                            )
+                        }
+                    else:
+                        # New agent
+                        agent_averages[agent_name] = {
+                            "appearances": 1,
+                            "avg_response_time_ms": agent_data.get("avg_response_time_ms", 0),
+                            "avg_messages_per_session": agent_data.get("message_count", 0),
+                            "avg_tokens_per_session": agent_data.get("total_tokens", 0)
+                        }
+                
+                update_doc["$set"]["agent_averages"] = agent_averages
+                
+                await self.workflow_averages_collection.update_one(
+                    {"workflow_name": workflow_name, "enterprise_id": eid},
+                    update_doc
+                )
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to update workflow averages: {e}")
+
+    def _update_running_average(self, current_avg: float, new_value: float, count: int) -> float:
+        """Update running average with new value"""
+        if count <= 1:
+            return new_value
+        return ((current_avg * (count - 1)) + new_value) / count
+
+    async def get_workflow_performance_averages(self, workflow_name: str,
+                                              enterprise_id: Optional[Union[str, ObjectId]] = None) -> Dict[str, Any]:
+        """Get comprehensive performance averages for a workflow"""
+        try:
+            query: Dict[str, Any] = {"workflow_name": workflow_name}
+            if enterprise_id:
+                eid = await self._validate_enterprise_exists(enterprise_id)
+                query["enterprise_id"] = eid
+                
+            averages_doc = await self.workflow_averages_collection.find_one(query)
+            
+            if not averages_doc:
+                return {
+                    "workflow_name": workflow_name,
+                    "enterprise_id": str(enterprise_id) if enterprise_id else None,
+                    "session_count": 0,
+                    "message": "No performance data available"
+                }
+            
+            # Format response
+            result = {
+                "workflow_name": workflow_name,
+                "enterprise_id": str(averages_doc["enterprise_id"]),
+                "session_count": averages_doc["session_count"],
+                "unique_users": len(averages_doc.get("total_users", [])),
+                "created_at": averages_doc["created_at"].isoformat(),
+                "last_updated": averages_doc["last_updated"].isoformat(),
+                
+                # Overall averages
+                "performance_averages": {
+                    "avg_session_duration_seconds": round(averages_doc.get("avg_session_duration_seconds", 0), 2),
+                    "avg_messages_per_session": round(averages_doc.get("avg_messages_per_session", 0), 1),
+                    "avg_agent_response_time_ms": round(averages_doc.get("avg_agent_response_time_ms", 0), 2),
+                    "avg_token_calc_time_ms": round(averages_doc.get("avg_token_calc_time_ms", 0), 2),
+                    "avg_tokens_per_session": round(averages_doc.get("avg_tokens_per_session", 0), 0),
+                    "avg_cost_per_session": round(averages_doc.get("avg_cost_per_session", 0.0), 4),
+                    "avg_agents_per_session": round(averages_doc.get("avg_agents_per_session", 0), 1)
+                },
+                
+                # Agent-specific averages
+                "agent_averages": averages_doc.get("agent_averages", {})
+            }
+            
+            logger.info(f"📊 Retrieved performance averages for workflow: {workflow_name}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get workflow performance averages: {e}")
+            return {}
+
+    async def get_enterprise_performance_summary(self, enterprise_id: Union[str, ObjectId],
+                                               days_back: int = 30) -> List[Dict[str, Any]]:
+        """Get performance summary across all workflows for an enterprise"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            # Get all workflow averages for the enterprise
+            workflow_averages = await self.workflow_averages_collection.find({
+                "enterprise_id": eid
+            }).to_list(None)
+            
+            # Get recent performance data for trend analysis
+            from datetime import timedelta
+            start_date = datetime.utcnow() - timedelta(days=days_back)
+            
+            recent_performance = await self.performance_metrics_collection.aggregate([
+                {"$match": {
+                    "enterprise_id": eid,
+                    "timestamp": {"$gte": start_date}
+                }},
+                {"$group": {
+                    "_id": "$workflow_name",
+                    "recent_sessions": {"$sum": 1},
+                    "recent_avg_response_time": {"$avg": "$avg_agent_response_time_ms"},
+                    "recent_avg_tokens": {"$avg": "$total_tokens"},
+                    "recent_avg_cost": {"$avg": "$total_cost"}
+                }}
+            ]).to_list(None)
+            
+            # Combine data
+            summary = []
+            for avg_doc in workflow_averages:
+                workflow_summary = {
+                    "workflow_name": avg_doc["workflow_name"],
+                    "total_sessions": avg_doc["session_count"],
+                    "unique_users": len(avg_doc.get("total_users", [])),
+                    "last_updated": avg_doc["last_updated"].isoformat(),
+                    
+                    # Overall averages
+                    "overall_averages": {
+                        "avg_session_duration_seconds": round(avg_doc.get("avg_session_duration_seconds", 0), 2),
+                        "avg_agent_response_time_ms": round(avg_doc.get("avg_agent_response_time_ms", 0), 2),
+                        "avg_tokens_per_session": round(avg_doc.get("avg_tokens_per_session", 0), 0),
+                        "avg_cost_per_session": round(avg_doc.get("avg_cost_per_session", 0.0), 4)
+                    },
+                    
+                    # Recent trends
+                    "recent_trends": {}
+                }
+                
+                # Add recent trend data if available
+                for recent in recent_performance:
+                    if recent["_id"] == avg_doc["workflow_name"]:
+                        workflow_summary["recent_trends"] = {
+                            "recent_sessions": recent["recent_sessions"],
+                            "recent_avg_response_time": round(recent.get("recent_avg_response_time", 0), 2),
+                            "recent_avg_tokens": round(recent.get("recent_avg_tokens", 0), 0),
+                            "recent_avg_cost": round(recent.get("recent_avg_cost", 0.0), 4)
+                        }
+                        break
+                
+                summary.append(workflow_summary)
+            
+            # Sort by session count (most active first)
+            summary.sort(key=lambda x: x["total_sessions"], reverse=True)
+            
+            logger.info(f"📈 Retrieved enterprise performance summary for {len(summary)} workflows")
+            return summary
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get enterprise performance summary: {e}")
+            return []
+
+    # ==================================================================================
+    # ANALYTICS QUERIES
+    # ==================================================================================
+
+    async def get_workflow_analytics(self, workflow_name: str, 
+                                   enterprise_id: Optional[Union[str, ObjectId]] = None,
+                                   days_back: int = 30) -> Dict[str, Any]:
+        """Get analytics for a specific workflow"""
+        try:
+            match_filter: Dict[str, Any] = {"workflow_name": workflow_name}
+            
+            if enterprise_id:
+                eid = await self._validate_enterprise_exists(enterprise_id)
+                match_filter["enterprise_id"] = eid
+            
+            # Add time filter
+            from datetime import timedelta
+            start_date = datetime.utcnow() - timedelta(days=days_back)
+            match_filter["timestamp"] = {"$gte": start_date}
+            
+            pipeline = [
+                {"$match": match_filter},
+                {"$group": {
+                    "_id": "$workflow_name",
+                    "total_tokens": {"$sum": "$tokens_used"},
+                    "total_trial_tokens": {"$sum": "$trial_tokens_used"},
+                    "session_count": {"$sum": 1},
+                    "avg_tokens_per_session": {"$avg": "$tokens_used"},
+                    "total_cost": {"$sum": "$cost_usd"},
+                    "unique_users": {"$addToSet": "$user_id"}
+                }},
+                {"$addFields": {
+                    "unique_user_count": {"$size": "$unique_users"}
+                }}
+            ]
+            
+            result = await self.token_usage_collection.aggregate(pipeline).to_list(1)
+            
+            if result:
+                analytics = result[0]
+                analytics["unique_users"] = len(analytics.get("unique_users", []))
+                return analytics
+            
+            return {
+                "workflow_name": workflow_name,
+                "total_tokens": 0,
+                "session_count": 0,
+                "avg_tokens_per_session": 0,
+                "unique_user_count": 0
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get workflow analytics: {e}")
+            return {}
+
+    async def get_enterprise_usage_summary(self, enterprise_id: Union[str, ObjectId],
+                                         days_back: int = 30) -> List[Dict[str, Any]]:
+        """Get usage summary by workflow for an enterprise"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            from datetime import timedelta
+            start_date = datetime.utcnow() - timedelta(days=days_back)
+            
+            pipeline = [
+                {"$match": {
+                    "enterprise_id": eid,
+                    "timestamp": {"$gte": start_date}
+                }},
+                {"$group": {
+                    "_id": "$workflow_name",
+                    "total_tokens": {"$sum": "$tokens_used"},
+                    "total_cost": {"$sum": "$cost_usd"},
+                    "session_count": {"$sum": 1},
+                    "unique_users": {"$addToSet": "$user_id"}
+                }},
+                {"$addFields": {
+                    "unique_user_count": {"$size": "$unique_users"}
+                }},
+                {"$sort": {"total_tokens": -1}}
+            ]
+            
+            results = await self.token_usage_collection.aggregate(pipeline).to_list(None)
+            
+            # Clean up results
+            for result in results:
+                result["workflow_name"] = result["_id"]
+                del result["_id"]
+                del result["unique_users"]  # Remove the array, keep count
+            
+            logger.info(f"📈 Retrieved usage summary for enterprise {enterprise_id}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get enterprise usage summary: {e}")
+            return []
+
+    async def get_user_usage_history(self, user_id: str, enterprise_id: Union[str, ObjectId],
+                                   limit: int = 50) -> List[Dict[str, Any]]:
+        """Get recent usage history for a user"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            history = await self.token_usage_collection.find(
+                {"user_id": user_id, "enterprise_id": eid},
+                {"_id": 0}  # Exclude MongoDB ObjectId
+            ).sort("timestamp", -1).limit(limit).to_list(limit)
+            
+            logger.info(f"📜 Retrieved {len(history)} usage records for user {user_id}")
+            return history
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get user usage history: {e}")
+            return []
+
+    # ========================================================================
+    # WORKFLOW PERFORMANCE ANALYTICS METHODS
+    # ========================================================================
+
+    async def log_workflow_performance(self, performance_data: Dict[str, Any]) -> bool:
+        """Log workflow performance data for averaging and analytics."""
+        try:
+            # Add timestamp if not present
+            if "timestamp" not in performance_data:
+                performance_data["timestamp"] = datetime.utcnow()
+            
+            # Validate enterprise exists
+            enterprise_id = performance_data.get("enterprise_id")
+            if enterprise_id:
+                await self._validate_enterprise_exists(enterprise_id)
+            
+            # Store in workflow performance collection
+            result = await self.workflow_performance_collection.insert_one(performance_data)
+            
+            logger.info(f"📊 Logged workflow performance for {performance_data.get('workflow_name', 'unknown')}")
+            return bool(result.inserted_id)
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to log workflow performance: {e}")
+            return False
+
+    async def get_workflow_averages(self, workflow_name: str, enterprise_id: Union[str, ObjectId],
+                                  days_back: int = 30) -> Dict[str, Any]:
+        """Get workflow performance averages across all users and sessions."""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            from datetime import timedelta
+            start_date = datetime.utcnow() - timedelta(days=days_back)
+            
+            if not hasattr(self, 'workflow_performance_collection'):
+                self.workflow_performance_collection = self.db2["WorkflowPerformance"]
+            
+            # Aggregation pipeline to calculate chat-level totals then averages
+            pipeline = [
+                {
+                    "$match": {
+                        "workflow_name": workflow_name,
+                        "enterprise_id": eid,
+                        "timestamp": {"$gte": start_date}
+                    }
+                },
+                {
+                    # First group by chat_id to get totals per conversation
+                    "$group": {
+                        "_id": "$chat_id",
+                        "user_id": {"$first": "$user_id"},
+                        "chat_total_duration": {"$sum": "$session_duration_seconds"},
+                        "chat_avg_response_time": {"$avg": "$avg_agent_response_time_ms"},
+                        "chat_total_tokens": {"$sum": "$total_tokens"},
+                        "chat_total_cost": {"$sum": "$total_cost"},
+                        "chat_total_messages": {"$sum": "$total_messages"},
+                        "chat_max_agents": {"$max": "$agent_count"},
+                        "session_count": {"$sum": 1}
+                    }
+                },
+                {
+                    # Then calculate averages across all chats
+                    "$group": {
+                        "_id": None,
+                        "avg_chat_duration": {"$avg": "$chat_total_duration"},
+                        "avg_response_time": {"$avg": "$chat_avg_response_time"},
+                        "avg_tokens_per_chat": {"$avg": "$chat_total_tokens"},
+                        "avg_cost_per_chat": {"$avg": "$chat_total_cost"},
+                        "avg_messages_per_chat": {"$avg": "$chat_total_messages"},
+                        "avg_agents_per_chat": {"$avg": "$chat_max_agents"},
+                        "total_chats": {"$sum": 1},
+                        "total_sessions": {"$sum": "$session_count"},
+                        "unique_users": {"$addToSet": "$user_id"},
+                        "total_tokens_all_chats": {"$sum": "$chat_total_tokens"},
+                        "total_cost_all_chats": {"$sum": "$chat_total_cost"}
+                    }
+                },
+                {
+                    "$project": {
+                        "_id": 0,
+                        "workflow_name": {"$literal": workflow_name},
+                        "enterprise_id": {"$literal": str(eid)},
+                        "days_analyzed": {"$literal": days_back},
+                        "avg_chat_duration_seconds": {"$round": ["$avg_chat_duration", 2]},
+                        "avg_response_time_ms": {"$round": ["$avg_response_time", 2]},
+                        "avg_tokens_per_chat": {"$round": ["$avg_tokens_per_chat", 0]},
+                        "avg_cost_per_chat": {"$round": ["$avg_cost_per_chat", 4]},
+                        "avg_messages_per_chat": {"$round": ["$avg_messages_per_chat", 1]},
+                        "avg_agents_per_chat": {"$round": ["$avg_agents_per_chat", 1]},
+                        "total_chats": "$total_chats",
+                        "total_sessions": "$total_sessions",
+                        "unique_user_count": {"$size": "$unique_users"},
+                        "total_tokens_all_chats": "$total_tokens_all_chats",
+                        "total_cost_all_chats": {"$round": ["$total_cost_all_chats", 4]},
+                        "analysis_period": {
+                            "$concat": [
+                                "Last ", 
+                                {"$toString": days_back}, 
+                                " days"
+                            ]
+                        }
+                    }
+                }
+            ]
+            
+            result = await self.performance_metrics_collection.aggregate(pipeline).to_list(1)
+            
+            if result:
+                averages = result[0]
+                logger.info(f"📊 Retrieved workflow averages for {workflow_name}: {averages['total_sessions']} sessions")
+                return averages
+            else:
+                # Return empty averages if no data
+                return {
+                    "workflow_name": workflow_name,
+                    "enterprise_id": str(eid),
+                    "days_analyzed": days_back,
+                    "avg_chat_duration_seconds": 0,
+                    "avg_response_time_ms": 0,
+                    "avg_tokens_per_chat": 0,
+                    "avg_cost_per_chat": 0,
+                    "avg_messages_per_chat": 0,
+                    "avg_agents_per_chat": 0,
+                    "total_chats": 0,
+                    "total_sessions": 0,
+                    "unique_user_count": 0,
+                    "total_tokens_all_chats": 0,
+                    "total_cost_all_chats": 0,
+                    "analysis_period": f"Last {days_back} days"
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to get workflow averages: {e}")
+            return {}
+
+    async def get_agent_performance_averages(self, workflow_name: str, enterprise_id: Union[str, ObjectId],
+                                           days_back: int = 30) -> Dict[str, Dict[str, Any]]:
+        """Get agent-specific performance averages for a workflow."""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            from datetime import timedelta
+            start_date = datetime.utcnow() - timedelta(days=days_back)
+            
+            if not hasattr(self, 'workflow_performance_collection'):
+                self.workflow_performance_collection = self.db2["WorkflowPerformance"]
+            
+            # Aggregation pipeline for agent-specific averages
+            pipeline = [
+                {
+                    "$match": {
+                        "workflow_name": workflow_name,
+                        "enterprise_id": eid,
+                        "timestamp": {"$gte": start_date}
+                    }
+                },
+                {
+                    "$unwind": {
+                        "path": "$agent_performance",
+                        "preserveNullAndEmptyArrays": False
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$agent_performance.k",  # Agent name
+                        "avg_response_time": {
+                            "$avg": "$agent_performance.v.avg_response_time_ms"
+                        },
+                        "avg_message_count": {
+                            "$avg": "$agent_performance.v.message_count"
+                        },
+                        "avg_content_length": {
+                            "$avg": "$agent_performance.v.avg_content_length"
+                        },
+                        "session_count": {"$sum": 1},
+                        "total_messages": {
+                            "$sum": "$agent_performance.v.message_count"
+                        }
+                    }
+                },
+                {
+                    "$project": {
+                        "_id": 0,
+                        "agent_name": "$_id",
+                        "avg_response_time_ms": {"$round": ["$avg_response_time", 2]},
+                        "avg_messages_per_session": {"$round": ["$avg_message_count", 1]},
+                        "avg_content_length": {"$round": ["$avg_content_length", 0]},
+                        "sessions_participated": "$session_count",
+                        "total_messages": "$total_messages"
+                    }
+                }
+            ]
+            
+            results = await self.workflow_performance_collection.aggregate(pipeline).to_list(100)
+            
+            # Convert to dictionary format
+            agent_averages = {}
+            for result in results:
+                agent_name = result["agent_name"]
+                agent_averages[agent_name] = {
+                    "avg_response_time_ms": result["avg_response_time_ms"],
+                    "avg_messages_per_session": result["avg_messages_per_session"],
+                    "avg_content_length": result["avg_content_length"],
+                    "sessions_participated": result["sessions_participated"],
+                    "total_messages": result["total_messages"]
+                }
+            
+            logger.info(f"📊 Retrieved agent averages for {workflow_name}: {len(agent_averages)} agents")
+            return agent_averages
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get agent performance averages: {e}")
+            return {}

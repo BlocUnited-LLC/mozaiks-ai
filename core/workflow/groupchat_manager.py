@@ -8,6 +8,7 @@ import logging
 import asyncio
 import inspect
 import uuid
+import threading
 from typing import Optional, Any, TYPE_CHECKING, List, Dict
 from datetime import datetime
 from collections import defaultdict
@@ -16,7 +17,7 @@ from ..data.persistence_manager import PersistenceManager
 
 # Initialize persistence manager
 mongodb_manager = PersistenceManager()
-from ..monitoring.observability import get_observer, get_token_tracker
+from ..data.token_manager import get_observer, get_token_tracker
 from ..transport.ag2_iostream import AG2StreamingManager
 from .tool_registry import WorkflowToolRegistry, ToolTrigger
 from logs.logging_config import (
@@ -32,6 +33,135 @@ chat_logger = get_chat_logger("core_groupchat")
 agent_logger = get_agent_logger("groupchat_manager")
 workflow_logger = get_workflow_logger("groupchat")
 logger = logging.getLogger(__name__)
+
+# ==============================================================================
+# REAL-TIME ANALYTICS & COST MONITORING (Expert Integration)
+# ==============================================================================
+
+async def check_workflow_cost_thresholds(
+    workflow_name: str, 
+    enterprise_id: str, 
+    current_cost: float,
+    current_tokens: int,
+    chat_id: str = ""
+) -> Dict[str, Any]:
+    """
+    Expert-level real-time cost monitoring during conversations.
+    Compares current conversation cost against workflow averages to detect anomalies.
+    
+    Returns:
+        Dict with threshold analysis and recommendations
+    """
+    try:
+        # Get workflow benchmarks for comparison
+        averages = await mongodb_manager.get_workflow_averages(workflow_name, enterprise_id)
+        
+        if not averages or averages.get('total_chats', 0) == 0:
+            # No historical data - can't compare yet
+            return {
+                "status": "no_baseline",
+                "message": "Insufficient historical data for cost comparison",
+                "current_cost": current_cost,
+                "current_tokens": current_tokens
+            }
+        
+        avg_cost_per_chat = averages.get('avg_cost_per_chat', 0)
+        avg_tokens_per_chat = averages.get('avg_tokens_per_chat', 0)
+        
+        # Calculate percentage over average
+        cost_multiplier = current_cost / avg_cost_per_chat if avg_cost_per_chat > 0 else 0
+        token_multiplier = current_tokens / avg_tokens_per_chat if avg_tokens_per_chat > 0 else 0
+        
+        # Define alert thresholds
+        if cost_multiplier > 3.0 or token_multiplier > 3.0:
+            alert_level = "CRITICAL"
+            message = f"🚨 COST ALERT: Conversation is {cost_multiplier:.1f}x average cost"
+        elif cost_multiplier > 2.0 or token_multiplier > 2.0:
+            alert_level = "WARNING"
+            message = f"⚠️ Cost Alert: Conversation is {cost_multiplier:.1f}x average cost"
+        elif cost_multiplier > 1.5 or token_multiplier > 1.5:
+            alert_level = "NOTICE"
+            message = f"📊 Above Average: Conversation is {cost_multiplier:.1f}x average cost"
+        else:
+            alert_level = "NORMAL"
+            message = f"✅ Normal: Conversation cost within expected range"
+        
+        analysis = {
+            "status": alert_level.lower(),
+            "alert_level": alert_level,
+            "message": message,
+            "current_cost": current_cost,
+            "current_tokens": current_tokens,
+            "avg_cost_per_chat": avg_cost_per_chat,
+            "avg_tokens_per_chat": avg_tokens_per_chat,
+            "cost_multiplier": cost_multiplier,
+            "token_multiplier": token_multiplier,
+            "workflow_benchmarks": {
+                "total_chats": averages.get('total_chats', 0),
+                "avg_response_time_ms": averages.get('avg_response_time_ms', 0)
+            }
+        }
+        
+        # Log significant cost events
+        if alert_level in ["WARNING", "CRITICAL"]:
+            log_business_event(
+                event_type=f"COST_THRESHOLD_{alert_level}",
+                description=message,
+                context={
+                    "enterprise_id": enterprise_id,
+                    "chat_id": chat_id,
+                    "workflow_name": workflow_name,
+                    "cost_analysis": analysis
+                },
+                level="WARNING" if alert_level == "WARNING" else "ERROR"
+            )
+            
+        return analysis
+        
+    except Exception as e:
+        logger.error(f"❌ Cost threshold check failed: {e}")
+        return {
+            "status": "error",
+            "message": f"Cost monitoring failed: {str(e)}",
+            "current_cost": current_cost,
+            "current_tokens": current_tokens
+        }
+
+def _background_cost_check(chat_id: str, workflow_type: str, current_cost: float = 0.0, current_tokens: int = 0, enterprise_id: str = ""):
+    """Non-blocking background cost monitoring for message hooks."""
+    
+    async def _async_cost_check():
+        try:
+            result = await check_workflow_cost_thresholds(
+                workflow_name=workflow_type,
+                enterprise_id=enterprise_id or "default_enterprise",
+                current_cost=current_cost,
+                current_tokens=current_tokens,
+                chat_id=chat_id
+            )
+            if result.get("status") == "alert":
+                logger.warning(f"🚨 Real-time cost alert: {result.get('message')}")
+        except Exception as e:
+            logger.error(f"Background cost check failed: {e}")
+    
+    # Schedule the async check without blocking the current thread
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(_async_cost_check())
+        else:
+            # If loop exists but isn't running, run the coroutine
+            loop.run_until_complete(_async_cost_check())
+    except RuntimeError:
+        # If no event loop is running, create a new one in a thread
+        def run_in_thread():
+            asyncio.run(_async_cost_check())
+        thread = threading.Thread(target=run_in_thread, daemon=True)
+        thread.start()
+
+# ==============================================================================
+# EXISTING CODE CONTINUES...
+# ==============================================================================
 
 # Performance-focused logging - minimal overhead
 function_call_logger = logging.getLogger("ag2_function_call_debug")
@@ -88,7 +218,6 @@ def create_core_response_tracking_hooks(
     tracker: AgentResponseTimeTracker, 
     chat_id: str = "", 
     enterprise_id: str = "", 
-    budget_capability = None,
     agents = None,
     streaming_manager: Optional[AG2StreamingManager] = None,
     workflow_name: str = "unknown",
@@ -101,7 +230,6 @@ def create_core_response_tracking_hooks(
         tracker: Agent response time tracker
         chat_id: Chat identifier
         enterprise_id: Enterprise identifier
-        budget_capability: Modular budget capability for usage tracking
         agents: List of agents for token tracking
         streaming_manager: AG2 streaming manager for real-time updates
         workflow_name: Type of workflow being executed
@@ -110,12 +238,6 @@ def create_core_response_tracking_hooks(
 
     # Initialize AG2-native observability systems
     observer = get_observer(chat_id, enterprise_id)
-    
-    # Start AG2's native runtime logging for this session
-    try:
-        observer.start_ag2_logging()
-    except Exception as e:
-        chat_logger.error(f"❌ [CORE] Failed to start AG2 logging: {e}")
 
     def before_reply_hook(messages, **kwargs):
         # AG2 expects messages parameter and accepts additional kwargs
@@ -226,32 +348,57 @@ def create_core_response_tracking_hooks(
         
         # Continue with normal message processing (MongoDB save, token tracking, etc.)
         
-        # BUDGET CAPABILITY USAGE TRACKING: Update usage via modular capability
-        # This works with any budget mode (commercial, opensource, testing)
-        if budget_capability and budget_capability.is_enabled() and agents and message_content and sender_name != 'unknown':
+        # REAL-TIME ANALYTICS TRACKING: Monitor conversation costs and performance
+        if token_tracker and message_content and sender_name != 'unknown':
             try:
-                import asyncio
+                # Track token usage for this agent message using the correct method
+                token_tracker.track_agent_message(
+                    agent_name=sender_name,
+                    message_content=message_content,
+                    recipient=recipient_name
+                )
                 
-                async def track_capability_usage():
+                # Real-time cost monitoring for workflow conversations
+                workflow_name_for_analysis = workflow_name or "unknown"
+                enterprise_id_for_analysis = enterprise_id or "default"
+                
+                if chat_id and workflow_name_for_analysis != "unknown":
                     try:
-                        if budget_capability and hasattr(budget_capability, 'update_usage'):
-                            usage_result = await budget_capability.update_usage(agents)
-                            if usage_result:
-                                chat_logger.debug(f"🪙 [BUDGET] Updated usage for {sender_name}: {usage_result}")
-                            else:
-                                chat_logger.debug(f"🪙 [BUDGET] Updated usage for {sender_name} via {budget_capability.__class__.__name__}")
+                        # Get current session stats for cost analysis
+                        session_summary = token_tracker.get_session_summary()
+                        current_cost = session_summary.get("estimated_total_cost", 0.0)
+                        current_tokens = session_summary.get("total_tokens", 0)
+                        
+                        # Schedule background cost check (non-blocking)
+                        import asyncio
+                        try:
+                            loop = asyncio.get_event_loop()
+                            # Create a simple coroutine wrapper for the background check
+                            async def cost_check_wrapper():
+                                _background_cost_check(
+                                    chat_id,
+                                    workflow_name_for_analysis, 
+                                    current_cost,
+                                    current_tokens,
+                                    enterprise_id_for_analysis
+                                )
+                            loop.create_task(cost_check_wrapper())
+                        except RuntimeError:
+                            # If no event loop, run in background thread
+                            _background_cost_check(
+                                chat_id,
+                                workflow_name_for_analysis,
+                                current_cost, 
+                                current_tokens,
+                                enterprise_id_for_analysis
+                            )
                     except Exception as e:
-                        chat_logger.error(f"❌ [BUDGET] Failed to update usage for {sender_name}: {e}")
-                
-                # Create task to run the usage tracking
-                loop = asyncio.get_event_loop()
-                loop.create_task(track_capability_usage())
-                
+                        chat_logger.debug(f"📊 Real-time cost monitoring skipped: {e}")
+                        
             except Exception as e:
-                chat_logger.error(f"❌ [BUDGET] Error setting up capability usage tracking: {e}")
+                chat_logger.error(f"❌ [ANALYTICS] Error in analytics tracking: {e}")
         
-        # AG2-NATIVE TOKEN TRACKING: Track usage via get_token_tracker
-        # This provides additional observability while TokenManager is disabled for testing
+        # AG2-NATIVE TOKEN TRACKING: Additional observability
         if token_tracker and message_content and sender_name != 'unknown':
             try:
                 # Track token usage for this agent message using the correct method
@@ -261,6 +408,39 @@ def create_core_response_tracking_hooks(
                     recipient=recipient_name
                 )
                 chat_logger.debug(f"📊 [AG2-TOKEN] Tracked usage for {sender_name} via AG2-native tracker")
+                
+                # REAL-TIME COST MONITORING (Expert Integration)
+                # Check if current conversation is exceeding cost thresholds
+                try:
+                    session_summary = token_tracker.get_session_summary()
+                    if session_summary:
+                        usage_summary = session_summary.get('usage_summary', {})
+                        current_cost = usage_summary.get('total_cost', 0)
+                        current_tokens = usage_summary.get('total_tokens', 0)
+                        
+                        # Only check thresholds if we have meaningful usage (more than $0.01 or 50 tokens)
+                        if current_cost > 0.01 or current_tokens > 50:
+                            # Schedule cost analysis as a background task (non-blocking)
+                            workflow_name_for_analysis = getattr(token_tracker, 'workflow_name', 'unknown')
+                            
+                            # Use the background cost check function directly (it handles async internally)
+                            try:
+                                _background_cost_check(
+                                    chat_id,
+                                    workflow_name_for_analysis,
+                                    current_cost,
+                                    current_tokens,
+                                    enterprise_id
+                                )
+                            except Exception:
+                                # Fallback - just log basic cost info
+                                if current_cost > 1.0:  # Only log if cost is significant
+                                    chat_logger.info(f"💰 [COST-INFO] Current conversation cost: ${current_cost:.3f} ({current_tokens} tokens)")
+                                
+                except Exception as cost_error:
+                    # Don't fail conversation if cost monitoring fails
+                    chat_logger.debug(f"❌ [COST-MONITOR] Cost monitoring failed: {cost_error}")
+                    
             except Exception as e:
                 chat_logger.error(f"❌ [AG2-TOKEN] Failed to track tokens for {sender_name}: {e}")
         
@@ -386,25 +566,11 @@ async def _start_or_resume_group_chat(
     # Initialize workflow with status 0 (VE pattern)
     await mongodb_manager.update_workflow_status(chat_id, enterprise_id, 0, workflow_name)
     
-    # Budget capability initialization
-    from ..capabilities import get_budget_capability
-    
-    budget_capability = get_budget_capability(chat_id, enterprise_id, workflow_name, user_id)
-    budget_info = await budget_capability.initialize_budget()
-    
-    # Extract token_manager if commercial mode
-    token_manager = getattr(budget_capability, 'token_manager', None)
-    if token_manager:
-        chat_logger.debug(f"🪙 [BUDGET] Token manager available: {type(token_manager).__name__}")
-    
-    # Initialize AG2-native token tracking for observability
+    # Initialize AG2-native token tracking for observability and analytics
     token_tracker = get_token_tracker(chat_id, enterprise_id, user_id or "unknown")
     
-    chat_logger.info(f"Budget capability initialized: {budget_info.get('budget_type', 'unknown')}")
-    if budget_info.get('is_free_trial'):
-        chat_logger.info(f"Free trial: {budget_info.get('free_loops_remaining', 0)} loops remaining")
-    else:
-        chat_logger.info(f"Mode: {budget_info.get('budget_type', 'unknown')}")
+    chat_logger.info(f"🔍 Analytics initialized for workflow: {workflow_name}")
+    chat_logger.info(f"📊 Real-time cost monitoring enabled for chat: {chat_id}")
 
     # Tool registration system
     if (
@@ -776,15 +942,30 @@ async def _start_or_resume_group_chat(
             f"✅ [CORE] Initiating/resuming chat with '{initiating_agent.name}' as the entry point."
         )
 
-        # Check budget limits using modular capability (bypass for test mode)
+        # Real-time analytics and cost monitoring
         if enterprise_id == "test_mode_bypass_budget":
-            logger.info("🧪 [TEST MODE] Bypassing budget checks for testing")
-            budget_check = {"can_continue": True, "message": "Test mode - budget bypassed"}
+            logger.info("🧪 [TEST MODE] Analytics enabled in test mode")
+            analytics_check = {"can_continue": True, "message": "Test mode - analytics enabled"}
         else:
-            budget_check = await budget_capability.check_budget_limits()
+            # Check workflow cost thresholds using analytics
+            try:
+                cost_check = await check_workflow_cost_thresholds(
+                    workflow_name=workflow_name,
+                    enterprise_id=enterprise_id,
+                    current_cost=0.0,  # Initial cost
+                    current_tokens=0,  # Initial tokens
+                    chat_id=chat_id
+                )
+                analytics_check = {
+                    "can_continue": cost_check.get("status") != "critical_alert",
+                    "message": cost_check.get("message", "Analytics check completed")
+                }
+            except Exception as e:
+                logger.warning(f"⚠️ [ANALYTICS] Cost check failed, continuing: {e}")
+                analytics_check = {"can_continue": True, "message": "Analytics unavailable"}
             
-        if not budget_check.get("can_continue", True):
-            error_msg = f"❌ [BUDGET] {budget_check.get('message', 'Budget limits exceeded')}"
+        if not analytics_check.get("can_continue", True):
+            error_msg = f"❌ [ANALYTICS] {analytics_check.get('message', 'Cost limits exceeded')}"
             logger.error(error_msg)
             raise ValueError(error_msg)
 
@@ -840,7 +1021,6 @@ async def _start_or_resume_group_chat(
             tracker=response_tracker,
             chat_id=chat_id,
             enterprise_id=enterprise_id,
-            budget_capability=budget_capability,
             agents=agents_list,
             streaming_manager=streaming_manager,
             workflow_name=workflow_name,
@@ -875,12 +1055,12 @@ async def _start_or_resume_group_chat(
             chat_logger.warning("⚠️ [CORE] Cannot register hooks - manager missing groupchat or agents")
 
         determined_max_turns = None
-        # Get turn limit from budget capability
-        capability_turn_limit = budget_capability.get_turn_limit()
-        if capability_turn_limit is not None:
-            determined_max_turns = capability_turn_limit
+        # Set reasonable default turn limit for analytics tracking
+        default_turn_limit = 50  # Configurable default
         if max_turns is not None:
             determined_max_turns = max_turns
+        else:
+            determined_max_turns = default_turn_limit
 
         if determined_max_turns:
             chat_logger.info(f"🔢 [CORE] Chat will run with max_turns={determined_max_turns}")
@@ -1034,40 +1214,40 @@ async def _start_or_resume_group_chat(
                     )
                     chat_logger.info(f"💾 [PERSISTENCE] Conversation state saved to database")
                     
-                    # Save token usage if tracker has data
+                    # Analytics finalization - save session performance
                     if token_tracker:
                         try:
-                            # Get usage data from agents
-                            agents_list = manager.groupchat.agents if hasattr(manager.groupchat, 'agents') else []
-                            session_usage = token_tracker.get_usage_for_business_logic(agents_list)
+                            # Finalize analytics session and get summary
+                            final_summary = await token_tracker.finalize_session()
                             
-                            if session_usage and session_usage.get('total_tokens', 0) > 0:
-                                await mongodb_manager.update_token_usage(
-                                    chat_id=chat_id,
-                                    enterprise_id=enterprise_id,
-                                    session_id=session_usage.get('session_id', str(uuid.uuid4())),
-                                    usage_data={
-                                        **session_usage,
-                                        "total_turns": len(manager.groupchat.messages) if hasattr(manager.groupchat, 'messages') else 0,
-                                        "conversation_duration_ms": agent_response_time
-                                    }
-                                )
-                                chat_logger.info(f"💰 [TOKEN-USAGE] Token usage saved: {session_usage.get('total_tokens', 0)} tokens, ${session_usage.get('total_cost', 0.0):.4f}")
+                            if final_summary.get('session_finalized', False):
+                                chat_logger.info(f"📊 [ANALYTICS] Session finalized with performance data")
+                                
+                                # Log summary metrics for business insights
+                                session_summary = final_summary.get('session_summary', {})
+                                total_tokens = session_summary.get('total_tokens', 0)
+                                total_cost = session_summary.get('estimated_total_cost', 0.0)
+                                
+                                if total_tokens > 0:
+                                    chat_logger.info(f"💰 [ANALYTICS] Session metrics: {total_tokens} tokens, ${total_cost:.4f}")
+                                else:
+                                    chat_logger.info(f"💰 [ANALYTICS] Session completed with no token usage recorded")
                             else:
-                                chat_logger.info(f"💰 [TOKEN-USAGE] No token usage data to save (0 tokens)")
-                        except Exception as token_e:
-                            chat_logger.error(f"❌ [TOKEN-USAGE] Failed to save token usage: {token_e}")
+                                chat_logger.warning(f"⚠️ [ANALYTICS] Session finalization failed")
+                        except Exception as analytics_e:
+                            chat_logger.error(f"❌ [ANALYTICS] Failed to finalize session: {analytics_e}")
                 else:
                     chat_logger.warning(f"⚠️ [PERSISTENCE] No groupchat found to save")
             except Exception as e:
                 chat_logger.error(f"❌ [PERSISTENCE] Failed to save conversation state: {e}")
             
-            # Complete user feedback loop if applicable
-            if budget_capability and budget_capability.is_enabled() and initial_message is not None:
+            # Finalize analytics session if applicable
+            if token_tracker and initial_message is not None:
                 try:
-                    await budget_capability.complete_user_feedback_loop()
+                    await token_tracker.finalize_session()
+                    chat_logger.info(f"📊 [ANALYTICS] Session finalized for chat: {chat_id}")
                 except Exception as e:
-                    chat_logger.error(f"❌ [BUDGET] Failed to complete feedback loop: {e}")
+                    chat_logger.error(f"❌ [ANALYTICS] Failed to finalize session: {e}")
 
         else:
             chat_logger.info(f"⏱️ [CORE] Resuming group chat: {chat_id}")
@@ -1135,12 +1315,13 @@ async def _start_or_resume_group_chat(
             )
             chat_logger.info(f"✅ [CORE] Agent conversation resumed in {agent_response_time:.2f}ms")
 
-            # Complete user feedback loop if applicable  
-            if budget_capability and budget_capability.is_enabled() and initial_message is not None:
+            # Finalize analytics session for resumed conversation
+            if token_tracker and initial_message is not None:
                 try:
-                    await budget_capability.complete_user_feedback_loop()
+                    await token_tracker.finalize_session()
+                    chat_logger.info(f"📊 [ANALYTICS] Resumed session finalized for chat: {chat_id}")
                 except Exception as e:
-                    chat_logger.error(f"❌ [BUDGET] Failed to complete feedback loop: {e}")
+                    chat_logger.error(f"❌ [ANALYTICS] Failed to finalize resumed session: {e}")
 
     except Exception:
         logger.exception("Unexpected error in start_or_resume_group_chat")
@@ -1531,6 +1712,60 @@ async def run_workflow_orchestration(
         )
         business_logger.info(f"🎉 [{workflow_name_upper}] Workflow completed in {chat_time:.2f}ms")
         
+        # ANALYTICS FINALIZATION - Expert Integration Point
+        try:
+            business_logger.info(f"📊 [{workflow_name_upper}] Finalizing workflow analytics...")
+            
+            # Get the token tracker that was created earlier in this workflow
+            token_tracker = get_token_tracker(chat_id, enterprise_id, user_id or "unknown")
+            
+            # Set workflow name for proper analytics categorization
+            if hasattr(token_tracker, 'workflow_name'):
+                token_tracker.workflow_name = workflow_name
+            
+            # Finalize session performance data
+            analytics_summary = await token_tracker.finalize_session()
+            
+            if analytics_summary and analytics_summary.get('session_finalized'):
+                business_logger.info(f"✅ [{workflow_name_upper}] Analytics finalized successfully")
+                business_logger.info(f"   • Performance persisted: {analytics_summary.get('performance_persisted', False)}")
+                
+                # Log key metrics for business intelligence
+                session_summary = analytics_summary.get('session_summary', {})
+                usage_summary = session_summary.get('usage_summary', {})
+                
+                log_business_event(
+                    event_type=f"{workflow_name_upper}_ANALYTICS_FINALIZED",
+                    description=f"Workflow analytics and performance data finalized",
+                    context={
+                        "enterprise_id": enterprise_id,
+                        "chat_id": chat_id,
+                        "workflow_name": workflow_name,
+                        "total_tokens": usage_summary.get('total_tokens', 0),
+                        "total_cost": usage_summary.get('total_cost', 0.0),
+                        "agent_count": usage_summary.get('agent_count', 0),
+                        "message_count": usage_summary.get('message_count', 0),
+                        "performance_persisted": analytics_summary.get('performance_persisted', False)
+                    }
+                )
+            else:
+                business_logger.warning(f"⚠️ [{workflow_name_upper}] Analytics finalization returned empty result")
+                
+        except Exception as analytics_error:
+            # Don't fail the workflow if analytics fail - log and continue
+            business_logger.error(f"❌ [{workflow_name_upper}] Analytics finalization failed: {analytics_error}")
+            log_business_event(
+                event_type=f"{workflow_name_upper}_ANALYTICS_FAILED",
+                description=f"Workflow analytics finalization failed",
+                context={
+                    "enterprise_id": enterprise_id,
+                    "chat_id": chat_id,
+                    "workflow_name": workflow_name,
+                    "error": str(analytics_error)
+                },
+                level="ERROR"
+            )
+        
         log_business_event(
             event_type=f"{workflow_name_upper}_WORKFLOW_COMPLETED",
             description=f"{workflow_name} workflow orchestration completed successfully",
@@ -1558,6 +1793,23 @@ async def run_workflow_orchestration(
         )
         raise
     finally:
+        # ANALYTICS CLEANUP - Ensure data is captured even on failure
+        try:
+            business_logger.debug(f"🧹 [{workflow_name_upper}] Analytics cleanup starting...")
+            
+            # Try to finalize analytics even if workflow failed
+            token_tracker = get_token_tracker(chat_id, enterprise_id, user_id or "unknown")
+            
+            # If session wasn't finalized yet (due to error), try to finalize now
+            if hasattr(token_tracker, 'session_usage') and not getattr(token_tracker, '_session_finalized', False):
+                business_logger.info(f"🔄 [{workflow_name_upper}] Attempting emergency analytics finalization...")
+                emergency_summary = await token_tracker.finalize_session()
+                if emergency_summary:
+                    business_logger.info(f"✅ [{workflow_name_upper}] Emergency analytics finalization successful")
+                    
+        except Exception as cleanup_error:
+            business_logger.error(f"❌ [{workflow_name_upper}] Analytics cleanup failed: {cleanup_error}")
+            
         business_logger.debug(f"🧹 [{workflow_name_upper}] Workflow cleanup completed")
 
 

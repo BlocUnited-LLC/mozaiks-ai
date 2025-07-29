@@ -23,7 +23,7 @@ _WORKFLOW_TOOLS: Dict[str, List[Callable]] = {}  # Tools per workflow
 _WORKFLOW_TRANSPORTS: Dict[str, str] = {}  # Transport type per workflow (websocket only)
 _INITIALIZERS: List[Callable[[], Awaitable[None]]] = []
 
-def initialize_workflow_components(workflow_name: str, workflow_name: str, base_dir: Path) -> List[str]:
+def initialize_workflow_components(workflow_name: str, base_dir: Path) -> List[str]:
     """Initialize components from workflow.json ui_capable_agents"""
     from .workflow_config import WorkflowConfig
     
@@ -121,7 +121,7 @@ def initialize_workflow_ui_components(workflow_name: str, base_dir: Path | None 
         base_dir = Path(__file__).parent.parent.parent  # Get to project root
     
     try:
-        created_files = initialize_workflow_components(workflow_name, workflow_name, base_dir)
+        created_files = initialize_workflow_components(workflow_name, base_dir)
         logger.info(f"🎨 Manually initialized {len(created_files)} component manifests for {workflow_name}")
         return created_files
     except Exception as e:

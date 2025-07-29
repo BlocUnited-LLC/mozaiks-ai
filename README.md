@@ -122,6 +122,13 @@ graph TD
 - **AG2 Resume:** Official AutoGen resume patterns for seamless conversation restoration
 - **Data Isolation:** Secure enterprise and chat ID validation for multi-tenant deployments
 
+### 📊 Real-Time Analytics & Performance Monitoring
+- **Chat-Level Aggregation:** Comprehensive analytics across all workflow uses with session-by-session tracking
+- **Agent Performance Metrics:** Response time analysis, token usage patterns, and efficiency monitoring
+- **Live Cost Intelligence:** Real-time threshold monitoring with automated alerts and budget management
+- **Workflow Optimization:** Historical performance comparison and optimization recommendations
+- **Business Intelligence:** Enterprise-level insights for resource planning and cost forecasting
+
 ---
 
 ## 📂 Project Structure
@@ -159,6 +166,8 @@ MozaiksAI/
 - **[Tool Manifest System](docs/TOOL_MANIFEST_SYSTEM.md)** – JSON-based tool registration and agent capability extension
 - **[Workflow Configuration](docs/WORKFLOW_CONFIG.md)** – Complete workflow.json configuration with UI component integration
 - **[Persistence & Resume](docs/PERSISTENCE_AND_RESUME.md)** – MongoDB integration and AG2 groupchat state restoration
+- **[Workflow Analytics System](docs/WORKFLOW_ANALYTICS_SYSTEM.md)** – Real-time performance monitoring, cost analysis, and chat-level aggregation
+- **[Token Architecture Mapping](docs/TOKEN_ARCHITECTURE_MAPPING.md)** – Billing architecture integration with analytics capabilities
 
 ### Development Guides
 - **[Unified Tool and UI System](docs/UNIFIED_TOOL_AND_UI_SYSTEM.md)** – How backend tools and frontend components work together through workflow.json
