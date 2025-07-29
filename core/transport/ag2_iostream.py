@@ -123,30 +123,51 @@ def _load_config_list_sync() -> List[dict]:
 
 class AG2StreamingIOStream(IOStreamProtocol):
     """
-    AG2-compliant IOStream implementation with proper streaming support.
+    AG2-compliant IOStream implementation with TokenManager integration.
     
     IMPORTANT: This class should work WITH AG2's built-in streaming, not replace it.
     AG2's llm_config["stream"] = True handles the LLM streaming, while this handles
-    the IO layer to your WebSocket transport.
+    the IO layer to your WebSocket transport and workflow management.
     """
     
-    def __init__(self, chat_id: str, enterprise_id: str):
+    def __init__(self, chat_id: str, enterprise_id: str, user_id: str = "unknown", workflow_name: str = "default"):
         self.chat_id = chat_id
         self.enterprise_id = enterprise_id
+        self.user_id = user_id
+        self.workflow_name = workflow_name
         
         # Streaming state - simplified to work with AG2's streaming
         self.current_message_id: Optional[str] = None
         self.current_agent_name: Optional[str] = None
         
+        # Initialize TokenManager for workflow integration
+        self.token_manager: Optional[Any] = None  # TokenManager will be imported dynamically
+        self._initialize_token_manager()
+        
         # Remove custom streaming logic - let AG2 handle it
         # AG2 will stream content directly through print() calls when "stream": True
     
+    def _initialize_token_manager(self):
+        """Initialize TokenManager for workflow integration."""
+        try:
+            from core.data.token_manager import TokenManager
+            self.token_manager = TokenManager(
+                chat_id=self.chat_id,
+                enterprise_id=self.enterprise_id,
+                user_id=self.user_id,
+                workflow_name=self.workflow_name
+            )
+            logger.info(f"🔧 TokenManager initialized for AG2 iostream: {self.chat_id} ({self.workflow_name})")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize TokenManager: {e}")
+            self.token_manager = None
+    
     def print(self, *objects: Any, sep: str = " ", end: str = "\n") -> None:
         """
-        AG2-compliant print method that works with AG2's native streaming.
+        AG2-compliant print method with TokenManager integration.
         
         When AG2 has "stream": True in llm_config, it will call this method
-        with already-streamed content. We just need to forward it to WebSocket.
+        with already-streamed content. We forward it to WebSocket and track in TokenManager.
         """
         # Convert the print arguments to text (same as standard print)
         content = sep.join(str(obj) for obj in objects) + end
@@ -157,6 +178,20 @@ class AG2StreamingIOStream(IOStreamProtocol):
         # Log agent output for tracking
         agent_name = getattr(self, '_current_agent_name', 'Unknown Agent')
         
+        # Track message in TokenManager for workflow management
+        if self.token_manager:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(self.token_manager.add_message(
+                        sender=agent_name,
+                        content=content.strip(),
+                        tokens_used=0,  # Tokens tracked separately via gather_usage_summary
+                        cost=0.0
+                    ))
+            except Exception as e:
+                logger.warning(f"Failed to track message in TokenManager: {e}")
+        
         # Clean content for readability
         clean_content = content.strip()
         if len(clean_content) > 500:
@@ -166,13 +201,14 @@ class AG2StreamingIOStream(IOStreamProtocol):
             preview = clean_content
         
         # Log with readable formatting
-        chat_logger.info(f"🤖 AGENT MESSAGE | Chat: {self.chat_id}")
+        chat_logger.info(f"🤖 AGENT MESSAGE | Chat: {self.chat_id} | Workflow: {self.workflow_name}")
         chat_logger.info(f"   👤 Agent: {agent_name}")
         chat_logger.info(f"   💬 Content: {preview}")
         
         # Log full content if it's JSON or structured data
         if clean_content.startswith('{') and clean_content.endswith('}'):
             try:
+                import json
                 parsed = json.loads(clean_content)
                 if isinstance(parsed, dict):
                     # Log key information from structured responses
@@ -182,9 +218,8 @@ class AG2StreamingIOStream(IOStreamProtocol):
                     elif 'context_variables' in parsed:
                         var_count = len(parsed['context_variables'])
                         chat_logger.info(f"   🎯 Context Variables Generated: {var_count} variables")
-            except json.JSONDecodeError:
-                pass  # Not valid JSON, continue with regular logging
             except Exception as e:
+                # Catch all JSON-related errors
                 logger.warning(f"Error parsing JSON content: {e}")
         
         # Send content directly to WebSocket (AG2 handles the streaming)
@@ -453,7 +488,7 @@ class AG2StreamingManager:
     streaming that works with the IOStream protocol.
     """
     
-    def __init__(self, chat_id: str, enterprise_id: str):
+    def __init__(self, chat_id: str, enterprise_id: str, user_id: str = "unknown", workflow_name: str = "default"):
         # Input validation
         if not isinstance(chat_id, str) or not chat_id.strip():
             raise ValueError("chat_id must be a non-empty string")
@@ -462,6 +497,8 @@ class AG2StreamingManager:
             
         self.chat_id = chat_id.strip()
         self.enterprise_id = enterprise_id.strip()
+        self.user_id = user_id
+        self.workflow_name = workflow_name
         self.streaming_iostream: Optional[AG2StreamingIOStream] = None
         self._original_iostream = None
         self._is_setup = False
@@ -481,7 +518,9 @@ class AG2StreamingManager:
             # Create the streaming IOStream
             self.streaming_iostream = AG2StreamingIOStream(
                 self.chat_id, 
-                self.enterprise_id
+                self.enterprise_id,
+                self.user_id,
+                self.workflow_name
             )
             
             # Store original IOStream for restoration

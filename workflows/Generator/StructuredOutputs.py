@@ -53,11 +53,11 @@ structured_outputs = {
     "OrchestratorAgent": OrchestratorOutput,
 }
 
-async def get_llm(flow: str = "base", enable_streaming: bool = False):
+async def get_llm(flow: str = "base", enable_streaming: bool = False, enable_token_tracking: bool = False):
     """Load LLM config with optional structured response model and streaming"""
     if flow in structured_outputs:
         # For structured outputs with streaming: add stream=True to extra_config
         extra_config = {"stream": True} if enable_streaming else None
-        return await make_structured_config(structured_outputs[flow], extra_config=extra_config)
+        return await make_structured_config(structured_outputs[flow], extra_config=extra_config, enable_token_tracking=enable_token_tracking)
     # For base configurations with streaming
-    return await make_llm_config(stream=enable_streaming)
+    return await make_llm_config(stream=enable_streaming, enable_token_tracking=enable_token_tracking)

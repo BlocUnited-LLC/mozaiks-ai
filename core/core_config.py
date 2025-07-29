@@ -77,7 +77,8 @@ async def _load_raw_config_list() -> list[dict]:
 async def make_llm_config(
     response_format: Optional[Type[BaseModel]] = None,
     stream: bool = False,
-    extra_config: Optional[Dict[str, Any]] = None
+    extra_config: Optional[Dict[str, Any]] = None,
+    enable_token_tracking: bool = False
 ) -> Tuple[OpenAIWrapper, Dict[str, Any]]:
     """Create LLM configuration with optional structured output and streaming"""
     config_list = await _load_raw_config_list()
@@ -88,6 +89,10 @@ async def make_llm_config(
         # Note: AG2 streaming is handled by IOStream, not by config_list stream parameter
         if extra_config:
             cfg.update(extra_config)
+        
+        # Enable token tracking for individual agents (AG2 requirement)
+        # Note: AG2 handles token tracking automatically when OpenAI clients are properly configured
+        # We just need to ensure the basic config is clean and valid
     
     for i, cfg in enumerate(config_list, start=1):
         redacted = {**cfg}
@@ -105,6 +110,12 @@ async def make_llm_config(
         "config_list": config_list
     }
     
+    # Add token tracking configuration if enabled
+    if enable_token_tracking:
+        # Note: AG2 handles individual agent token tracking automatically
+        # when agents are created with proper OpenAI clients
+        logger.debug("🔧 Token tracking enabled - AG2 will handle individual agent tracking automatically")
+    
     if stream:
         logger.info("🎯 AG2 streaming will be handled by IOStream (not config_list)")
     else:
@@ -114,13 +125,13 @@ async def make_llm_config(
     
     return client, llm_config
 
-async def make_streaming_config(extra_config: Optional[Dict[str, Any]] = None):
+async def make_streaming_config(extra_config: Optional[Dict[str, Any]] = None, enable_token_tracking: bool = False):
     """Create streaming LLM configuration"""
-    return await make_llm_config(stream=True, extra_config=extra_config)
+    return await make_llm_config(stream=True, extra_config=extra_config, enable_token_tracking=enable_token_tracking)
 
-async def make_structured_config(response_format: Type[BaseModel], extra_config: Optional[Dict[str, Any]] = None):
+async def make_structured_config(response_format: Type[BaseModel], extra_config: Optional[Dict[str, Any]] = None, enable_token_tracking: bool = False):
     """Create structured output LLM configuration"""
-    return await make_llm_config(response_format=response_format, extra_config=extra_config)
+    return await make_llm_config(response_format=response_format, extra_config=extra_config, enable_token_tracking=enable_token_tracking)
 
 # MongoDB Collections
 mongo_client = get_mongo_client()

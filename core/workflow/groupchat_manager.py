@@ -20,6 +20,7 @@ mongodb_manager = PersistenceManager()
 from ..data.token_manager import get_observer, get_token_tracker
 from ..transport.ag2_iostream import AG2StreamingManager
 from .tool_registry import WorkflowToolRegistry, ToolTrigger
+from .termination_handler import create_termination_handler
 from logs.logging_config import (
     get_chat_logger,
     log_business_event,
@@ -1152,10 +1153,22 @@ async def _start_or_resume_group_chat(
                     emergency_fixes_applied += 1
             
             if emergency_fixes_applied > 0:
-                chat_logger.info(f"� [CORE] Applied {emergency_fixes_applied} message initialization fixes")
+                chat_logger.info(f"🛠 [CORE] Applied {emergency_fixes_applied} message initialization fixes")
+
+            # Create termination handler for VE-style status management
+            termination_handler = create_termination_handler(
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
+                workflow_name=workflow_name,
+                token_manager=token_tracker
+            )
+            
+            # Signal conversation start (sets status to 0 - in progress)
+            await termination_handler.on_conversation_start()
 
             try:
                 # Start the agent conversation
+                chat_logger.info(f"🚀 [AG2] Starting conversation with {determined_max_turns} max turns")
                 await initiating_agent.a_initiate_chat(
                     recipient=manager,
                     message=initial_message,
@@ -1164,10 +1177,45 @@ async def _start_or_resume_group_chat(
                 
                 chat_logger.info(f"✅ [CORE] Agent conversation completed successfully")
                 
+                # Detect termination reason and finalize
+                termination_reason = "completed"
+                max_turns_reached = False
+                
+                # Check if max turns was reached
+                if hasattr(manager, 'groupchat') and hasattr(manager.groupchat, 'messages'):
+                    actual_turns = len(manager.groupchat.messages)
+                    if actual_turns >= determined_max_turns:
+                        max_turns_reached = True
+                        termination_reason = "max_turns_reached"
+                        chat_logger.info(f"🔄 Conversation ended due to max turns: {actual_turns}/{determined_max_turns}")
+                
+                # Check for TerminateTarget patterns in conversation
+                if hasattr(manager, 'groupchat') and hasattr(manager.groupchat, 'messages'):
+                    terminate_detected = await termination_handler.detect_terminate_target(manager.groupchat.messages)
+                    if terminate_detected:
+                        termination_reason = "terminate_target"
+                        chat_logger.info(f"🎯 TerminateTarget pattern detected in conversation")
+                
+                # Handle conversation termination with VE-style status update
+                termination_result = await termination_handler.on_conversation_end(
+                    termination_reason=termination_reason,
+                    max_turns_reached=max_turns_reached
+                )
+                
+                if termination_result.terminated:
+                    chat_logger.info(f"🎉 Workflow completed with status {termination_result.final_status}")
+                else:
+                    chat_logger.warning(f"⚠️ Termination handling failed")
+                
             except Exception as e:
                 chat_logger.error(f"❌ [CORE] Agent conversation failed: {e}")
                 deep_logger.error(f"🔬 [DEEP-LOG] Exception type: {type(e).__name__}")
                 deep_logger.error(f"🔬 [DEEP-LOG] Exception details: {str(e)}")
+                
+                # Handle conversation termination with error status (VE-style: 1 = completed/terminated)
+                await termination_handler.on_conversation_end(
+                    termination_reason="error"
+                )
                 raise
 
             # Performance metrics
