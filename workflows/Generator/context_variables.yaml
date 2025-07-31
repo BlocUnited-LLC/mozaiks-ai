@@ -1,0 +1,10 @@
+context_variables:
+  variables:
+    - name: concept_overview
+      description: "Main project description and overview"
+      default_value: "Please provide a concept overview to generate agents and workflows for your application."
+      database:
+        collection: concepts
+        query:
+          type: concept_overview
+        field: content

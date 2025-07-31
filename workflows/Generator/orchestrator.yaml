@@ -1,0 +1,8 @@
+workflow_name: Generator
+max_turns: 25
+human_in_the_loop: true
+startup_mode: AgentDriven
+orchestration_pattern: DefaultPattern
+initial_message_to_user: null
+initial_message: "Based on the concept overview in the context variables, please begin by analyzing what types of agents will be needed for this application. Define the agent architecture first, then we'll create the context variables based on those agent requirements."
+recipient: ContextAgent

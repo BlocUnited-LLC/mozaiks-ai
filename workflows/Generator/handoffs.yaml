@@ -1,0 +1,55 @@
+handoffs:
+  handoff_rules:
+    - source_agent: ContextAgent
+      target_agent: AgentsAgent
+      handoff_type: after_work
+      condition: null
+      transition_target: AgentTarget
+
+    - source_agent: AgentsAgent
+      target_agent: ContextVariablesAgent
+      handoff_type: after_work
+      condition: null
+      transition_target: AgentTarget
+
+    - source_agent: ContextVariablesAgent
+      target_agent: HandoffsAgent
+      handoff_type: after_work
+      condition: null
+      transition_target: AgentTarget
+
+    - source_agent: HandoffsAgent
+      target_agent: OrchestratorAgent
+      handoff_type: after_work
+      condition: null
+      transition_target: AgentTarget
+
+    - source_agent: OrchestratorAgent
+      target_agent: UserFeedbackAgent
+      handoff_type: after_work
+      condition: null
+      transition_target: AgentTarget
+
+    - source_agent: UserFeedbackAgent
+      target_agent: user
+      handoff_type: after_work
+      condition: null
+      transition_target: RevertToUserTarget
+
+    - source_agent: UserFeedbackAgent
+      target_agent: APIKeyAgent
+      handoff_type: condition
+      condition: "The system should prompt for API key setup only when it is explicitly required based on the features included in the user's request, or when missing API credentials block the execution of those features."
+      transition_target: AgentTarget
+
+    - source_agent: UserFeedbackAgent
+      target_agent: AgentsAgent
+      handoff_type: condition
+      condition: "When the user wants to restart the workflow generation, modify requirements, or start over with a different approach. This includes requests to change the workflow design or requirements."
+      transition_target: AgentTarget
+
+    - source_agent: APIKeyAgent
+      target_agent: UserFeedbackAgent
+      handoff_type: after_work
+      condition: null
+      transition_target: AgentTarget

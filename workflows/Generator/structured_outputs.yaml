@@ -1,0 +1,117 @@
+structured_outputs:
+  models:
+    AgentDefinition:
+      type: model
+      fields:
+        name:
+          type: str
+          description: "Agent variable name"
+        display_name:
+          type: str
+          description: "Agent display name"
+        system_message:
+          type: str
+          description: "Complete system message for the agent"
+        human_input_mode:
+          type: literal
+          values: ["ALWAYS", "NEVER", "TERMINATE"]
+        max_consecutive_auto_reply:
+          type: int
+          default: 1
+
+    AgentsOutput:
+      type: model
+      fields:
+        agents:
+          type: list
+          items: AgentDefinition
+
+    ContextVariablesDefinition:
+      type: model
+      fields:
+        name:
+          type: str
+          description: "Variable name"
+        source:
+          type: str
+          description: "Data source for this variable"
+        description:
+          type: str
+          description: "Description of what this variable represents"
+        default_value:
+          type: str
+          description: "Default value if extraction fails"
+
+    ContextVariablesOutput:
+      type: model
+      fields:
+        context_variables:
+          type: list
+          items: ContextVariablesDefinition
+
+    HandoffRule:
+      type: model
+      fields:
+        source_agent:
+          type: str
+          description: "Source agent name"
+        target_agent:
+          type: str
+          description: "Target agent name, 'user', or 'terminate'"
+        handoff_type:
+          type: literal
+          values: ["after_work", "condition"]
+          description: "Type of handoff"
+        condition:
+          type: optional_str
+          default: null
+          description: "Condition for handoff (if handoff_type is condition)"
+        transition_target:
+          type: optional_str
+          default: null
+          description: "Specific transition target for complex routing"
+
+    HandoffsOutput:
+      type: model
+      fields:
+        handoff_rules:
+          type: list
+          items: HandoffRule
+
+    OrchestratorOutput:
+      type: model
+      fields:
+        workflow_name:
+          type: str
+          description: "Name of the workflow"
+        max_turns:
+          type: int
+          default: 25
+          description: "Maximum workflow turns"
+        human_in_the_loop:
+          type: bool
+          description: "Whether human interaction is required in the workflow"
+        startup_mode:
+          type: literal
+          values: ["AgentDriven", "UserDriven", "BackendOnly"]
+          description: "How the workflow interface behaves"
+        orchestration_pattern:
+          type: str
+          description: "Orchestration pattern (DefaultPattern, AutoPattern, etc.)"
+        initial_message_to_user:
+          type: optional_str
+          default: null
+          description: "Message shown to user (null for AgentDriven/BackendOnly)"
+        initial_message:
+          type: optional_str
+          default: null
+          description: "Initial workflow message (null for UserDriven)"
+        recipient:
+          type: str
+          description: "First recipient agent (first specialist agent in workflow sequence)"
+
+  registry:
+    ContextVariablesAgent: ContextVariablesOutput
+    AgentsAgent: AgentsOutput
+    HandoffsAgent: HandoffsOutput
+    OrchestratorAgent: OrchestratorOutput

@@ -1,40 +1,47 @@
 # ==============================================================================
-# FILE: Generator/ContextVariables.py  
-# DESCRIPTION: JSON-driven context variables for Generator workflow with Azure Key Vault integration
+# FILE: core/workflow/context_variables.py  
+# DESCRIPTION: Workflow-agnostic context variables - loads from modular YAML configs
 # ==============================================================================
-import json
 import logging
 import asyncio
 from pathlib import Path
 from autogen.agentchat.group import ContextVariables
 from typing import Dict, Any, Optional, List
 
+from .file_manager import workflow_file_manager
+
 # Import enhanced logging
 from logs.logging_config import get_business_logger
 
 # Get specialized logger
-business_logger = get_business_logger("generator_context_variables")
+business_logger = get_business_logger("workflow_context_variables")
 
-def get_context(concept_data: Optional[Dict[str, Any]] = None) -> ContextVariables:
+def get_context(workflow_name: str, concept_data: Optional[Dict[str, Any]] = None) -> ContextVariables:
     """
-    Create context variables for the Generator workflow - now fully JSON-driven.
+    Create context variables for any workflow - fully workflow-agnostic.
     
-    Reads context variable definitions from workflow.json and dynamically extracts
+    Reads context variable definitions from workflow YAML files and dynamically extracts
     data from MongoDB via Azure Key Vault or provided concept_data.
     
     Args:
+        workflow_name: Name of the workflow to load context for
         concept_data: Optional data dictionary to extract context from
         
     Returns:
         ContextVariables instance populated with extracted data
     """
     try:
-        business_logger.info("🔧 [CONTEXT] Creating JSON-driven context variables...")
+        business_logger.info(f"🔧 [CONTEXT] Creating context variables for workflow: {workflow_name}")
         
-        # Load context variable configuration from workflow.json
-        workflow_path = Path(__file__).parent / "workflow.json"
-        with open(workflow_path, 'r', encoding='utf-8') as f:
-            workflow_config = json.load(f)
+        # Load context variable configuration from workflow YAML
+        workflow_config = workflow_file_manager.load_workflow(workflow_name)
+        
+        if not workflow_config:
+            business_logger.error(f"❌ [CONTEXT] No configuration found for workflow: {workflow_name}")
+            # Return minimal fallback context
+            context_vars = ContextVariables()
+            context_vars.set("error", f"No configuration found for workflow: {workflow_name}")
+            return context_vars
         
         context_config = workflow_config.get('context_variables', {})
         variable_definitions = context_config.get('variables', [])
@@ -56,7 +63,7 @@ def get_context(concept_data: Optional[Dict[str, Any]] = None) -> ContextVariabl
         if concept_data is None:
             concept_data = {}
         
-        # Process each variable definition from JSON
+        # Process each variable definition from YAML
         for var_def in variable_definitions:
             var_name = var_def.get('name')
             default_value = var_def.get('default_value', '')
@@ -73,14 +80,14 @@ def get_context(concept_data: Optional[Dict[str, Any]] = None) -> ContextVariabl
             context_vars.set(var_name, extracted_value)
             business_logger.debug(f"🔧 [CONTEXT] Set '{var_name}': {description}")
         
-        business_logger.info(f"✅ [CONTEXT] Created {len(variable_definitions)} context variables from JSON configuration")
+        business_logger.info(f"✅ [CONTEXT] Created {len(variable_definitions)} context variables for {workflow_name}")
         return context_vars
         
     except Exception as e:
-        business_logger.error(f"❌ [CONTEXT] Failed to create context variables: {e}")
+        business_logger.error(f"❌ [CONTEXT] Failed to create context variables for {workflow_name}: {e}")
         # Return minimal fallback context
         context_vars = ContextVariables()
-        context_vars.set("concept_overview", "Error loading context - using minimal fallback")
+        context_vars.set("error", f"Error loading context for {workflow_name}: {str(e)}")
         return context_vars
 
 async def _load_concept_data(variable_definitions: List[Dict[str, Any]]) -> Dict[str, Any]:

@@ -10,6 +10,8 @@ from autogen.agentchat.group import ContextVariables
 
 # Import enhanced logging
 from logs.logging_config import get_business_logger
+# Import workflow converter for creating modular files
+from .workflow_converter import create_workflow_files
 
 business_logger = get_business_logger("generator_handle_file_download")
 
@@ -39,6 +41,8 @@ async def handle_file_download(data: Dict[str, Any], context_variables: Optional
                 return {"status": "error", "message": f"Unknown download type: {download_type}"}
         elif action_type == 'cancel':
             return await handle_download_cancellation(data, context_variables)
+        elif action_type == 'create_workflow_files':
+            return await create_workflow_files(data, context_variables)
         else:
             business_logger.warning(f"Unknown action type: {action_type}")
             return {"status": "error", "message": f"Unknown action: {action_type}"}

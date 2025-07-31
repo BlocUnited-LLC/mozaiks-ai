@@ -11,12 +11,12 @@ Mozaiks operates a **two-level billing system** where we act as the middleware p
 ### Core Identifiers
 
 - **`enterprise_id`**: Unique App Identifier - identifies a specific app created by a Mozaiks user
-- **`mozaiks_user_id`**: Mozaiks Platform Customer - the person/company who uses Mozaiks to create apps
+- **`user_id`**: Mozaiks Platform Customer - the person/company who uses Mozaiks to create apps
 - **`platform_user_id`**: App End User - the customers of the Mozaiks user's app
 
 ### Database Architecture
 
-- **Platform Database**: Tracks Mozaiks users and their apps (`mozaiks_user_id` + `enterprise_id`)
+- **Platform Database**: Tracks Mozaiks users and their apps (`user_id` + `enterprise_id`)
 - **App Databases**: Individual databases per app (`enterprise_id`) tracking only app end users (`platform_user_id`)
 
 ## Two-Level Billing Flow
@@ -39,7 +39,7 @@ Mozaiks operates a **two-level billing system** where we act as the middleware p
 ### Level 1: Mozaiks → Mozaiks User (App Creation)
 
 **What**: Tokens used to BUILD and GENERATE apps
-**Who Pays**: `mozaiks_user_id` (Mozaiks customer)
+**Who Pays**: `user_id` (Mozaiks customer)
 **Who Bills**: Mozaiks Platform
 **Token Usage**:
 - Generator workflows (creating app architecture)
@@ -108,7 +108,7 @@ All token tracking includes comprehensive analytics capabilities:
 ```json
 {
   "level": "platform",
-  "mozaiks_user_id": "user_123",
+  "user_id": "user_123",
   "enterprise_id": "app_456", 
   "workflow_type": "app_generation",
   "tokens_used": 15000,
@@ -122,14 +122,11 @@ All token tracking includes comprehensive analytics capabilities:
 {
   "level": "app_usage",
   "enterprise_id": "app_456",
-  "mozaiks_user_id": "user_123",      // NEEDED: For revenue sharing & analytics
+  "user_id": "user_123",      // NEEDED: For revenue sharing & analytics
   "platform_user_id": "enduser_789",
   "workflow_type": "chat_interaction", 
   "tokens_used": 500,
   "cost": 0.015,
-  "billing_target": "platform_user",
-  "revenue_share": 0.003,             // Amount owed to mozaiks_user_id
-  "mozaiks_fee": 0.001                // Amount kept by Mozaiks
 }
 ```
 
@@ -143,7 +140,7 @@ All token tracking includes comprehensive analytics capabilities:
 5. **Real-time analytics**: Performance monitoring and cost intelligence
 
 ### Persistence Manager Responsibilities  
-1. **Platform persistence**: `mozaiks_user_id` billing data
+1. **Platform persistence**: `user_id` billing data
 2. **App persistence**: `platform_user_id` usage data per app
 3. **Analytics aggregation**: Cross-app insights for dashboards
 4. **Audit trails**: Complete billing transparency

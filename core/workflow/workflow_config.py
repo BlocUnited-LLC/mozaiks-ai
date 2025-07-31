@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+from .file_manager import workflow_file_manager
 
 logger = logging.getLogger(__name__)
 
@@ -30,27 +31,26 @@ class WorkflowConfig:
             _configs_loaded = True
     
     def _load_all_workflows(self):
-        """Load all workflow.json files from workflows directory"""
-        workflows_dir = Path(__file__).parent.parent.parent / "workflows"
-        
-        if not workflows_dir.exists():
-            logger.warning(f"Workflows directory not found: {workflows_dir}")
-            return
-        
-        for workflow_dir in workflows_dir.iterdir():
-            if workflow_dir.is_dir():
-                config_file = workflow_dir / "workflow.json"
-                if config_file.exists():
-                    try:
-                        with open(config_file, 'r') as f:
-                            config = json.load(f)
-                        
-                        workflow_name = workflow_dir.name.lower()
-                        self._configs[workflow_name] = config
-                        logger.info(f"✅ Loaded workflow config: {workflow_name}")
-                        
-                    except Exception as e:
-                        logger.error(f"❌ Failed to load {config_file}: {e}")
+        """Load all workflow configs using the file manager"""
+        try:
+            # Get list of available workflows from file manager
+            workflow_names = workflow_file_manager.list_workflows()
+            
+            for workflow_name in workflow_names:
+                try:
+                    # Load using file manager (handles both modular YAML and legacy JSON)
+                    config = workflow_file_manager.load_workflow(workflow_name)
+                    
+                    if config:
+                        self._configs[workflow_name.lower()] = config
+                        workflow_type = workflow_file_manager.workflow_type(workflow_name)
+                        logger.info(f"✅ Loaded {workflow_type} workflow config: {workflow_name}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to load workflow {workflow_name}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Failed to load workflows: {e}")
     
     def get_config(self, workflow_name: str) -> Dict[str, Any]:
         """Get configuration for a workflow type"""
@@ -255,37 +255,22 @@ class WorkflowConfig:
         return config.get("initiating_agent", "ContextVariablesAgent")
     
     def reload_workflow(self, workflow_name: str):
-        """Reload a specific workflow configuration from disk"""
-        workflows_dir = Path(__file__).parent.parent.parent / "workflows"
-        
-        # Find the workflow directory by name (case-insensitive)
-        workflow_dir = None
-        for dir_item in workflows_dir.iterdir():
-            if dir_item.is_dir() and dir_item.name.lower() == workflow_name.lower():
-                workflow_dir = dir_item
-                break
-        
-        if workflow_dir is None:
-            logger.warning(f"⚠️ Workflow directory not found for: {workflow_name}")
-            return {}
+        """Reload a specific workflow configuration from disk using file manager"""
+        try:
+            # Use file manager to reload the workflow
+            config = workflow_file_manager.load_workflow(workflow_name)
             
-        config_file = workflow_dir / "workflow.json"
-        
-        if config_file.exists():
-            try:
-                with open(config_file, 'r') as f:
-                    config = json.load(f)
-                
-                workflow_name = workflow_name.lower()
-                self._configs[workflow_name] = config
-                logger.info(f"🔄 Reloaded workflow config: {workflow_name} from {config_file}")
+            if config:
+                self._configs[workflow_name.lower()] = config
+                workflow_type = workflow_file_manager.workflow_type(workflow_name)
+                logger.info(f"🔄 Reloaded {workflow_type} workflow config: {workflow_name}")
                 return config
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to reload {config_file}: {e}")
+            else:
+                logger.warning(f"⚠️ No config found for workflow: {workflow_name}")
                 return {}
-        else:
-            logger.warning(f"⚠️ Workflow config not found: {config_file}")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to reload workflow {workflow_name}: {e}")
             return {}
     
     def reload_all_workflows(self):

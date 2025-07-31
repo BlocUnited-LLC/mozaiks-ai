@@ -207,7 +207,11 @@ export class DynamicUIHandler {
   /**
    * Get workflow configuration from backend
    */
-  async getWorkflowConfig(workflowname = 'generator') {
+  async getWorkflowConfig(workflowname) {
+    if (!workflowname) {
+      throw new Error('Workflow name is required');
+    }
+    
     const cacheKey = workflowname;
     
     if (this.workflowCache.has(cacheKey)) {
@@ -232,7 +236,11 @@ export class DynamicUIHandler {
   /**
    * Get component definition from workflow config
    */
-  async getComponentDefinition(componentName, workflowname = 'generator') {
+  async getComponentDefinition(componentName, workflowname) {
+    if (!workflowname) {
+      throw new Error('Workflow name is required');
+    }
+    
     try {
       const config = await this.getWorkflowConfig(workflowname);
       

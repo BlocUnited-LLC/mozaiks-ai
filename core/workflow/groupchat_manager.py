@@ -213,7 +213,7 @@ async def run_workflow_orchestration(
                 if conversation_data:
                     # The persistence manager already provides the conversation history
                     # Frontend will automatically display this when WebSocket reconnects
-                    # Visual agents (APIKeyAgent, UserFeedbackAgent) will show their previous interactions
+                    # Visual agents will show their previous interactions
                     business_logger.info(f"✅ [{workflow_name_upper}] Conversation state available for visual agents restoration")
                     business_logger.debug(f"📋 [{workflow_name_upper}] Available conversation: {len(conversation_data)} messages from previous session")
                 

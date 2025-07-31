@@ -270,16 +270,6 @@ class PersistenceEngine:
         """Load workflow definition for WebSocket execution"""
 ```
 
-## File Structure After Migration
-
-### Remove (Redundant/Conflicting)
-```
-❌ core/data/token_manager.py       # Redundant with unified usage_manager.py
-❌ Multiple token tracking systems   # Unified in core/usage/usage_manager.py
-❌ Separate platform/ folder        # Everything is part of MozaiksCore
-❌ SDK and examples folders         # Not needed - users get complete MozaiksCore
-```
-
 ## Revenue Model
 
 ### 💰 **Multiple Revenue Streams**

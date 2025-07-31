@@ -1,49 +1,54 @@
-﻿# ==============================================================================
-# FILE: Generator/StructuredOutputs.py
-# DESCRIPTION: JSON-driven structured output models for AG2 Generator agents
+# ==============================================================================
+# FILE: core/workflow/structured_outputs.py
+# DESCRIPTION: Workflow-agnostic structured output models - loads from modular YAML configs
 # ==============================================================================
 
 from pydantic import BaseModel, Field, create_model
 from typing import List, Dict, Any, Optional, Literal, Union
 from pathlib import Path
-import json
 from core.core_config import make_llm_config, make_structured_config
+from .file_manager import workflow_file_manager
 
-# Global cache for models and registry
-_models_cache = {}
-_registry_cache = {}
-_config_loaded = False
+# Global cache for models and registry per workflow
+_workflow_caches = {}
 
-def _load_structured_outputs_config():
-    """Load structured outputs configuration from workflow.json"""
-    global _models_cache, _registry_cache, _config_loaded
+def _load_structured_outputs_config(workflow_name: str):
+    """Load structured outputs configuration from workflow YAML files"""
+    global _workflow_caches
     
-    if _config_loaded:
-        return _models_cache, _registry_cache
+    if workflow_name in _workflow_caches:
+        return _workflow_caches[workflow_name]['models'], _workflow_caches[workflow_name]['registry']
     
-    workflow_path = Path(__file__).parent / "workflow.json"
-    with open(workflow_path, 'r', encoding='utf-8') as f:
-        workflow_config = json.load(f)
+    # Load workflow configuration
+    workflow_config = workflow_file_manager.load_workflow(workflow_name)
+    
+    if not workflow_config:
+        raise ValueError(f"No configuration found for workflow: {workflow_name}")
     
     structured_config = workflow_config.get('structured_outputs', {})
     models_config = structured_config.get('models', {})
     registry_config = structured_config.get('registry', {})
     
     if not models_config:
-        raise ValueError("No structured outputs models found in workflow.json")
+        raise ValueError(f"No structured outputs models found for workflow: {workflow_name}")
     
     if not registry_config:
-        raise ValueError("No structured outputs registry found in workflow.json")
+        raise ValueError(f"No structured outputs registry found for workflow: {workflow_name}")
     
-    # Build Pydantic models dynamically from JSON configuration
-    _models_cache = _build_pydantic_models(models_config)
-    _registry_cache = {agent: _models_cache[model_name] for agent, model_name in registry_config.items()}
+    # Build Pydantic models dynamically from YAML configuration
+    models_cache = _build_pydantic_models(models_config)
+    registry_cache = {agent: models_cache[model_name] for agent, model_name in registry_config.items()}
     
-    _config_loaded = True
-    return _models_cache, _registry_cache
+    # Cache the results
+    _workflow_caches[workflow_name] = {
+        'models': models_cache,
+        'registry': registry_cache
+    }
+    
+    return models_cache, registry_cache
 
 def _build_pydantic_models(models_config: Dict[str, Any]) -> Dict[str, type]:
-    """Build Pydantic models dynamically from JSON configuration"""
+    """Build Pydantic models dynamically from YAML configuration"""
     models = {}
     
     # First pass: create all models without dependencies
@@ -71,7 +76,7 @@ def _build_pydantic_models(models_config: Dict[str, Any]) -> Dict[str, type]:
     return models
 
 def _convert_field_definition(field_def: Dict[str, Any], models: Optional[Dict[str, type]] = None) -> tuple:
-    """Convert JSON field definition to Pydantic field type and kwargs"""
+    """Convert YAML field definition to Pydantic field type and kwargs"""
     if models is None:
         models = {}
     
@@ -94,6 +99,8 @@ def _convert_field_definition(field_def: Dict[str, Any], models: Optional[Dict[s
         return (str, Field(**field_kwargs))
     elif field_type == 'int':
         return (int, Field(**field_kwargs))
+    elif field_type == 'bool':
+        return (bool, Field(**field_kwargs))
     elif field_type == 'optional_str':
         return (Optional[str], Field(**field_kwargs))
     elif field_type == 'literal':
@@ -112,17 +119,24 @@ def _convert_field_definition(field_def: Dict[str, Any], models: Optional[Dict[s
         else:
             raise ValueError(f"Unknown field type or model reference: {field_type}")
 
-# Load configuration at module import
-models_cache, registry_cache = _load_structured_outputs_config()
+def get_structured_outputs_for_workflow(workflow_name: str) -> Dict[str, type]:
+    """Get structured outputs registry for a specific workflow"""
+    _, registry = _load_structured_outputs_config(workflow_name)
+    return registry
 
-# Registry mapping - now loaded from JSON
-structured_outputs = registry_cache
-
-async def get_llm(flow: str = "base", enable_streaming: bool = False, enable_token_tracking: bool = False):
-    """Load LLM config with optional structured response model and streaming - now JSON-driven"""
-    if flow in structured_outputs:
-        # For structured outputs with streaming: add stream=True to extra_config
-        extra_config = {"stream": True} if enable_streaming else None
-        return await make_structured_config(structured_outputs[flow], extra_config=extra_config, enable_token_tracking=enable_token_tracking)
+async def get_llm_for_workflow(workflow_name: str, flow: str = "base", enable_streaming: bool = False, enable_token_tracking: bool = False):
+    """Load LLM config with optional structured response model for a specific workflow"""
+    try:
+        structured_outputs = get_structured_outputs_for_workflow(workflow_name)
+        
+        if flow in structured_outputs:
+            # For structured outputs with streaming: add stream=True to extra_config
+            extra_config = {"stream": True} if enable_streaming else None
+            return await make_structured_config(structured_outputs[flow], extra_config=extra_config, enable_token_tracking=enable_token_tracking)
+        
+    except (ValueError, FileNotFoundError):
+        # If workflow doesn't have structured outputs, fall back to base config
+        pass
+    
     # For base configurations with streaming
     return await make_llm_config(stream=enable_streaming, enable_token_tracking=enable_token_tracking)
