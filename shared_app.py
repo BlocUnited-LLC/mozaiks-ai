@@ -8,7 +8,7 @@ import json
 import asyncio
 import logging
 import traceback
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime
 from pathlib import Path
 # Ensure project root is on Python path for workflow imports
@@ -24,7 +24,15 @@ from core.core_config import make_streaming_config, get_mongo_client
 from core.transport.simple_transport import SimpleTransport
 from core.workflow.init_registry import get_initialization_coroutines, get_registered_workflows, workflow_status_summary, get_workflow_transport, get_workflow_tools, workflow_human_loop
 from core.data.persistence_manager import PersistenceManager
-from core.data.token_manager import _mock_get_remaining, _mock_consume_tokens
+
+# Simple mock functions for token management (TODO: replace with real token service)
+def _mock_get_remaining(user_id: str, app_id: str = "default") -> Dict[str, Any]:
+    """Mock function for getting user token balance"""
+    return {"remaining": 10000, "user_id": user_id, "app_id": app_id}
+
+def _mock_consume_tokens(user_id: str, app_id: str, amount: int) -> Dict[str, Any]:
+    """Mock function for consuming user tokens"""
+    return {"success": True, "remaining": 9000, "consumed": amount, "user_id": user_id}
 
 # Initialize persistence manager
 mongodb_manager = PersistenceManager()
@@ -94,7 +102,7 @@ async def startup():
     business_logger.info("🚀 Starting MozaiksAI Runtime...")
 
     try:
-        # Initialize simple transport
+        # Initialize simple transport with streaming config
         streaming_start = datetime.utcnow()
         _, streaming_llm_config = await make_streaming_config()
         simple_transport = SimpleTransport(streaming_llm_config)
@@ -103,10 +111,13 @@ async def startup():
         log_performance_metric(
             metric_name="streaming_config_init_duration",
             value=streaming_time,
-            context={"config_keys": list(streaming_llm_config.keys()) if streaming_llm_config else []}
+            context={
+                "config_keys": list(streaming_llm_config.keys()) if streaming_llm_config else [],
+                "streaming_enabled": streaming_llm_config.get("stream", False)
+            }
         )
         
-        business_logger.info("🔌 Simple transport initialized")
+        business_logger.info(f"🔌 Simple transport initialized - Streaming: {streaming_llm_config.get('stream', False)}")
 
         # Test MongoDB connection
         mongo_start = datetime.utcnow()
@@ -300,160 +311,43 @@ async def shutdown():
         )
 
 async def _import_workflow_modules():
-    """Import workflow modules from directories"""
-    base_path = Path(__file__).parent
-    business_logger.info(f"🔍 Scanning {base_path} for workflow plugins")
+    """
+    Workflow system startup - using runtime auto-discovery.
+    No more scanning for initializer.py files - workflows are discovered on-demand.
+    """
+    business_logger.info(f"🔍 Workflow system ready - using runtime auto-discovery")
 
-    discovered = []
     scan_start = datetime.utcnow()
-
-    # Scan current directory
-    current_dir_count = 0
-    for d in base_path.iterdir():
-        if d.is_dir() and not d.name.startswith((".", "__")) and (d / "initializer.py").exists():
-            discovered.append(f"{d.name}.initializer")
-            current_dir_count += 1
-
-    # Scan additional directories
-    extra_dirs = [p.strip() for p in os.getenv("PLUGIN_DIRS", "").split(",") if p.strip()]
-    additional_dir_count = 0
     
-    for name in extra_dirs or ["workflows", "modules", "apps", "plugins"]:
-        p = base_path / name
-        if not p.is_dir():
-            continue
-        for d in p.iterdir():
-            if d.is_dir() and not d.name.startswith((".", "__")) and (d / "initializer.py").exists():
-                discovered.append(f"{name}.{d.name}.initializer")
-                additional_dir_count += 1
-
+    # Runtime auto-discovery means no upfront imports needed
+    # Workflows will be discovered when requested via WebSocket
+    
     scan_time = (datetime.utcnow() - scan_start).total_seconds() * 1000
     
     log_performance_metric(
-        metric_name="plugin_discovery_duration",
+        metric_name="workflow_discovery_duration",
         value=scan_time,
         unit="ms",
         context={
-            "plugins_found": len(discovered),
-            "current_dir_plugins": current_dir_count,
-            "additional_dir_plugins": additional_dir_count
+            "discovery_mode": "runtime_auto_discovery",
+            "upfront_imports": 0
         }
     )
     
-    business_logger.info(f"🔍 Found {len(discovered)} plugin(s) in {scan_time:.1f}ms")
-    
-    # Import modules
-    import_start = datetime.utcnow()
-    successful_imports = 0
-    failed_imports = 0
-    
-    for module_name in discovered:
-        module_start = datetime.utcnow()
-        try:
-            importlib.import_module(module_name)
-            module_time = (datetime.utcnow() - module_start).total_seconds() * 1000
-            
-            log_performance_metric(
-                metric_name="module_import_duration",
-                value=module_time,
-                unit="ms",
-                context={"module": module_name}
-            )
-            
-            business_logger.info(f"📦 Imported {module_name} ({module_time:.1f}ms)")
-            successful_imports += 1
-            
-        except Exception as e:
-            module_time = (datetime.utcnow() - module_start).total_seconds() * 1000
-            
-            log_business_event(
-                event_type="MODULE_IMPORT_FAILED",
-                description=f"Failed to import workflow module: {module_name}",
-                context={
-                    "module": module_name,
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                    "duration_ms": module_time
-                },
-                level="ERROR"
-            )
-            failed_imports += 1
-    
-    total_import_time = (datetime.utcnow() - import_start).total_seconds() * 1000
-    
+    business_logger.info(f"🚀 Workflow system ready - auto-discovery will handle new requests on-demand")
+
     log_business_event(
-        event_type="WORKFLOW_MODULES_IMPORTED",
-        description="Workflow module import process completed",
+        event_type="WORKFLOW_SYSTEM_READY",
+        description="Workflow system initialized with runtime auto-discovery",
         context={
-            "total_discovered": len(discovered),
-            "successful_imports": successful_imports,
-            "failed_imports": failed_imports,
-            "total_import_time_ms": total_import_time
-        },
-        level="WARNING" if failed_imports > 0 else "INFO"
+            "scan_duration_ms": scan_time,
+            "discovery_mode": "runtime_on_demand"
+        }
     )
 
 # ============================================================================
 # API ENDPOINTS (WebSocket and workflow handling)
 # ============================================================================
-
-@app.get("/api/workflows")
-async def list_workflows():
-    """List all registered workflows and their tools"""
-    request_start = datetime.utcnow()
-    
-    try:
-        registered = get_registered_workflows()
-        
-        # Convert workflow names to full workflow objects
-        workflows = []
-        for workflow_name in registered:
-            workflows.append({
-                "workflow_name": workflow_name,
-                "transport": get_workflow_transport(workflow_name),
-                "human_loop": workflow_human_loop(workflow_name)
-            })
-        
-        response_time = (datetime.utcnow() - request_start).total_seconds() * 1000
-        log_performance_metric(
-            metric_name="api_workflows_duration",
-            value=response_time,
-            unit="ms",
-            context={"workflows_count": len(workflows)}
-        )
-        
-        business_logger.debug(f"📋 Workflows API called - {len(workflows)} workflows returned")
-        
-        return {
-            "workflows": workflows,
-            "count": len(workflows),
-            "message": f"Found {len(workflows)} registered workflows"
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to list workflows: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve workflows")
-
-@app.get("/api/workflows/{workflow_name}/config")
-async def get_workflow_config(workflow_name: str):
-    """Get full configuration for a specific workflow"""
-    try:
-        from core.workflow.workflow_config import workflow_config
-        
-        config = workflow_config.get_config(workflow_name)
-        if not config:
-            raise HTTPException(status_code=404, detail=f"Workflow '{workflow_name}' not found")
-            
-        return {
-            "workflow_name": workflow_name,
-            "config": config
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Failed to get workflow config for {workflow_name}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve workflow config")
 
 @app.get("/api/chat/{chat_id}/messages")
 async def get_chat_messages(chat_id: str, enterprise_id: str):
@@ -573,48 +467,19 @@ async def list_chats(enterprise_id: str, workflow_name: str):
             eid = ObjectId(enterprise_id)
         except:
             eid = enterprise_id
-        # Query workflows collection
-        cursor = mongodb_manager.workflows_collection.find(
+            
+        # Query chat sessions collection with the refactored schema
+        cursor = mongodb_manager.chat_sessions_collection.find(
             {"enterprise_id": eid, "workflow_name": workflow_name}
         ).sort("created_at", -1)
         docs = await cursor.to_list(length=20)
         chat_ids = [doc.get("chat_id") for doc in docs]
         return {"chat_ids": chat_ids}
+        
     except Exception as e:
         logger.error(f"❌ Failed to list chats for enterprise {enterprise_id}, workflow {workflow_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list chats")
-@app.post("/api/chats/{enterprise_id}/{workflow_name}/start")
-async def start_chat(
-    enterprise_id: str,
-    workflow_name: str,
-    payload: StartChatRequest,
-):
-    """Start a new chat session for the given enterprise and workflow"""
-    # Generate unique chat ID
-    chat_id = str(uuid4())
     
-    # Get concept for enterprise (optional - create default if none exists)
-    concept = await mongodb_manager.find_latest_concept_for_enterprise(enterprise_id)
-    if not concept:
-        logger.info(f"No concept found for enterprise {enterprise_id}, creating default concept")
-        # Create a default concept ID for the workflow
-        from bson.objectid import ObjectId
-        concept = {"_id": ObjectId()}
-    
-    # Initialize workflow in database
-    workflow_id = await mongodb_manager.create_workflow_for_chat(
-        chat_id=chat_id,
-        enterprise_id=enterprise_id,
-        concept_id=concept["_id"],
-        workflow_name=workflow_name,
-        user_id=payload.user_id
-    )
-    
-    if not workflow_id:
-        raise HTTPException(status_code=500, detail="Failed to initialize chat workflow")
-    
-    return {"chat_id": chat_id, "workflow_id": str(workflow_id)}
-
 
 @app.websocket("/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}")
 async def websocket_endpoint(
@@ -813,42 +678,20 @@ async def get_workflow_ui_tools_manifest(workflow_name: str):
 
 @app.get("/api/tokens/{user_id}/balance")
 async def get_user_token_balance(user_id: str, appid: str = "default"):
-    """
-    Get user token balance.
-    """
+    """Get user token balance"""
     try:
         log_business_event(
             event_type="TOKEN_BALANCE_REQUEST",
             description=f"Token balance requested for user {user_id}, app {appid}"
         )
         
-
-        # Use the mock function (or could be real API call)
+        # Use the mock function for token balance
         result = _mock_get_remaining(user_id, appid)
 
-        # Try to get free trial status and free loops from TokenManager
-        from core.data.token_manager import TokenManager
-        # For this endpoint, we don't have chat_id or enterprise_id, so we use user_id as chat_id and 'default' as enterprise_id
-        token_manager = TokenManager(chat_id=user_id, enterprise_id="default", workflow_name="default", user_id=user_id)
-        # Try to initialize budget to load free trial info
-        try:
-            import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If already running (e.g. in FastAPI), use create_task and await
-                budget_info = await token_manager.initialize_budget(user_id=user_id)
-            else:
-                budget_info = loop.run_until_complete(token_manager.initialize_budget(user_id=user_id))
-            
-            # Log budget initialization result
-            logger.debug(f"Budget initialized for user {user_id}: {budget_info}")
-            
-            is_free_trial = token_manager.is_free_trial
-            free_loops_remaining = getattr(token_manager, 'free_loops_remaining', None)
-        except Exception as e:
-            logger.warning(f"Failed to initialize TokenManager for user {user_id}: {e}")
-            is_free_trial = False
-            free_loops_remaining = None
+        # For now, use mock data for free trial info since the TokenManager interface changed
+        # TODO: Update TokenManager to provide proper budget/trial methods
+        is_free_trial = False
+        free_loops_remaining = None
 
         # Map the response to client expectations
         response = {

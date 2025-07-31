@@ -94,7 +94,7 @@ class AG2TerminationHandler:
     
     async def on_conversation_end(self, 
                                 termination_reason: str = "completed",
-                                final_status: int = 100,
+                                final_status: int = 1,
                                 max_turns_reached: bool = False) -> TerminationResult:
         """
         Called when AG2 conversation ends (TerminateTarget triggered or max_turns reached)

@@ -110,16 +110,18 @@ async def make_llm_config(
         "config_list": config_list
     }
     
+    # Add streaming configuration if enabled
+    if stream:
+        llm_config["stream"] = True
+        logger.info("🎯 AG2 streaming enabled - custom IOStream will handle output")
+    else:
+        logger.info("🎯 AG2 streaming disabled")
+    
     # Add token tracking configuration if enabled
     if enable_token_tracking:
         # Note: AG2 handles individual agent token tracking automatically
         # when agents are created with proper OpenAI clients
         logger.debug("🔧 Token tracking enabled - AG2 will handle individual agent tracking automatically")
-    
-    if stream:
-        logger.info("🎯 AG2 streaming will be handled by IOStream (not config_list)")
-    else:
-        logger.info("🎯 AG2 streaming disabled")
     
     logger.info("LLM runtime config initialized successfully.")
     
@@ -140,3 +142,35 @@ enterprises_collection = db1['Enterprises']
 db2 = mongo_client['autogen_ai_agents']
 concepts_collection = db2['Concepts']
 workflows_collection = db2['Workflows']
+
+# ==============================================================================
+# FREE TRIAL CONFIGURATION
+# ==============================================================================
+
+def get_free_trial_config() -> Dict[str, Any]:
+    """Get free trial configuration from environment variables"""
+    return {
+        "enabled": os.getenv("FREE_TRIAL_ENABLED", "true").lower() == "true",
+        "default_tokens": int(os.getenv("FREE_TRIAL_DEFAULT_TOKENS", "1000")),
+        "auto_upgrade_prompt": os.getenv("AUTO_UPGRADE_PROMPT_ENABLED", "true").lower() == "true",
+        "warning_threshold": int(os.getenv("TRIAL_WARNING_THRESHOLD", "100"))
+    }
+
+def get_token_config() -> Dict[str, Any]:
+    """Get token configuration including available (paid) tokens"""
+    return {
+        "available_tokens_default": int(os.getenv("AVAILABLE_TOKENS_DEFAULT", "0")),
+        "purchase_minimum": int(os.getenv("AVAILABLE_TOKENS_PURCHASE_MINIMUM", "1000"))
+    }
+
+def get_token_pricing() -> Dict[str, str]:
+    """Get token pricing configuration - AG2 handles actual costs"""
+    return {
+        "note": "Token costs are handled by AG2 observability system"
+    }
+
+def get_rate_limits() -> Dict[str, str]:
+    """Get rate limiting configuration - not implemented yet"""
+    return {
+        "note": "Rate limiting not implemented yet"
+    }

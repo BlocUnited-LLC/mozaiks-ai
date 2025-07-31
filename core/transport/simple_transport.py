@@ -19,6 +19,9 @@ from autogen.agentchat.groupchat import GroupChat
 # Import workflow configuration for agent visibility filtering
 from core.workflow.workflow_config import workflow_config
 
+# Import core configuration for token management
+from core.core_config import get_free_trial_config
+
 # Logging setup
 logger = logging.getLogger(__name__)
 
@@ -198,6 +201,11 @@ class SimpleTransport:
         # User input collection mechanism
         self.pending_input_requests: Dict[str, asyncio.Future] = {}
         
+        # AG2 streaming setup - if streaming is enabled in config
+        self.ag2_streaming_manager = None
+        if self.default_llm_config.get("stream"):
+            self._setup_ag2_streaming()
+        
         # Set this instance as the singleton for user input collection
         self._set_as_instance()
         
@@ -275,6 +283,74 @@ class SimpleTransport:
         """Set this instance as the singleton"""
         SimpleTransport._instance = self
         
+    def _setup_ag2_streaming(self):
+        """Set up AG2 streaming infrastructure for all active chat sessions"""
+        logger.info("Setting up AG2 streaming infrastructure...")
+        
+        try:
+            from core.transport.ag2_iostream import AG2StreamingManager
+            
+            # Set up streaming for all active connections
+            for chat_id, connection in self.connections.items():
+                enterprise_id = connection.get('enterprise_id', 'default')
+                user_id = connection.get('user_id', 'unknown')
+                workflow_name = connection.get('workflow_name', 'default')
+                
+                logger.info(f"Setting up AG2 streaming for chat {chat_id}")
+                
+                # Create streaming manager for this chat session
+                streaming_manager = AG2StreamingManager(
+                    chat_id=chat_id,
+                    enterprise_id=enterprise_id,
+                    user_id=user_id,
+                    workflow_name=workflow_name
+                )
+                
+                # Set up streaming with the transport instance
+                streaming_manager.setup_streaming(transport=self)
+                
+                # Store the streaming manager for this connection
+                connection['ag2_streaming_manager'] = streaming_manager
+            
+            logger.info("AG2 streaming infrastructure initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to set up AG2 streaming: {e}")
+            
+    async def _setup_ag2_streaming_for_connection(self, chat_id: str, enterprise_id: str):
+        """Set up AG2 streaming infrastructure for a single connection"""
+        try:
+            from core.transport.ag2_iostream import AG2StreamingManager
+            
+            connection = self.connections.get(chat_id)
+            if not connection:
+                logger.warning(f"No connection found for chat_id {chat_id}")
+                return
+                
+            user_id = connection.get('user_id', 'unknown')
+            workflow_name = connection.get('workflow_name', 'default')
+            
+            logger.info(f"Setting up AG2 streaming for new connection {chat_id}")
+            
+            # Create streaming manager for this chat session
+            streaming_manager = AG2StreamingManager(
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
+                user_id=user_id,
+                workflow_name=workflow_name
+            )
+            
+            # Set up streaming with the transport instance
+            streaming_manager.setup_streaming(transport=self)
+            
+            # Store the streaming manager for this connection
+            connection['ag2_streaming_manager'] = streaming_manager
+            
+            logger.info(f"AG2 streaming set up successfully for {chat_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to set up AG2 streaming for {chat_id}: {e}")
+            
     def should_show_to_user(self, agent_name: Optional[str], chat_id: Optional[str] = None) -> bool:
         """Check if a message should be shown to the user interface"""
         if not agent_name:
@@ -587,6 +663,10 @@ class SimpleTransport:
                 "active": True
             }
             
+            # Set up AG2 streaming for this new connection if streaming is enabled
+            if self.default_llm_config.get("stream"):
+                await self._setup_ag2_streaming_for_connection(chat_id, enterprise_id)
+            
             await self.send_status(
                 "Session initialized",
                 "session_created",
@@ -657,6 +737,102 @@ class SimpleTransport:
             logger.error(f"❌ Error getting connection info: {e}")
             return {"websocket_connections": 0, "total_connections": 0}
     
+    async def check_user_tokens(self, user_id: str, enterprise_id: str, chat_id: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """
+        Check if user has tokens available for AI usage.
+        Returns (has_tokens, token_info)
+        """
+        try:
+            from core.data.persistence_manager import PersistenceManager
+            
+            persistence = PersistenceManager()
+            token_data = await persistence.get_user_tokens(user_id, enterprise_id)
+            
+            if not token_data:
+                return False, None
+            
+            trial_config = get_free_trial_config()
+            
+            trial_tokens = token_data.get("available_trial_tokens", 0)
+            available_tokens = token_data.get("available_tokens", 0)
+            total_tokens = trial_tokens + available_tokens
+            
+            # Check if user is running low on trial tokens
+            is_trial_user = token_data.get("free_trial", False)
+            near_trial_limit = is_trial_user and trial_tokens <= trial_config["warning_threshold"]
+            
+            token_info = {
+                "total_available": total_tokens,
+                "trial_tokens": trial_tokens,
+                "available_tokens": available_tokens,
+                "is_trial_user": is_trial_user,
+                "near_trial_limit": near_trial_limit,
+                "warning_threshold": trial_config["warning_threshold"]
+            }
+            
+            return total_tokens > 0, token_info
+            
+        except Exception as e:
+            logger.error(f"❌ Error checking user tokens: {e}")
+            return False, None
+    
+    async def send_token_exhausted_message(self, chat_id: str, token_info: Optional[Dict[str, Any]] = None) -> None:
+        """Send token exhausted message to user via WebSocket"""
+        trial_config = get_free_trial_config()
+        
+        # Determine message based on user type
+        if token_info and token_info.get("is_trial_user", False):
+            message = (
+                "🚀 **Your free trial tokens have been used up!**\n\n"
+                "To continue using MozaiksAI, please upgrade to a paid plan. "
+                "You'll get more tokens and access to all features."
+            )
+        else:
+            message = (
+                "💰 **You've run out of tokens!**\n\n"
+                "Please purchase more tokens to continue your conversation."
+            )
+        
+        await self.send_chat_message(
+            message,
+            "System",
+            chat_id
+        )
+        
+        # Send structured token exhausted event
+        await self.send_to_ui({
+            "type": "token_exhausted",
+            "data": {
+                "message": message,
+                "token_info": token_info,
+                "upgrade_available": trial_config.get("auto_upgrade_prompt", True),
+                "chat_paused": True
+            }
+        }, chat_id)
+    
+    async def send_low_tokens_warning(self, chat_id: str, token_info: Dict[str, Any]) -> None:
+        """Send low tokens warning to user"""
+        remaining = token_info.get("total_available", 0)
+        
+        if token_info.get("is_trial_user", False):
+            message = (
+                f"⚠️ **Trial tokens running low!**\n\n"
+                f"You have {remaining} tokens remaining in your free trial. "
+                f"Consider upgrading to continue unlimited conversations."
+            )
+        else:
+            message = (
+                f"⚠️ **Low token balance!**\n\n"
+                f"You have {remaining} tokens remaining. "
+                f"Consider purchasing more tokens to avoid interruption."
+            )
+        
+        await self.send_chat_message(
+            message,
+            "System",
+            chat_id
+        )
+    
     async def handle_websocket(
         self,
         websocket: WebSocket,
@@ -723,13 +899,13 @@ class SimpleTransport:
                             )
                             
                             # Process message through workflow system
-                            from core.workflow.init_registry import get_workflow_handler
+                            from core.workflow.init_registry import get_or_discover_workflow_handler
                             
                             # Determine workflow type from message or use default
                             workflow_name = message_data.get("workflow_name", "chat")
                             
                             # Process through workflow handler
-                            workflow_handler = get_workflow_handler(workflow_name)
+                            workflow_handler = get_or_discover_workflow_handler(workflow_name)
                             if workflow_handler:
                                 try:
                                     result = await self.handle_user_input_from_api(
@@ -799,6 +975,22 @@ class SimpleTransport:
         except Exception as e:
             logger.error(f"❌ Failed to handle WebSocket: {e}")
         finally:
+            # Proper disconnection handling for AG2 resume functionality
+            try:
+                # Import and use the real persistence manager for disconnection handling
+                from core.data.persistence_manager import PersistenceManager
+                real_persistence = PersistenceManager()
+                
+                if enterprise_id:
+                    await real_persistence.handle_websocket_disconnection(
+                        chat_id=chat_id,
+                        enterprise_id=enterprise_id,
+                        reason="websocket_disconnected"
+                    )
+                    logger.info(f"💾 Saved disconnection state for resume: {chat_id}")
+            except Exception as save_error:
+                logger.error(f"❌ Failed to save disconnection state: {save_error}")
+            
             # Cleanup connection
             if chat_id in self.connections:
                 self.connections[chat_id]["active"] = False
@@ -863,9 +1055,9 @@ class SimpleTransport:
             )
             
             # Get the actual workflow handler and execute it
-            from core.workflow.init_registry import get_workflow_handler
+            from core.workflow.init_registry import get_or_discover_workflow_handler
             
-            workflow_handler = get_workflow_handler(workflow_name)
+            workflow_handler = get_or_discover_workflow_handler(workflow_name)
             if not workflow_handler:
                 error_msg = f"Workflow '{workflow_name}' not found in registry"
                 logger.error(f"❌ {error_msg}")
@@ -884,6 +1076,28 @@ class SimpleTransport:
             try:
                 # Extract enterprise_id from context or use default
                 enterprise_id = getattr(self, 'current_enterprise_id', 'default')
+                
+                # 🎯 CHECK USER TOKENS BEFORE WORKFLOW EXECUTION
+                has_tokens, token_info = await self.check_user_tokens(
+                    user_id=user_id or "unknown",
+                    enterprise_id=enterprise_id,
+                    chat_id=chat_id
+                )
+                
+                if not has_tokens:
+                    logger.warning(f"⚠️ User {user_id} has no tokens available for chat {chat_id}")
+                    await self.send_token_exhausted_message(chat_id, token_info)
+                    
+                    return {
+                        "status": "token_exhausted",
+                        "message": "No tokens available for AI processing",
+                        "workflow_name": workflow_name,
+                        "token_info": token_info
+                    }
+                
+                # Send low tokens warning if needed
+                if token_info and token_info.get("near_trial_limit", False):
+                    await self.send_low_tokens_warning(chat_id, token_info)
                 
                 # Log workflow start to agent_chat.log
                 chat_logger.info(f"WORKFLOW_START | Chat: {chat_id} | Workflow: {workflow_name} | User: {user_id or 'unknown'} | HasMessage: {message is not None}")

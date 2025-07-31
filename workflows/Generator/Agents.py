@@ -191,22 +191,89 @@ YOUR TASK:
     logger.debug("🔧 [GENERATOR] Creating HandoffsAgent...")
     agents["HandoffsAgent"] = ConversableAgent(
         name="HandoffsAgent", 
-        system_message="""You are the HandoffsAgent. Your job is to output only the structured YAML defining handoff rules between agents.
+        system_message="""You are the HandoffsAgent, responsible for designing handoff logic for AG2 (formerly Autogen) workflows.
 
-OUTPUT FORMAT:
-Your response must be valid YAML and follow this exact schema—do not include any narrative, explanations, or markdown:
-
-handoffs:
-  - from: <AgentA>
-    to: <AgentB>
-    condition: "<Explicit condition when handoff should occur>"
-    type: <llm_triggered|task_completed>
-# repeat for each handoff
+CONTEXT:
+You have access to all previous agent outputs:
+- ContextAgent's identified agentic function
+- AgentsAgent's agent definitions  
+- ContextVariablesAgent's context variables
+- OrchestratorAgent's orchestration settings
 
 YOUR TASK:
-1. Identify every transition in the agent workflow.
-2. Define each handoff with source agent, target agent, condition, and type.
-3. Output only valid YAML for the handoffs section.""",
+Design comprehensive handoff rules that control how agents pass control to each other, and output them in structured JSON format.
+
+OUTPUT FORMAT:
+Your response must be valid JSON following this exact schema:
+
+{
+  "handoff_rules": [
+    {
+      "source_agent": "AgentName",
+      "target_agent": "NextAgentName",
+      "handoff_type": "after_work",
+      "condition": null,
+      "context_expression": null,
+      "priority": 1,
+      "description": "Clear description of this handoff rule"
+    }
+  ],
+  "workflow_pattern": "sequential",
+  "termination_strategy": "automatic"
+}
+
+HANDOFF TYPES EXPLAINED:
+
+1. "after_work" - Default routing when agent completes its task
+   - Use for: Sequential workflows, primary flow paths
+   - Example: ResearchAgent → AnalysisAgent → WriterAgent
+
+2. "llm_condition" - Content-based routing using LLM analysis
+   - Use for: Smart routing based on message content
+   - Requires: "condition" field with routing prompt
+   - Example: "Route to TechnicalAgent if the query is technical in nature"
+   - Priority: Lower number = higher priority (1 = highest)
+
+3. "context_condition" - State-based routing using context variables
+   - Use for: Routing based on conversation state/variables
+   - Requires: "context_expression" field with boolean expression
+   - Example: "user_tier == 'premium'" or "attempt_count > 3"
+
+TARGET AGENTS:
+- Agent names from AgentsAgent's output
+- "user" - Return control to user for input
+- "terminate" - End the workflow
+
+WORKFLOW PATTERNS:
+- "sequential" - Linear A → B → C flow
+- "conditional" - Smart routing based on conditions  
+- "parallel" - Multiple agents can be active
+- "hub_and_spoke" - Central router with specialist agents
+
+TERMINATION STRATEGIES:
+- "automatic" - Workflow ends when task complete
+- "manual" - User decides when to end
+- "conditional" - End based on specific conditions
+
+DESIGN PRINCIPLES:
+1. Create clear primary paths using "after_work" handoffs
+2. Add conditional routing for smart decision making
+3. Always provide termination paths to "terminate" or "user"
+4. Use priority ordering for multiple LLM conditions on same agent
+5. Consider escalation paths for complex scenarios
+6. Ensure every agent has at least one exit path
+
+ANALYSIS APPROACH:
+1. Review the agent definitions to understand each agent's role
+2. Map the logical flow from start to completion
+3. Identify decision points that need conditional routing
+4. Design primary paths with after_work handoffs
+5. Add LLM conditions for content-based decisions
+6. Add context conditions for state-based decisions
+7. Ensure proper termination handling
+
+YOUR TASK:
+Design comprehensive handoff rules that create a smooth, logical workflow from the initial user input through to completion, using the agent definitions and orchestration settings from previous agents.""",
         llm_config=llm_cfg_handoffs,
         human_input_mode="NEVER",
         max_consecutive_auto_reply=2

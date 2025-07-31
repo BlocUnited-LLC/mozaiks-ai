@@ -35,7 +35,8 @@ const ModernChatInterface = ({
   workflowName,
   startupMode,
   initialMessageToUser,
-  onRetry
+  onRetry,
+  tokensExhausted = false
 }) => {
   const [message, setMessage] = useState('');
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
@@ -92,6 +93,12 @@ const ModernChatInterface = ({
     }
     
     if (message.trim() === '') return;
+    
+    // Don't allow sending if tokens are exhausted
+    if (tokensExhausted) {
+      alert('💰 Unable to send message - your tokens have been exhausted. Please upgrade your plan to continue.');
+      return;
+    }
     
     const newMessage = { "sender": "user", "content": message };
     onSendMessage(newMessage);
@@ -221,6 +228,8 @@ const ModernChatInterface = ({
                   message={chat.content}
                   message_from={chat.sender}
                   agentName={chat.agentName}
+                  isTokenMessage={chat.isTokenMessage}
+                  isWarningMessage={chat.isWarningMessage}
                 />
                 
                 {/* Render UI Tool Events */}
@@ -274,8 +283,8 @@ const ModernChatInterface = ({
               }}
               onKeyPress={handleKeyPress}
               onFocus={() => setHasUserInteracted(true)}
-              placeholder="Type transmission..."
-              disabled={buttonText === 'NEXT'}
+              placeholder={tokensExhausted ? "Tokens exhausted - please upgrade to continue..." : "Type transmission..."}
+              disabled={buttonText === 'NEXT' || tokensExhausted}
               rows={1}
               className={`w-full bg-white/10 border-2 rounded-2xl px-4 py-3 text-cyan-50 placeholder-cyan-400/80 focus:outline-none resize-none transition-all duration-300 oxanium min-h-[48px] max-h-[120px] my-scroll1 backdrop-blur-sm ${
                 hasUserInteracted 
@@ -295,16 +304,16 @@ const ModernChatInterface = ({
           {/* Command Button */}
           <button
             type="submit"
-            disabled={!message.trim()}
+            disabled={!message.trim() || tokensExhausted}
             className={`
               px-6 py-3 rounded-xl transition-all duration-300 min-w-[100px] h-12 oxanium uppercase font-bold text-[14px] flex items-center justify-center letter-spacing-wide border-2
-              ${!message.trim()
+              ${(!message.trim() || tokensExhausted)
                 ? 'bg-gray-800/50 text-gray-400 cursor-not-allowed border-gray-600/50' 
                 : 'bg-gradient-to-r from-cyan-500/80 to-blue-500/80 hover:from-cyan-400/90 hover:to-blue-400/90 text-white border-cyan-400/50 hover:border-cyan-300/70 shadow-lg shadow-cyan-500/20 hover:shadow-cyan-400/30 hover:scale-105 active:scale-95'
               }
             `}
           >
-            {buttonText === 'NEXT' ? '🚀 LAUNCH' : '📡 TRANSMIT'}
+            {tokensExhausted ? '💰 UPGRADE' : (buttonText === 'NEXT' ? '🚀 LAUNCH' : '📡 TRANSMIT')}
           </button>
         </form>
       </div>

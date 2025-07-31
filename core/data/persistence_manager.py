@@ -82,7 +82,7 @@ class PersistenceManager:
                 "workflow_name": workflow_name,
                 
                 # VE-style session state tracking
-                "status": 0,  # 0 = in progress, 100+ = completed
+                "status": 0,  # 0 = in progress, 1 = completed
                 "is_complete": False,
                 "connection_state": "active",
                 "can_resume": True,
@@ -274,11 +274,16 @@ class PersistenceManager:
             )
             
             if not enterprise or "users" not in enterprise or user_id not in enterprise["users"]:
-                # Create default user token data
+                # Import token configurations
+                from core.core_config import get_free_trial_config, get_token_config
+                trial_config = get_free_trial_config()
+                token_config = get_token_config()
+                
+                # Create default user token data using environment configuration
                 default_tokens = {
-                    "available_tokens": 0,
-                    "available_trial_tokens": 1000,
-                    "free_trial": True,
+                    "available_tokens": token_config["available_tokens_default"],
+                    "available_trial_tokens": trial_config["default_tokens"],
+                    "free_trial": trial_config["enabled"],
                     "trial_started_at": datetime.utcnow(),
                     "usage_history": []
                 }
@@ -344,7 +349,7 @@ class PersistenceManager:
 
     async def update_chat_status(self, chat_id: str, enterprise_id: Union[str, ObjectId], 
                                 status: int, workflow_name: str = "default") -> bool:
-        """Update chat status (VE pattern: 0=in progress, 100+=complete)"""
+        """Update chat status (VE pattern: 0=in progress, 1=complete)"""
         try:
             eid = await self._validate_enterprise_exists(enterprise_id)
             
@@ -355,8 +360,8 @@ class PersistenceManager:
                 "last_activity": datetime.utcnow()
             }
             
-            # Mark as complete if status >= 100 (VE pattern)
-            if status >= 100:
+            # Mark as complete if status >= 1 (VE pattern)
+            if status >= 1:
                 update_doc.update({
                     "is_complete": True,
                     "can_resume": False,
@@ -505,7 +510,7 @@ class PersistenceManager:
             main_status = session.get("status", 0)
             status = workflow_status if workflow_status is not None else main_status
             
-            if status >= 100:
+            if status >= 1:
                 return False, f"Workflow completed with status {status}"
             
             # Check if session is marked complete
@@ -703,7 +708,7 @@ class PersistenceManager:
             query = {
                 "enterprise_id": eid,
                 "is_complete": {"$ne": True},
-                "status": {"$lt": 100}
+                "status": {"$lt": 1}
             }
             
             if workflow_name:
@@ -737,8 +742,8 @@ class PersistenceManager:
                 {"$group": {
                     "_id": "$workflow_name",
                     "total_sessions": {"$sum": 1},
-                    "active_sessions": {"$sum": {"$cond": [{"$lt": ["$status", 100]}, 1, 0]}},
-                    "completed_sessions": {"$sum": {"$cond": [{"$gte": ["$status", 100]}, 1, 0]}},
+                    "active_sessions": {"$sum": {"$cond": [{"$lt": ["$status", 1]}, 1, 0]}},
+                    "completed_sessions": {"$sum": {"$cond": [{"$gte": ["$status", 1]}, 1, 0]}},
                     "avg_tokens": {"$avg": "$token_usage.total_tokens"},
                     "total_tokens": {"$sum": "$token_usage.total_tokens"},
                     "avg_cost": {"$avg": "$token_usage.total_cost"},
@@ -812,7 +817,7 @@ class PersistenceManager:
             return 0
 
     async def finalize_conversation_with_cleanup(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                                               final_status: int = 100, workflow_name: str = "default",
+                                               final_status: int = 1, workflow_name: str = "default",
                                                cleanup_data: Optional[Dict[str, Any]] = None) -> bool:
         """VE-style conversation finalization with comprehensive cleanup"""
         try:
@@ -979,7 +984,7 @@ class PersistenceManager:
     # ==================================================================================
 
     async def finalize_conversation(self, chat_id: str, enterprise_id: Union[str, ObjectId],
-                                  final_status: int = 100, workflow_name: str = "default") -> bool:
+                                  final_status: int = 1, workflow_name: str = "default") -> bool:
         """Finalize conversation and mark as complete"""
         try:
             eid = await self._validate_enterprise_exists(enterprise_id)
@@ -1129,7 +1134,7 @@ class PersistenceManager:
                     main_status = session.get("status", 0)
                     status = workflow_status if workflow_status is not None else main_status
                     
-                    if status >= 100:  # VE uses 100+ for completion
+                    if status >= 1:  # VE uses 1 for completion
                         logger.info(f"✅ {workflow_name.title()} workflow already completed with status {status}")
                         return False, {"already_complete": True, "status": status}
                 

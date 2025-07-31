@@ -12,10 +12,7 @@ import { dynamicUIHandler } from '../core/dynamicUIHandler';
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
   const [ws, setWs] = useState(null);
-  // Track pending user messages to filter out echoed messages
-  const pendingMessagesRef = useRef([]);
-  // Track streaming messages by message ID
-  const streamingMessagesRef = useRef(new Map());
+  // Removed unnecessary streaming refs - AG2 handles streaming natively
   const [loading, setLoading] = useState(true);
   const [agentsInitialized, setAgentsInitialized] = useState(false);
   
@@ -48,6 +45,7 @@ const ChatPage = () => {
   const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
   const defaultWorkflow = urlWorkflowName || config?.chat?.defaultWorkflow || 'Generator'; // Default to Generator
   const [currentWorkflowName, setCurrentWorkflowName] = useState(defaultWorkflow?.toLowerCase() || 'generator'); // Dynamic workflow detection
+  const [tokensExhausted, setTokensExhausted] = useState(false); // Track token exhaustion state
   
   // Dynamic UI updates state
   const [dynamicUIUpdates, setDynamicUIUpdates] = useState([]);
@@ -86,6 +84,54 @@ const ChatPage = () => {
 
     return unsubscribe;
   }, []);
+
+  // Token handling functions
+  const handleTokenExhausted = useCallback((data) => {
+    console.log('💰 Handling token exhausted:', data);
+    
+    // Set token exhausted state to disable input
+    setTokensExhausted(true);
+    
+    // Add system message about token exhaustion
+    const tokenMessage = {
+      id: Date.now().toString(),
+      sender: 'system',
+      agentName: 'System',
+      content: data.data?.message || 'You have run out of tokens. Please purchase more to continue.',
+      timestamp: Date.now(),
+      isStreaming: false,
+      isTokenMessage: true
+    };
+    
+    setMessagesWithLogging(prev => [...prev, tokenMessage]);
+    
+    // Show upgrade modal or redirect to billing
+    if (data.data?.upgrade_available) {
+      console.log('🚀 Showing upgrade prompt...');
+      // TODO: Implement upgrade modal
+      // For now, show an alert
+      setTimeout(() => {
+        alert(`🚀 ${tokenMessage.content}\n\nUpgrade your plan to continue using MozaiksAI!`);
+      }, 500);
+    }
+  }, [setMessagesWithLogging]);
+
+  const handleTokenWarning = useCallback((data) => {
+    console.log('⚠️ Handling token warning:', data);
+    
+    // Add system warning message
+    const warningMessage = {
+      id: Date.now().toString(),
+      sender: 'system',
+      agentName: 'System',
+      content: data.data?.message || 'Your token balance is running low.',
+      timestamp: Date.now(),
+      isStreaming: false,
+      isWarningMessage: true
+    };
+    
+    setMessagesWithLogging(prev => [...prev, warningMessage]);
+  }, [setMessagesWithLogging]);
 
   // Initialize agents on page load
   useEffect(() => {
@@ -159,7 +205,6 @@ const ChatPage = () => {
     console.log("Received stream message:", data);
     console.log("Message type:", data.type, "Data:", data.data);
     console.log("Current messages count:", messages.length);
-    console.log("Current streaming messages:", streamingMessagesRef.current.size);
     
     // Handle dynamic UI event types from backend
     switch (data.type) {
@@ -204,6 +249,18 @@ const ChatPage = () => {
         console.log('🎯 UI Tool Event received:', data);
         // Handle UI tool events from the backend (DYNAMIC_UI_COMPLETE_GUIDE.md specification)
         dynamicUIHandler.processUIEvent(data);
+        return;
+        
+      case 'token_exhausted':
+      case 'TOKEN_EXHAUSTED':
+        console.log('💰 Token exhausted event received:', data);
+        handleTokenExhausted(data);
+        return;
+        
+      case 'token_warning':
+      case 'TOKEN_WARNING':
+        console.log('⚠️ Token warning event received:', data);
+        handleTokenWarning(data);
         return;
         
       case 'simple_text':
@@ -313,122 +370,9 @@ const ChatPage = () => {
         break;
     }
     
-    // Handle streaming text message types (existing logic)
-    if (data.type === 'TEXT_MESSAGE_START' || data.type === 'text_stream_start') {
-      // Start of a new message - initialize streaming message
-      const messageId = data.data?.messageId || data.data?.message_id || data.data?.stream_id || data.timestamp || Date.now();
-      if (messageId) {
-        console.log('📝 Starting new message:', messageId);
-        const friendlyAgentName = (data.agent_name || data.data?.agent_name) ? 
-          (data.agent_name || data.data?.agent_name).replace('Agent', '').replace(/([A-Z])/g, ' $1').trim() || (data.agent_name || data.data?.agent_name) : 
-          'Agent';
-        streamingMessagesRef.current.set(messageId, {
-          id: messageId,
-          content: '',
-          sender: 'agent',
-          agentName: friendlyAgentName,
-          timestamp: Date.now(),
-          isStreaming: true
-        });
-      }
-      return;
-    }
-    
-    if (data.type === 'TEXT_MESSAGE_CONTENT' || data.type === 'text_stream_chunk') {
-      // Streaming content - append to existing message
-      const messageId = data.data?.messageId || data.data?.message_id || data.data?.stream_id || data.timestamp;
-      const delta = data.data?.delta || data.data?.content || data.data?.chunk || data.content || '';
-      
-      console.log('🔍 Processing chunk - messageId:', messageId, 'delta:', delta);
-      
-      if (messageId && delta) {
-        let streamingMessage = streamingMessagesRef.current.get(messageId);
-        
-        // If no existing message found, create a new one (auto-start scenario)
-        if (!streamingMessage) {
-          console.log('🔄 Auto-creating message for stream_id:', messageId);
-          const friendlyAgentName = data.agent_name ? 
-            data.agent_name.replace('Agent', '').replace(/([A-Z])/g, ' $1').trim() || data.agent_name : 
-            'Agent';
-          streamingMessage = {
-            id: messageId,
-            content: '',
-            sender: data.agent_name === 'user' ? 'user' : 'agent',
-            agentName: friendlyAgentName,
-            timestamp: Date.now(),
-            isStreaming: true
-          };
-          streamingMessagesRef.current.set(messageId, streamingMessage);
-          console.log('✅ Created new streaming message:', streamingMessage);
-        } else {
-          // Update agent name if we have it and it's not set
-          if (data.agent_name && (!streamingMessage.agentName || streamingMessage.agentName === 'Agent')) {
-            const friendlyAgentName = data.agent_name.replace('Agent', '').replace(/([A-Z])/g, ' $1').trim() || data.agent_name;
-            streamingMessage.agentName = friendlyAgentName;
-          }
-        }
-        
-        // Update the streaming message content
-        streamingMessage.content += delta;
-        console.log('📝 Updated message content to:', streamingMessage.content.substring(0, 50) + '...');
-        
-        // Update the messages array with the current content
-        setMessagesWithLogging(prev => {
-          const existingIndex = prev.findIndex(msg => msg.id === messageId);
-          if (existingIndex >= 0) {
-            // Update existing message
-            const updated = [...prev];
-            updated[existingIndex] = { ...streamingMessage };
-            console.log('🔄 Updated existing message at index:', existingIndex);
-            console.log('🔍 Updated message data:', updated[existingIndex]);
-            return updated;
-          } else {
-            // Add new streaming message
-            console.log('➕ Adding new message to array, current length:', prev.length);
-            console.log('🔍 New message data:', streamingMessage);
-            const newArray = [...prev, { ...streamingMessage }];
-            console.log('📊 New array length:', newArray.length);
-            return newArray;
-          }
-        });
-      } else {
-        console.warn('⚠️ Received chunk with no messageId or content:', data);
-      }
-      return;
-    }
-    
-    if (data.type === 'TEXT_MESSAGE_END' || data.type === 'text_stream_end') {
-      // End of message - mark as complete
-      const messageId = data.data?.messageId || data.data?.message_id || data.data?.stream_id || data.timestamp;
-      if (messageId) {
-        console.log('✅ Message completed:', messageId);
-        const streamingMessage = streamingMessagesRef.current.get(messageId);
-        if (streamingMessage) {
-          streamingMessage.isStreaming = false;
-          setMessagesWithLogging(prev => {
-            const updated = [...prev];
-            const index = updated.findIndex(msg => msg.id === messageId);
-            if (index >= 0) {
-              updated[index] = { ...streamingMessage };
-              console.log('✅ Finalized message at index:', index);
-            }
-            return updated;
-          });
-          streamingMessagesRef.current.delete(messageId);
-        }
-      }
-      return;
-    }
-    
-    // Handle standard message format
+    // Handle standard message format (fallback for other message types)
     const content = data.content || data.message;
     if (content) {
-      const idx = pendingMessagesRef.current.indexOf(content);
-      if (idx > -1) { 
-        pendingMessagesRef.current.splice(idx, 1); 
-        return; 
-      }
-      
       const newMessage = { 
         id: data.message_id || Date.now().toString(),
         sender: data.sender || 'agent', 
@@ -593,8 +537,7 @@ const ChatPage = () => {
       isStreaming: false
     };
     
-    // Optimistic add: add user message to chat and mark pending
-    pendingMessagesRef.current.push(messageContent.content);
+    // Optimistic add: add user message to chat immediately
     setMessagesWithLogging(prevMessages => [...prevMessages, userMessage]);
     
     // Send directly to backend workflow via WebSocket
@@ -716,6 +659,7 @@ const ChatPage = () => {
               startupMode={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.startup_mode}
               initialMessageToUser={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.initial_message_to_user}
               onRetry={retryConnection}
+              tokensExhausted={tokensExhausted}
             />
           </div>
           

@@ -345,7 +345,7 @@ class TokenManager:
             await self.persistence.finalize_conversation(
                 chat_id=self.chat_id,
                 enterprise_id=self.enterprise_id,
-                final_status=100,  # VE-style completion status
+                final_status=1,  # VE-style completion status
                 workflow_name=self.workflow_name
             )
             

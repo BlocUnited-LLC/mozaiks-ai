@@ -30,13 +30,17 @@ class ContextVariablesOutput(BaseModel):
 # HandoffsAgent Output
 class HandoffRule(BaseModel):
     source_agent: str = Field(description="Source agent name")
-    target_agent: str = Field(description="Target agent name or 'user' for user handoff") 
-    handoff_type: Literal["llm_condition", "after_work"] = Field(description="Type of handoff condition")
+    target_agent: str = Field(description="Target agent name, 'user', or 'terminate'") 
+    handoff_type: Literal["llm_condition", "after_work", "context_condition"] = Field(description="Type of handoff condition")
     condition: Optional[str] = Field(default=None, description="LLM condition prompt if handoff_type is llm_condition")
-    description: str = Field(description="Human-readable description of the handoff rule")
+    context_expression: Optional[str] = Field(default=None, description="Context expression if handoff_type is context_condition")
+    priority: int = Field(default=1, description="Priority for LLM conditions (lower = higher priority)")
+    description: str = Field(description="Human-readable description of this handoff rule")
 
 class HandoffsOutput(BaseModel):
     handoff_rules: List[HandoffRule] = Field(description="All handoff rules between agents")
+    workflow_pattern: str = Field(default="sequential", description="Overall workflow pattern (sequential, parallel, conditional)")
+    termination_strategy: Literal["manual", "automatic", "conditional"] = Field(default="automatic", description="How the workflow should terminate")
 
 class OrchestratorOutput(BaseModel):
     max_rounds: int = Field(default=8, description="Maximum conversation rounds")

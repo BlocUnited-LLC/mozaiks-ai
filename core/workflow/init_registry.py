@@ -4,6 +4,8 @@
 # ==============================================================================
 from typing import Dict, Callable, Awaitable, Any, List, Optional
 import logging
+import json
+import importlib
 from pathlib import Path
 from core.transport.ag2_iostream import AG2StreamingManager
 
@@ -133,9 +135,157 @@ def register_workflow_tools(workflow_name: str, tools: List[Callable]):
     _WORKFLOW_TOOLS[workflow_name] = tools
     logger.info(f"🔧 Registered {len(tools)} tools for {workflow_name}: {[t.__name__ for t in tools]}")
 
-def get_workflow_handler(workflow_name: str) -> Callable[..., Awaitable[Any]] | None:
-    """Get workflow handler by type"""
-    return _WORKFLOW_HANDLERS.get(workflow_name)
+def get_or_discover_workflow_handler(workflow_name: str) -> Callable[..., Awaitable[Any]] | None:
+    """
+    Get workflow handler, discovering it on-demand if not already registered.
+    This is the main entry point called by the WebSocket system.
+    
+    Args:
+        workflow_name: The workflow type requested
+        
+    Returns:
+        Workflow handler function or None if discovery failed
+    """
+    # Try to get existing handler first
+    handler = _WORKFLOW_HANDLERS.get(workflow_name)
+    if handler:
+        return handler
+    
+    # If not found, try auto-discovery
+    logger.info(f"🔍 [AUTO-DISCOVERY] Workflow {workflow_name} not registered, attempting discovery...")
+    
+    if discover_and_register_workflow_on_demand(workflow_name):
+        return _WORKFLOW_HANDLERS.get(workflow_name)
+    
+    logger.error(f"❌ [AUTO-DISCOVERY] Failed to discover workflow: {workflow_name}")
+    return None
+
+def discover_and_register_workflow_on_demand(workflow_name: str) -> bool:
+    """
+    Discover and register a workflow on-demand when requested via WebSocket.
+    This eliminates the need for individual initializer.py files.
+    
+    Args:
+        workflow_name: The workflow type requested by the frontend
+        
+    Returns:
+        True if workflow was discovered and registered, False otherwise
+    """
+    # Check if already registered
+    if workflow_name in _WORKFLOW_HANDLERS:
+        logger.debug(f"✅ Workflow {workflow_name} already registered")
+        return True
+    
+    workflows_dir = Path(__file__).parent.parent.parent / "workflows"
+    if not workflows_dir.exists():
+        logger.warning(f"Workflows directory not found: {workflows_dir}")
+        return False
+    
+    # Find the workflow directory (case-insensitive)
+    workflow_dir = None
+    for dir_item in workflows_dir.iterdir():
+        if dir_item.is_dir() and dir_item.name.lower() == workflow_name.lower():
+            workflow_dir = dir_item
+            break
+    
+    if not workflow_dir:
+        logger.warning(f"⚠️ Workflow directory not found: {workflow_name}")
+        return False
+        
+    workflow_json = workflow_dir / "workflow.json"
+    if not workflow_json.exists():
+        logger.warning(f"⚠️ workflow.json not found for: {workflow_name}")
+        return False
+        
+    try:
+        # Load workflow configuration
+        with open(workflow_json, 'r') as f:
+            config = json.load(f)
+        
+        workflow_name_normalized = workflow_dir.name.lower()
+        
+        logger.info(f"🔍 [AUTO-DISCOVERY] Discovering workflow: {workflow_name_normalized}")
+        
+        # Auto-discover agent factory
+        agents_factory = None
+        try:
+            agents_module = importlib.import_module(f"workflows.{workflow_dir.name}.Agents")
+            agents_factory = getattr(agents_module, "define_agents", None)
+            if agents_factory:
+                logger.debug(f"✅ Found define_agents in {workflow_dir.name}.Agents")
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"⚠️ Could not import agents for {workflow_name_normalized}: {e}")
+        
+        # Auto-discover context factory  
+        context_factory = None
+        try:
+            context_module = importlib.import_module(f"workflows.{workflow_dir.name}.ContextVariables")
+            context_factory = getattr(context_module, "get_context", None)
+            if context_factory:
+                logger.debug(f"✅ Found get_context in {workflow_dir.name}.ContextVariables")
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"⚠️ Could not import context for {workflow_name_normalized}: {e}")
+            
+        # Auto-discover handoffs factory
+        handoffs_factory = None
+        try:
+            handoffs_module = importlib.import_module(f"workflows.{workflow_dir.name}.Handoffs")
+            handoffs_factory = getattr(handoffs_module, "wire_handoffs", None)
+            if handoffs_factory:
+                logger.debug(f"✅ Found wire_handoffs in {workflow_dir.name}.Handoffs")
+        except (ImportError, AttributeError) as e:
+            logger.debug(f"ℹ️ No handoffs factory found for {workflow_name_normalized}: {e}")
+        
+        # Create the workflow handler using discovered factories
+        async def auto_discovered_workflow_handler(enterprise_id: str, chat_id: str, user_id: Optional[str] = None, initial_message: Optional[str] = None):
+            from core.workflow.groupchat_manager import run_workflow_orchestration
+            from core.transport.simple_transport import SimpleTransport
+            
+            # Get LLM config from transport
+            transport = SimpleTransport._get_instance()
+            if not transport:
+                raise RuntimeError(f"SimpleTransport instance not available for {workflow_name_normalized}")
+            
+            llm_config = transport.default_llm_config
+            if not llm_config:
+                raise ValueError(f"No LLM config available for {workflow_name_normalized}")
+            
+            logger.info(f"🚀 [AUTO-DISCOVERY] Running workflow: {workflow_name_normalized}")
+            
+            # Call workflow orchestration with auto-discovered factories
+            return await run_workflow_orchestration(
+                workflow_name=workflow_name_normalized,
+                llm_config=llm_config,
+                enterprise_id=enterprise_id,
+                chat_id=chat_id,
+                user_id=user_id,
+                initial_message=initial_message,
+                agents_factory=agents_factory,
+                context_factory=context_factory,
+                handoffs_factory=handoffs_factory
+            )
+        
+        # Extract configuration from workflow.json
+        human_loop = config.get("human_in_the_loop", False)
+        
+        # Register the auto-discovered workflow
+        _WORKFLOW_HANDLERS[workflow_name_normalized] = auto_discovered_workflow_handler
+        _WORKFLOW_METADATA[workflow_name_normalized] = {
+            'human_loop': human_loop,
+            'transport': "websocket",
+            'auto_init_components': True,
+            'auto_discovered': True  # Mark as auto-discovered
+        }
+        _WORKFLOW_TRANSPORTS[workflow_name_normalized] = "websocket"
+        
+        logger.info(f"✅ [AUTO-DISCOVERY] Successfully registered workflow: {workflow_name_normalized}")
+        logger.info(f"📋 [AUTO-DISCOVERY] Factories found: agents={agents_factory is not None}, context={context_factory is not None}, handoffs={handoffs_factory is not None}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ [AUTO-DISCOVERY] Failed to discover workflow {workflow_name}: {e}")
+        return False
 
 def get_workflow_tools(workflow_name: str) -> List[Callable]:
     """Get tools for a specific workflow"""
@@ -199,7 +349,7 @@ async def run_workflow_with_streaming(
     This function integrates the new AG2StreamingIOStream with any workflow handler.
     """
     # Get the workflow handler
-    handler = get_workflow_handler(workflow_name)
+    handler = get_or_discover_workflow_handler(workflow_name)
     if not handler:
         raise ValueError(f"No handler registered for workflow type: {workflow_name}")
     
@@ -233,143 +383,5 @@ async def run_workflow_with_streaming(
         logger.debug("🔄 AG2 IOStream restored")
 
 # ==============================================================================
-# AUTO-DISCOVERY SYSTEM - Eliminates need for workflow-specific initializer.py files
+# Note: Runtime auto-discovery replaces startup registration for better performance
 # ==============================================================================
-
-def auto_discover_and_register_workflows():
-    """
-    Auto-discover all workflows from workflow.json files and register them.
-    This eliminates the need for individual initializer.py files in each workflow.
-    """
-    import json
-    import importlib
-    from pathlib import Path
-    
-    workflows_dir = Path(__file__).parent.parent.parent / "workflows"
-    if not workflows_dir.exists():
-        logger.warning(f"Workflows directory not found: {workflows_dir}")
-        return
-    
-    registered_count = 0
-    
-    # Scan all workflow directories
-    for workflow_dir in workflows_dir.iterdir():
-        if not workflow_dir.is_dir() or workflow_dir.name.startswith('.'):
-            continue
-            
-        workflow_json = workflow_dir / "workflow.json"
-        if not workflow_json.exists():
-            continue
-            
-        try:
-            # Load workflow configuration
-            with open(workflow_json, 'r') as f:
-                config = json.load(f)
-            
-            workflow_name = workflow_dir.name.lower()
-            
-            # Auto-discover agent factory
-            agents_factory = None
-            try:
-                agents_module = importlib.import_module(f"workflows.{workflow_name.title()}.Agents")
-                agents_factory = getattr(agents_module, "define_agents", None)
-            except (ImportError, AttributeError) as e:
-                logger.warning(f"Could not import agents for {workflow_name}: {e}")
-            
-            # Auto-discover context factory  
-            context_factory = None
-            try:
-                context_module = importlib.import_module(f"workflows.{workflow_name.title()}.ContextVariables")
-                context_factory = getattr(context_module, "get_context", None)
-            except (ImportError, AttributeError) as e:
-                logger.warning(f"Could not import context for {workflow_name}: {e}")
-            
-            # Create auto-generated workflow handler
-            def create_workflow_handler(wf_type, agents_fact, context_fact):
-                async def workflow_handler(enterprise_id: str, chat_id: str, user_id: Optional[str] = None, initial_message: Optional[str] = None):
-                    from core.workflow.groupchat_manager import run_workflow_orchestration
-                    from core.transport.simple_transport import SimpleTransport
-                    
-                    # Get LLM config from transport
-                    transport = SimpleTransport._get_instance()
-                    if not transport:
-                        raise RuntimeError(f"SimpleTransport instance not available for {wf_type}")
-                    
-                    llm_config = transport.default_llm_config
-                    if not llm_config:
-                        raise ValueError(f"No LLM config available for {wf_type}")
-                    
-                    # Call workflow orchestration with auto-discovered factories
-                    return await run_workflow_orchestration(
-                        workflow_name=wf_type,
-                        llm_config=llm_config,
-                        enterprise_id=enterprise_id,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        initial_message=initial_message,
-                        agents_factory=agents_fact,
-                        context_factory=context_fact
-                    )
-                return workflow_handler
-            
-            # Register the auto-generated workflow
-            workflow_handler = create_workflow_handler(workflow_name, agents_factory, context_factory)
-            
-            # Extract configuration from workflow.json
-            human_loop = config.get("human_in_the_loop", False)
-            
-            # Register using the decorator pattern
-            register_workflow(
-                workflow_name=workflow_name,
-                human_loop=human_loop,
-                transport="websocket",
-                auto_init_components=True
-            )(workflow_handler)
-            
-            # Also register a startup initialization coroutine for tool discovery
-            def create_startup_handler(wf_type):
-                async def startup_handler():
-                    from core.workflow.tool_registry import WorkflowToolRegistry
-                    from logs.logging_config import log_business_event
-                    
-                    try:
-                        # Pre-discover tools for group chat initialization
-                        tool_registry = WorkflowToolRegistry(wf_type)
-                        tool_registry.load_configuration()
-                        
-                        log_business_event(
-                            event_type=f"{wf_type.upper()}_AUTO_STARTUP_COMPLETED",
-                            description=f"Auto-discovered {wf_type} workflow initialization completed"
-                        )
-                        
-                        logger.info(f"🔧 Auto-initialized tools for workflow: {wf_type}")
-                        
-                    except Exception as e:
-                        log_business_event(
-                            event_type=f"{wf_type.upper()}_AUTO_STARTUP_FAILED", 
-                            description=f"Auto-discovered {wf_type} workflow initialization failed",
-                            context={"error": str(e)},
-                            level="ERROR"
-                        )
-                        logger.error(f"❌ Auto-initialization failed for {wf_type}: {e}")
-                        raise
-                        
-                return startup_handler
-            
-            # Register the startup handler
-            startup_handler = create_startup_handler(workflow_name)
-            add_initialization_coroutine(startup_handler)
-            
-            logger.info(f"🤖 Auto-registered workflow: {workflow_name} from {workflow_json}")
-            registered_count += 1
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to auto-register workflow {workflow_dir.name}: {e}")
-    
-    logger.info(f"🎯 Auto-discovery complete: {registered_count} workflows registered")
-
-# Auto-discover and register workflows on module import
-try:
-    auto_discover_and_register_workflows()
-except Exception as e:
-    logger.error(f"❌ Auto-discovery failed: {e}")
