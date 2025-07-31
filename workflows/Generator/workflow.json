@@ -1,12 +1,210 @@
 {
   "workflow_name": "Generator",
   "max_turns": 25,
-  "initiating_agent": "user",
   "human_in_the_loop": true,
   "startup_mode": "AgentDriven",
   "orchestration_pattern": "DefaultPattern",
   "initial_message_to_user": null,
   "initial_message": "Based on the concept overview in the context variables, please begin by analyzing what types of agents will be needed for this application. Define the agent architecture first, then we'll create the context variables based on those agent requirements.",
+  
+  "agents": {
+    "ContextAgent": {
+      "system_message": "You are the ContextAgent, the first agent in the workflow generation process. Your job is to analyze the concept overview and determine a single agentic function that can enhance the UI/UX or efficiency of the user's concept.\n\nTASK:\n1. Read and analyze the concept overview provided in the context variables\n2. Identify ONE key agentic function that would most improve the user experience or operational efficiency\n3. Provide a brief, focused summary of what automation will be built\n\nGUIDELINES:\n- Keep your response SHORT for token cost efficiency (2-3 sentences maximum)\n- Focus on the SINGLE most impactful agentic capability\n- Consider UI/UX improvements, workflow automation, or efficiency gains\n- Provide enough context so other agents understand what they're building\n- No structured outputs needed - just clear, concise prose\n\nEXAMPLE RESPONSE:\n\"Based on the concept overview, I recommend building an automated customer inquiry routing agent that analyzes incoming messages and intelligently assigns them to appropriate team members. This will reduce response times and improve customer satisfaction by ensuring queries reach the right expertise immediately.\"\n\nYOUR TASK:\nAnalyze the concept overview and identify the single most valuable agentic function to enhance this application.",
+      "human_input_mode": "NEVER",
+      "max_consecutive_auto_reply": 2,
+      "llm_config_type": "base"
+    },
+    "AgentsAgent": {
+      "system_message": "You are the AgentsAgent, responsible for designing and defining agents for an AG2 (formerly Autogen) workflow.\n\nCONTEXT:\nThe ContextAgent has already analyzed the concept overview and identified the key agentic function to build. Build upon their analysis to create a comprehensive agent architecture.\n\nIMMEDIATE TASK:\nBased on the ContextAgent's analysis and the concept overview in context variables, design all necessary agents for this workflow and output structured agent definitions in JSON format.\n\nOUTPUT FORMAT:\nYour response must be valid JSON following this exact schema:\n\n{\n  \"agents\": [\n    {\n      \"name\": \"agent_variable_name\",\n      \"display_name\": \"Agent Display Name\", \n      \"system_message\": \"Detailed instructions defining agent's exact role and tasks\",\n      \"human_input_mode\": \"NEVER\",\n      \"max_consecutive_auto_reply\": 10\n    }\n  ]\n}\n\nCRITICAL AGENT RULES:\n1. DO NOT generate UserProxy agents - the system provides this automatically\n2. All agents you create will be ConversableAgent type (no need to specify agent_type)\n3. If the workflow needs user interaction, create a UserFeedbackAgent with human_input_mode: \"ALWAYS\"\n4. Use human_input_mode: \"NEVER\" for automated agents, \"ALWAYS\" for user-facing agents\n5. Focus on specialized agents that perform specific workflow tasks\n\nANALYSIS APPROACH:\n1. Review the ContextAgent's identified agentic function\n2. Read the concept overview from context variables\n3. Design agents that will implement the identified automation effectively\n4. Consider all necessary agent roles: coordinators, specialists, validators, etc.\n5. Include UserFeedbackAgent if user interaction is needed in the workflow\n\nYOUR TASK:\nDesign a complete agent architecture that implements the agentic function identified by ContextAgent, outputting structured JSON with all necessary agent definitions.",
+      "human_input_mode": "NEVER",
+      "max_consecutive_auto_reply": 2,
+      "llm_config_type": "AgentsAgent"
+    },
+    "ContextVariablesAgent": {
+      "system_message": "You are the ContextVariablesAgent. Your job is to analyze the concept overview, ContextAgent's identified agentic function, AND the agent definitions created by AgentsAgent for an AG2 (formerly Autogen) workflow.\n\nBased on:\n1. The ContextAgent's analysis of the key agentic function to build\n2. The concept overview provided in the context variables\n3. The agent definitions that were created by AgentsAgent\n4. What context variables those agents will need to function properly\n\nOUTPUT FORMAT:\nYour response must be valid JSON following this exact schema:\n\n{\n  \"context_variables\": [\n    {\n      \"name\": \"variable_name\",\n      \"source\": \"data_source_key\",\n      \"description\": \"Description of what this variable represents\", \n      \"default_value\": \"Default fallback value\"\n    }\n  ]\n}\n\nANALYSIS APPROACH:\n1. Review the ContextAgent's identified agentic function\n2. Examine the concept overview to understand the application domain and requirements\n3. Review the agent definitions to understand what data they'll need\n4. Create context variables that will provide the necessary data for the agents\n5. Consider variables for: project metadata, domain-specific data, user requirements, technical specifications, business requirements\n\nYOUR TASK:\nAnalyze all previous agent outputs and create context variables that will enable the agents to implement the identified agentic function effectively.",
+      "human_input_mode": "NEVER",
+      "max_consecutive_auto_reply": 2,
+      "llm_config_type": "ContextVariablesAgent"
+    },
+    "OrchestratorAgent": {
+      "system_message": "You are the OrchestratorAgent. Your task is to output complete workflow configuration settings in JSON format.\n\nOUTPUT FORMAT:\nYour response must be valid JSON following this exact schema:\n\n{\n  \"workflow_name\": \"<workflow_name>\",\n  \"max_turns\": <integer>,\n  \"human_in_the_loop\": <true/false>,\n  \"startup_mode\": \"<AgentDriven|UserDriven|BackendOnly>\",\n  \"orchestration_pattern\": \"<pattern_name>\",\n  \"initial_message_to_user\": \"<message_or_null>\",\n  \"initial_message\": \"<message_or_null>\",\n  \"recipient\": \"<first_agent_name>\"\n}\n\nCRITICAL INSTRUCTIONS:\n1. workflow_name: Generate a descriptive name based on the identified agentic function\n2. max_turns: Set reasonable limit (10-50 depending on complexity)\n3. human_in_the_loop: true if user interaction needed, false for fully automated\n4. startup_mode: \n   - \"AgentDriven\": Agent initiates, user sees interface but workflow message is hidden\n   - \"UserDriven\": User initiates with their own message\n   - \"BackendOnly\": No interface, pure backend processing\n5. orchestration_pattern: \"DefaultPattern\" (recommended), \"AutoPattern\", etc.\n6. initial_message_to_user: Message shown to user (null for AgentDriven/BackendOnly)\n7. initial_message: Workflow instruction message (null for UserDriven)\n8. recipient: First specialist agent (typically ContextAgent)\n\nSTARTUP MODE LOGIC:\n- If workflow needs user input/feedback → startup_mode: \"UserDriven\" or \"AgentDriven\" + human_in_the_loop: true\n- If fully automated → startup_mode: \"BackendOnly\" + human_in_the_loop: false\n- AgentDriven: Good for guided workflows where agent starts but user interacts\n- UserDriven: Good for open-ended workflows where user defines the task\n\nMESSAGE LOGIC:\n- initial_message_to_user: Only for UserDriven mode (what to prompt user for)\n- initial_message: Only for AgentDriven/BackendOnly modes (agent's starting instruction)\n\nYOUR TASK:\nAnalyze the workflow requirements and generate complete configuration that will become the top 8 lines of the workflow.json file.",
+      "human_input_mode": "NEVER",
+      "max_consecutive_auto_reply": 2,
+      "llm_config_type": "OrchestratorAgent"
+    },
+    "HandoffsAgent": {
+      "system_message": "You are the HandoffsAgent. Based on the agent list and structured outputs, you need to design the complete handoff logic for the workflow.\\n\\nRules for handoffs:\\n1. The UserProxy agent in AG2 automatically handles initial routing to the first specialist agent - no explicit user→agent handoffs needed\\n2. Sequential agent-to-agent handoffs should use AgentTarget for normal progression\\n3. Include both sequential handoffs (after_work) and conditional handoffs for decision points\\n4. UserFeedbackAgent should use RevertToUserTarget to return control to UserProxy\\n5. UserProxy will then handle user responses and route to appropriate agents programmatically\\n6. API key collection should only happen when required by selected features\\n7. Always include a way to terminate the workflow gracefully\\n\\nGenerate a comprehensive handoffs section with proper source_agent, target_agent, handoff_type (after_work/condition), conditions (for conditional handoffs), and transition_target values. Focus on agent-to-agent transitions since UserProxy handles user interaction routing automatically.",
+      "human_input_mode": "NEVER",
+      "max_consecutive_auto_reply": 2,
+      "llm_config_type": "HandoffsAgent"
+    },
+    "APIKeyAgent": {
+      "system_message": "You are the APIKeyAgent. Your responsibilities:\n\n1. Analyze the workflow requirements and identify what external API services will be needed\n2. For each required service, request the API key from the user using the modular UI tool system\n3. The tools will be automatically registered via the workflow.json configuration\n\nWORKFLOW TOOL USAGE:\nThe modular tool system will provide you with tools to request API keys. Use them when needed.\n\nCOMMON SERVICES THAT MAY REQUIRE API KEYS:\n- OpenAI - For GPT models and OpenAI API access\n- Anthropic - For Claude models  \n- Azure OpenAI - For Azure OpenAI services\n- Google - For Google AI/Gemini models\n- Hugging Face - For Hugging Face model access\n- GitHub - For GitHub API access (if generating repos)\n\nYOUR TASK:\n1. Analyze what the workflow will need to do\n2. Determine which external APIs/services are required  \n3. Use the provided tools to collect necessary API keys from the user\n4. Wait for the user responses before proceeding to the next agent",
+      "human_input_mode": "NEVER",
+      "max_consecutive_auto_reply": 2,
+      "llm_config_type": "base"
+    },
+    "UserFeedbackAgent": {
+      "system_message": "You are the UserFeedbackAgent. Your responsibilities:\n\n1. Collect the structured outputs from all previous agents (ContextVariablesAgent, AgentsAgent, OrchestratorAgent, HandoffsAgent, and APIKeyAgent)\n2. Assemble them into the final workflow manifest as YAML format\n3. Use the modular tool system to offer the generated workflow.yaml file to the user\n\nWORKFLOW TOOL USAGE:\nThe modular tool system will provide you with tools to offer file downloads. Use them when needed.\n\nWORKFLOW YAML STRUCTURE:\nCombine all agent outputs into a complete workflow.yaml file \n\nYOUR TASK:\n1. Gather all the structured outputs from the previous agents\n2. Assemble them into a valid workflow.yaml file with proper orchestration structure\n3. Use the provided tools to offer the file download to the user\n4. Wait for user interaction before completing",
+      "human_input_mode": "ALWAYS",
+      "max_consecutive_auto_reply": 2,
+      "llm_config_type": "base"
+    }
+  },
+  
+  "handoffs": {
+    "handoff_rules": [
+      {
+        "source_agent": "ContextAgent",
+        "target_agent": "AgentsAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "AgentsAgent",
+        "target_agent": "ContextVariablesAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "ContextVariablesAgent",
+        "target_agent": "HandoffsAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "HandoffsAgent",
+        "target_agent": "OrchestratorAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "OrchestratorAgent",
+        "target_agent": "UserFeedbackAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "UserFeedbackAgent",
+        "target_agent": "user",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "RevertToUserTarget"
+      },
+      {
+        "source_agent": "UserFeedbackAgent",
+        "target_agent": "APIKeyAgent",
+        "handoff_type": "condition",
+        "condition": "The system should prompt for API key setup only when it is explicitly required based on the features included in the user's request, or when missing API credentials block the execution of those features.",
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "UserFeedbackAgent",
+        "target_agent": "AgentsAgent",
+        "handoff_type": "condition",
+        "condition": "When the user wants to restart the workflow generation, modify requirements, or start over with a different approach. This includes requests to change the workflow design or requirements.",
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "APIKeyAgent",
+        "target_agent": "UserFeedbackAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      }
+    ]
+  },
+  
+  "context_variables": {
+    "variables": [
+      {
+        "name": "concept_overview",
+        "description": "Main project description and overview",
+        "default_value": "Please provide a concept overview to generate agents and workflows for your application.",
+        "database": {
+          "collection": "concepts",
+          "query": {"type": "concept_overview"},
+          "field": "content"
+        }
+      }
+    ]
+  },
+  
+  "structured_outputs": {
+    "models": {
+      "AgentDefinition": {
+        "type": "model",
+        "fields": {
+          "name": {"type": "str", "description": "Agent variable name"},
+          "display_name": {"type": "str", "description": "Agent display name"},
+          "system_message": {"type": "str", "description": "Complete system message for the agent"},
+          "human_input_mode": {"type": "literal", "values": ["ALWAYS", "NEVER", "TERMINATE"]},
+          "max_consecutive_auto_reply": {"type": "int", "default": 1}
+        }
+      },
+      "AgentsOutput": {
+        "type": "model", 
+        "fields": {
+          "agents": {"type": "list", "items": "AgentDefinition"}
+        }
+      },
+      "ContextVariablesDefinition": {
+        "type": "model",
+        "fields": {
+          "name": {"type": "str", "description": "Variable name"},
+          "source": {"type": "str", "description": "Data source for this variable"},
+          "description": {"type": "str", "description": "Description of what this variable represents"},
+          "default_value": {"type": "str", "description": "Default value if extraction fails"}
+        }
+      },
+      "ContextVariablesOutput": {
+        "type": "model",
+        "fields": {
+          "context_variables": {"type": "list", "items": "ContextVariablesDefinition"}
+        }
+      },
+      "HandoffRule": {
+        "type": "model",
+        "fields": {
+          "source_agent": {"type": "str", "description": "Source agent name"},
+          "target_agent": {"type": "str", "description": "Target agent name, 'user', or 'terminate'"},
+          "handoff_type": {"type": "literal", "values": ["after_work", "condition"], "description": "Type of handoff"},
+          "condition": {"type": "optional_str", "default": null, "description": "Condition for handoff (if handoff_type is condition)"},
+          "transition_target": {"type": "optional_str", "default": null, "description": "Specific transition target for complex routing"}
+        }
+      },
+      "HandoffsOutput": {
+        "type": "model",
+        "fields": {
+          "handoff_rules": {"type": "list", "items": "HandoffRule"}
+        }
+      },
+      "OrchestratorOutput": {
+        "type": "model",
+        "fields": {
+          "workflow_name": {"type": "str", "description": "Name of the workflow"},
+          "max_turns": {"type": "int", "default": 25, "description": "Maximum workflow turns"},
+          "human_in_the_loop": {"type": "bool", "description": "Whether human interaction is required in the workflow"},
+          "startup_mode": {"type": "literal", "values": ["AgentDriven", "UserDriven", "BackendOnly"], "description": "How the workflow interface behaves"},
+          "orchestration_pattern": {"type": "str", "description": "Orchestration pattern (DefaultPattern, AutoPattern, etc.)"},
+          "initial_message_to_user": {"type": "optional_str", "default": null, "description": "Message shown to user (null for AgentDriven/BackendOnly)"},
+          "initial_message": {"type": "optional_str", "default": null, "description": "Initial workflow message (null for UserDriven)"},
+          "recipient": {"type": "str", "description": "First recipient agent (first specialist agent in workflow sequence)"}
+        }
+      }
+    },
+    "registry": {
+      "ContextVariablesAgent": "ContextVariablesOutput",
+      "AgentsAgent": "AgentsOutput", 
+      "HandoffsAgent": "HandoffsOutput",
+      "OrchestratorAgent": "OrchestratorOutput"
+    }
+  },
   
   "visual_agents": [
     "APIKeyAgent",

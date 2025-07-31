@@ -28,7 +28,7 @@ from logs.logging_config import (
 
 # Type imports
 if TYPE_CHECKING:
-    from .StructuredOutputs import HandoffsOutput, HandoffRule
+    pass  # No longer importing from StructuredOutputs
 
 # Get specialized loggers
 business_logger = get_business_logger("generator_handoffs")
@@ -47,45 +47,53 @@ class HandoffGenerator:
             "terminate": lambda: TerminateTarget(),
         }
     
-    def generate_from_structured_output(self, handoffs_output: "HandoffsOutput", agents: Dict[str, Any]) -> None:
+    def generate_from_structured_output(self, handoffs_output: Dict[str, Any], agents: Dict[str, Any]) -> None:
         """
-        Generate handoffs from HandoffsAgent's structured output.
+        Generate handoffs from structured output data.
         
         Args:
-            handoffs_output: Structured output from HandoffsAgent
+            handoffs_output: Dictionary containing handoff rules and configuration
             agents: Dictionary of agent instances
         """
         handoff_start = time.time()
+        
+        handoff_rules = handoffs_output.get('handoff_rules', [])
+        workflow_pattern = handoffs_output.get('workflow_pattern', 'sequential')
         
         log_business_event(
             event_type="STRUCTURED_HANDOFF_GENERATION_STARTED",
             description="Starting handoff generation from structured outputs",
             context={
-                "rules_count": len(handoffs_output.handoff_rules),
-                "workflow_pattern": handoffs_output.workflow_pattern,
+                "rules_count": len(handoff_rules),
+                "workflow_pattern": workflow_pattern,
                 "agent_count": len(agents)
             }
         )
         
         try:
-            business_logger.info(f"🔗 [HANDOFFS] Generating from structured output - Pattern: {handoffs_output.workflow_pattern}")
+            business_logger.info(f"🔗 [HANDOFFS] Generating from structured output - Pattern: {workflow_pattern}")
             
             # Group rules by source agent for efficient processing
             agent_rules = {}
-            for rule in handoffs_output.handoff_rules:
-                if rule.source_agent not in agent_rules:
-                    agent_rules[rule.source_agent] = {
+            for rule in handoff_rules:
+                source_agent = rule.get('source_agent')
+                if not source_agent:
+                    continue
+                    
+                if source_agent not in agent_rules:
+                    agent_rules[source_agent] = {
                         "after_work": None,
                         "llm_conditions": [],
                         "context_conditions": []
                     }
                 
-                if rule.handoff_type == "after_work":
-                    agent_rules[rule.source_agent]["after_work"] = rule
-                elif rule.handoff_type == "llm_condition":
-                    agent_rules[rule.source_agent]["llm_conditions"].append(rule)
-                elif rule.handoff_type == "context_condition":
-                    agent_rules[rule.source_agent]["context_conditions"].append(rule)
+                handoff_type = rule.get('handoff_type', 'after_work')
+                if handoff_type == "after_work":
+                    agent_rules[source_agent]["after_work"] = rule
+                elif handoff_type == "llm_condition":
+                    agent_rules[source_agent]["llm_conditions"].append(rule)
+                elif handoff_type == "context_condition":
+                    agent_rules[source_agent]["context_conditions"].append(rule)
             
             # Apply handoffs to each agent
             for agent_name, rules in agent_rules.items():
@@ -103,8 +111,8 @@ class HandoffGenerator:
                 value=total_time,
                 unit="ms",
                 context={
-                    "rules_count": len(handoffs_output.handoff_rules),
-                    "workflow_pattern": handoffs_output.workflow_pattern
+                    "rules_count": len(handoff_rules),
+                    "workflow_pattern": workflow_pattern
                 }
             )
             
@@ -132,17 +140,17 @@ class HandoffGenerator:
         # Add LLM conditions
         if rules["llm_conditions"]:
             # Sort by priority (lower number = higher priority)
-            sorted_conditions = sorted(rules["llm_conditions"], key=lambda r: r.priority)
+            sorted_conditions = sorted(rules["llm_conditions"], key=lambda r: r.get('priority', 1))
             
             conditions = []
             for rule in sorted_conditions:
                 target = self._create_target(rule, agents)
                 condition = OnCondition(
                     target=target,
-                    condition=StringLLMCondition(prompt=rule.condition)
+                    condition=StringLLMCondition(prompt=rule.get('condition', ''))
                 )
                 conditions.append(condition)
-                business_logger.debug(f"🔗 [HANDOFFS] {agent_name} → {rule.target_agent} (LLM: {rule.description})")
+                business_logger.debug(f"🔗 [HANDOFFS] {agent_name} → {rule.get('target_agent')} (LLM: {rule.get('description', 'No description')})")
             
             agent.handoffs.add_llm_conditions(conditions)
         
@@ -153,15 +161,15 @@ class HandoffGenerator:
                 condition = OnContextCondition(
                     target=target,
                     condition=ExpressionContextCondition(
-                        expression=ContextExpression(rule.context_expression)
+                        expression=ContextExpression(rule.get('context_expression', ''))
                     )
                 )
                 agent.handoffs.add_context_condition(condition)
-                business_logger.debug(f"🔗 [HANDOFFS] {agent_name} → {rule.target_agent} (Context: {rule.description})")
+                business_logger.debug(f"🔗 [HANDOFFS] {agent_name} → {rule.get('target_agent')} (Context: {rule.get('description', 'No description')})")
     
-    def _create_target(self, rule: "HandoffRule", agents: Dict[str, Any]):
-        """Create appropriate target from handoff rule"""
-        target_agent = rule.target_agent
+    def _create_target(self, rule: Dict[str, Any], agents: Dict[str, Any]):
+        """Create appropriate target from handoff rule dictionary"""
+        target_agent = rule.get('target_agent')
         
         # Special targets
         if target_agent in self.target_mapping:
@@ -191,49 +199,96 @@ def wire_handoffs_from_structured_output(handoffs_output, agents: Dict[str, Any]
 
 async def wire_handoffs(agents: Dict[str, Any]) -> None:
     """
-    Core integration function called by groupchat_manager.py
+    Core integration function called by groupchat_manager.py - now driven by workflow.json
     
-    This function extracts HandoffsAgent's structured output and applies it to the agents.
-    This is the entry point that the core system calls.
+    This function reads handoff configuration from workflow.json and applies it to the agents.
+    It also supports dynamic handoffs from HandoffsAgent if available.
     
     Args:
         agents: Dictionary of agent instances from the workflow
     """
     try:
-        business_logger.info(f"🔗 [HANDOFFS] Starting structured handoff integration...")
+        business_logger.info(f"🔗 [HANDOFFS] Starting JSON-driven handoff integration...")
         
-        # Check if HandoffsAgent exists and has generated output
-        if "HandoffsAgent" not in agents:
-            business_logger.warning(f"⚠️ [HANDOFFS] HandoffsAgent not found in agents dict - skipping handoffs")
-            return
+        # Load workflow configuration from JSON
+        from pathlib import Path
+        import json
         
-        handoffs_agent = agents["HandoffsAgent"]
-        business_logger.info(f"🔗 [HANDOFFS] HandoffsAgent found - extracting structured output...")
+        workflow_path = Path(__file__).parent / "workflow.json"
+        with open(workflow_path, 'r', encoding='utf-8') as f:
+            workflow_config = json.load(f)
         
-        # Extract structured output from the HandoffsAgent
-        # This implementation depends on how your agents store their outputs
-        # For now, we'll implement a solution that checks the conversation history
+        handoffs_config = workflow_config.get('handoffs', {})
+        static_rules = handoffs_config.get('handoff_rules', [])
         
-        handoffs_output = await _extract_handoffs_output(handoffs_agent)
+        business_logger.info(f"🔗 [HANDOFFS] Found {len(static_rules)} static handoff rules in workflow.json")
         
-        if handoffs_output:
-            business_logger.info(f"🔗 [HANDOFFS] Found structured output with {len(handoffs_output.handoff_rules)} rules")
+        # Apply static handoffs from JSON configuration
+        if static_rules:
+            business_logger.info(f"🔗 [HANDOFFS] Applying static handoffs from workflow.json...")
             
-            # Apply the structured handoffs to the agents
-            wire_handoffs_from_structured_output(handoffs_output, agents)
+            # Create a structured output dictionary from JSON config
+            handoff_rules = []
+            for rule_data in static_rules:
+                handoff_rule = {
+                    'source_agent': rule_data.get('source_agent'),
+                    'target_agent': rule_data.get('target_agent'),
+                    'handoff_type': rule_data.get('handoff_type', 'after_work'),
+                    'condition': rule_data.get('condition'),
+                    'context_expression': rule_data.get('context_expression'),
+                    'priority': rule_data.get('priority', 1),
+                    'description': rule_data.get('description', 'Static handoff from workflow.json')
+                }
+                handoff_rules.append(handoff_rule)
             
-            business_logger.info(f"✅ [HANDOFFS] Successfully applied structured handoffs")
+            static_handoffs_output = {
+                'handoff_rules': handoff_rules,
+                'workflow_pattern': handoffs_config.get('workflow_pattern', 'sequential'),
+                'termination_strategy': handoffs_config.get('termination_strategy', 'automatic'),
+                'llm_conditions': [],
+                'context_conditions': []
+            }
+            
+            # Apply static handoffs
+            wire_handoffs_from_structured_output(static_handoffs_output, agents)
+            business_logger.info(f"✅ [HANDOFFS] Applied {len(static_rules)} static handoffs from workflow.json")
+        
+        # Check if HandoffsAgent exists and try to get dynamic handoffs
+        dynamic_handoffs_applied = False
+        if "HandoffsAgent" in agents:
+            business_logger.info(f"🔗 [HANDOFFS] HandoffsAgent found - checking for dynamic handoffs...")
+            
+            handoffs_agent = agents["HandoffsAgent"]
+            handoffs_output = await _extract_handoffs_output(handoffs_agent)
+            
+            if handoffs_output:
+                llm_count = len(handoffs_output.get('llm_conditions', []))
+                context_count = len(handoffs_output.get('context_conditions', []))
+                business_logger.info(f"🔗 [HANDOFFS] Found dynamic output with {llm_count} LLM conditions and {context_count} context conditions")
+                
+                # Apply dynamic handoffs (these override static ones if conflicts exist)
+                wire_handoffs_from_structured_output(handoffs_output, agents)
+                business_logger.info(f"✅ [HANDOFFS] Applied dynamic handoffs from HandoffsAgent")
+                dynamic_handoffs_applied = True
+            else:
+                business_logger.info(f"📝 [HANDOFFS] No dynamic handoffs found - using static configuration")
         else:
-            business_logger.warning(f"⚠️ [HANDOFFS] No structured output found from HandoffsAgent")
-            business_logger.info(f"📝 [HANDOFFS] Agent may not have completed execution yet")
+            business_logger.info(f"📝 [HANDOFFS] No HandoffsAgent found - using static configuration only")
+        
+        # Log summary
+        total_rules = len(static_rules)
+        if dynamic_handoffs_applied:
+            business_logger.info(f"🎉 [HANDOFFS] Handoff integration completed - using dynamic handoffs")
+        else:
+            business_logger.info(f"🎉 [HANDOFFS] Handoff integration completed - using {total_rules} static handoffs")
         
     except Exception as e:
         business_logger.error(f"❌ [HANDOFFS] Failed to wire handoffs: {e}", exc_info=True)
         # Don't raise - handoffs are optional and shouldn't break the workflow
 
-async def _extract_handoffs_output(handoffs_agent: Any) -> Optional["HandoffsOutput"]:
+async def _extract_handoffs_output(handoffs_agent: Any) -> Optional[Dict[str, Any]]:
     """
-    Extract HandoffsOutput from the agent's conversation history
+    Extract handoffs output from the agent's conversation history
     
     This function searches the agent's last message or response for structured JSON output.
     
@@ -241,11 +296,9 @@ async def _extract_handoffs_output(handoffs_agent: Any) -> Optional["HandoffsOut
         handoffs_agent: The HandoffsAgent instance
         
     Returns:
-        HandoffsOutput if found, None otherwise
+        Dict containing handoffs data if found, None otherwise
     """
     try:
-        from .StructuredOutputs import HandoffsOutput
-        
         business_logger.debug(f"🔍 [HANDOFFS] Extracting structured output from HandoffsAgent...")
         
         # Method 1: Check if the agent has a last_message attribute
@@ -254,7 +307,7 @@ async def _extract_handoffs_output(handoffs_agent: Any) -> Optional["HandoffsOut
             output = _parse_json_from_content(content)
             if output:
                 try:
-                    return HandoffsOutput.model_validate(output)
+                    return output  # Return the dict directly
                 except Exception as e:
                     business_logger.warning(f"⚠️ [HANDOFFS] Failed to validate structured output from last_message: {e}")
         
@@ -267,7 +320,7 @@ async def _extract_handoffs_output(handoffs_agent: Any) -> Optional["HandoffsOut
                     output = _parse_json_from_content(content)
                     if output:
                         try:
-                            return HandoffsOutput.model_validate(output)
+                            return output  # Return the dict directly
                         except Exception as e:
                             business_logger.warning(f"⚠️ [HANDOFFS] Failed to validate structured output from chat_messages: {e}")
         
@@ -285,7 +338,7 @@ async def _extract_handoffs_output(handoffs_agent: Any) -> Optional["HandoffsOut
                                 output = _parse_json_from_content(content)
                                 if output:
                                     try:
-                                        return HandoffsOutput.model_validate(output)
+                                        return output  # Return the dict directly
                                     except Exception as e:
                                         business_logger.warning(f"⚠️ [HANDOFFS] Failed to validate structured output from {attr_name}: {e}")
         
