@@ -20,7 +20,7 @@ from bson.objectid import ObjectId
 from uuid import uuid4
 from pydantic import BaseModel
 
-from core.core_config import make_streaming_config, get_mongo_client
+from core.core_config import make_llm_config, get_mongo_client
 from core.transport.simple_transport import SimpleTransport
 from core.workflow.init_registry import get_initialization_coroutines, get_registered_workflows, workflow_status_summary, get_workflow_transport, get_workflow_tools, workflow_human_loop
 from core.data.persistence_manager import PersistenceManager
@@ -102,9 +102,9 @@ async def startup():
     business_logger.info("🚀 Starting MozaiksAI Runtime...")
 
     try:
-        # Initialize simple transport with streaming config
+        # Initialize simple transport with basic LLM config
         streaming_start = datetime.utcnow()
-        _, streaming_llm_config = await make_streaming_config()
+        _, streaming_llm_config = await make_llm_config()
         simple_transport = SimpleTransport(streaming_llm_config)
         
         streaming_time = (datetime.utcnow() - streaming_start).total_seconds() * 1000
@@ -113,11 +113,11 @@ async def startup():
             value=streaming_time,
             context={
                 "config_keys": list(streaming_llm_config.keys()) if streaming_llm_config else [],
-                "streaming_enabled": streaming_llm_config.get("stream", False)
+                "streaming_enabled": True  # AG2 IOStream handles streaming
             }
         )
         
-        business_logger.info(f"🔌 Simple transport initialized - Streaming: {streaming_llm_config.get('stream', False)}")
+        business_logger.info(f"🔌 Simple transport initialized - Streaming: True (AG2 IOStream)")
 
         # Test MongoDB connection
         mongo_start = datetime.utcnow()
@@ -458,6 +458,44 @@ async def health_check():
         logger.error(f"❌ Health check failed: {e}")
         raise HTTPException(status_code=500, detail=f"Health check failed: {e}")
 
+@app.post("/api/chats/{enterprise_id}/{workflow_name}/start")
+async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
+    """Start a new chat session for a workflow"""
+    try:
+        data = await request.json()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id is required")
+        
+        # Generate a new chat ID
+        chat_id = str(uuid4())
+        
+        log_business_event(
+            event_type="CHAT_SESSION_STARTED",
+            description=f"New chat session started for workflow {workflow_name}",
+            context={
+                "enterprise_id": enterprise_id,
+                "workflow_name": workflow_name,
+                "user_id": user_id,
+                "chat_id": chat_id
+            }
+        )
+        
+        return {
+            "success": True,
+            "chat_id": chat_id,
+            "workflow_name": workflow_name,
+            "enterprise_id": enterprise_id,
+            "user_id": user_id,
+            "websocket_url": f"/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}",
+            "message": "Chat session created successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to start chat session: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start chat: {e}")
+
 @app.get("/api/chats/{enterprise_id}/{workflow_name}")
 async def list_chats(enterprise_id: str, workflow_name: str):
     """List recent chat IDs for a given enterprise and workflow"""
@@ -738,6 +776,28 @@ async def consume_user_tokens(user_id: str, request: Request):
     except Exception as e:
         logger.error(f"Error consuming tokens for user {user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/workflows")
+async def get_workflows():
+    """Get all workflows for frontend (alias for /api/workflows/config)"""
+    try:
+        from core.workflow.workflow_config import workflow_config
+        
+        configs = {}
+        for workflow_name in workflow_config.get_all_workflow_names():
+            configs[workflow_name] = workflow_config.get_config(workflow_name)
+        
+        log_business_event(
+            event_type="WORKFLOWS_REQUESTED",
+            description="Workflows requested by frontend",
+            context={"workflow_count": len(configs)}
+        )
+        
+        return configs
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to get workflows: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve workflows")
 
 @app.get("/api/workflows/config")
 async def get_workflow_configs():

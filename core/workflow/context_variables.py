@@ -44,6 +44,11 @@ def get_context(workflow_name: str, concept_data: Optional[Dict[str, Any]] = Non
             return context_vars
         
         context_config = workflow_config.get('context_variables', {})
+        
+        # Handle nested structure: context_variables -> context_variables -> variables
+        if 'context_variables' in context_config:
+            context_config = context_config['context_variables']
+        
         variable_definitions = context_config.get('variables', [])
         
         business_logger.info(f"🔧 [CONTEXT] Found {len(variable_definitions)} context variable definitions")

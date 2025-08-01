@@ -123,6 +123,10 @@ class AG2TerminationHandler:
             # VE-style status pattern: 0 = in progress, 1 = completed (any reason)
             final_status = 1  # All completed conversations get status 1
             
+            # Adjust termination reason if max turns was reached
+            if max_turns_reached and termination_reason == "completed":
+                termination_reason = "max_turns_reached"
+            
             # Update VE-style workflow status (0 → 1)
             status_updated = await self.persistence_manager.update_workflow_status(
                 self.chat_id, self.enterprise_id, final_status, self.workflow_name
@@ -168,6 +172,7 @@ class AG2TerminationHandler:
                     "final_status": final_status,
                     "duration_ms": conversation_duration * 1000,
                     "termination_reason": termination_reason,
+                    "max_turns_reached": max_turns_reached,
                     "workflow_complete": result.workflow_complete
                 }
             )
@@ -259,7 +264,7 @@ def create_termination_handler(chat_id: str,
     """
     Factory function to create configured termination handler
     
-    Usage in groupchat_manager.py:
+    Usage in orchestration_patterns.py:
     ```python
     termination_handler = create_termination_handler(chat_id, enterprise_id, workflow_name, token_manager)
     await termination_handler.on_conversation_start()

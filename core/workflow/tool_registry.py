@@ -1,6 +1,6 @@
 """
-Modular Tool Registry for JSON-Driven Agent Tools with Lifecycle Control
-Supports workflow.json configuration for clean, centralized tool management with timing control
+Modular Tool Registry for YAML-Driven Agent Tools with Lifecycle Control
+Supports modular YAML configuration for clean, centralized tool management with timing control
 """
 
 import json
@@ -75,23 +75,25 @@ class WorkflowToolRegistry:
         self.workflow_name = workflow_name
         self.agent_tools: Dict[str, List[ToolConfig]] = {}
         self.lifecycle_tools: Dict[ToolTrigger, List[ToolConfig]] = {}
-        self.config_path = Path("workflows") / workflow_name / "workflow.json"
+        # Use modular YAML configuration instead of workflow.json
+        from .file_manager import workflow_file_manager
+        self.file_manager = workflow_file_manager
         
     def load_configuration(self):
-        """Load tool configuration from workflow.json"""
-        if not self.config_path.exists():
-            logger.warning(f"No workflow.json found at '{self.config_path}'")
-            return
-            
+        """Load tool configuration from modular YAML files"""
         try:
-            with open(self.config_path, 'r') as f:
-                config = json.load(f)
-                
+            # Load complete workflow configuration
+            workflow_config = self.file_manager.load_workflow(self.workflow_name)
+            
+            if not workflow_config:
+                logger.warning(f"No modular YAML configuration found for workflow: {self.workflow_name}")
+                return
+            
             # Load agent tools from multiple possible schemas
-            self._load_agent_tools_from_config(config)
+            self._load_agent_tools_from_config(workflow_config)
                     
             # Load lifecycle tools
-            lifecycle_tools = config.get("lifecycle_tools", {})
+            lifecycle_tools = workflow_config.get("lifecycle_tools", {})
             for tool_name, tool_config in lifecycle_tools.items():
                 # Support the original schema with lifecycle_event field
                 if isinstance(tool_config, dict) and "lifecycle_event" in tool_config:

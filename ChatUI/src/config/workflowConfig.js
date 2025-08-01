@@ -22,34 +22,22 @@ class WorkflowConfig {
       const response = await fetch('/api/workflows');
       if (response.ok) {
         const data = await response.json();
-        const workflows = data.workflows || []; // Handle backend structure
         
         console.log('🔍 Raw workflow data from backend:', data);
         
-        // For each workflow, fetch full configuration
+        // Backend returns workflows as object with workflow names as keys
+        // Convert to array format for processing
+        const workflows = [];
+        for (const [workflowName, workflowConfig] of Object.entries(data)) {
+          workflows.push({
+            workflow_name: workflowName,
+            ...workflowConfig
+          });
+        }
+        
+        // Store each workflow configuration directly
         for (const workflow of workflows) {
-          try {
-            const configResponse = await fetch(`/api/workflows/${workflow.workflow_name}/config`);
-            if (configResponse.ok) {
-              const configData = await configResponse.json();
-              this.configs.set(workflow.workflow_name, configData.config);
-            } else {
-              // Fallback to minimal structure
-              this.configs.set(workflow.workflow_name, {
-                workflow_name: workflow.workflow_name,
-                transport: workflow.transport || 'websocket',
-                human_in_the_loop: workflow.human_loop !== false
-              });
-            }
-          } catch (configError) {
-            console.warn(`⚠️ Failed to fetch config for ${workflow.workflow_name}:`, configError);
-            // Fallback to minimal structure
-            this.configs.set(workflow.workflow_name, {
-              workflow_name: workflow.workflow_name,
-              transport: workflow.transport || 'websocket',
-              human_in_the_loop: workflow.human_loop !== false
-            });
-          }
+          this.configs.set(workflow.workflow_name, workflow);
         }
         
         console.log('✅ Loaded workflow configs:', workflows.map(w => w.workflow_name));

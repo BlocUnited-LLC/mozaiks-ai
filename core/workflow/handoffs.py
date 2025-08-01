@@ -64,10 +64,16 @@ class HandoffManager:
                 return
             
             handoffs_config = workflow_config.get('handoffs', {})
+            
+            # Handle nested structure: handoffs -> handoffs -> handoff_rules
+            if 'handoffs' in handoffs_config:
+                handoffs_config = handoffs_config['handoffs']
+            
             handoff_rules = handoffs_config.get('handoff_rules', [])
             
             if not handoff_rules:
                 business_logger.warning(f"⚠️ [HANDOFFS] No handoff rules found in {workflow_name}/handoffs.yaml")
+                business_logger.debug(f"🔍 [HANDOFFS] Available keys in handoffs_config: {list(handoffs_config.keys())}")
                 return
             
             business_logger.info(f"🔗 [HANDOFFS] Found {len(handoff_rules)} handoff rules for {workflow_name}")
@@ -160,12 +166,17 @@ class HandoffManager:
     def _configure_agent_handoffs(self, agent: Any, agent_name: str, rules: Dict[str, Any], agents: Dict[str, Any]) -> None:
         """Configure handoffs for a single agent from rules"""
         
+        business_logger.info(f"🔗 [HANDOFFS] Configuring handoffs for agent: {agent_name}")
+        business_logger.debug(f"🔍 [HANDOFFS] Agent {agent_name} has handoffs attribute: {hasattr(agent, 'handoffs')}")
+        business_logger.debug(f"🔍 [HANDOFFS] Rules for {agent_name}: {rules}")
+        
         # Set after-work behavior
         if rules["after_work"]:
             target = self._create_target(rules["after_work"], agents)
+            business_logger.info(f"🎯 [HANDOFFS] Setting after_work for {agent_name} → {rules['after_work'].get('target_agent', 'unknown')}")
             agent.handoffs.set_after_work(target)
             target_name = rules["after_work"].get('target_agent', 'unknown')
-            business_logger.debug(f"🔗 [HANDOFFS] {agent_name} → {target_name} (after work)")
+            business_logger.info(f"✅ [HANDOFFS] {agent_name} → {target_name} (after work) configured successfully")
         
         # Add LLM conditions
         if rules["llm_conditions"]:
@@ -184,13 +195,15 @@ class HandoffManager:
                     )
                     conditions.append(condition)
                     target_name = rule.get('target_agent', 'unknown')
-                    business_logger.debug(f"🔗 [HANDOFFS] {agent_name} → {target_name} (LLM condition)")
+                    business_logger.info(f"✅ [HANDOFFS] {agent_name} → {target_name} (LLM condition) configured successfully")
             
             if conditions:
+                business_logger.info(f"🎯 [HANDOFFS] Adding {len(conditions)} LLM conditions for {agent_name}")
                 agent.handoffs.add_llm_conditions(conditions)
         
         # Add context conditions
         if rules["context_conditions"]:
+            business_logger.info(f"🎯 [HANDOFFS] Adding context conditions for {agent_name}")
             for rule in rules["context_conditions"]:
                 target = self._create_target(rule, agents)
                 context_expr = rule.get('context_expression', '')
@@ -204,7 +217,7 @@ class HandoffManager:
                     )
                     agent.handoffs.add_context_condition(condition)
                     target_name = rule.get('target_agent', 'unknown')
-                    business_logger.debug(f"🔗 [HANDOFFS] {agent_name} → {target_name} (Context condition)")
+                    business_logger.info(f"✅ [HANDOFFS] {agent_name} → {target_name} (context condition) configured successfully")
     
     def _create_target(self, rule: Dict[str, Any], agents: Dict[str, Any]):
         """Create appropriate target from handoff rule dictionary"""

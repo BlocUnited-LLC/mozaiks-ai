@@ -106,9 +106,6 @@ structured_outputs:
           type: optional_str
           default: null
           description: "Initial workflow message (null for UserDriven)"
-        recipient:
-          type: str
-          description: "First recipient agent (first specialist agent in workflow sequence)"
 
   registry:
     ContextVariablesAgent: ContextVariablesOutput

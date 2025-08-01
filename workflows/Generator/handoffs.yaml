@@ -25,9 +25,21 @@ handoffs:
       transition_target: AgentTarget
 
     - source_agent: OrchestratorAgent
-      target_agent: UserFeedbackAgent
+      target_agent: APIKeyAgent
       handoff_type: after_work
       condition: null
+      transition_target: AgentTarget
+
+    - source_agent: APIKeyAgent
+      target_agent: user
+      handoff_type: after_work
+      condition: "If the users request requires API keys for external services, such as OpenAI, Anthropic, Azure OpenAI, Google, Hugging Face, or GitHub."
+      transition_target: RevertToUserTarget
+
+    - source_agent: APIKeyAgent
+      target_agent: UserFeedbackAgent
+      handoff_type: after_work
+      condition: "If the users request does not require API keys, or if the API keys have already been collected."
       transition_target: AgentTarget
 
     - source_agent: UserFeedbackAgent
@@ -36,20 +48,14 @@ handoffs:
       condition: null
       transition_target: RevertToUserTarget
 
-    - source_agent: UserFeedbackAgent
-      target_agent: APIKeyAgent
+    - source_agent: user
+      target_agent: terminate
       handoff_type: condition
-      condition: "The system should prompt for API key setup only when it is explicitly required based on the features included in the user's request, or when missing API credentials block the execution of those features."
-      transition_target: AgentTarget
+      condition: "When the user accepts the generated workflow files, downloads them, or indicates satisfaction with the workflow. This includes responses like 'yes', 'download', 'accept', 'looks good', or 'thank you'."
+      transition_target: TerminateTarget
 
-    - source_agent: UserFeedbackAgent
-      target_agent: AgentsAgent
+    - source_agent: user
+      target_agent: ContextAgent
       handoff_type: condition
       condition: "When the user wants to restart the workflow generation, modify requirements, or start over with a different approach. This includes requests to change the workflow design or requirements."
-      transition_target: AgentTarget
-
-    - source_agent: APIKeyAgent
-      target_agent: UserFeedbackAgent
-      handoff_type: after_work
-      condition: null
       transition_target: AgentTarget

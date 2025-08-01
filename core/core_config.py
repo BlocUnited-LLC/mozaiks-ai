@@ -110,9 +110,8 @@ async def make_llm_config(
         "config_list": config_list
     }
     
-    # Add streaming configuration if enabled
+    # Note: Streaming is handled by AG2's IOStream system, not by llm_config
     if stream:
-        llm_config["stream"] = True
         logger.info("🎯 AG2 streaming enabled - custom IOStream will handle output")
     else:
         logger.info("🎯 AG2 streaming disabled")
@@ -126,10 +125,6 @@ async def make_llm_config(
     logger.info("LLM runtime config initialized successfully.")
     
     return client, llm_config
-
-async def make_streaming_config(extra_config: Optional[Dict[str, Any]] = None, enable_token_tracking: bool = False):
-    """Create streaming LLM configuration"""
-    return await make_llm_config(stream=True, extra_config=extra_config, enable_token_tracking=enable_token_tracking)
 
 async def make_structured_config(response_format: Type[BaseModel], extra_config: Optional[Dict[str, Any]] = None, enable_token_tracking: bool = False):
     """Create structured output LLM configuration"""

@@ -409,26 +409,29 @@ class SimpleTransport:
         Send messages to UI via WebSocket broadcast.
         """
         
+        # Extract clean content from AG2 UUID-formatted messages
+        clean_message = self._extract_clean_content(message)
+        
         # For simple strings, apply traditional filtering
-        if isinstance(message, str):
+        if isinstance(clean_message, str):
             if not self.should_show_to_user(agent_name, chat_id):
-                logger.debug(f"🚫 Filtered message from {agent_name}: {message[:50]}...")
+                logger.debug(f"🚫 Filtered message from {agent_name}: {clean_message[:50]}...")
                 return
         
         # Format agent name
         formatted_agent = self.format_agent_name(agent_name)
         
         # Log agent message to agent_chat.log for tracking
-        if isinstance(message, str) and formatted_agent and formatted_agent != "Assistant":
-            chat_logger.info(f"AGENT_MESSAGE | Chat: {chat_id or 'unknown'} | Agent: {formatted_agent} | Message: {str(message)[:200]}{'...' if len(str(message)) > 200 else ''}")
-        elif isinstance(message, str):
-            chat_logger.info(f"SYSTEM_MESSAGE | Chat: {chat_id or 'unknown'} | Type: {message_type} | Message: {str(message)[:200]}{'...' if len(str(message)) > 200 else ''}")
+        if isinstance(clean_message, str) and formatted_agent and formatted_agent != "Assistant":
+            chat_logger.info(f"AGENT_MESSAGE | Chat: {chat_id or 'unknown'} | Agent: {formatted_agent} | Message: {str(clean_message)[:200]}{'...' if len(str(clean_message)) > 200 else ''}")
+        elif isinstance(clean_message, str):
+            chat_logger.info(f"SYSTEM_MESSAGE | Chat: {chat_id or 'unknown'} | Type: {message_type} | Message: {str(clean_message)[:200]}{'...' if len(str(clean_message)) > 200 else ''}")
         
         # Create event data
         event_data = {
             "type": "chat_message",
             "data": {
-                "message": str(message),
+                "message": str(clean_message),
                 "agent_name": formatted_agent,
                 "chat_id": chat_id,
                 "metadata": metadata or {},
@@ -440,7 +443,47 @@ class SimpleTransport:
         # Broadcast to WebSocket connections only
         await self._broadcast_to_websockets(event_data, chat_id)
         
-        logger.info(f"📤 {formatted_agent}: {str(message)[:100]}...")
+        logger.info(f"📤 {formatted_agent}: {str(clean_message)[:100]}...")
+        
+    def _extract_clean_content(self, message: Union[str, Dict[str, Any], Any]) -> str:
+        """Extract clean content from AG2 UUID-formatted messages or other formats."""
+        
+        # Handle string messages (most common case)
+        if isinstance(message, str):
+            # Check if it's a UUID-formatted AG2 message
+            if 'uuid=UUID(' in message and 'content=' in message:
+                # Extract content using regex
+                import re
+                # Try both single and double quotes
+                content_match = re.search(r"content='([^']*)'|content=\"([^\"]*)\"", message)
+                if content_match:
+                    extracted_content = content_match.group(1) or content_match.group(2)
+                    # Unescape common escape sequences
+                    extracted_content = extracted_content.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\')
+                    return extracted_content
+                else:
+                    # Fallback: return the original message if parsing fails
+                    return message
+            else:
+                # Regular string message
+                return message
+        
+        # Handle dict messages
+        elif isinstance(message, dict):
+            # Try common content keys
+            for key in ['content', 'message', 'text', 'body']:
+                if key in message:
+                    return str(message[key])
+            # Fallback to string representation
+            return str(message)
+        
+        # Handle other object types
+        else:
+            # Check if object has content attribute
+            if hasattr(message, 'content'):
+                return str(message.content)
+            # Fallback to string representation
+            return str(message)
         
     async def _broadcast_to_websockets(self, event_data: Dict[str, Any], target_chat_id: Optional[str] = None) -> None:
         """Broadcast event to WebSocket connections only"""
