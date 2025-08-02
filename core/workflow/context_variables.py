@@ -1,215 +1,315 @@
 # ==============================================================================
 # FILE: core/workflow/context_variables.py  
-# DESCRIPTION: Workflow-agnostic context variables - loads from modular YAML configs
+# DESCRIPTION: Simple context variables system for workflow agents
+# REQUIREMENTS:
+# 1. Provide database schema as context to agents
+# 2. Allow extraction of specific data from existing schema
 # ==============================================================================
-import logging
+
 import asyncio
-from pathlib import Path
-from autogen.agentchat.group import ContextVariables
 from typing import Dict, Any, Optional, List
+from autogen.agentchat.group import ContextVariables
 
+# Import existing infrastructure
 from .file_manager import workflow_file_manager
-
-# Import enhanced logging
 from logs.logging_config import get_business_logger
 
-# Get specialized logger
-business_logger = get_business_logger("workflow_context_variables")
+# Get logger
+business_logger = get_business_logger("context_variables")
 
-def get_context(workflow_name: str, concept_data: Optional[Dict[str, Any]] = None) -> ContextVariables:
+def get_context(workflow_name: str, enterprise_id: Optional[str] = None) -> ContextVariables:
     """
-    Create context variables for any workflow - fully workflow-agnostic.
+    Create context variables for any workflow.
     
-    Reads context variable definitions from workflow YAML files and dynamically extracts
-    data from MongoDB via Azure Key Vault or provided concept_data.
+    Features:
+    1. Database schema information for agents
+    2. Specific data extraction based on YAML configuration
     
     Args:
-        workflow_name: Name of the workflow to load context for
-        concept_data: Optional data dictionary to extract context from
+        workflow_name: Name of the workflow (e.g., 'Generator')
+        enterprise_id: Enterprise ID for database queries
         
     Returns:
-        ContextVariables instance populated with extracted data
+        ContextVariables populated with schema info and specific data
     """
     try:
-        business_logger.info(f"🔧 [CONTEXT] Creating context variables for workflow: {workflow_name}")
+        # Handle event loop issues
+        try:
+            loop = asyncio.get_running_loop()
+            return _load_context_sync(workflow_name, enterprise_id)
+        except RuntimeError:
+            return asyncio.run(_load_context_async(workflow_name, enterprise_id))
+    except Exception as e:
+        business_logger.error(f"❌ Context loading failed: {e}")
+        # Return basic fallback
+        context = ContextVariables()
+        if enterprise_id:
+            context.set("enterprise_id", enterprise_id)
+        return context
+
+def _load_context_sync(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
+    """Synchronous context loading - handles existing event loop properly."""
+    business_logger.info(f"🔧 Loading context for {workflow_name} (sync)")
+    
+    # When we're already in an event loop, we need to handle async operations differently
+    try:
+        # Try to get the current loop
+        loop = asyncio.get_running_loop()
         
-        # Load context variable configuration from workflow YAML
+        # We're in an event loop, so we need to create a task and wait for it
+        # But we can't await in a sync function, so we'll use a different approach
+        business_logger.warning("⚠️ Already in event loop - using simplified sync loading")
+        
+        # Load basic context without database operations
+        context = ContextVariables()
+        if enterprise_id:
+            context.set("enterprise_id", enterprise_id)
+        
+        # Load configuration but skip database operations
+        config = _load_workflow_config(workflow_name)
+        if config:
+            context.set("config_loaded", True)
+            
+            # Handle schema_overview configuration  
+            schema_config = config.get('schema_overview', {})
+            if isinstance(schema_config, dict) and 'database_name' in schema_config:
+                context.set("database_name", schema_config['database_name'])
+            
+            variables = config.get('variables', [])
+            if variables:
+                context.set("configured_variables", [v.get('name') for v in variables])
+        
+        business_logger.info(f"✅ Sync context loaded (basic): {len(context.data)} variables")
+        return context
+        
+    except RuntimeError:
+        # No running event loop, we can use asyncio.run
+        return asyncio.run(_load_context_async(workflow_name, enterprise_id))
+    except Exception as e:
+        business_logger.error(f"❌ Sync context loading failed: {e}")
+        # Return basic fallback
+        context = ContextVariables()
+        if enterprise_id:
+            context.set("enterprise_id", enterprise_id)
+        return context
+
+async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
+    """Async context loading - properly handles async MongoDB operations."""
+    business_logger.info(f"🔧 Loading context for {workflow_name} (async)")
+    
+    context = ContextVariables()
+    
+    # Store enterprise_id internally (used for queries but not exposed as context variable)
+    internal_enterprise_id = enterprise_id
+    
+    # Load workflow configuration  
+    config = _load_workflow_config(workflow_name)
+    
+    # Handle schema_overview configuration
+    schema_config = config.get('schema_overview', {})
+    if isinstance(schema_config, dict) and schema_config.get('enabled', False) and internal_enterprise_id:
+        schema_database = schema_config.get('database_name', 'autogen_ai_agents')
+        schema_info = await _get_database_schema_async(schema_database, internal_enterprise_id)
+        # Only add the schema_overview content, not database_name as separate variable
+        if 'schema_overview' in schema_info:
+            context.set("schema_overview", schema_info['schema_overview'])
+    
+    # Load specific variables from database
+    variables = config.get('variables', [])
+    if variables and internal_enterprise_id:
+        # Use default database name if not specified in schema config
+        default_db = config.get('database_name', 'autogen_ai_agents')
+        if isinstance(schema_config, dict) and 'database_name' in schema_config:
+            default_db = schema_config['database_name']
+        
+        loaded_data = await _load_specific_data_async(variables, default_db, internal_enterprise_id)
+        for key, value in loaded_data.items():
+            context.set(key, value)
+    
+    # Log the final context summary - only user-facing variables
+    variable_names = list(context.data.keys())
+    user_variables = [name for name in variable_names if name not in ['enterprise_id', 'database_name']]
+    business_logger.info(f"✅ Context loaded: {len(user_variables)} user context variables: {user_variables}")
+    
+    # Add enterprise_id for internal use but don't count it in summary
+    if internal_enterprise_id:
+        context.set("enterprise_id", internal_enterprise_id)
+    
+    return context
+
+def _load_workflow_config(workflow_name: str) -> Dict[str, Any]:
+    """Load YAML configuration for workflow."""
+    try:
         workflow_config = workflow_file_manager.load_workflow(workflow_name)
         
-        if not workflow_config:
-            business_logger.error(f"❌ [CONTEXT] No configuration found for workflow: {workflow_name}")
-            # Return minimal fallback context
-            context_vars = ContextVariables()
-            context_vars.set("error", f"No configuration found for workflow: {workflow_name}")
-            return context_vars
-        
-        context_config = workflow_config.get('context_variables', {})
-        
-        # Handle nested structure: context_variables -> context_variables -> variables
-        if 'context_variables' in context_config:
-            context_config = context_config['context_variables']
-        
-        variable_definitions = context_config.get('variables', [])
-        
-        business_logger.info(f"🔧 [CONTEXT] Found {len(variable_definitions)} context variable definitions")
-        
-        # Create context variables instance
-        context_vars = ContextVariables()
-        
-        # Load concept data from database if variables have database config
-        if concept_data is None:
-            # Check if any variables have database configuration
-            has_database_vars = any(var_def.get('database') for var_def in variable_definitions)
-            if has_database_vars:
-                # Run async function in sync context
-                concept_data = asyncio.run(_load_concept_data(variable_definitions))
-        
-        # Ensure concept_data is not None for variable extraction
-        if concept_data is None:
-            concept_data = {}
-        
-        # Process each variable definition from YAML
-        for var_def in variable_definitions:
-            var_name = var_def.get('name')
-            default_value = var_def.get('default_value', '')
-            description = var_def.get('description', '')
+        if workflow_config and 'context_variables' in workflow_config:
+            context_section = workflow_config['context_variables']
             
-            if not var_name:
-                business_logger.warning(f"⚠️ [CONTEXT] Variable definition missing name: {var_def}")
-                continue
+            # Handle double nesting if it exists
+            if isinstance(context_section, dict) and 'context_variables' in context_section:
+                result = context_section['context_variables']
+            else:
+                result = context_section
             
-            # Extract value directly from concept_data using variable name as key
-            extracted_value = concept_data.get(var_name, default_value)
-            
-            # Set the context variable
-            context_vars.set(var_name, extracted_value)
-            business_logger.debug(f"🔧 [CONTEXT] Set '{var_name}': {description}")
-        
-        business_logger.info(f"✅ [CONTEXT] Created {len(variable_definitions)} context variables for {workflow_name}")
-        return context_vars
-        
+            return result
+        return {}
     except Exception as e:
-        business_logger.error(f"❌ [CONTEXT] Failed to create context variables for {workflow_name}: {e}")
-        # Return minimal fallback context
-        context_vars = ContextVariables()
-        context_vars.set("error", f"Error loading context for {workflow_name}: {str(e)}")
-        return context_vars
+        business_logger.warning(f"⚠️ Could not load config for {workflow_name}: {e}")
+        return {}
 
-async def _load_concept_data(variable_definitions: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def _get_database_schema_async(database_name: str, enterprise_id: str) -> Dict[str, Any]:
     """
-    Load concept data from database via Azure Key Vault based on variable definitions.
-    
-    Args:
-        variable_definitions: List of variable definitions with database config
-        
-    Returns:
-        Dictionary containing loaded concept data
+    FEATURE 1: Provide database schema as context
+    Returns clean, field-focused schema info for LLMs.
     """
-    concept_data = {}
+    schema_info = {}
     
     try:
-        # Load concept data from database via Azure Key Vault
-        business_logger.info("🔧 [CONTEXT] Loading from database via Azure Key Vault...")
-        db_data = await _load_from_database(variable_definitions)
-        if db_data:
-            concept_data.update(db_data)
-            business_logger.info("✅ [CONTEXT] Loaded concept data from database")
-        else:
-            business_logger.info("📝 [CONTEXT] No data from database - will use defaults")
+        from core.core_config import get_mongo_client
+        
+        client = get_mongo_client()
+        db = client[database_name]
+        
+        # Get collection names
+        collection_names = await db.list_collection_names()
+        schema_info["database_name"] = database_name
+        
+        # Create clean collection schemas - focus on fields only
+        collection_schemas = {}
+        enterprise_collections = []
+        
+        for collection_name in collection_names:
+            try:
+                collection = db[collection_name]
+                sample_doc = await collection.find_one()
                 
+                if sample_doc:
+                    # Clean field mapping
+                    field_types = {}
+                    for key, value in sample_doc.items():
+                        if key == '_id':
+                            continue  # Skip MongoDB internal ID
+                        
+                        field_type = type(value).__name__
+                        # Simplify type names
+                        if field_type == 'ObjectId':
+                            field_type = 'ObjectId'
+                        elif field_type == 'datetime':
+                            field_type = 'DateTime'
+                        elif field_type == 'NoneType':
+                            field_type = 'null'
+                        elif field_type == 'bool':
+                            field_type = 'boolean'
+                        
+                        field_types[key] = field_type
+                    
+                    collection_schemas[collection_name] = field_types
+                    
+                    # Track enterprise-specific collections
+                    if "enterprise_id" in sample_doc:
+                        enterprise_collections.append(collection_name)
+                else:
+                    collection_schemas[collection_name] = {"note": "No sample data available"}
+                    
+            except Exception as e:
+                business_logger.debug(f"Could not analyze {collection_name}: {e}")
+                collection_schemas[collection_name] = {"error": f"Analysis failed: {str(e)}"}
+        
+        # Create a clean, structured schema summary for LLMs
+        schema_lines = []
+        schema_lines.append(f"DATABASE: {database_name}")
+        schema_lines.append(f"TOTAL COLLECTIONS: {len(collection_names)}")
+        schema_lines.append("")
+        
+        # Add detailed field information for each collection
+        for collection_name, fields in collection_schemas.items():
+            if isinstance(fields, dict) and "note" not in fields and "error" not in fields:
+                is_enterprise = " [Enterprise-specific]" if collection_name in enterprise_collections else ""
+                schema_lines.append(f"🔍 {collection_name.upper()}{is_enterprise}:")
+                schema_lines.append("  Fields:")
+                
+                # List each field with its type
+                for field_name, field_type in fields.items():
+                    schema_lines.append(f"    • {field_name}: {field_type}")
+                
+                schema_lines.append("")  # Add spacing between collections
+        
+        # Store only the clean schema overview - no redundant data
+        schema_info["schema_overview"] = "\n".join(schema_lines)
+        
+        business_logger.info(f"📊 Schema loaded: {len(collection_names)} collections, {len(enterprise_collections)} enterprise-specific")
+        
     except Exception as e:
-        business_logger.warning(f"⚠️ [CONTEXT] Error loading from database: {e}")
+        business_logger.error(f"❌ Database schema loading failed: {e}")
+        schema_info["error"] = f"Could not load schema: {e}"
     
-    return concept_data
+    return schema_info
 
-async def _load_from_database(variable_definitions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+async def _load_specific_data_async(variables: List[Dict[str, Any]], default_database_name: str, enterprise_id: str) -> Dict[str, Any]:
     """
-    Load concept data from MongoDB using Azure Key Vault secrets.
+    FEATURE 2: Load specific data based on YAML configuration
+    Allows users to extract specific endpoints/data without full schema.
+    Now supports per-variable database_name for multi-database enterprises.
+    """
+    loaded_data = {}
     
-    Args:
-        variable_definitions: List of variable definitions with database config
-        
-    Returns:
-        Loaded data or None if not available
-    """
     try:
-        # Import the existing core configuration
-        from core.core_config import get_mongo_client, get_secret
+        from core.core_config import get_mongo_client
+        from bson import ObjectId
         
-        # Get database name from Azure Key Vault or fallback to environment
-        try:
-            # Try to get from Azure Key Vault first
-            database_name = get_secret('MongoDBName')
-        except:
-            # Fallback to environment variable
-            import os
-            database_name = os.getenv('MONGODB_DATABASE_NAME', 'autogen_ai_agents')
+        client = get_mongo_client()
         
-        business_logger.info(f"🔧 [CONTEXT] Connecting to MongoDB database via Azure Key Vault: {database_name}")
-        
-        # Use the existing MongoDB client from core_config (handles Key Vault automatically)
-        mongo_client = get_mongo_client()
-        
-        # Test the connection
-        try:
-            await mongo_client.admin.command('ping')
-            business_logger.info("✅ [CONTEXT] MongoDB connection successful via Azure Key Vault")
-        except Exception as e:
-            business_logger.warning(f"⚠️ [CONTEXT] MongoDB connection failed: {e}")
-            return None
-        
-        database = mongo_client[database_name]
-        concept_data = {}
-        
-        # Query each variable that has database configuration
-        for var_def in variable_definitions:
-            var_name = var_def.get('name')
-            db_config = var_def.get('database')
-            
-            if not db_config or not var_name:
+        for var_config in variables:
+            var_name = var_config.get('name')
+            if not var_name:
                 continue
                 
             try:
+                # Get database configuration - support per-variable database names
+                db_config = var_config.get('database', {})
                 collection_name = db_config.get('collection')
-                query = db_config.get('query', {})
-                field = db_config.get('field', 'content')
+                search_by = db_config.get('search_by', 'enterprise_id')
+                field = db_config.get('field')
+                
+                # Use variable-specific database name if provided, otherwise use default
+                variable_database_name = db_config.get('database_name', default_database_name)
                 
                 if not collection_name:
-                    business_logger.warning(f"⚠️ [CONTEXT] No collection specified for variable: {var_name}")
+                    business_logger.warning(f"⚠️ No collection specified for {var_name}")
                     continue
                 
-                collection = database[collection_name]
+                # Connect to the specific database for this variable
+                db = client[variable_database_name]
+                business_logger.info(f"🔍 Loading {var_name} from database: {variable_database_name}")
                 
-                # Execute the query (using async motor client)
-                business_logger.debug(f"🔧 [CONTEXT] Querying {collection_name} for {var_name} with: {query}")
+                # Build query
+                if search_by == 'enterprise_id':
+                    try:
+                        query = {'enterprise_id': ObjectId(enterprise_id)}
+                    except:
+                        query = {'enterprise_id': enterprise_id}
+                else:
+                    query = {search_by: enterprise_id}
                 
+                # Execute query (await the async operation)
+                collection = db[collection_name]
                 document = await collection.find_one(query)
                 
                 if document:
-                    # Extract the specified field or the whole document
                     if field and field in document:
-                        concept_data[var_name] = document[field]
+                        loaded_data[var_name] = document[field]
+                        business_logger.info(f"✅ Loaded {var_name} from {variable_database_name}.{collection_name}.{field}")
                     else:
-                        concept_data[var_name] = document
-                    
-                    business_logger.info(f"✅ [CONTEXT] Found data for {var_name} in {collection_name}")
+                        loaded_data[var_name] = document
+                        business_logger.info(f"✅ Loaded {var_name} document from {variable_database_name}.{collection_name}")
                 else:
-                    business_logger.info(f"📝 [CONTEXT] No data found for {var_name} in {collection_name}")
+                    business_logger.info(f"📝 No data found for {var_name} in {variable_database_name}.{collection_name}")
                     
             except Exception as e:
-                business_logger.warning(f"⚠️ [CONTEXT] Failed to query {var_name}: {e}")
+                business_logger.error(f"❌ Error loading {var_name}: {e}")
                 continue
         
-        # Close the connection
-        mongo_client.close()
-        
-        if concept_data:
-            business_logger.info(f"✅ [CONTEXT] Successfully loaded {len(concept_data)} variables from MongoDB")
-            return concept_data
-        else:
-            business_logger.info("📝 [CONTEXT] No data found in any MongoDB queries")
-            return None
-        
     except Exception as e:
-        business_logger.warning(f"⚠️ [CONTEXT] MongoDB loading failed: {e}")
-        return None
+        business_logger.error(f"❌ Specific data loading failed: {e}")
+    
+    return loaded_data

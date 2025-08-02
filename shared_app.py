@@ -26,11 +26,11 @@ from core.workflow.init_registry import get_initialization_coroutines, get_regis
 from core.data.persistence_manager import PersistenceManager
 
 # Simple mock functions for token management (TODO: replace with real token service)
-def _mock_get_remaining(user_id: str, app_id: str = "default") -> Dict[str, Any]:
+def _mock_get_remaining(user_id: str, enterprise_id: str = "default") -> Dict[str, Any]:
     """Mock function for getting user token balance"""
-    return {"remaining": 10000, "user_id": user_id, "app_id": app_id}
+    return {"remaining": 10000, "user_id": user_id, "enterprise_id": enterprise_id}
 
-def _mock_consume_tokens(user_id: str, app_id: str, amount: int) -> Dict[str, Any]:
+def _mock_consume_tokens(user_id: str, enterprise_id: str, amount: int) -> Dict[str, Any]:
     """Mock function for consuming user tokens"""
     return {"success": True, "remaining": 9000, "consumed": amount, "user_id": user_id}
 
@@ -67,11 +67,18 @@ else:
         description="Development logging configuration applied"
     )
 
+# Set autogen library logging to DEBUG for detailed output
+import autogen
+logging.getLogger('autogen').setLevel(logging.DEBUG)
+
 # Get specialized loggers
 business_logger = get_business_logger("shared_app")
 chat_logger = get_chat_logger("shared_app")
 performance_logger = get_performance_logger("shared_app")
 logger = logging.getLogger(__name__)
+
+# Log AG2 version for debugging
+business_logger.info(f"🔍 autogen version: {getattr(autogen, '__version__', 'unknown')}")
 
 # FastAPI app
 app = FastAPI(
@@ -99,8 +106,6 @@ async def startup():
     global simple_transport
     startup_start = datetime.utcnow()
 
-    business_logger.info("🚀 Starting MozaiksAI Runtime...")
-
     try:
         # Initialize simple transport with basic LLM config
         streaming_start = datetime.utcnow()
@@ -113,11 +118,9 @@ async def startup():
             value=streaming_time,
             context={
                 "config_keys": list(streaming_llm_config.keys()) if streaming_llm_config else [],
-                "streaming_enabled": True  # AG2 IOStream handles streaming
+                "streaming_enabled": True
             }
         )
-        
-        business_logger.info(f"🔌 Simple transport initialized - Streaming: True (AG2 IOStream)")
 
         # Test MongoDB connection
         mongo_start = datetime.utcnow()
@@ -129,12 +132,6 @@ async def startup():
                 metric_name="mongodb_ping_duration",
                 value=mongo_time,
                 unit="ms"
-            )
-            
-            log_business_event(
-                event_type="MONGODB_CONNECTED",
-                description="MongoDB connection established successfully",
-                context={"ping_time_ms": mongo_time}
             )
             
         except Exception as e:
@@ -157,9 +154,8 @@ async def startup():
             unit="ms"
         )
 
-        # Component system is now event-driven - no registration needed
+        # Component system is event-driven
         registry_start = datetime.utcnow()
-        business_logger.info("🎯 Component system: Event-driven (ui_tools → transport.send_tool_event() → React)")
         
         registry_time = (datetime.utcnow() - registry_start).total_seconds() * 1000
         log_performance_metric(
@@ -170,7 +166,6 @@ async def startup():
         
         # Run initialization coroutines
         init_start = datetime.utcnow()
-        business_logger.info("🔧 Running plugin initializers...")
         
         init_coroutines = get_initialization_coroutines()
         successful_inits = 0
@@ -189,7 +184,6 @@ async def startup():
                     context={"initializer": init_coro.__name__}
                 )
                 
-                business_logger.debug(f"✅ Initialized: {init_coro.__name__} ({coro_time:.1f}ms)")
                 successful_inits += 1
                 
             except Exception as e:
@@ -229,7 +223,7 @@ async def startup():
             value=total_startup_time,
             unit="ms",
             context={
-                "workflows_count": status.get("registered_workflows", 0),
+                "workflows_count": status.get("total_workflows", 0),
                 "tools_count": status.get("total_tools", 0)
             }
         )
@@ -240,7 +234,7 @@ async def startup():
             context={
                 "environment": env,
                 "startup_time_ms": total_startup_time,
-                "workflows_registered": status.get("registered_workflows", 0),
+                "workflows_registered": status.get("total_workflows", 0),
                 "tools_available": status.get("total_tools", 0),
                 "summary": status.get("summary", "Unknown")
             }
@@ -315,8 +309,6 @@ async def _import_workflow_modules():
     Workflow system startup - using runtime auto-discovery.
     No more scanning for initializer.py files - workflows are discovered on-demand.
     """
-    business_logger.info(f"🔍 Workflow system ready - using runtime auto-discovery")
-
     scan_start = datetime.utcnow()
     
     # Runtime auto-discovery means no upfront imports needed
@@ -333,8 +325,6 @@ async def _import_workflow_modules():
             "upfront_imports": 0
         }
     )
-    
-    business_logger.info(f"🚀 Workflow system ready - auto-discovery will handle new requests on-demand")
 
     log_business_event(
         event_type="WORKFLOW_SYSTEM_READY",

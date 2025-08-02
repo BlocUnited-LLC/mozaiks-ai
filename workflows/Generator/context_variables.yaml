@@ -1,10 +1,15 @@
 context_variables:
+  # Schema overview configuration - provides database schema as context
+  schema_overview: 
+    enabled: true
+    database_name: "autogen_ai_agents"
+  
+  # Specific variables to extract from database
   variables:
     - name: concept_overview
-      description: "Main project description and overview"
-      default_value: "Please provide a concept overview to generate agents and workflows for your application."
+      description: "Main project description and overview from the database"
       database:
-        collection: concepts
-        query:
-          type: concept_overview
-        field: content
+        collection: Concepts
+        database_name: autogen_ai_agents
+        search_by: enterprise_id
+        field: ConceptOverview

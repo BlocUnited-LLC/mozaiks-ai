@@ -33,7 +33,16 @@ Lifecycle Tools → System Hooks
 ### 1. Backend Tools (`backend_tools`)
 Regular tools that agents can call for computation, processing, or business logic.
 
+ex:
+```yaml
+backend_tools:
+  - ALL_AGENTS:
+    - path: workflows.Generator.tools.echo_ctx_only.echo_context
+      description: "Context echo tool for context validation"
+```
+
 **Execution:**
+- Customize by Agents name
 - Agent calls function directly when needed
 - No UI interaction required
 

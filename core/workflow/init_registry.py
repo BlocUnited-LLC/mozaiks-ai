@@ -54,8 +54,6 @@ def initialize_workflow_components(workflow_name: str, base_dir: Path) -> List[s
                     components_found.append(f"{component_name} ({component_type})")
         
         if component_count > 0:
-            logger.info(f"🎨 Found {component_count} UI components in {workflow_name}: {', '.join(components_found)}")
-            
             log_business_event(
                 event_type="WORKFLOW_COMPONENTS_DISCOVERED",
                 description=f"Discovered {component_count} UI components for {workflow_name}",
@@ -92,11 +90,9 @@ def register_workflow(workflow_name: str, human_loop: bool = False, transport: s
         _WORKFLOW_TRANSPORTS[workflow_name] = transport
         
         if auto_init_components:
-            logger.info(f"🎨 Event-driven UI system active for {workflow_name}")
-        else:
-            logger.info(f"🎨 Auto-initialized 0 component manifests for {workflow_name}")
+            logger.debug(f"Event-driven UI system active for {workflow_name}")
         
-        logger.info(f"✅ Registered workflow: {workflow_name} (human_loop={human_loop}, transport={transport})")
+        logger.debug(f"Registered workflow: {workflow_name} (human_loop={human_loop}, transport={transport})")
         return handler_func
     return decorator
 
@@ -107,7 +103,7 @@ def initialize_workflow_ui_components(workflow_name: str, base_dir: Path | None 
     
     try:
         created_files = initialize_workflow_components(workflow_name, base_dir)
-        logger.info(f"🎨 Manually initialized {len(created_files)} component manifests for {workflow_name}")
+        logger.debug(f"Manually initialized {len(created_files)} component manifests for {workflow_name}")
         return created_files
     except Exception as e:
         logger.error(f"❌ Failed to initialize components for {workflow_name}: {e}")
@@ -116,7 +112,7 @@ def initialize_workflow_ui_components(workflow_name: str, base_dir: Path | None 
 def register_workflow_tools(workflow_name: str, tools: List[Callable]):
     """Register tools for a specific workflow"""
     _WORKFLOW_TOOLS[workflow_name] = tools
-    logger.info(f"🔧 Registered {len(tools)} tools for {workflow_name}: {[t.__name__ for t in tools]}")
+    logger.debug(f"Registered {len(tools)} tools for {workflow_name}: {[t.__name__ for t in tools]}")
 
 def get_workflow_handler(workflow_name: str) -> Callable[..., Awaitable[Any]] | None:
     """
@@ -135,12 +131,11 @@ def get_workflow_handler(workflow_name: str) -> Callable[..., Awaitable[Any]] | 
             return handler
     
     # If not found, create a dynamic handler that uses orchestration_patterns
-    logger.info(f"🔍 [CLEAN-REGISTRY] Creating dynamic handler for: {workflow_name}")
+    logger.debug(f"[CLEAN-REGISTRY] Creating dynamic handler for: {workflow_name}")
     
     try:
         # Create a dynamic handler that delegates to orchestration_patterns
         async def dynamic_workflow_handler(
-            llm_config: Dict[str, Any],
             enterprise_id: str,
             chat_id: str,
             user_id: Optional[str] = None,
@@ -152,7 +147,6 @@ def get_workflow_handler(workflow_name: str) -> Callable[..., Awaitable[Any]] | 
             
             return await run_workflow_orchestration(
                 workflow_name=workflow_name,
-                llm_config=llm_config,
                 enterprise_id=enterprise_id,
                 chat_id=chat_id,
                 user_id=user_id,
@@ -162,7 +156,7 @@ def get_workflow_handler(workflow_name: str) -> Callable[..., Awaitable[Any]] | 
         
         # Cache the dynamic handler for future use
         _WORKFLOW_HANDLERS[normalized_name] = dynamic_workflow_handler
-        logger.info(f"✅ [CLEAN-REGISTRY] Created and cached dynamic handler for: {workflow_name}")
+        logger.debug(f"[CLEAN-REGISTRY] Created and cached dynamic handler for: {workflow_name}")
         return dynamic_workflow_handler
         
     except Exception as e:
@@ -190,9 +184,51 @@ def run_initializers():
                 logger.error(f"❌ Initializer failed: {initializer.__name__}: {e}")
     
     if _INITIALIZERS:
-        logger.info(f"🚀 Running {len(_INITIALIZERS)} workflow initializers...")
+        logger.debug(f"Running {len(_INITIALIZERS)} workflow initializers...")
         asyncio.run(run_all())
-        logger.info("✅ All workflow initializers completed")
+        logger.debug("All workflow initializers completed")
+
+def get_initialization_coroutines() -> List[Callable[[], Awaitable[None]]]:
+    """Get all registered initialization coroutines"""
+    return _INITIALIZERS.copy()
+
+def workflow_status_summary() -> Dict[str, Any]:
+    """Get status summary of all workflows"""
+    registered_workflows = list(_WORKFLOW_HANDLERS.keys())
+    total_workflows = len(registered_workflows)
+    total_tools = sum(len(tools) for tools in _WORKFLOW_TOOLS.values())
+    total_initializers = len(_INITIALIZERS)
+    
+    summary = f"{total_workflows} workflows, {total_tools} tools, {total_initializers} initializers"
+    
+    return {
+        "total_workflows": total_workflows,
+        "registered_workflows": registered_workflows,
+        "metadata": _WORKFLOW_METADATA.copy(),
+        "total_tools": total_tools,
+        "total_initializers": total_initializers,
+        "summary": summary
+    }
+
+def get_workflow_transport(workflow_name: str) -> str:
+    """Get transport type for a workflow"""
+    return _WORKFLOW_TRANSPORTS.get(workflow_name, "websocket")
+
+def get_workflow_tools(workflow_name: str) -> List[Callable]:
+    """Get tools registered for a workflow"""
+    return _WORKFLOW_TOOLS.get(workflow_name, [])
+
+def get_or_discover_workflow_handler(workflow_name: str) -> Callable[..., Awaitable[Any]] | None:
+    """
+    Get workflow handler with discovery fallback.
+    This is an alias for get_workflow_handler for backward compatibility.
+    """
+    return get_workflow_handler(workflow_name)
+
+def workflow_human_loop(workflow_name: str) -> bool:
+    """Check if workflow requires human interaction"""
+    metadata = _WORKFLOW_METADATA.get(workflow_name, {})
+    return metadata.get('human_loop', False)
 
 # ==============================================================================
 # CLEAN REGISTRY - SELF-CONTAINED, NO CIRCULAR DEPENDENCIES

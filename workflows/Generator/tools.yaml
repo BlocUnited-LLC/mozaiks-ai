@@ -1,12 +1,4 @@
 backend_tools:
-  ALL_AGENTS:
-    - path: workflows.Generator.tools.echo_all.echo
-      description: "Echo tool available to all agents"
-
-  ContextVariablesAgent:
-    - path: workflows.Generator.tools.echo_ctx_only.echo_context
-      description: "Context echo tool for context validation"
-
   APIKeyAgent:
     - path: workflows.Generator.tools.store_api_key.store_api_key
       description: "Store API key received from UI response - backend handler"

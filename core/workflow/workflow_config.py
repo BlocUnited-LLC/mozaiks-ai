@@ -43,7 +43,7 @@ class CleanWorkflowConfig:
             self._load_all_workflows()
             _global_configs = self._configs.copy()
             _configs_loaded = True
-            logger.info(f"✅ Loaded {len(self._configs)} workflow configurations")
+            logger.debug(f"Loaded {len(self._configs)} workflow configurations")
     
     def _load_all_workflows(self) -> None:
         """Load all workflow configs using the file manager"""
@@ -61,7 +61,6 @@ class CleanWorkflowConfig:
                     if config:
                         normalized_name = workflow_name.lower()
                         self._configs[normalized_name] = config
-                        logger.debug(f"✅ Loaded config: {workflow_name}")
                     else:
                         logger.warning(f"⚠️ Empty config for workflow: {workflow_name}")
                     
@@ -122,7 +121,7 @@ class CleanWorkflowConfig:
                 normalized_name = workflow_name.lower()
                 self._configs[normalized_name] = config
                 _global_configs[normalized_name] = config
-                logger.info(f"✅ Reloaded config: {workflow_name}")
+                logger.debug(f"Reloaded config: {workflow_name}")
                 return config
             else:
                 logger.warning(f"⚠️ Failed to reload config: {workflow_name}")

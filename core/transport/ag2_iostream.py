@@ -77,8 +77,13 @@ class AG2StreamingIOStream(InputStream, OutputStream):
         else:
             preview = clean_content
         
-        # Simple logging
+        # Enhanced logging for agent conversations
         chat_logger.info(f"🤖 [{agent_name}] {preview}")
+        
+        # ALSO log to the main agent chat log for debugging
+        import logging
+        agent_logger = logging.getLogger('chat.agent_messages')
+        agent_logger.info(f"AGENT_OUTPUT | Chat: {self.chat_id} | Agent: {agent_name} | Content: {clean_content}")
         
         # Send content to WebSocket (AG2 handles the streaming)
         try:
