@@ -58,7 +58,7 @@ async def track_message_sending(
         
         # Log as business event for analytics
         log_business_event(
-            event_type="AGENT_HANDOFF_DETECTED",
+            log_event_type="AGENT_HANDOFF_DETECTED",
             description=f"Agent handoff detected from {sender_name} to {recipient_name}",
             context={
                 "sender_agent": sender_name,

@@ -12,7 +12,6 @@ import threading
 from datetime import datetime
 
 from autogen import ConversableAgent, UserProxyAgent
-from autogen.agentchat import run_group_chat, a_run_group_chat
 from autogen.agentchat.group.patterns import (
     DefaultPattern as AG2DefaultPattern,
     AutoPattern as AG2AutoPattern,
@@ -20,8 +19,18 @@ from autogen.agentchat.group.patterns import (
     RandomPattern as AG2RandomPattern,
 )
 
-from ..data.persistence_manager import PersistenceManager
-from ..data.token_manager import get_token_tracker
+# OpenLit instrumentation for AG2 observability
+try:
+    import openlit
+    from openlit.instrumentation.ag2 import AG2Instrumentor
+    OPENLIT_AVAILABLE = True
+except ImportError:
+    openlit = None
+    AG2Instrumentor = None
+    OPENLIT_AVAILABLE = False
+
+from ..data.persistence_manager import WorkflowChatManager
+from ..data.performance_manager import BusinessPerformanceManager, performance_tracking_context
 from .tool_registry import WorkflowToolRegistry
 from .termination_handler import create_termination_handler
 from logs.logging_config import (
@@ -35,14 +44,38 @@ from logs.logging_config import (
 
 logger = logging.getLogger(__name__)
 
-# Initialize persistence manager (moved from groupchat_manager.py)
-mongodb_manager = PersistenceManager()
-
 # Consolidated logging (moved from groupchat_manager.py)
 chat_logger = get_chat_logger("orchestration_patterns")
 agent_logger = get_agent_logger("orchestration_patterns")
 workflow_logger = get_workflow_logger("orchestration_patterns")
 
+# ===================================================================
+# OPENLIT INSTRUMENTATION SETUP
+# ===================================================================
+# Initialize OpenLit for AG2 observability and performance monitoring
+if OPENLIT_AVAILABLE and openlit and AG2Instrumentor:
+    try:
+        # Initialize OpenLit with basic configuration
+        openlit.init(
+            # Optional: Configure collection endpoint (defaults to localhost:4318)
+            # otlp_endpoint="http://localhost:4318",
+            # Optional: Add custom metadata
+            environment="development",  # or "production"
+            application_name="MozaiksAI"
+        )
+        
+        # Explicitly instrument AG2 components
+        AG2Instrumentor().instrument()
+        
+        logger.info("✅ OpenLit instrumentation initialized for AG2 observability")
+        
+    except Exception as e:
+        logger.warning(f"⚠️ OpenLit initialization failed: {e}")
+        logger.info("📊 Continuing without OpenLit observability")
+else:
+    logger.info("ℹ️ OpenLit not available, continuing without observability")
+
+# ===================================================================
 # ===================================================================
 # AG2 INTERNAL LOGGING CONFIGURATION
 # ===================================================================
@@ -64,7 +97,7 @@ else:
 # ===================================================================
 
 # ==============================================================================
-# SIMPLIFIED RESPONSE TRACKING (Analytics moved to token_manager.py)
+# SIMPLIFIED RESPONSE TRACKING (Now uses simple_tracking.py)
 # ==============================================================================
 
 # Performance-focused logging - minimal overhead (from groupchat_manager.py)
@@ -101,7 +134,7 @@ async def run_workflow_orchestration(
     It handles ALL setup, execution, and cleanup that groupchat_manager.py used to do.
     
     Args:
-        workflow_name: Type of workflow (e.g., "generator", "analyzer")
+        workflow_name: Type of workflow (e.g., "chat", "analysis", "generation")
         enterprise_id: Enterprise identifier
         chat_id: Chat identifier
         user_id: User identifier (optional)
@@ -139,7 +172,8 @@ async def run_workflow_orchestration(
         # Get initial agent from orchestrator.yaml - this is simply the agent that gets the first turn
         # regardless of startup_mode. The initial_message is sent to the group chat context,
         # and the initial_agent gets the first opportunity to respond.
-        initial_agent = config.get("initial_agent", "ContextAgent")
+        # Default to first available agent if not specified in config
+        initial_agent = config.get("initial_agent", None)
         
         # ===================================================================
         # 2. LOAD LLM CONFIGURATION FOR THIS WORKFLOW (using existing system)
@@ -168,7 +202,7 @@ async def run_workflow_orchestration(
         final_initial_message = [{"role": "user", "content": final_initial_message_text}]
         
         log_business_event(
-            event_type=f"{workflow_name_upper}_WORKFLOW_STARTED",
+            log_event_type=f"{workflow_name_upper}_WORKFLOW_STARTED",
             description=f"{workflow_name} workflow orchestration initialized using consolidated patterns",
             context={
                 "enterprise_id": enterprise_id,
@@ -181,42 +215,7 @@ async def run_workflow_orchestration(
         )
 
         # ===================================================================
-        # 3. RESUME LOGIC - Check if workflow can be resumed (VE-style)
-        # ===================================================================
-        can_resume = await mongodb_manager.can_resume_chat(chat_id, enterprise_id, workflow_name)
-        
-        if can_resume:
-            business_logger.info(f"🔄 [{workflow_name_upper}] Resumable session found for {chat_id}")
-            
-            success, resume_data = await mongodb_manager.resume_chat(chat_id, enterprise_id, workflow_name)
-            
-            if success and resume_data:
-                # Check if already complete (VE pattern)
-                if resume_data.get("already_complete"):
-                    status = resume_data.get("status", 0)
-                    business_logger.info(f"✅ [{workflow_name_upper}] Workflow already completed with status {status}")
-                    
-                    # Send completion message to WebSocket if available
-                    await transport.send_simple_text_message(
-                        f"{workflow_name.title()} workflow already completed successfully.",
-                        chat_id=chat_id,
-                        agent_name="system"
-                    )
-                    return {"status": "already_completed", "message": f"{workflow_name} workflow already completed"}
-                
-                # Resume active conversation (VE pattern)
-                conversation_data = resume_data.get("conversation", [])
-                status = resume_data.get("status", 0)
-                business_logger.info(f"🔄 [{workflow_name_upper}] Resuming conversation with {len(conversation_data)} messages, status {status}")
-            else:
-                business_logger.warning(f"❌ [{workflow_name_upper}] Resume failed - starting new session")
-        
-        # Initialize workflow with status 0 (VE pattern) - for new sessions or failed resumes
-        await mongodb_manager.update_workflow_status(chat_id, enterprise_id, 0, workflow_name)
-        business_logger.info(f"🆕 [{workflow_name_upper}] Starting new session (status=0)")
-
-        # ===================================================================
-        # 4. BUILD CONTEXT (if context factory provided, or use context variables)
+        # 3. BUILD CONTEXT (if context factory provided, or use context variables)
         # ===================================================================
         context = None
         if context_factory:
@@ -327,6 +326,23 @@ async def run_workflow_orchestration(
         )
         business_logger.info(f"✅ [{workflow_name_upper}] Agents defined: {len(agents)} total")
 
+        # ===================================================================
+        # INITIALIZE CENTRALIZED CHAT MANAGER
+        # ===================================================================
+        business_logger.info(f"�️ [{workflow_name_upper}] Initializing centralized chat manager...")
+        chat_manager = WorkflowChatManager(
+            workflow_name=workflow_name,
+            enterprise_id=enterprise_id,
+            chat_id=chat_id,
+            user_id=user_id
+        )
+        business_logger.info(f"✅ [{workflow_name_upper}] Centralized chat manager initialized with session: {chat_manager.session_id}")
+
+        # ===================================================================
+        # SKIP HOOK REGISTRATION - Using event streaming instead
+        # ===================================================================
+        business_logger.info(f"🔄 [{workflow_name_upper}] Skipping hook registration - using AG2 event streaming for real-time persistence")
+
         # Register tools
         tools_start = time.time()
         business_logger.info("🔧 Registering tools using modular tool registry...")
@@ -358,11 +374,11 @@ async def run_workflow_orchestration(
                 human_input_mode = "ALWAYS"  # User drives the conversation
                 business_logger.info(f"👤 [{workflow_name_upper}] UserDriven mode: User initiates, interface enabled")
             elif startup_mode == "AgentDriven":
-                human_input_mode = "ALWAYS"  # Agent starts, but human can interact
-                business_logger.info(f"🤖 [{workflow_name_upper}] AgentDriven mode: Agent initiates, interface enabled")
+                human_input_mode = "TERMINATE"  # Agent starts automatically, human can interact when needed
+                business_logger.info(f"🤖 [{workflow_name_upper}] AgentDriven mode: Agent initiates automatically, interface enabled")
             else:
-                human_input_mode = "ALWAYS"  # Safe fallback - allow human interaction
-                business_logger.warning(f"⚠️ [{workflow_name_upper}] Unknown startup_mode '{startup_mode}', using fallback")
+                human_input_mode = "TERMINATE"  # Safe fallback - agent driven with human interaction available
+                business_logger.warning(f"⚠️ [{workflow_name_upper}] Unknown startup_mode '{startup_mode}', using agent-driven fallback")
             
             # Create UserProxyAgent with existing llm_config system
             user_proxy_agent = UserProxyAgent(
@@ -376,6 +392,8 @@ async def run_workflow_orchestration(
             
             # Add to agents dict for easy access
             agents["user"] = user_proxy_agent
+            
+            # Skip hook registration - using event streaming instead
             business_logger.info(f"✅ [{workflow_name_upper}] UserProxyAgent created with startup_mode: {startup_mode}, human_input_mode: {human_input_mode}")
         else:
             # Find existing user proxy
@@ -388,20 +406,28 @@ async def run_workflow_orchestration(
         # ===================================================================
         # 10. GET INITIATING AGENT
         # ===================================================================
-        initiating_agent = agents.get(initial_agent)
-        if not initiating_agent:
-            # Fallback: try to find the agent by checking if any agent's name matches
-            for agent_name, agent in agents.items():
-                if hasattr(agent, 'name') and agent.name == initial_agent:
-                    initiating_agent = agent
-                    break
-            
+        initiating_agent = None
+        
+        # If initial_agent is specified, try to find it
+        if initial_agent:
+            initiating_agent = agents.get(initial_agent)
             if not initiating_agent:
-                # Final fallback to the first available agent
-                initiating_agent = next(iter(agents.values())) if agents else None
-                if not initiating_agent:
-                    raise ValueError(f"No agents available and initiating agent '{initial_agent}' not found")
+                # Fallback: try to find the agent by checking if any agent's name matches
+                for agent_name, agent in agents.items():
+                    if hasattr(agent, 'name') and agent.name == initial_agent:
+                        initiating_agent = agent
+                        break
+        
+        # If no initial agent specified or not found, use first available agent
+        if not initiating_agent:
+            initiating_agent = next(iter(agents.values())) if agents else None
+            if not initiating_agent:
+                raise ValueError(f"No agents available for workflow {workflow_name}")
+            
+            if initial_agent:
                 business_logger.warning(f"⚠️ [{workflow_name_upper}] Initiating agent '{initial_agent}' not found, using first available agent: {getattr(initiating_agent, 'name', 'unknown')}")
+            else:
+                business_logger.info(f"ℹ️ [{workflow_name_upper}] No initial agent specified, using first available agent: {getattr(initiating_agent, 'name', 'unknown')}")
         else:
             business_logger.info(f"✅ [{workflow_name_upper}] Initiating agent: {getattr(initiating_agent, 'name', initial_agent)}")
 
@@ -616,7 +642,7 @@ async def run_workflow_orchestration(
             
         # Log handoff status for debugging
         log_business_event(
-            event_type=f"{workflow_name_upper}_HANDOFF_STATUS",
+            log_event_type=f"{workflow_name_upper}_HANDOFF_STATUS",
             description="Handoff configuration status for debugging",
             context={
                 "handoff_attempted": handoff_details["attempted"],
@@ -756,189 +782,245 @@ async def run_workflow_orchestration(
         total_agents_in_pattern = len(agents_list) + (1 if human_in_loop and user_proxy_agent else 0)
         business_logger.info(f"🔍 [{workflow_name_upper}] Pattern: {total_agents_in_pattern} agents, initial: {initiating_agent.name}")
         
-        # Initialize termination handler for conversation tracking
+        # Initialize termination handler for conversation tracking (simplified)
         termination_handler = create_termination_handler(
             chat_id=chat_id,
             enterprise_id=enterprise_id, 
-            workflow_name=workflow_name,
-            token_manager=get_token_tracker(chat_id, enterprise_id, user_id or "unknown")
+            workflow_name=workflow_name
         )
         await termination_handler.on_conversation_start()
-        business_logger.info(f"✅ [{workflow_name_upper}] Conversation tracking initialized")
-        
-        # ALIGNED EXECUTION
-        try:
-            # Debug logging before AG2 execution
-            business_logger.info(f"🔍 [{workflow_name_upper}] Pre-execution summary:")
-            business_logger.info(f"   🎯 Pattern: {type(pattern).__name__} | Agents: {len(agents_list)} | User: {user_proxy_agent is not None and human_in_loop}")
+        # Initialize business performance tracking (replaces optimized tracking)
+        async with performance_tracking_context(
+            chat_id=chat_id,
+            enterprise_id=enterprise_id,
+            user_id=user_id or "unknown",
+            workflow_name=workflow_name
+        ) as performance_manager:
             
-            if startup_mode == "BackendOnly":
-                business_logger.info(f"🔍 [{workflow_name_upper}] Using run_group_chat (sync)")
-                result = run_group_chat(
-                    pattern=pattern,
-                    messages=final_initial_message,
-                    max_rounds=max_turns
-                )
-                business_logger.info(f"🔍 [{workflow_name_upper}] Processing AG2 events to execute conversation...")
-                result.process()
-                business_logger.info(f"✅ [{workflow_name_upper}] AG2 event processing completed")
-                
-                # Log conversation history for sync execution too
-                try:
-                    conversation_history = getattr(result, 'messages', [])
-                    business_logger.info(f"📋 [{workflow_name_upper}] Sync conversation completed with {len(conversation_history)} messages")
-                    
-                    agent_logger = logging.getLogger('chat.agent_messages')
-                    for i, msg in enumerate(conversation_history):
-                        sender = msg.get('name', msg.get('role', 'unknown'))
-                        content = msg.get('content', '')
-                        msg_preview = content[:200] + "..." if len(content) > 200 else content
-                        agent_logger.info(f"SYNC_MSG_{i+1} | Chat: {chat_id} | Agent: {sender} | Content: {msg_preview}")
-                except Exception as e:
-                    business_logger.warning(f"⚠️ [{workflow_name_upper}] Could not extract sync conversation history: {e}")
-            else:  # AgentDriven or UserDriven
-                business_logger.info(f"🔍 [{workflow_name_upper}] Using a_run_group_chat (async)")
-                business_logger.info(f"🔍 [{workflow_name_upper}] About to call a_run_group_chat...")
-                
-                # Debug the AG2 call parameters
-                business_logger.info(f"🔍 [{workflow_name_upper}] AG2 call parameters:")
-                business_logger.info(f"   📝 Messages: {final_initial_message}")
-                business_logger.info(f"   🔢 Max rounds: {max_turns}")
-                business_logger.info(f"   🎯 Pattern type: {pattern}")
-                business_logger.info(f"   📊 Pattern agents count: {len(getattr(pattern, 'agents', []))}")
-                
-                # Try to get more info about the pattern
-                try:
-                    if hasattr(pattern, 'agents'):
-                        agent_names = [getattr(agent, 'name', 'unnamed') for agent in pattern.agents]
-                        business_logger.info(f"   🤖 Pattern agent names: {agent_names}")
-                    if hasattr(pattern, 'initial_speaker'):
-                        business_logger.info(f"   🎬 Initial speaker: {getattr(pattern.initial_speaker, 'name', 'unnamed')}")
-                except Exception as e:
-                    business_logger.warning(f"   ⚠️ Could not inspect pattern details: {e}")
-                
-                result = await a_run_group_chat(
-                    pattern=pattern,
-                    messages=final_initial_message,
-                    max_rounds=max_turns
-                )
-                business_logger.info(f"🔍 [{workflow_name_upper}] a_run_group_chat returned: type={type(result).__name__}")
-                
-                # ===================================================================
-                # CRITICAL: PROCESS EVENTS TO ACTUALLY EXECUTE THE CONVERSATION
-                # ===================================================================
-                business_logger.info(f"🔍 [{workflow_name_upper}] Processing AG2 events to execute conversation...")
-                await result.process()
-                business_logger.info(f"✅ [{workflow_name_upper}] AG2 event processing completed")
-                
-                # ===================================================================
-                # ENHANCED CONVERSATION LOGGING - Log the actual agent messages
-                # ===================================================================
-                try:
-                    # Get the conversation history from the result
-                    conversation_history = getattr(result, 'messages', [])
-                    business_logger.info(f"📋 [{workflow_name_upper}] Conversation completed with {len(conversation_history)} messages")
-                    
-                    # Log each message for debugging
-                    agent_logger = logging.getLogger('chat.agent_messages')
-                    for i, msg in enumerate(conversation_history):
-                        sender = msg.get('name', msg.get('role', 'unknown'))
-                        content = msg.get('content', '')
-                        msg_preview = content[:200] + "..." if len(content) > 200 else content
-                        agent_logger.info(f"MSG_{i+1} | Chat: {chat_id} | Agent: {sender} | Content: {msg_preview}")
-                    
-                    business_logger.info(f"🎯 [{workflow_name_upper}] Full conversation logged to agent_messages logger")
-                    
-                except Exception as e:
-                    business_logger.warning(f"⚠️ [{workflow_name_upper}] Could not extract conversation history: {e}")
-                
-                # ===================================================================
-                # AG2 EVENT TAP - Stream live engine events in real time
-                # ===================================================================
-                async def _stream_ag2_events(resp):
-                    try:
-                        business_logger.info(f"📡 [{workflow_name_upper}] Starting AG2 event stream monitoring...")
-                        event_count = 0
-                        async for ev in resp.events:
-                            event_count += 1
-                            # Typical ev.type values: 'agent_started', 'agent_finished', 'message'
-                            business_logger.debug(
-                                f"📡 [{workflow_name_upper}] EVENT #{event_count} {ev.type} :: {ev.data}"
-                            )
-                        business_logger.info(f"📡 [{workflow_name_upper}] AG2 event stream completed with {event_count} events")
-                    except Exception as e:
-                        business_logger.error(f"⚠️ [{workflow_name_upper}] Event stream error: {e}")
-
-                # Fire-and-forget (don't await, just schedule)
-                import asyncio
-                asyncio.create_task(_stream_ag2_events(result))
-                business_logger.info(f"📡 [{workflow_name_upper}] AG2 event monitoring task started")
-                
-                # CRITICAL: Await the messages coroutine to get actual conversation
-                # Check for messages attribute without triggering the coroutine
-                try:
-                    business_logger.info(f"🔍 [{workflow_name_upper}] Awaiting messages coroutine...")
-                    # This is the key - we need to await the messages to get the actual conversation
-                    actual_messages = await result.messages
-                    
-                    # Count messages safely
-                    message_count = 'unknown'
-                    try:
-                        if hasattr(actual_messages, '__len__'):
-                            message_count = len(actual_messages)  # type: ignore
-                        elif hasattr(actual_messages, '__iter__'):
-                            message_count = sum(1 for _ in actual_messages)
-                    except Exception:
-                        pass
-                    
-                    business_logger.info(f"🔍 [{workflow_name_upper}] Conversation completed with {message_count} messages")
-                    
-                    # If we got 0 messages, let's investigate why
-                    if message_count == 0:
-                        business_logger.warning(f"⚠️ [{workflow_name_upper}] AG2 returned 0 messages - investigating...")
-                        
-                        # Inspect the result object more closely
-                        business_logger.info(f"🔍 [{workflow_name_upper}] Result object type: {type(result)}")
-                        business_logger.info(f"🔍 [{workflow_name_upper}] Result object attributes:")
-                        for attr in dir(result):
-                            if not attr.startswith('_'):
-                                try:
-                                    value = getattr(result, attr)
-                                    if not callable(value):
-                                        business_logger.info(f"   {attr}: {type(value)} = {value}")
-                                    else:
-                                        business_logger.info(f"   {attr}: {type(value)} (callable)")
-                                except Exception as e:
-                                    business_logger.info(f"   {attr}: Error accessing - {e}")
-                    
-                    # Log some message details for debugging
-                    if hasattr(actual_messages, '__iter__') and message_count and message_count != 0:
-                        for i, msg in enumerate(actual_messages):
-                            if i < 3:  # Log first 3 messages
-                                sender = getattr(msg, 'name', 'unknown') if hasattr(msg, 'name') else 'unknown'
-                                content_preview = str(getattr(msg, 'content', ''))[:100] if hasattr(msg, 'content') else 'no content'
-                                business_logger.info(f"🔍 [{workflow_name_upper}] Message {i+1}: {sender} -> {content_preview}...")
-                except AttributeError:
-                    business_logger.warning(f"⚠️ [{workflow_name_upper}] No messages property found on result")
-                except Exception as e:
-                    business_logger.error(f"❌ [{workflow_name_upper}] Failed to await messages: {e}")
-                    import traceback
-                    business_logger.error(f"❌ [{workflow_name_upper}] Traceback: {traceback.format_exc()}")
-                
-            # Debug the result
+            business_logger.info(f"✅ [{workflow_name_upper}] Business performance tracking initialized: {chat_id}")
+            
+            # AG2 execution using event streaming for REAL-TIME persistence
             try:
-                if hasattr(result, '__len__'):
-                    business_logger.info(f"🔍 [{workflow_name_upper}] Result length: {len(result)}")  # type: ignore
-            except Exception:
-                pass
-            business_logger.info(f"🔍 [{workflow_name_upper}] Full result: {str(result)[:200]}...")
+                business_logger.info(f"🔍 [{workflow_name_upper}] Pre-execution summary:")
+                business_logger.info(f"   🎯 Pattern: {type(pattern).__name__} | Agents: {len(agents_list)} | User: {user_proxy_agent is not None and human_in_loop}")
                 
-            business_logger.info(f"🎉 [{workflow_name_upper}] Group chat execution completed successfully")
-        except Exception as e:
-            business_logger.error(f"❌ [{workflow_name_upper}] Group chat execution failed: {e}")
-            import traceback
-            business_logger.error(f"❌ [{workflow_name_upper}] Traceback: {traceback.format_exc()}")
-            raise
+                # Use AG2 async group chat with EVENT STREAMING for real-time message capture
+                business_logger.info(f"🔍 [{workflow_name_upper}] Using AG2 async group chat with event streaming for real-time persistence")
+                
+                from autogen.agentchat import a_run_group_chat
+                from logs.logging_config import get_chat_logger
+                from datetime import datetime
+                
+                # Get agent chat logger for real-time logging
+                agent_chat_logger = get_chat_logger("agent_messages")
+                
+                # DEBUG: Add detailed logging before AG2 execution
+                business_logger.info(f"🔍 [{workflow_name_upper}] AG2 Execution Debug:")
+                business_logger.info(f"   📋 Pattern type: {type(pattern)}")
+                business_logger.info(f"   💬 Initial message: {final_initial_message[:100]}...")
+                business_logger.info(f"   🔄 Max rounds: {max_turns}")
+                business_logger.info(f"   🤖 Pattern agents: {[agent.name for agent in pattern.agents] if hasattr(pattern, 'agents') else 'No agents attr'}")
+                
+                # Start AG2 group chat with event streaming
+                business_logger.info(f"🚀 [{workflow_name_upper}] Calling a_run_group_chat...")
+                
+                try:
+                    # Add timeout to prevent infinite hanging
+                    result = await asyncio.wait_for(
+                        a_run_group_chat(
+                            pattern=pattern,
+                            messages=final_initial_message,
+                            max_rounds=max_turns
+                        ),
+                        timeout=60.0  # 60 second timeout
+                    )
+                    business_logger.info(f"✅ [{workflow_name_upper}] a_run_group_chat completed, processing events...")
+                except asyncio.TimeoutError:
+                    business_logger.error(f"❌ [{workflow_name_upper}] AG2 execution timed out after 60 seconds!")
+                    raise Exception("AG2 workflow execution timed out - this suggests a configuration issue")
+                except Exception as ag2_error:
+                    business_logger.error(f"❌ [{workflow_name_upper}] AG2 execution failed: {ag2_error}")
+                    raise
+                
+                # =============================================================================
+                # NATIVE AG2 EVENT PROCESSING - Correct AG2 Pattern
+                # =============================================================================
+                business_logger.info(f"🎯 [{workflow_name_upper}] Processing AG2 result using native AG2 event system...")
+                
+                # STEP 1: Process the result to trigger AG2's native event processing
+                business_logger.info(f"🔄 [{workflow_name_upper}] Calling result.process() to trigger AG2 event processing...")
+                try:
+                    # Use custom UI event processor to route input requests to our UI
+                    from core.transport.ui_event_processor import UIEventProcessor
+                    ui_processor = UIEventProcessor(chat_id=chat_id, enterprise_id=enterprise_id)
+                    
+                    await result.process(processor=ui_processor)  # Use our custom processor
+                    business_logger.info(f"✅ [{workflow_name_upper}] AG2 result.process() completed with UI processor")
+                except Exception as process_error:
+                    business_logger.error(f"❌ [{workflow_name_upper}] AG2 result.process() failed: {process_error}")
+                    import traceback
+                    business_logger.error(f"❌ [{workflow_name_upper}] Process error traceback: {traceback.format_exc()}")
+                    # Try fallback without processor
+                    try:
+                        await result.process()  # Fallback to default processor
+                        business_logger.info(f"✅ [{workflow_name_upper}] AG2 result.process() completed with default processor")
+                    except Exception as fallback_error:
+                        business_logger.error(f"❌ [{workflow_name_upper}] Both processors failed: {fallback_error}")
+                        # Continue anyway to try to extract messages
+                
+                # STEP 2: Extract messages from AG2 result (this is the native AG2 way)
+                business_logger.info(f"📋 [{workflow_name_upper}] Extracting messages from AG2 result...")
+                business_logger.info(f"🔍 [{workflow_name_upper}] Result object type: {type(result)}")
+                business_logger.info(f"🔍 [{workflow_name_upper}] Result attributes: {[attr for attr in dir(result) if not attr.startswith('_')]}")
+                
+                try:
+                    # Debug: Check what the result object contains
+                    if hasattr(result, 'messages'):
+                        business_logger.info(f"🔍 [{workflow_name_upper}] result.messages type: {type(result.messages)}")
+                        all_messages = await result.messages  # Await the messages property
+                        business_logger.info(f"🔍 [{workflow_name_upper}] all_messages type: {type(all_messages)}")
+                        message_list = list(all_messages) if all_messages else []
+                        business_logger.info(f"✅ [{workflow_name_upper}] Found {len(message_list)} messages in result")
+                        
+                        # Debug: Log first message structure if available
+                        if message_list:
+                            first_msg = message_list[0]
+                            business_logger.info(f"🔍 [{workflow_name_upper}] First message type: {type(first_msg)}")
+                            business_logger.info(f"🔍 [{workflow_name_upper}] First message attributes: {[attr for attr in dir(first_msg) if not attr.startswith('_')]}")
+                            if hasattr(first_msg, '__dict__'):
+                                business_logger.info(f"🔍 [{workflow_name_upper}] First message dict: {first_msg.__dict__}")
+                        
+                        # Convert AG2 messages to our conversation history format
+                        conversation_history = []
+                        message_count = 0
+                        
+                        for i, message in enumerate(message_list):
+                            try:
+                                # Debug: Log each message structure
+                                business_logger.info(f"🔍 [{workflow_name_upper}] Processing message {i+1}: type={type(message)}")
+                                
+                                # Try multiple ways to extract sender and content using getattr for safety
+                                sender = 'unknown'
+                                content = ''
+                                
+                                # Method 1: Standard AG2 message attributes (use getattr for safety)
+                                sender = getattr(message, 'name', getattr(message, 'sender', getattr(message, 'role', 'unknown')))
+                                content = getattr(message, 'content', getattr(message, 'message', getattr(message, 'text', str(message))))
+                                
+                                # Method 2: Dictionary access if it's a dict
+                                if isinstance(message, dict):
+                                    sender = message.get('name', message.get('sender', message.get('role', 'unknown')))
+                                    content = message.get('content', message.get('message', message.get('text', str(message))))
+                                
+                                business_logger.info(f"🔍 [{workflow_name_upper}] Message {i+1}: sender='{sender}', content_preview='{content[:100]}...' (length: {len(str(content))})")
+                                
+                                if content and str(content).strip():
+                                    msg_dict = {
+                                        "sender": sender,
+                                        "content": str(content),
+                                        "timestamp": datetime.utcnow().isoformat(),
+                                        "role": "assistant" if sender != "user" else "user"
+                                    }
+                                    conversation_history.append(msg_dict)
+                                    message_count += 1
+                                    
+                                    # Persist each message immediately using centralized chat manager
+                                    await chat_manager.add_message_to_history(
+                                        sender=sender,
+                                        content=str(content),
+                                        role=msg_dict["role"]
+                                    )
+                                    
+                                    # CRITICAL: Send message to UI immediately via transport
+                                    from core.transport.simple_transport import SimpleTransport
+                                    transport = SimpleTransport._get_instance()
+                                    if transport:
+                                        try:
+                                            await transport.send_to_ui(
+                                                message=str(content),
+                                                agent_name=sender,
+                                                message_type="chat_message",
+                                                chat_id=chat_id,
+                                                metadata={"source": "ag2_result", "message_index": message_count}
+                                            )
+                                            business_logger.info(f"✅ [{workflow_name_upper}] Sent message {message_count} to UI: {sender}")
+                                        except Exception as ui_error:
+                                            business_logger.error(f"❌ [{workflow_name_upper}] Failed to send message to UI: {ui_error}")
+                                    else:
+                                        business_logger.warning(f"⚠️ [{workflow_name_upper}] No transport instance - message not sent to UI")
+                                    
+                                    business_logger.info(f"💬 [{workflow_name_upper}] Processed message {message_count} from {sender}: {len(str(content))} chars")
+                                    
+                            except Exception as msg_error:
+                                business_logger.error(f"❌ [{workflow_name_upper}] Failed to process message {i+1}: {msg_error}")
+                                import traceback
+                                business_logger.error(f"❌ [{workflow_name_upper}] Message processing traceback: {traceback.format_exc()}")
+                        
+                        business_logger.info(f"✅ [{workflow_name_upper}] Successfully processed {message_count} messages from AG2 result")
+                        
+                    else:
+                        business_logger.warning(f"⚠️ [{workflow_name_upper}] AG2 result has no 'messages' attribute")
+                        conversation_history = []
+                        
+                except Exception as extract_error:
+                    business_logger.error(f"❌ [{workflow_name_upper}] Failed to extract messages from AG2 result: {extract_error}")
+                    conversation_history = []
+                
+                # STEP 3: Log conversation to agent_chat.log and send to UI
+                try:
+                    await log_conversation_to_agent_chat_file(
+                        conversation_history,
+                        chat_id,
+                        enterprise_id,
+                        workflow_name
+                    )
+                except Exception as log_error:
+                    business_logger.error(f"❌ [{workflow_name_upper}] Failed to log to agent chat: {log_error}")
+                
+                # ===================================================================
+                # CENTRALIZED TOKEN TRACKING UPDATE
+                # ===================================================================
+                business_logger.info(f"🔄 [{workflow_name_upper}] Starting centralized token tracking update...")
+                await performance_manager.update_from_agents(agents_list)
+                
+                # Get token summary from performance manager
+                tracker_summary = await performance_manager.get_summary()
+                business_logger.info(f"📊 [{workflow_name_upper}] Token tracking summary: {tracker_summary}")
+                
+                if tracker_summary.get('total_tokens', 0) > 0:
+                    business_logger.info(f"🔥 [{workflow_name_upper}] CENTRALIZED TOKEN UPDATE: Found {tracker_summary['total_tokens']} tokens, ${tracker_summary['total_cost']:.6f}")
+                    try:
+                        # Update centralized chat manager with token data
+                        await chat_manager.update_message_tokens(tracker_summary)
+                        business_logger.info(f"✅ [{workflow_name_upper}] CENTRALIZED TOKEN SUCCESS: Updated centralized chat manager with {tracker_summary['total_tokens']} tokens, ${tracker_summary['total_cost']:.6f}")
+                        
+                        # Display session summary
+                        session_summary = chat_manager.get_session_summary()
+                        business_logger.info(f"📋 [{workflow_name_upper}] CENTRALIZED SESSION SUMMARY: {session_summary}")
+                        
+                    except Exception as token_update_error:
+                        business_logger.error(f"❌ [{workflow_name_upper}] CENTRALIZED TOKEN FAILED: Failed to update centralized chat manager with token data: {token_update_error}")
+                        import traceback
+                        business_logger.error(f"❌ [{workflow_name_upper}] CENTRALIZED TOKEN ERROR TRACEBACK: {traceback.format_exc()}")
+                else:
+                    business_logger.warning(f"⚠️ [{workflow_name_upper}] NO TOKENS FOUND: Token tracking returned 0 tokens - this indicates the tracking system didn't capture token usage")
+                    business_logger.warning(f"⚠️ [{workflow_name_upper}] TOKEN DEBUG: Full tracker summary = {tracker_summary}")
+                    
+                    # Still display what's in the centralized chat manager
+                    session_summary = chat_manager.get_session_summary()
+                    business_logger.info(f"📋 [{workflow_name_upper}] CENTRALIZED SESSION SUMMARY (no tokens): {session_summary}")
+                
+                termination_result = await termination_handler.on_conversation_end(
+                    termination_reason="completed",
+                    final_status=1,
+                    max_turns_reached=False
+                )
+                
+                business_logger.info(f"📊 [{workflow_name_upper}] Tracking summary: {await performance_manager.get_summary()}")
+                
+            except Exception as e:
+                business_logger.error(f"❌ [{workflow_name_upper}] Execution failed: {e}")
+                raise
         
         chat_time = (time.time() - chat_start) * 1000
         log_performance_metric(
@@ -968,14 +1050,14 @@ async def run_workflow_orchestration(
         except Exception as termination_error:
             business_logger.error(f"❌ [{workflow_name_upper}] Termination handling failed: {termination_error}")
         
-        # Analytics handled by token_manager.py - no complex cost monitoring in orchestration_patterns
-        business_logger.info(f"✅ [{workflow_name_upper}] Analytics tracking handled by token_manager.py")
+        # Analytics handled by simple_tracking.py - unified approach
+        business_logger.info(f"✅ [{workflow_name_upper}] Analytics tracking handled by simple_tracking.py")
 
         # ===================================================================
         # 15. RETURN FINAL RESULT
         # ===================================================================
         log_business_event(
-            event_type=f"{workflow_name_upper}_WORKFLOW_COMPLETED",
+            log_event_type=f"{workflow_name_upper}_WORKFLOW_COMPLETED",
             description=f"{workflow_name} workflow orchestration completed successfully using consolidated patterns",
             context={
                 "enterprise_id": enterprise_id,
@@ -994,7 +1076,7 @@ async def run_workflow_orchestration(
         duration = time.time() - start_time
         logger.error(f"❌ [{workflow_name_upper}] Workflow orchestration failed after {duration:.2f}s: {e}", exc_info=True)
         log_business_event(
-            event_type=f"{workflow_name_upper}_WORKFLOW_FAILED",
+            log_event_type=f"{workflow_name_upper}_WORKFLOW_FAILED",
             description=f"{workflow_name} workflow orchestration failed using consolidated patterns",
             context={
                 "enterprise_id": enterprise_id,
@@ -1021,17 +1103,8 @@ async def run_workflow_orchestration(
                     business_logger.error(f"❌ [{workflow_name_upper}] AG2 streaming cleanup failed: {streaming_cleanup_error}")
             
             # Try to finalize analytics even if workflow failed
-            try:
-                token_tracker = get_token_tracker(chat_id, enterprise_id, user_id or "unknown")
-                
-                # If session wasn't finalized yet (due to error), try to finalize now
-                if hasattr(token_tracker, 'session_usage') and not getattr(token_tracker, '_session_finalized', False):
-                    business_logger.info(f"🔄 [{workflow_name_upper}] Attempting emergency analytics finalization...")
-                    emergency_summary = await token_tracker.finalize_session()
-                    if emergency_summary:
-                        business_logger.info(f"✅ [{workflow_name_upper}] Emergency analytics finalization successful")
-            except Exception as token_cleanup_error:
-                business_logger.error(f"❌ [{workflow_name_upper}] Token cleanup failed: {token_cleanup_error}")
+            # Analytics now handled by simple tracking context - no manual cleanup needed
+            business_logger.info(f"📊 [{workflow_name_upper}] Analytics handled by unified tracking")
                     
         except Exception as cleanup_error:
             logger.warning(f"⚠️ [{workflow_name_upper}] Cleanup warning: {cleanup_error}")
@@ -1168,9 +1241,106 @@ def log_agent_message_details(message, sender_name, recipient_name):
         # NOTE: UI routing is now handled by individual tools (api_manager.py, file_manager.py)
         # Tools emit UI events directly via emit_ui_tool_event() when needed
         
-        # NOTE: Analytics tracking is handled by token_manager.py - no complex monitoring here
+        # NOTE: Analytics tracking is handled by simple_tracking.py - unified monitoring
         
     return message
+
+
+async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str, enterprise_id: str, workflow_name: str):
+    """
+    Log the complete AG2 conversation to the agent chat log file.
+    
+    This function processes the conversation_history from result.messages after result.process()
+    and writes all agent messages to logs/logs/agent_chat.log for debugging and UI display.
+    
+    Args:
+        conversation_history: List of messages from AG2's ChatResult.messages
+        chat_id: Chat identifier for tracking
+        enterprise_id: Enterprise identifier
+        workflow_name: Name of the workflow for context
+    """
+    try:
+        # Get the agent chat logger (specifically for agent conversations)
+        agent_chat_logger = get_chat_logger("agent_messages")
+        
+        if not conversation_history:
+            agent_chat_logger.info(f"🔍 [{workflow_name}] No conversation history to log for chat {chat_id}")
+            return
+        
+        msg_count = len(conversation_history) if hasattr(conversation_history, '__len__') else 0
+        agent_chat_logger.info(f"📝 [{workflow_name}] Logging {msg_count} messages to agent chat file for chat {chat_id}")
+        
+        # Process each message in the conversation
+        for i, message in enumerate(conversation_history):
+            try:
+                # Extract message details from AG2 message format
+                sender_name = "Unknown"
+                content = ""
+                
+                # Handle different AG2 message formats (check for dict first to avoid attribute errors)
+                if isinstance(message, dict):
+                    # Handle dictionary format first
+                    if 'name' in message and message['name']:
+                        sender_name = message['name']
+                    elif 'sender' in message and message['sender']:
+                        sender_name = message['sender']
+                    elif 'from' in message and message['from']:
+                        sender_name = message['from']
+                    
+                    # Extract content from dictionary
+                    if 'content' in message and message['content']:
+                        content = message['content']
+                    elif 'message' in message and message['message']:
+                        content = message['message']
+                    elif 'text' in message and message['text']:
+                        content = message['text']
+                elif isinstance(message, str):
+                    content = message
+                elif hasattr(message, 'name') and hasattr(message, 'content'):
+                    # Handle object format (AG2 message objects)
+                    sender_name = getattr(message, 'name', 'Unknown')
+                    content = getattr(message, 'content', '')
+                elif hasattr(message, 'sender') and hasattr(message, 'message'):
+                    # Alternative object format
+                    sender_name = getattr(message, 'sender', 'Unknown')
+                    content = getattr(message, 'message', '')
+                else:
+                    # Fallback for any other format
+                    content = str(message)
+                
+                # Clean up content for logging
+                clean_content = content.strip() if content else ""
+                
+                if clean_content:
+                    # Log to agent chat file with proper format
+                    agent_chat_logger.info(f"AGENT_MESSAGE | Chat: {chat_id} | Enterprise: {enterprise_id} | Agent: {sender_name} | Message #{i+1}: {clean_content}")
+                    
+                    # Also send to UI via SimpleTransport if available
+                    try:
+                        from core.transport.simple_transport import SimpleTransport
+                        transport = SimpleTransport._get_instance()
+                        if transport:
+                            await transport.send_chat_message(
+                                message=clean_content,
+                                agent_name=sender_name,
+                                chat_id=chat_id,
+                                metadata={"source": "ag2_conversation", "message_index": i+1}
+                            )
+                    except Exception as ui_error:
+                        # Don't fail logging if UI sending fails
+                        logger.debug(f"UI forwarding failed for message {i+1}: {ui_error}")
+                        
+                else:
+                    agent_chat_logger.debug(f"EMPTY_MESSAGE | Chat: {chat_id} | Agent: {sender_name} | Message #{i+1}: (empty)")
+                    
+            except Exception as msg_error:
+                agent_chat_logger.error(f"❌ Failed to log message {i+1} in chat {chat_id}: {msg_error}")
+        
+        agent_chat_logger.info(f"✅ [{workflow_name}] Successfully logged {msg_count} messages for chat {chat_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to log conversation to agent chat file for {chat_id}: {e}")
+        # Don't raise - logging failure shouldn't break the workflow
 
 # ==============================================================================
 # END CONSOLIDATED ORCHESTRATION PATTERNS

@@ -55,7 +55,7 @@ def initialize_workflow_components(workflow_name: str, base_dir: Path) -> List[s
         
         if component_count > 0:
             log_business_event(
-                event_type="WORKFLOW_COMPONENTS_DISCOVERED",
+                log_event_type="WORKFLOW_COMPONENTS_DISCOVERED",
                 description=f"Discovered {component_count} UI components for {workflow_name}",
                 context={
                     "workflow_name": workflow_name,

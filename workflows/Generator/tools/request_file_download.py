@@ -1,6 +1,7 @@
 # ==============================================================================
 # FILE: workflows/Generator/tools/request_file_download.py
 # DESCRIPTION: File download request tool - single async function export
+# NOTE: 'description' in the 'payload' must be a property to use to display the agent's instructions, making the whole system easier to extend.
 # ==============================================================================
 
 import asyncio
@@ -45,8 +46,8 @@ async def emit_ui_tool_event(
     
     try:
         # Send the UI tool event through the transport system
-        await transport.send_tool_event(
-            tool_id=tool_id,
+        await transport.send_ui_tool_event(
+            ui_tool_id=tool_id,
             payload=payload,
             display="inline"
         )
@@ -104,7 +105,10 @@ async def request_file_download(
         UIToolError: If the request fails or times out
     """
     business_logger.info(f"📥 [REQUEST_FILE_DOWNLOAD] Requesting file download: {download_type}")
-    
+
+    # DEV NOTE: The 'description' key is the standardized way to pass the agent's
+    # contextual message to the corresponding UI component. All dynamic UI tools
+    # should follow this convention.
     # Prepare payload for AgentFileDownload component
     if isinstance(files, str):
         # Single file as string
@@ -125,7 +129,7 @@ async def request_file_download(
     
     # Emit the UI tool event
     event_id = await emit_ui_tool_event(
-        tool_id="agent_file_download",
+        tool_id="agent_file_download",  # Must match ui_event_processor.py toolId
         payload=payload
     )
     

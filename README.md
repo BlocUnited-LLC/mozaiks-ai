@@ -98,6 +98,23 @@ graph TD
 - **Enterprise Isolation:** Secure data separation with enterprise and chat ID validation
 - **Message History:** AG2-format message storage with full conversation reconstruction
 
+#### 5. 🔔 Event Architecture
+- Unified Event Dispatcher (`core/events/unified_event_dispatcher.py`) centralizes event routing for Business, Runtime, and UI Tool events.
+- Events are defined by dataclasses (`BusinessLogEvent`, `RuntimeEvent`, `UIToolEvent`) and processed by default handlers (`BusinessLogHandler`, `RuntimeEventHandler`, `UIToolHandler`).
+- Dispatcher metrics track processed, failed, and categorized events.
+- Emit events via convenience methods: `emit_business_event()`, `emit_runtime_event()`, `emit_ui_tool_event()`.
+
+```mermaid
+sequenceDiagram
+    participant Producer as Code/Agent
+    participant Dispatcher as UnifiedEventDispatcher
+    participant Handler as EventHandler
+    participant Persistence as Persistence/Transport
+    Producer->>Dispatcher: emit_*_event(...)
+    Dispatcher->>Handler: handle(event)
+    Handler->>Persistence: log/process
+```
+
 ---
 
 ## 🧩 Key Features
@@ -168,6 +185,7 @@ MozaiksAI/
 - **[Persistence & Resume](docs/PERSISTENCE_AND_RESUME.md)** – MongoDB integration and AG2 groupchat state restoration
 - **[Workflow Analytics System](docs/WORKFLOW_ANALYTICS_SYSTEM.md)** – Real-time performance monitoring, cost analysis, and chat-level aggregation
 - **[Token Architecture Mapping](docs/TOKEN_ARCHITECTURE_MAPPING.md)** – Billing architecture integration with analytics capabilities
+- **[Event Architecture](docs/EVENT_ARCHITECTURE.md)** – Overview of unified event system, dispatcher, events, and handlers
 
 ### Development Guides
 - **[Unified Tool and UI System](docs/UNIFIED_TOOL_AND_UI_SYSTEM.md)** – How backend tools and frontend components work together through workflow.json

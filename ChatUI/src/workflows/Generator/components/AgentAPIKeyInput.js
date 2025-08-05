@@ -28,6 +28,9 @@ const AgentAPIKeyInput = ({
   service = "openai",
   componentId = "AgentAPIKeyInput"
 }) => {
+  // DEV NOTE: This component receives the agent's contextual message via the
+  // `payload.description` prop. This is the standardized convention for all
+  // dynamic UI components in this application.
   // Extract dynamic configuration from agent payload
   const config = {
     service: payload.service || service,

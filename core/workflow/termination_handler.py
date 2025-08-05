@@ -11,7 +11,6 @@ from dataclasses import dataclass
 
 from logs.logging_config import get_business_logger, log_business_event
 from core.data.persistence_manager import PersistenceManager
-from core.data.token_manager import TokenManager
 
 logger = get_business_logger("termination_handler")
 
@@ -50,13 +49,11 @@ class AG2TerminationHandler:
                  chat_id: str, 
                  enterprise_id: str, 
                  workflow_name: str = "default",
-                 persistence_manager: Optional[PersistenceManager] = None,
-                 token_manager: Optional[TokenManager] = None):
+                 persistence_manager: Optional[PersistenceManager] = None):
         self.chat_id = chat_id
         self.enterprise_id = enterprise_id
         self.workflow_name = workflow_name
         self.persistence_manager = persistence_manager or PersistenceManager()
-        self.token_manager = token_manager
         
         # Termination detection state
         self.conversation_active = False
@@ -81,7 +78,7 @@ class AG2TerminationHandler:
         )
         
         log_business_event(
-            event_type="CONVERSATION_STARTED",
+            log_event_type="CONVERSATION_STARTED",
             description=f"AG2 conversation started for {self.workflow_name}",
             context={
                 "chat_id": self.chat_id,
@@ -143,14 +140,9 @@ class AG2TerminationHandler:
             if not conversation_finalized:
                 logger.error(f"❌ Failed to finalize conversation")
             
-            # Finalize TokenManager session if available
+            # Analytics now handled by simple_tracking.py automatically
             session_summary = None
-            if self.token_manager:
-                try:
-                    session_summary = await self.token_manager.finalize_session()
-                    logger.info(f"📊 TokenManager session finalized")
-                except Exception as e:
-                    logger.error(f"❌ Failed to finalize TokenManager session: {e}")
+            logger.info(f"📊 Analytics handled by unified simple tracking")
             
             # Create termination result
             result = TerminationResult(
@@ -163,7 +155,7 @@ class AG2TerminationHandler:
             
             # Log business event
             log_business_event(
-                event_type="CONVERSATION_TERMINATED",
+                log_event_type="CONVERSATION_TERMINATED",
                 description=f"AG2 conversation terminated: {termination_reason}",
                 context={
                     "chat_id": self.chat_id,
@@ -259,14 +251,13 @@ class AG2TerminationHandler:
 
 def create_termination_handler(chat_id: str, 
                              enterprise_id: str, 
-                             workflow_name: str = "default",
-                             token_manager: Optional[TokenManager] = None) -> AG2TerminationHandler:
+                             workflow_name: str = "default") -> AG2TerminationHandler:
     """
     Factory function to create configured termination handler
     
     Usage in orchestration_patterns.py:
     ```python
-    termination_handler = create_termination_handler(chat_id, enterprise_id, workflow_name, token_manager)
+    termination_handler = create_termination_handler(chat_id, enterprise_id, workflow_name)
     await termination_handler.on_conversation_start()
     
     # ... AG2 conversation happens here ...
@@ -278,6 +269,5 @@ def create_termination_handler(chat_id: str,
     return AG2TerminationHandler(
         chat_id=chat_id,
         enterprise_id=enterprise_id,
-        workflow_name=workflow_name,
-        token_manager=token_manager
+        workflow_name=workflow_name
     )

@@ -4,8 +4,10 @@ Supports multiple workflows per enterprise with comprehensive session tracking
 Based on AD_DevDeploy.py patterns for production-scale chat management
 """
 import logging
+import time
+import asyncio
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Union, Tuple
+from typing import Dict, List, Any, Optional, Union, Tuple, Callable
 from dataclasses import dataclass, field
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -13,7 +15,11 @@ from bson.errors import InvalidId
 from logs.logging_config import get_business_logger
 from core.core_config import get_mongo_client
 
+# OpenTelemetry instrumentation for database operations
+from opentelemetry import trace
+
 logger = get_business_logger("persistence")
+tracer = trace.get_tracer(__name__)
 
 class InvalidEnterpriseIdError(Exception):
     """Raised when enterprise ID is invalid"""
@@ -33,18 +39,16 @@ class PersistenceManager:
     Collection Design:
     - ChatSessions: Individual user sessions with workflow-specific data
     - Enterprises: Company data with embedded user management and workflow stats
-    - Concepts: Workflow definitions and configuration (optional)
     """
 
     def __init__(self):
         self.client = get_mongo_client()
         self.db1 = self.client['MozaiksDB']
-        self.db2 = self.client['autogen_ai_agents']
+        self.db2 = self.client['MozaiksAI']
         
         # Core collections (optimized 3-collection design)
         self.enterprises_collection = self.db1['Enterprises']
         self.chat_sessions_collection = self.db2['ChatSessions']  # VE-style comprehensive sessions
-        self.concepts_collection = self.db2['Concepts']  # Workflow definitions
     
     def _ensure_object_id(self, id_value: Union[str, ObjectId], field_name: str = "ID") -> ObjectId:
         """Convert string to ObjectId or validate existing ObjectId"""
@@ -71,97 +75,148 @@ class PersistenceManager:
     async def create_chat_session(self, chat_id: str, enterprise_id: Union[str, ObjectId],
                                 user_id: str, workflow_name: str = "default") -> bool:
         """Create new VE-style chat session with comprehensive tracking"""
-        try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
-            
-            # VE-style comprehensive session document
-            session_doc = {
+        with tracer.start_as_current_span("persistence.create_chat_session") as span:
+            span.set_attributes({
                 "chat_id": chat_id,
-                "enterprise_id": eid,
+                "enterprise_id": str(enterprise_id),
                 "user_id": user_id,
-                "workflow_name": workflow_name,
-                
-                # VE-style session state tracking
-                "status": 0,  # 0 = in progress, 1 = completed
-                "is_complete": False,
-                "connection_state": "active",
-                "can_resume": True,
-                "transport_type": "websocket",
-                "flow_state": "initial",  # VE workflow progression tracking
-                
-                # VE-style workflow-specific status and state tracking
-                "workflow_status": {
-                    workflow_name: 0  # Per-workflow status tracking
-                },
-                "workflow_state": {
-                    workflow_name: {
-                        "can_resume": True,
-                        "last_speaker": None,
-                        "agent_iteration_counts": {},
-                        "current_step": "initialization"
-                    }
-                },
-                "current_workflow": workflow_name,
-                
-                # VE-style conversation tracking with agent output history
-                "messages": [],  # All conversation messages
-                "agent_history": [],  # Detailed agent outputs (VE pattern)
-                "agents": [],  # Active agents in session
-                "current_speaker": None,
-                "last_speaker": None,
-                "round_count": 0,
-                
-                # Token usage (embedded for performance)
-                "token_usage": {
-                    "total_tokens": 0,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_cost": 0.0,
-                    "model_breakdown": {},
-                    "agent_breakdown": {},
-                    "session_id": None,  # VE-style session tracking
-                    "cumulative_tokens": 0,
-                    "cumulative_cost": 0.0
-                },
-                
-                # VE-style performance metrics
-                "performance": {
-                    "session_duration_ms": 0,
-                    "avg_response_time_ms": 0,
-                    "agent_metrics": {},
-                    "response_times": [],
-                    "file_structure_updates": 0,
-                    "stepper_updates": []
-                },
-                
-                # VE-style connection management
-                "connection_info": {
-                    "websocket_id": None,
-                    "client_ip": None,
-                    "user_agent": None,
-                    "last_ping": datetime.utcnow()
-                },
-                
-                # VE-style resume and lifecycle tracking
-                "resume_attempts": 0,
-                "max_resume_attempts": 5,
-                "disconnection_reason": None,
-                "finalized_at": None,
-                
-                # Timestamps
-                "created_at": datetime.utcnow(),
-                "last_updated": datetime.utcnow(),
-                "connected_at": datetime.utcnow(),
-                "last_activity": datetime.utcnow()
-            }
+                "workflow_name": workflow_name
+            })
             
-            await self.chat_sessions_collection.insert_one(session_doc)
-            logger.info(f"🆕 Created VE-style chat session: {chat_id} (workflow: {workflow_name})")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to create chat session: {e}")
-            return False
+            try:
+                eid = await self._validate_enterprise_exists(enterprise_id)
+                
+                # VE-style comprehensive session document
+                session_doc = {
+                    "chat_id": chat_id,
+                    "enterprise_id": eid,
+                    "user_id": user_id,
+                    "workflow_name": workflow_name,
+                    
+                    # VE-style session state tracking
+                    "status": 0,  # 0 = in progress, 1 = completed
+                    "is_complete": False,
+                    "connection_state": "active",
+                    "can_resume": True,
+                    "transport_type": "websocket",
+                    "flow_state": "initial",  # VE workflow progression tracking
+                    
+                    # VE-style workflow-specific status and state tracking
+                    "workflow_status": {
+                        workflow_name: 0  # Per-workflow status tracking
+                    },
+                    "workflow_state": {
+                        workflow_name: {
+                            "can_resume": True,
+                            "last_speaker": None,
+                            "agent_iteration_counts": {},
+                            "current_step": "initialization"
+                        }
+                    },
+                    "current_workflow": workflow_name,
+                    
+                    # VE-style conversation tracking with agent output history
+                    "messages": [],  # All conversation messages
+                    "agent_history": [],  # Detailed agent outputs (VE pattern)
+                    "agents": [],  # Active agents in session
+                    "current_speaker": None,
+                    "last_speaker": None,
+                    "round_count": 0,
+                    
+                    # Enhanced real-time tracking (replaces separate UnifiedTracking collection)
+                    "real_time_tracking": {
+                        "session_id": f"track_{chat_id}_{int(datetime.utcnow().timestamp() * 1000)}",
+                        "start_time": datetime.utcnow(),
+                        "end_time": None,
+                        "current_status": "running",  # running|completed|failed
+                        
+                        # Comprehensive token tracking
+                        "tokens": {
+                            "total_tokens": 0,
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_cost": 0.0,
+                            "model_breakdown": {},
+                            "agent_breakdown": {},
+                            "cumulative_tokens": 0,
+                            "cumulative_cost": 0.0,
+                            "last_updated": datetime.utcnow()
+                        },
+                        
+                        # Performance metrics
+                        "performance": {
+                            "agent_count": 0,
+                            "operation_count": 0,
+                            "avg_response_time_ms": 0.0,
+                            "duration_ms": 0,
+                            "response_times": [],
+                            "last_operation": datetime.utcnow()
+                        },
+                        
+                        # OpenLit observability integration
+                        "observability": {
+                            "trace_id": None,
+                            "span_ids": [],
+                            "metrics_exported": False,
+                            "last_export": None,
+                            "export_count": 0
+                        }
+                    },
+                    
+                    # Legacy token_usage (for backward compatibility - will be deprecated)
+                    "token_usage": {
+                        "total_tokens": 0,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_cost": 0.0,
+                        "model_breakdown": {},
+                        "agent_breakdown": {},
+                        "session_id": None,
+                        "cumulative_tokens": 0,
+                        "cumulative_cost": 0.0
+                    },
+                    
+                    # VE-style performance metrics
+                    "performance": {
+                        "session_duration_ms": 0,
+                        "avg_response_time_ms": 0,
+                        "agent_metrics": {},
+                        "response_times": [],
+                        "file_structure_updates": 0,
+                        "stepper_updates": []
+                    },
+                    
+                    # VE-style connection management
+                    "connection_info": {
+                        "websocket_id": None,
+                        "client_ip": None,
+                        "user_agent": None,
+                        "last_ping": datetime.utcnow()
+                    },
+                    
+                    # VE-style resume and lifecycle tracking
+                    "resume_attempts": 0,
+                    "max_resume_attempts": 5,
+                    "disconnection_reason": None,
+                    "finalized_at": None,
+                    
+                    # Timestamps
+                    "created_at": datetime.utcnow(),
+                    "last_updated": datetime.utcnow(),
+                    "connected_at": datetime.utcnow(),
+                    "last_activity": datetime.utcnow()
+                }
+                
+                await self.chat_sessions_collection.insert_one(session_doc)
+                logger.info(f"🆕 Created VE-style chat session: {chat_id} (workflow: {workflow_name})")
+                span.set_attribute("success", True)
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to create chat session: {e}")
+                span.set_attribute("success", False)
+                span.set_attribute("error", str(e))
+                return False
 
     async def update_session_tokens(self, chat_id: str, enterprise_id: Union[str, ObjectId],
                                   agent_breakdown: Dict[str, Any]) -> bool:
@@ -196,11 +251,139 @@ class PersistenceManager:
             logger.error(f"❌ Failed to update session tokens: {e}")
             return False
 
+    # ==================================================================================
+    # OPTIMIZED REAL-TIME TRACKING (Replaces UnifiedTracking collection)
+    # ==================================================================================
+
+    async def update_real_time_tracking(self, chat_id: str, enterprise_id: Union[str, ObjectId],
+                                       tracking_data: Dict[str, Any]) -> bool:
+        """Update real-time tracking data directly in ChatSessions (eliminates UnifiedTracking collection)"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            update_fields = {}
+            current_time = datetime.utcnow()
+            
+            # Update token data if provided
+            if "tokens" in tracking_data:
+                for key, value in tracking_data["tokens"].items():
+                    update_fields[f"real_time_tracking.tokens.{key}"] = value
+                update_fields["real_time_tracking.tokens.last_updated"] = current_time
+            
+            # Update performance data if provided
+            if "performance" in tracking_data:
+                for key, value in tracking_data["performance"].items():
+                    if key == "response_times" and isinstance(value, list):
+                        # Append to response times array
+                        update_fields["$push"] = {"real_time_tracking.performance.response_times": {"$each": value}}
+                    else:
+                        update_fields[f"real_time_tracking.performance.{key}"] = value
+                update_fields["real_time_tracking.performance.last_operation"] = current_time
+            
+            # Update status if provided
+            if "status" in tracking_data:
+                update_fields["real_time_tracking.current_status"] = tracking_data["status"]
+                if tracking_data["status"] in ["completed", "failed"]:
+                    update_fields["real_time_tracking.end_time"] = current_time
+            
+            # Update observability data if provided
+            if "observability" in tracking_data:
+                for key, value in tracking_data["observability"].items():
+                    update_fields[f"real_time_tracking.observability.{key}"] = value
+            
+            update_fields["last_updated"] = current_time
+            
+            # Separate push operations if needed
+            push_ops = update_fields.pop("$push", None)
+            
+            # Perform the update
+            if update_fields:
+                await self.chat_sessions_collection.update_one(
+                    {"chat_id": chat_id, "enterprise_id": eid},
+                    {"$set": update_fields}
+                )
+            
+            if push_ops:
+                await self.chat_sessions_collection.update_one(
+                    {"chat_id": chat_id, "enterprise_id": eid},
+                    {"$push": push_ops}
+                )
+            
+            logger.debug(f"📊 Updated real-time tracking for {chat_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to update real-time tracking: {e}")
+            return False
+
+    async def get_real_time_tracking(self, chat_id: str, enterprise_id: Union[str, ObjectId]) -> Optional[Dict[str, Any]]:
+        """Get real-time tracking data from ChatSessions"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            session = await self.chat_sessions_collection.find_one(
+                {"chat_id": chat_id, "enterprise_id": eid},
+                {"real_time_tracking": 1}
+            )
+            
+            if session and "real_time_tracking" in session:
+                return session["real_time_tracking"]
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get real-time tracking: {e}")
+            return None
+
+    async def finalize_real_time_tracking(self, chat_id: str, enterprise_id: Union[str, ObjectId],
+                                         success: bool = True) -> str:
+        """Finalize real-time tracking session and return tracking session ID"""
+        try:
+            eid = await self._validate_enterprise_exists(enterprise_id)
+            
+            session = await self.chat_sessions_collection.find_one(
+                {"chat_id": chat_id, "enterprise_id": eid},
+                {"real_time_tracking.session_id": 1}
+            )
+            
+            if not session:
+                raise ValueError(f"Session not found: {chat_id}")
+            
+            tracking_session_id = session.get("real_time_tracking", {}).get("session_id")
+            
+            final_status = "completed" if success else "failed"
+            current_time = datetime.utcnow()
+            
+            await self.chat_sessions_collection.update_one(
+                {"chat_id": chat_id, "enterprise_id": eid},
+                {
+                    "$set": {
+                        "real_time_tracking.current_status": final_status,
+                        "real_time_tracking.end_time": current_time,
+                        "is_complete": success,
+                        "last_updated": current_time
+                    }
+                }
+            )
+            
+            logger.info(f"✅ Finalized real-time tracking: {tracking_session_id} ({final_status})")
+            return tracking_session_id
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to finalize real-time tracking: {e}")
+            raise
+
     async def add_message(self, chat_id: str, enterprise_id: Union[str, ObjectId],
                         sender: str, content: str, tokens_used: int = 0, cost: float = 0.0) -> bool:
         """Add message to consolidated session document"""
         try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
+            # Validate enterprise exists, but allow fallback if invalid or missing
+            try:
+                eid = await self._validate_enterprise_exists(enterprise_id)
+            except InvalidEnterpriseIdError:
+                logger.warning(f"⚠️ Invalid enterprise_id '{enterprise_id}', skipping validation and using raw value")
+                # Use raw enterprise_id when validation fails
+                eid = enterprise_id
             
             message = {
                 "sender": sender,
@@ -211,12 +394,60 @@ class PersistenceManager:
                 "message_id": str(ObjectId())
             }
             
+            # Create a proper session document if it doesn't exist
+            # Note: Don't include fields that are also in $set (to avoid conflicts)
+            current_time = datetime.utcnow()
+            session_defaults = {
+                "chat_id": chat_id,
+                "enterprise_id": eid,
+                "user_id": "unknown",  # Default user_id for upsert cases
+                "workflow_name": "default",
+                "status": 0,
+                "is_complete": False,
+                "connection_state": "active",
+                "can_resume": True,
+                "workflow_status": {},
+                "workflow_state": {},
+                "agent_history": [],
+                "agents": [],
+                "current_speaker": None,
+                "last_speaker": None,
+                "round_count": 0,
+                "token_usage": {
+                    "total_tokens": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_cost": 0.0,
+                    "agent_breakdown": {},
+                    "cumulative_tokens": 0,
+                    "cumulative_cost": 0.0
+                },
+                "performance": {
+                    "session_duration_ms": 0,
+                    "avg_response_time_ms": 0,
+                    "agent_metrics": {},
+                    "response_times": []
+                },
+                "connection_info": {
+                    "websocket_id": None,
+                    "client_ip": None,
+                    "user_agent": None,
+                    "last_ping": current_time
+                },
+                "resume_attempts": 0,
+                "max_resume_attempts": 5,
+                "created_at": current_time
+                # Don't include last_updated and last_activity here since they're in $set
+            }
+            
             await self.chat_sessions_collection.update_one(
                 {"chat_id": chat_id, "enterprise_id": eid},
                 {
                     "$push": {"messages": message},
-                    "$set": {"last_updated": datetime.utcnow()}
-                }
+                    "$set": {"last_updated": current_time, "last_activity": current_time},
+                    "$setOnInsert": session_defaults
+                },
+                upsert=True  # This will create the document if it doesn't exist
             )
             
             logger.info(f"💬 Added message from {sender}: {tokens_used} tokens")
@@ -239,15 +470,21 @@ class PersistenceManager:
             if not session:
                 return {}
             
+            # Calculate duration safely
+            created_at = session.get("created_at")
+            duration_seconds = 0
+            if created_at:
+                duration_seconds = (datetime.utcnow() - created_at).total_seconds()
+                
             return {
                 "session_info": {
-                    "chat_id": session["chat_id"],
-                    "user_id": session["user_id"],
-                    "workflow_name": session["workflow_name"],
-                    "status": session["status"],
-                    "is_complete": session["is_complete"],
-                    "created_at": session["created_at"],
-                    "duration_seconds": (datetime.utcnow() - session["created_at"]).total_seconds()
+                    "chat_id": session.get("chat_id", chat_id),
+                    "user_id": session.get("user_id", "unknown"),
+                    "workflow_name": session.get("workflow_name", "default"),
+                    "status": session.get("status", 0),
+                    "is_complete": session.get("is_complete", False),
+                    "created_at": created_at,
+                    "duration_seconds": duration_seconds
                 },
                 "usage_summary": session.get("token_usage", {}),
                 "performance_metrics": session.get("performance", {}),
@@ -384,58 +621,69 @@ class PersistenceManager:
                                                    sender: str, content: str, workflow_name: str = "default",
                                                    agent_output: Optional[Dict[str, Any]] = None) -> bool:
         """Update conversation with VE-style agent history tracking"""
-        try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
-            
-            message = {
+        with tracer.start_as_current_span("persistence.update_conversation") as span:
+            span.set_attributes({
+                "chat_id": chat_id,
+                "enterprise_id": str(enterprise_id),
                 "sender": sender,
-                "content": content,
-                "timestamp": datetime.utcnow(),
-                "message_id": str(ObjectId()),
-                "workflow_name": workflow_name
-            }
-            
-            # Extract structured data from agent messages (VE pattern)
-            extracted_data = await self._extract_agent_data(sender, content)
-            if extracted_data:
-                message.update(extracted_data)
-            
-            update_doc = {
-                "$push": {"messages": message},
-                "$set": {
-                    "last_updated": datetime.utcnow(),
-                    "last_activity": datetime.utcnow(),
-                    "last_speaker": sender
-                }
-            }
-            
-            # Add to agent history if this is an agent output (VE pattern)
-            if agent_output or sender != "user_proxy":
-                agent_history_entry = {
-                    "agent_name": sender,
+                "workflow_name": workflow_name,
+                "has_agent_output": agent_output is not None
+            })
+            try:
+                eid = await self._validate_enterprise_exists(enterprise_id)
+                
+                message = {
+                    "sender": sender,
                     "content": content,
                     "timestamp": datetime.utcnow(),
-                    "workflow_name": workflow_name,
-                    "message_id": message["message_id"]
+                    "message_id": str(ObjectId()),
+                    "workflow_name": workflow_name
                 }
                 
-                if agent_output:
-                    agent_history_entry["parsed_output"] = agent_output
+                # Extract structured data from agent messages (VE pattern)
+                extracted_data = await self._extract_agent_data(sender, content)
+                if extracted_data:
+                    message.update(extracted_data)
                 
-                update_doc["$push"]["agent_history"] = agent_history_entry
-            
-            await self.chat_sessions_collection.update_one(
-                {"chat_id": chat_id, "enterprise_id": eid},
-                update_doc,
-                upsert=True
-            )
-            
-            logger.info(f"💬 Added message from {sender} with agent history tracking")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to update conversation: {e}")
-            return False
+                update_doc = {
+                    "$push": {"messages": message},
+                    "$set": {
+                        "last_updated": datetime.utcnow(),
+                        "last_activity": datetime.utcnow(),
+                        "last_speaker": sender
+                    }
+                }
+                
+                # Add to agent history if this is an agent output (VE pattern)
+                if agent_output or sender != "user_proxy":
+                    agent_history_entry = {
+                        "agent_name": sender,
+                        "content": content,
+                        "timestamp": datetime.utcnow(),
+                        "workflow_name": workflow_name,
+                        "message_id": message["message_id"]
+                    }
+                    
+                    if agent_output:
+                        agent_history_entry["parsed_output"] = agent_output
+                    
+                    update_doc["$push"]["agent_history"] = agent_history_entry
+                
+                await self.chat_sessions_collection.update_one(
+                    {"chat_id": chat_id, "enterprise_id": eid},
+                    update_doc,
+                    upsert=True
+                )
+                
+                logger.info(f"💬 Added message from {sender} with agent history tracking")
+                span.set_attribute("success", True)
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to update conversation: {e}")
+                span.set_attribute("success", False)
+                span.set_attribute("error", str(e))
+                return False
 
     async def get_chat_status(self, chat_id: str, enterprise_id: Union[str, ObjectId],
                             workflow_name: str = "default") -> Optional[int]:
@@ -1311,72 +1559,677 @@ class PersistenceManager:
             return False
 
     # ==================================================================================
-    # BACKWARD COMPATIBILITY METHODS (for groupchat_manager.py)
+    # REMOVED: load_chat_state method - replaced by event-driven persistence system
     # ==================================================================================
 
-    async def get_workflow_averages(self, workflow_name: str, enterprise_id: Union[str, ObjectId]) -> Dict[str, Any]:
-        """Get workflow averages from enterprise analytics"""
+# ===================================================================
+# CENTRALIZED WORKFLOW CHAT MANAGER
+# ===================================================================
+
+class WorkflowChatManager:
+    """
+    Centralized chat persistence manager.
+    This class provides single-source-of-truth for chat history and real-time token tracking.
+    
+    Moved from orchestration_patterns.py to centralize all persistence logic.
+    """
+    
+    def __init__(self, workflow_name: str, enterprise_id: str, chat_id: str, 
+                 user_id: Optional[str] = None, persistence_manager: Optional[PersistenceManager] = None):
+        self.workflow_name = workflow_name
+        self.enterprise_id = enterprise_id
+        self.chat_id = chat_id
+        self.user_id = user_id
+        
+        # Use provided persistence manager or create new one
+        self.persistence_manager = persistence_manager or PersistenceManager()
+        
+        # Centralized message store - single source of truth
+        self.agent_history: List[Dict[str, Any]] = []
+        
+        # Token tracking integration
+        import time
+        self.session_id = str(int(time.time() * 1000))  # Unique session ID
+        self.cumulative_tokens = 0
+        self.cumulative_cost = 0.0
+        
+        # Workflow state
+        self.message_count = 0
+        self.last_speaker = None
+        
+        logger.info(f"🏗️ WorkflowChatManager initialized: {workflow_name} | {chat_id} | session: {self.session_id}")
+    
+    async def add_message_to_history(self, sender: str, content: str, role: str = "assistant") -> Optional[Dict[str, Any]]:
+        """
+        Add message to centralized history and immediately persist to database.
+        This is the SINGLE entry point for all message storage.
+        """
         try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
+            # Create standardized message object
+            message = {
+                "timestamp": datetime.utcnow(),
+                "sender": sender,
+                "content": content,
+                "role": role,
+                "name": sender,
+                "tokens_used": 0,  # Will be updated when tokens are calculated
+                "cost": 0.0,      # Will be updated when tokens are calculated
+                "session_id": self.session_id,
+                "message_id": f"{self.session_id}_{self.message_count}",
+                "workflow_name": self.workflow_name
+            }
             
-            enterprise = await self.enterprises_collection.find_one(
-                {"_id": eid},
-                {f"workflow_stats.{workflow_name}": 1}
+            # Check for duplicates (prevent double storage)
+            if not any(
+                msg["content"] == content and msg["sender"] == sender 
+                for msg in self.agent_history
+            ):
+                # Add to centralized in-memory store
+                self.agent_history.append(message)
+                self.message_count += 1
+                self.last_speaker = sender
+                
+                # REAL-TIME persistence - immediately persist to database
+                await self._persist_message_to_database_realtime(message)
+                
+                logger.info(f"� REAL-TIME PERSIST: Added and persisted message from {sender} ({len(content)} chars)")
+                return message
+            else:
+                logger.debug(f"🚫 DUPLICATE SKIP: Message from {sender} already in history")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ CENTRALIZED STORE ERROR: Failed to add message from {sender}: {e}")
+            raise
+    
+    async def _persist_message_to_database(self, message: Dict[str, Any]) -> None:
+        """
+        Internal method to immediately persist message to database.
+        """
+        try:
+            await self.persistence_manager.add_message(
+                chat_id=self.chat_id,
+                enterprise_id=self.enterprise_id,
+                sender=message["sender"],
+                content=message["content"],
+                tokens_used=message["tokens_used"],
+                cost=message["cost"]
+            )
+            logger.debug(f"💾 DB PERSIST: Message from {message['sender']} stored in database")
+            
+        except Exception as db_error:
+            logger.error(f"❌ DB PERSIST FAILED: Database storage failed for {message['sender']}: {db_error}")
+            # Don't raise - we still have it in memory, this is just persistence layer
+
+    async def _persist_message_to_database_realtime(self, message: Dict[str, Any]) -> None:
+        """
+        REAL-TIME: Immediately persist message to database without blocking.
+        This is called from event processing for instant persistence.
+        """
+        try:
+            # Debug: Log the enterprise_id we're working with
+            logger.info(f"🚀 REAL-TIME DB START: Attempting to persist message from {message['sender']} | Chat: {self.chat_id} | Enterprise: {self.enterprise_id}")
+            
+            await self.persistence_manager.add_message(
+                chat_id=self.chat_id,
+                enterprise_id=self.enterprise_id,
+                sender=message["sender"],
+                content=message["content"],
+                tokens_used=message["tokens_used"],
+                cost=message["cost"]
+            )
+            # Mark as persisted to avoid duplicate storage
+            message["database_persisted"] = True
+            message["persisted_at"] = datetime.utcnow()
+            
+            logger.info(f"🚀 REAL-TIME DB SUCCESS: Message from {message['sender']} immediately persisted to database")
+            
+        except Exception as db_error:
+            logger.error(f"❌ REAL-TIME DB FAILED: {db_error}")
+            logger.error(f"❌ REAL-TIME DB ERROR DETAILS: Chat: {self.chat_id}, Enterprise: {self.enterprise_id}, Sender: {message.get('sender')}")
+            import traceback
+            logger.error(f"❌ REAL-TIME DB TRACEBACK: {traceback.format_exc()}")
+            # Mark as needing persistence retry
+            message["needs_persistence"] = True
+            message["persistence_error"] = str(db_error)
+    
+    async def flush_messages_to_database(self) -> None:
+        """
+        Flush all cached messages to database.
+        Called when AG2 conversation completes to ensure all messages are persisted.
+        """
+        try:
+            if not self.agent_history:
+                logger.warning(f"⚠️ FLUSH SKIP: No messages to flush to database")
+                return
+            
+            persisted_count = 0
+            for message in self.agent_history:
+                try:
+                    # Check if message already has database persistence marker
+                    if not message.get("database_persisted", False):
+                        await self.persistence_manager.add_message(
+                            chat_id=self.chat_id,
+                            enterprise_id=self.enterprise_id,
+                            sender=message["sender"],
+                            content=message["content"],
+                            tokens_used=message["tokens_used"],
+                            cost=message["cost"]
+                        )
+                        # Mark as persisted to avoid duplicates
+                        message["database_persisted"] = True
+                        persisted_count += 1
+                        
+                except Exception as persist_error:
+                    logger.error(f"❌ FLUSH ERROR: Failed to persist message from {message['sender']}: {persist_error}")
+            
+            logger.info(f"✅ FLUSH SUCCESS: Persisted {persisted_count}/{len(self.agent_history)} messages to database")
+            
+        except Exception as e:
+            logger.error(f"❌ FLUSH FAILED: {e}")
+            raise
+
+    async def update_message_tokens(self, tracker_summary: Dict[str, Any]) -> None:
+        """
+        Update messages in centralized history with real token usage data.
+        """
+        try:
+            total_tokens = tracker_summary.get("total_tokens", 0)
+            total_cost = tracker_summary.get("total_cost", 0.0)
+            
+            if total_tokens == 0 or not self.agent_history:
+                logger.warning(f"⚠️ TOKEN UPDATE SKIP: No tokens ({total_tokens}) or no messages ({len(self.agent_history)})")
+                return
+            
+            # Filter agent messages for token distribution (generic agent pattern)
+            agent_messages = [
+                msg for msg in self.agent_history 
+                if msg["sender"].endswith("Agent") or msg["sender"] == "Assistant"
+            ]
+            
+            if not agent_messages:
+                logger.warning(f"⚠️ TOKEN UPDATE SKIP: No agent messages found for token distribution")
+                return
+            
+            # Calculate total content length for proportional distribution
+            total_content_length = sum(len(msg["content"]) for msg in agent_messages)
+            
+            if total_content_length == 0:
+                logger.warning(f"⚠️ TOKEN UPDATE SKIP: Total content length is 0")
+                return
+            
+            # Distribute tokens proportionally based on content length
+            for message in agent_messages:
+                content_length = len(message["content"])
+                proportion = content_length / total_content_length
+                
+                message["tokens_used"] = int(total_tokens * proportion)
+                message["cost"] = total_cost * proportion
+                message["token_update_timestamp"] = datetime.utcnow()
+                message["token_tracking_session"] = self.session_id
+            
+            # Update cumulative tracking
+            self.cumulative_tokens += total_tokens
+            self.cumulative_cost += total_cost
+            
+            # Update database with token information
+            await self._update_database_with_tokens()
+            
+            logger.info(f"✅ TOKEN UPDATE SUCCESS: Updated {len(agent_messages)} messages with {total_tokens} tokens, ${total_cost:.6f}")
+            
+        except Exception as e:
+            logger.error(f"❌ TOKEN UPDATE FAILED: {e}")
+            raise
+    
+    async def _update_database_with_tokens(self) -> None:
+        """
+        Update database messages with token information from centralized history.
+        """
+        try:
+            # Get current chat session
+            chat_session = await self.persistence_manager.chat_sessions_collection.find_one({
+                "chat_id": self.chat_id,
+                "enterprise_id": await self.persistence_manager._validate_enterprise_exists(self.enterprise_id)
+            })
+            
+            if not chat_session:
+                logger.error(f"❌ TOKEN DB UPDATE: Chat session not found for {self.chat_id}")
+                return
+            
+            # Create mapping of session messages by message content and sender for matching
+            db_messages = chat_session.get("messages", [])
+            updated_messages = []
+            
+            for db_msg in db_messages:
+                # Find matching message in our centralized history
+                matching_msg = None
+                for hist_msg in self.agent_history:
+                    if (hist_msg["content"] == db_msg.get("content", "") and 
+                        hist_msg["sender"] == db_msg.get("sender", "")):
+                        matching_msg = hist_msg
+                        break
+                
+                if matching_msg and matching_msg["tokens_used"] > 0:
+                    # Update database message with token data from centralized history
+                    db_msg["tokens_used"] = matching_msg["tokens_used"]
+                    db_msg["cost"] = matching_msg["cost"]
+                    db_msg["token_update_timestamp"] = matching_msg["token_update_timestamp"]
+                    db_msg["session_id"] = self.session_id
+                
+                updated_messages.append(db_msg)
+            
+            # Update entire messages array in database
+            await self.persistence_manager.chat_sessions_collection.update_one(
+                {"chat_id": self.chat_id, "enterprise_id": await self.persistence_manager._validate_enterprise_exists(self.enterprise_id)},
+                {
+                    "$set": {
+                        "messages": updated_messages,
+                        "centralized_token_update": True,
+                        "total_session_tokens": self.cumulative_tokens,
+                        "total_session_cost": self.cumulative_cost,
+                        "last_token_update": datetime.utcnow()
+                    }
+                }
             )
             
-            if enterprise and "workflow_stats" in enterprise and workflow_name in enterprise["workflow_stats"]:
-                stats = enterprise["workflow_stats"][workflow_name]
-                return {
-                    "avg_tokens": stats.get("avg_tokens_per_session", 0),
-                    "avg_cost": stats.get("avg_cost_per_session", 0),
-                    "avg_duration_ms": stats.get("avg_duration_ms", 0),
-                    "total_sessions": stats.get("total_sessions", 0)
-                }
-            
-            return {"avg_tokens": 0, "avg_cost": 0, "avg_duration_ms": 0, "total_sessions": 0}
+            logger.info(f"✅ DB TOKEN UPDATE: Updated database with centralized token data")
             
         except Exception as e:
-            logger.error(f"❌ Failed to get workflow averages: {e}")
-            return {"avg_tokens": 0, "avg_cost": 0, "avg_duration_ms": 0, "total_sessions": 0}
+            logger.error(f"❌ DB TOKEN UPDATE FAILED: {e}")
+            raise
+    
+    def get_message_history(self) -> List[Dict[str, Any]]:
+        """Get complete message history from centralized store."""
+        return self.agent_history.copy()
+    
+    def get_session_summary(self) -> Dict[str, Any]:
+        """Get session summary including token usage."""
+        return {
+            "session_id": self.session_id,
+            "workflow_name": self.workflow_name,
+            "message_count": len(self.agent_history),
+            "total_tokens": self.cumulative_tokens,
+            "total_cost": self.cumulative_cost,
+            "last_speaker": self.last_speaker,
+            "chat_id": self.chat_id,
+            "enterprise_id": self.enterprise_id
+        }
 
-    async def load_chat_state(self, chat_id: str, enterprise_id: Union[str, ObjectId], 
-                            workflow_name: str = "default") -> Optional[Dict[str, Any]]:
-        """Load chat state from session document (compatible with old interface)"""
+
+def create_event_driven_message_processor(chat_manager: WorkflowChatManager) -> Dict[str, Any]:
+    """
+    Create event-driven message processor that uses the centralized chat manager.
+    
+    Used by event streaming in orchestration_patterns.py for real-time persistence.
+    """
+    
+    async def process_event_message(event_data: Dict[str, Any]) -> None:
+        """
+        Process AG2 event messages for centralized storage via direct event processing.
+        """
         try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
+            # Extract message details from event
+            sender_name = event_data.get("sender", "Unknown")
+            content = event_data.get("content", "")
+            ag2_event_type = event_data.get("type", "message")
             
-            session = await self.chat_sessions_collection.find_one(
-                {"chat_id": chat_id, "enterprise_id": eid},
-                {f"workflow_state.{workflow_name}": 1}
+            # Skip empty messages or unknown senders
+            if not content or sender_name == "Unknown":
+                logger.debug(f"🚫 EVENT SKIP: Empty content or unknown sender: {sender_name}")
+                return
+            
+            logger.debug(f"🎯 EVENT PROCESSOR: Processing {ag2_event_type} from {sender_name}")
+            
+            try:
+                # Log the message for real-time monitoring to AGENT CHAT LOG
+                from logs.logging_config import get_chat_logger
+                agent_chat_logger = get_chat_logger("agent_messages")
+                agent_chat_logger.info(f"AGENT_MESSAGE | Chat: {chat_manager.chat_id} | Agent: {sender_name} | {content}")
+                
+                # Also log to business logic for debugging
+                logger.info(f"📝 AGENT_MESSAGE | {sender_name} | {content[:150]}...")
+                
+                # Use centralized chat manager for immediate storage
+                message_result = await chat_manager.add_message_to_history(
+                    sender=sender_name,
+                    content=content,
+                    role="assistant"
+                )
+                
+                if message_result:
+                    logger.info(f"✅ EVENT SUCCESS: Message from {sender_name} processed and stored")
+                else:
+                    logger.debug(f"🚫 EVENT DUPLICATE: Message from {sender_name} already existed")
+                
+            except Exception as storage_error:
+                logger.error(f"❌ EVENT STORAGE ERROR: Failed to store message from {sender_name}: {storage_error}")
+                raise
+            
+        except Exception as event_error:
+            logger.error(f"❌ EVENT PROCESSOR FAILED: {event_error}")
+            raise
+    
+    async def process_event_stream(events) -> None:
+        """
+        Process a stream of AG2 events for message persistence.
+        This is the main entry point for event-driven persistence.
+        """
+        try:
+            async for event in events:
+                if event.type == "message":
+                    await process_event_message({
+                        "sender": event.data.get("name", "Unknown"),
+                        "content": event.data.get("content", ""),
+                        "type": "message"
+                    })
+                elif event.type == "input_request":
+                    logger.debug(f"🔄 EVENT: Input request received")
+                elif event.type == "termination":
+                    logger.info(f"🏁 EVENT: Workflow termination received")
+                    break
+        except Exception as stream_error:
+            logger.error(f"❌ EVENT STREAM ERROR: {stream_error}")
+            raise
+    
+    return {
+        "process_event_message": process_event_message,
+        "process_event_stream": process_event_stream
+    }
+
+# ==================================================================================
+# AG2 GROUPCHAT PERSISTENCE EXTENSIONS 
+# ==================================================================================
+class AG2PersistenceExtensions:
+    """
+    AG2-specific persistence methods that extend the main PersistenceManager.
+    These handle AG2 groupchat resume functionality.
+    """
+    
+    def __init__(self, persistence_manager: PersistenceManager):
+        self.pm = persistence_manager
+        self.logger = logger
+    
+    async def save_ag2_groupchat_state(
+        self,
+        chat_id: str,
+        enterprise_id: Union[str, ObjectId],
+        groupchat_messages: List[Dict[str, Any]],
+        workflow_name: str = "default"
+    ) -> bool:
+        """Save AG2 groupchat state for resume functionality"""
+        try:
+            eid = await self.pm._validate_enterprise_exists(enterprise_id)
+            
+            # Convert messages to AG2 format
+            ag2_messages = []
+            if groupchat_messages:
+                for msg in groupchat_messages:
+                    if isinstance(msg, dict):
+                        ag2_messages.append({
+                            "content": msg.get("content", str(msg)),
+                            "role": msg.get("role", "assistant"),
+                            "name": msg.get("name", msg.get("sender", "unknown"))
+                        })
+                    else:
+                        ag2_messages.append({
+                            "content": str(msg),
+                            "role": "assistant",
+                            "name": "unknown"
+                        })
+            
+            # Update existing chat session with AG2 state
+            await self.pm.chat_sessions_collection.update_one(
+                {"chat_id": chat_id, "enterprise_id": eid, "workflow_name": workflow_name},
+                {
+                    "$set": {
+                        "ag2_state": {
+                            "messages": ag2_messages,
+                            "message_count": len(ag2_messages),
+                            "can_resume": True,
+                            "last_saved": datetime.utcnow()
+                        },
+                        "last_updated": datetime.utcnow()
+                    }
+                },
+                upsert=True
             )
             
-            if session and "workflow_state" in session and workflow_name in session["workflow_state"]:
-                return session["workflow_state"][workflow_name]
+            self.logger.info(f"💾 Saved AG2 groupchat state: {len(ag2_messages)} messages for {chat_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to save AG2 groupchat state: {e}")
+            return False
+
+    async def load_ag2_groupchat_state(self, chat_id: str, enterprise_id: Union[str, ObjectId], 
+                                      workflow_name: str = "default") -> Optional[Dict[str, Any]]:
+        """Load AG2 groupchat state for resume"""
+        try:
+            eid = await self.pm._validate_enterprise_exists(enterprise_id)
+            
+            session = await self.pm.chat_sessions_collection.find_one(
+                {"chat_id": chat_id, "enterprise_id": eid, "workflow_name": workflow_name}
+            )
+            
+            if session and session.get("ag2_state", {}).get("can_resume", False):
+                return session["ag2_state"]
             
             return None
             
         except Exception as e:
-            logger.error(f"❌ Failed to load chat state: {e}")
+            self.logger.error(f"❌ Failed to load AG2 groupchat state: {e}")
             return None
 
-    async def find_latest_concept_for_enterprise(self, enterprise_id: Union[str, ObjectId]) -> Optional[Dict[str, Any]]:
-        """Find latest concept for enterprise (placeholder implementation)"""
+    async def resume_ag2_groupchat(
+        self,
+        chat_id: str,
+        enterprise_id: Union[str, ObjectId],
+        workflow_name: str = "default"
+    ) -> Tuple[bool, Optional[List[Dict[str, Any]]], Optional[str]]:
+        """Resume AG2 groupchat and return messages"""
         try:
-            eid = await self._validate_enterprise_exists(enterprise_id)
+            state = await self.load_ag2_groupchat_state(chat_id, enterprise_id, workflow_name)
+            if not state:
+                return False, None, "No resumable state found"
             
-            # For VE-style, we can return basic enterprise info as "concept"
-            enterprise = await self.enterprises_collection.find_one({"_id": eid})
+            messages = state.get("messages", [])
+            if not messages:
+                return False, None, "No messages in state"
             
-            if enterprise:
-                return {
-                    "enterprise_id": str(enterprise["_id"]),
-                    "name": enterprise.get("name", "Unknown"),
-                    "workflows": list(enterprise.get("workflow_stats", {}).keys()),
-                    "concept_type": "enterprise_default"
-                }
-            
-            return None
+            self.logger.info(f"✅ AG2 groupchat can be resumed: {len(messages)} messages")
+            return True, messages, None
             
         except Exception as e:
-            logger.error(f"❌ Failed to find concept for enterprise: {e}")
-            return None
+            self.logger.error(f"❌ AG2 resume failed: {e}")
+            return False, None, f"Resume failed: {str(e)}"
+
+    async def get_ag2_resume_info(
+        self,
+        chat_id: str,
+        enterprise_id: Union[str, ObjectId],
+        workflow_name: str = "default"
+    ) -> Dict[str, Any]:
+        """Get information about whether an AG2 chat can be resumed"""
+        try:
+            state = await self.load_ag2_groupchat_state(chat_id, enterprise_id, workflow_name)
+            
+            if not state:
+                return {
+                    "can_resume": False,
+                    "reason": "no_existing_session",
+                    "is_new_chat": True,
+                    "message_count": 0
+                }
+            
+            message_count = state.get("message_count", 0)
+            
+            return {
+                "can_resume": message_count > 0,
+                "message_count": message_count,
+                "is_new_chat": message_count == 0,
+                "reason": "messages_found" if message_count > 0 else "no_messages",
+                "last_saved": state.get("last_saved")
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get AG2 resume info: {e}")
+            return {
+                "can_resume": False,
+                "reason": "error",
+                "error": str(e),
+                "is_new_chat": True,
+                "message_count": 0
+            }
+
+    async def process_runtime_event(self, event_data) -> bool:
+        """Process AG2 runtime events for real-time persistence and monitoring
+        
+        Args:
+            event_data: Either a Dict[str, Any] (from unified event dispatcher) 
+                       or a raw AG2 event object (from direct AG2 event consumers)
+        """
+        try:
+            # Handle both dictionary format (from unified dispatcher) and raw AG2 events
+            # Check if it's a real dictionary by looking for 'event_type' key (our unified dispatcher format)
+            if hasattr(event_data, 'get') and 'event_type' in event_data:
+                # Dictionary format from unified event dispatcher
+                event_type = event_data.get("event_type", "unknown")
+                agent_name = event_data.get("agent_name", "unknown")
+                raw_content = event_data.get("content", "")
+                metadata = event_data.get("metadata", {})
+                event_id = event_data.get("event_id")
+                timestamp = event_data.get("timestamp", datetime.utcnow().isoformat())
+                
+                # Handle case where content is still an AG2 event object
+                if hasattr(raw_content, 'content'):
+                    # Content is an AG2 event object, extract its content
+                    content = str(getattr(raw_content, 'content', ''))
+                elif hasattr(raw_content, 'termination_reason'):
+                    content = str(getattr(raw_content, 'termination_reason', ''))
+                elif hasattr(raw_content, 'prompt'):
+                    content = str(getattr(raw_content, 'prompt', ''))
+                else:
+                    content = str(raw_content) if raw_content else ""
+                
+            else:
+                # Raw AG2 event object - based on actual AG2 source structure
+                # All AG2 events have .type attribute and direct attributes for data
+                event_type = getattr(event_data, 'type', type(event_data).__name__.lower().replace('event', ''))
+                
+                # Extract agent name based on AG2 event structure
+                if hasattr(event_data, 'sender'):
+                    agent_name = getattr(event_data, 'sender', 'unknown')
+                elif hasattr(event_data, 'speaker'):
+                    agent_name = getattr(event_data, 'speaker', 'unknown')
+                else:
+                    agent_name = 'unknown'
+                
+                # Extract content based on AG2 event structure  
+                if hasattr(event_data, 'content'):
+                    content = getattr(event_data, 'content', '')
+                    # Handle complex content (lists, dicts, etc.)
+                    if not isinstance(content, str):
+                        content = str(content)
+                elif hasattr(event_data, 'termination_reason'):
+                    content = getattr(event_data, 'termination_reason', '')
+                elif hasattr(event_data, 'prompt'):
+                    content = getattr(event_data, 'prompt', '')
+                else:
+                    content = ''
+                
+                # Try to extract agent name from debug content if present
+                if content and content.startswith("uuid=UUID(") and "speaker=" in content:
+                    import re
+                    speaker_match = re.search(r"speaker='([^']+)'", content)
+                    if speaker_match:
+                        agent_name = speaker_match.group(1)
+                
+                # Build metadata from AG2 event attributes
+                metadata = {
+                    "event_class": type(event_data).__name__
+                }
+                
+                # Add recipient if available
+                if hasattr(event_data, 'recipient'):
+                    metadata['recipient'] = getattr(event_data, 'recipient')
+                    
+                # Get event ID from uuid
+                if hasattr(event_data, 'uuid'):
+                    event_id = str(getattr(event_data, 'uuid'))
+                else:
+                    event_id = None
+                    
+                timestamp = datetime.utcnow().isoformat()
+            
+            # Extract chat_id from metadata if available
+            chat_id = metadata.get("chat_id") if isinstance(metadata, dict) else None
+            enterprise_id = metadata.get("enterprise_id", "default") if isinstance(metadata, dict) else "default"
+            
+            # Log the runtime event for monitoring
+            self.logger.debug(f"🔄 Processing AG2 runtime event: {event_type} from {agent_name}")
+            
+            # FOR MESSAGE EVENTS - LEGACY PERSISTENCE DISABLED 
+            # This legacy persistence was creating duplicate messages with incorrect "Generator" sender
+            # Real-time streaming persistence (in orchestration_patterns.py) handles message persistence correctly
+            if event_type in ["text", "message", "group_chat_run_chat"] and content and agent_name != "unknown":
+                # Filter out debug messages and simple continuations
+                if (content.startswith("uuid=UUID(") or 
+                    content.lower().strip() in ["continue", "next", ""] or
+                    len(content.strip()) < 10):
+                    # Skip persisting debug/continuation messages
+                    self.logger.debug(f"🔍 Skipping debug/continuation message: {content[:50]}...")
+                else:
+                    # LEGACY PERSISTENCE DISABLED - Real-time streaming handles message persistence
+                    # This was causing duplicate messages with sender "Generator" instead of actual agent names
+                    self.logger.debug(f"🔄 LEGACY PERSISTENCE DISABLED | Skipping duplicate persistence for {agent_name}: {len(content)} chars")
+                    # try:
+                    #     if chat_id:  # Only persist if we have chat context
+                    #         await self.pm.add_message(
+                    #             chat_id=chat_id,
+                    #             enterprise_id=enterprise_id,
+                    #             sender=agent_name,
+                    #             content=content,
+                    #             tokens_used=0,  # Tokens will be updated separately
+                    #             cost=0.0       # Cost will be updated separately
+                    #         )
+                    #         self.logger.info(f"💬 Persisted AG2 message from {agent_name}: {len(content)} chars")
+                    # except Exception as persist_error:
+                    #     self.logger.error(f"❌ Failed to persist AG2 message from {agent_name}: {persist_error}")
+            
+            # If we have chat context, update real-time tracking
+            if chat_id:
+                await self.pm.update_real_time_tracking(
+                    chat_id=chat_id,
+                    enterprise_id=enterprise_id,
+                    tracking_data={
+                        "runtime_events": {
+                            "last_event": {
+                                "type": event_type,
+                                "agent": agent_name,
+                                "timestamp": timestamp,
+                                "event_id": event_id
+                            }
+                        }
+                    }
+                )
+            
+            # Store runtime event for analytics if needed
+            runtime_event_doc = {
+                "event_type": event_type,
+                "agent_name": agent_name,
+                "content": content[:1000],  # Truncate for storage
+                "metadata": metadata,
+                "timestamp": datetime.utcnow(),
+                "event_id": event_id,
+                "chat_id": chat_id,
+                "enterprise_id": enterprise_id
+            }
+            
+            # Optional: Store in runtime_events collection for detailed analysis
+            # await self.pm.db.runtime_events.insert_one(runtime_event_doc)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to process runtime event: {e}")
+            return False

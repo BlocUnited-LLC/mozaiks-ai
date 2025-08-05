@@ -26,7 +26,7 @@ def get_context(workflow_name: str, enterprise_id: Optional[str] = None) -> Cont
     2. Specific data extraction based on YAML configuration
     
     Args:
-        workflow_name: Name of the workflow (e.g., 'Generator')
+        workflow_name: Name of the workflow (e.g., 'ChatWorkflow', 'AnalysisWorkflow')
         enterprise_id: Enterprise ID for database queries
         
     Returns:
@@ -108,7 +108,7 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
     # Handle schema_overview configuration
     schema_config = config.get('schema_overview', {})
     if isinstance(schema_config, dict) and schema_config.get('enabled', False) and internal_enterprise_id:
-        schema_database = schema_config.get('database_name', 'autogen_ai_agents')
+        schema_database = schema_config.get('database_name', 'MozaiksAI')
         schema_info = await _get_database_schema_async(schema_database, internal_enterprise_id)
         # Only add the schema_overview content, not database_name as separate variable
         if 'schema_overview' in schema_info:
@@ -118,7 +118,7 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
     variables = config.get('variables', [])
     if variables and internal_enterprise_id:
         # Use default database name if not specified in schema config
-        default_db = config.get('database_name', 'autogen_ai_agents')
+        default_db = config.get('database_name', 'MozaiksAI')
         if isinstance(schema_config, dict) and 'database_name' in schema_config:
             default_db = schema_config['database_name']
         

@@ -124,19 +124,24 @@ def get_structured_outputs_for_workflow(workflow_name: str) -> Dict[str, type]:
     _, registry = _load_structured_outputs_config(workflow_name)
     return registry
 
-async def get_llm_for_workflow(workflow_name: str, flow: str = "base", enable_streaming: bool = False, enable_token_tracking: bool = False):
-    """Load LLM config with optional structured response model for a specific workflow"""
+async def get_llm_for_workflow(workflow_name: str, flow: str = "base", enable_token_tracking: bool = False):
+    """Load LLM config with optional structured response model for a specific workflow.
+    Streaming is automatically enabled for agents with llm_config_type: 'base'"""
+    
+    # Check if this flow/agent should have streaming enabled (only for llm_config_type: 'base')
+    should_stream = (flow == "base")
+    
     try:
         structured_outputs = get_structured_outputs_for_workflow(workflow_name)
         
         if flow in structured_outputs:
-            # For structured outputs with streaming: add stream=True to extra_config
-            extra_config = {"stream": True} if enable_streaming else None
+            # For structured outputs: add stream=True only for base config type
+            extra_config = {"stream": True} if should_stream else None
             return await make_structured_config(structured_outputs[flow], extra_config=extra_config, enable_token_tracking=enable_token_tracking)
         
     except (ValueError, FileNotFoundError):
         # If workflow doesn't have structured outputs, fall back to base config
         pass
     
-    # For base configurations with streaming
-    return await make_llm_config(stream=enable_streaming, enable_token_tracking=enable_token_tracking)
+    # For base configurations: enable streaming only for base config type
+    return await make_llm_config(stream=should_stream, enable_token_tracking=enable_token_tracking)

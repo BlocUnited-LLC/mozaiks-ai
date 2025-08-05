@@ -321,15 +321,44 @@ def log_chat_interaction(
 
 def log_business_event(
     *,
-    event_type: str,
+    log_event_type: str,
     description: str,
     context: dict | None = None,
     level: str = "INFO",
+    use_dispatcher: bool = False,
 ) -> None:
+    """
+    Log a business event. Can optionally use the unified event dispatcher.
+    
+    Args:
+        log_event_type: Type of business event
+        description: Event description
+        context: Additional context data
+        level: Log level (INFO, WARNING, ERROR, etc.)
+        use_dispatcher: If True, use unified event dispatcher (async)
+    """
+    if use_dispatcher:
+        # For async contexts, events should use the dispatcher
+        import asyncio
+        try:
+            # Try to emit through dispatcher if in async context
+            from core.events import emit_business_event
+            if asyncio.get_running_loop():
+                # In async context - schedule the event
+                asyncio.create_task(emit_business_event(log_event_type, description, context, level))
+                return
+        except RuntimeError:
+            # Not in async context, fall through to direct logging
+            pass
+        except ImportError:
+            # Dispatcher not available, fall through to direct logging  
+            pass
+    
+    # Direct logging (synchronous)
     logger = get_business_logger("event")
     log_fn = getattr(logger, level.lower())
     ctx    = f" | Context: {context}" if context else ""
-    log_fn("🏢 %s: %s%s", event_type, description, ctx)
+    log_fn("🏢 %s: %s%s", log_event_type, description, ctx)
 
 def log_performance_metric(
     *,

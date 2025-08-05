@@ -134,9 +134,6 @@ async def make_structured_config(response_format: Type[BaseModel], extra_config:
 mongo_client = get_mongo_client()
 db1 = mongo_client['MozaiksDB']
 enterprises_collection = db1['Enterprises']
-db2 = mongo_client['autogen_ai_agents']
-concepts_collection = db2['Concepts']
-workflows_collection = db2['Workflows']
 
 # ==============================================================================
 # FREE TRIAL CONFIGURATION

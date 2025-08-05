@@ -28,7 +28,7 @@ const componentMetadata = {
 // Register Generator workflow components
 console.log(`🚀 Registering ${WORKFLOW_NAME} workflow components...`);
 
-// File Download Tool
+// File Download Tool - Register with both toolIds for flexibility
 registerUiTool(
   'file_download', 
   FileDownloadCenter, 
@@ -37,6 +37,18 @@ registerUiTool(
     description: 'UI component for downloading generated files',
     category: 'artifact',
     supports: ['single_download', 'bulk_download', 'download_status']
+  }
+);
+
+// Also register with the agent_file_download toolId (used by ui_event_processor.py)
+registerUiTool(
+  'agent_file_download',
+  FileDownloadCenter,
+  {
+    ...componentMetadata,
+    description: 'UI component for AG2 agent file download requests',
+    category: 'inline',
+    supports: ['agent_integration', 'download_feedback', 'cancellation']
   }
 );
 

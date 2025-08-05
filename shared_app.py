@@ -1,4 +1,4 @@
-﻿# ==============================================================================
+# ==============================================================================
 # FILE: shared_app.py
 # DESCRIPTION: FastAPI app - workflow agnostic, tools handled by workflows
 # ==============================================================================
@@ -57,13 +57,13 @@ env = os.getenv("ENVIRONMENT", "development").lower()
 if env == "production":
     setup_production_logging()
     log_business_event(
-        event_type="LOGGING_CONFIGURED",
+        log_event_type="LOGGING_CONFIGURED",
         description="Production logging configuration applied"
     )
 else:
     setup_development_logging()
     log_business_event(
-        event_type="LOGGING_CONFIGURED", 
+        log_event_type="LOGGING_CONFIGURED", 
         description="Development logging configuration applied"
     )
 
@@ -79,6 +79,11 @@ logger = logging.getLogger(__name__)
 
 # Log AG2 version for debugging
 business_logger.info(f"🔍 autogen version: {getattr(autogen, '__version__', 'unknown')}")
+
+# Initialize unified event dispatcher
+from core.events import get_event_dispatcher
+event_dispatcher = get_event_dispatcher()
+business_logger.info("🎯 Unified Event Dispatcher initialized")
 
 # FastAPI app
 app = FastAPI(
@@ -136,7 +141,7 @@ async def startup():
             
         except Exception as e:
             log_business_event(
-                event_type="MONGODB_CONNECTION_FAILED",
+                log_event_type="MONGODB_CONNECTION_FAILED",
                 description="Failed to connect to MongoDB",
                 context={"error": str(e)},
                 level="ERROR"
@@ -190,7 +195,7 @@ async def startup():
                 coro_time = (datetime.utcnow() - coro_start).total_seconds() * 1000
                 
                 log_business_event(
-                    event_type="INITIALIZER_FAILED",
+                    log_event_type="INITIALIZER_FAILED",
                     description=f"Plugin initializer failed: {init_coro.__name__}",
                     context={
                         "initializer": init_coro.__name__,
@@ -228,9 +233,10 @@ async def startup():
             }
         )
         
-        log_business_event(
-            event_type="SERVER_STARTUP_COMPLETED",
-            description="Server startup completed successfully",
+        # Use unified event dispatcher for this important startup event
+        await event_dispatcher.emit_business_event(
+            log_event_type="SERVER_STARTUP_COMPLETED",
+            description="Server startup completed successfully with unified event dispatcher",
             context={
                 "environment": env,
                 "startup_time_ms": total_startup_time,
@@ -240,12 +246,12 @@ async def startup():
             }
         )
         
-        business_logger.info(f"✅ Server ready - {status['summary']} (Startup: {total_startup_time:.1f}ms)")
+        business_logger.info(f"? Server ready - {status['summary']} (Startup: {total_startup_time:.1f}ms)")
 
     except Exception as e:
         startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
         log_business_event(
-            event_type="SERVER_STARTUP_FAILED",
+            log_event_type="SERVER_STARTUP_FAILED",
             description="Server startup failed",
             context={
                 "environment": env,
@@ -262,16 +268,16 @@ async def shutdown():
     global simple_transport
     shutdown_start = datetime.utcnow()
     
-    business_logger.info("🛑 Shutting down server...")
+    business_logger.info("?? Shutting down server...")
     
     try:
         if simple_transport:
             simple_transport.disconnect()
-            business_logger.info("🔌 Simple transport cleaned up")
+            business_logger.info("?? Simple transport cleaned up")
         
         if mongo_client:
             mongo_client.close()
-            business_logger.info("🔌 MongoDB client closed")
+            business_logger.info("?? MongoDB client closed")
         
         # Calculate shutdown time and log metrics
         shutdown_time = (datetime.utcnow() - shutdown_start).total_seconds() * 1000
@@ -283,19 +289,19 @@ async def shutdown():
         )
         
         log_business_event(
-            event_type="SERVER_SHUTDOWN_COMPLETED",
+            log_event_type="SERVER_SHUTDOWN_COMPLETED",
             description="Server shutdown completed successfully",
             context={
                 "shutdown_time_ms": shutdown_time,
             }
         )
         
-        business_logger.info(f"✅ Shutdown complete ({shutdown_time:.1f}ms)")
+        business_logger.info(f"? Shutdown complete ({shutdown_time:.1f}ms)")
         
     except Exception as e:
         shutdown_time = (datetime.utcnow() - shutdown_start).total_seconds() * 1000
         log_business_event(
-            event_type="SERVER_SHUTDOWN_FAILED",
+            log_event_type="SERVER_SHUTDOWN_FAILED",
             description="Error during server shutdown",
             context={
                 "error": str(e),
@@ -327,7 +333,7 @@ async def _import_workflow_modules():
     )
 
     log_business_event(
-        event_type="WORKFLOW_SYSTEM_READY",
+        log_event_type="WORKFLOW_SYSTEM_READY",
         description="Workflow system initialized with runtime auto-discovery",
         context={
             "scan_duration_ms": scan_time,
@@ -338,61 +344,24 @@ async def _import_workflow_modules():
 # ============================================================================
 # API ENDPOINTS (WebSocket and workflow handling)
 # ============================================================================
+# API ENDPOINTS (WebSocket and workflow handling)
+# ============================================================================
 
-@app.get("/api/chat/{chat_id}/messages")
-async def get_chat_messages(chat_id: str, enterprise_id: str):
-    """Get messages from a chat for debugging"""
-    request_start = datetime.utcnow()
-    
+@app.get("/api/events/metrics")
+async def get_event_metrics():
+    """Get unified event dispatcher metrics"""
     try:
-        chat_data = await mongodb_manager.load_chat_state(chat_id, enterprise_id)
-        if not chat_data:
-            log_business_event(
-                event_type="CHAT_NOT_FOUND",
-                description="Chat not found for messages API",
-                context={
-                    "chat_id": chat_id,
-                    "enterprise_id": enterprise_id
-                },
-                level="WARNING"
-            )
-            raise HTTPException(status_code=404, detail="Chat not found")
-        
-        # Use primary schema
-        chat_history = chat_data.get("chat_history", [])
-        chat_state = chat_data.get("chat_state", {})
-        workflow_name = chat_data.get("workflow_name", "unknown")
-        
-        response_time = (datetime.utcnow() - request_start).total_seconds() * 1000
-        log_performance_metric(
-            metric_name="api_chat_messages_duration",
-            value=response_time,
-            unit="ms",
-            context={
-                "chat_id": chat_id,
-                "message_count": len(chat_history),
-                "workflow_name": workflow_name
-            }
-        )
-        
-        chat_logger.debug(
-            f"📨 Chat messages API - Chat: {chat_id}, Messages: {len(chat_history)}, "
-            f"Workflow: {workflow_name}"
-        )
+        metrics = event_dispatcher.get_metrics()
         
         return {
-            "chat_id": chat_id,
-            "message_count": len(chat_history),
-            "messages": chat_history,
-            "workflow_name": workflow_name,
-            "chat_state": chat_state  # Include current chat state info
+            "status": "success",
+            "data": metrics,
+            "timestamp": datetime.utcnow().isoformat()
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"❌ Failed to get chat messages for {chat_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve messages")
+        logger.error(f"❌ Failed to get event metrics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve event metrics")
 
 @app.get("/api/health")
 async def health_check():
@@ -440,12 +409,12 @@ async def health_check():
             "health_check_time_ms": round(health_time, 2)
         }
         
-        business_logger.debug(f"💚 Health check passed - Response time: {health_time:.1f}ms")
+        business_logger.debug(f"?? Health check passed - Response time: {health_time:.1f}ms")
         
         return health_data
         
     except Exception as e:
-        logger.error(f"❌ Health check failed: {e}")
+        logger.error(f"? Health check failed: {e}")
         raise HTTPException(status_code=500, detail=f"Health check failed: {e}")
 
 @app.post("/api/chats/{enterprise_id}/{workflow_name}/start")
@@ -462,7 +431,7 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
         chat_id = str(uuid4())
         
         log_business_event(
-            event_type="CHAT_SESSION_STARTED",
+            log_event_type="CHAT_SESSION_STARTED",
             description=f"New chat session started for workflow {workflow_name}",
             context={
                 "enterprise_id": enterprise_id,
@@ -483,7 +452,7 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
         }
         
     except Exception as e:
-        logger.error(f"❌ Failed to start chat session: {e}")
+        logger.error(f"? Failed to start chat session: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to start chat: {e}")
 
 @app.get("/api/chats/{enterprise_id}/{workflow_name}")
@@ -505,7 +474,7 @@ async def list_chats(enterprise_id: str, workflow_name: str):
         return {"chat_ids": chat_ids}
         
     except Exception as e:
-        logger.error(f"❌ Failed to list chats for enterprise {enterprise_id}, workflow {workflow_name}: {e}")
+        logger.error(f"? Failed to list chats for enterprise {enterprise_id}, workflow {workflow_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list chats")
     
 
@@ -522,7 +491,7 @@ async def websocket_endpoint(
         await websocket.close(code=1000, reason="Transport service not available")
         return
 
-    business_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_name}'")
+    business_logger.info(f"?? New WebSocket connection for workflow '{workflow_name}'")
     
     await simple_transport.handle_websocket(
         websocket=websocket,
@@ -549,7 +518,7 @@ async def handle_user_input(
         workflow_name = data.get("workflow_name")  # No default, must be provided
         
         log_business_event(
-            event_type="USER_INPUT_ENDPOINT_CALLED",
+            log_event_type="USER_INPUT_ENDPOINT_CALLED",
             description=f"User input endpoint called for chat {chat_id}",
             context={
                 "enterprise_id": enterprise_id,
@@ -571,7 +540,7 @@ async def handle_user_input(
         )
         
         log_business_event(
-            event_type="USER_INPUT_PROCESSED",
+            log_event_type="USER_INPUT_PROCESSED",
             description=f"User input processed successfully for chat {chat_id}",
             context={"transport": result.get("transport")}
         )
@@ -581,7 +550,7 @@ async def handle_user_input(
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")
     except Exception as e:
-        logger.error(f"❌ Error handling user input for chat {chat_id}: {e}")
+        logger.error(f"? Error handling user input for chat {chat_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process input: {e}")
 
 @app.post("/api/user-input/submit")
@@ -610,7 +579,7 @@ async def submit_user_input_response(request: Request):
         
         if success:
             log_business_event(
-                event_type="USER_INPUT_RESPONSE_SUBMITTED",
+                log_event_type="USER_INPUT_RESPONSE_SUBMITTED",
                 description=f"User input response submitted for request {input_request_id}",
                 context={
                     "input_request_id": input_request_id,
@@ -624,7 +593,7 @@ async def submit_user_input_response(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")
     except Exception as e:
-        logger.error(f"❌ Error submitting user input response: {e}")
+        logger.error(f"? Error submitting user input response: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to submit user input: {e}")
 
 @app.get("/api/workflows/{workflow_name}/transport")
@@ -709,7 +678,7 @@ async def get_user_token_balance(user_id: str, appid: str = "default"):
     """Get user token balance"""
     try:
         log_business_event(
-            event_type="TOKEN_BALANCE_REQUEST",
+            log_event_type="TOKEN_BALANCE_REQUEST",
             description=f"Token balance requested for user {user_id}, app {appid}"
         )
         
@@ -749,7 +718,7 @@ async def consume_user_tokens(user_id: str, request: Request):
         app_id = body.get("app_id", "default")
         
         log_business_event(
-            event_type="TOKEN_CONSUMPTION_REQUEST",
+            log_event_type="TOKEN_CONSUMPTION_REQUEST",
             description=f"Token consumption requested: {amount} tokens for user {user_id}, app {app_id}"
         )
         
@@ -778,7 +747,7 @@ async def get_workflows():
             configs[workflow_name] = workflow_config.get_config(workflow_name)
         
         log_business_event(
-            event_type="WORKFLOWS_REQUESTED",
+            log_event_type="WORKFLOWS_REQUESTED",
             description="Workflows requested by frontend",
             context={"workflow_count": len(configs)}
         )
@@ -786,7 +755,7 @@ async def get_workflows():
         return configs
         
     except Exception as e:
-        logger.error(f"❌ Failed to get workflows: {e}")
+        logger.error(f"? Failed to get workflows: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve workflows")
 
 @app.get("/api/workflows/config")
@@ -800,7 +769,7 @@ async def get_workflow_configs():
             configs[workflow_name] = workflow_config.get_config(workflow_name)
         
         log_business_event(
-            event_type="WORKFLOW_CONFIGS_REQUESTED",
+            log_event_type="WORKFLOW_CONFIGS_REQUESTED",
             description="Workflow configurations requested by frontend",
             context={"workflow_count": len(configs)}
         )
@@ -808,7 +777,7 @@ async def get_workflow_configs():
         return configs
         
     except Exception as e:
-        logger.error(f"❌ Failed to get workflow configs: {e}")
+        logger.error(f"? Failed to get workflow configs: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve workflow configurations")
 
 @app.post("/chat/{enterprise_id}/{chat_id}/component_action")
@@ -828,7 +797,7 @@ async def handle_component_action(
         action_data = data.get("action_data", {})
         
         log_business_event(
-            event_type="COMPONENT_ACTION_ENDPOINT_CALLED",
+            log_event_type="COMPONENT_ACTION_ENDPOINT_CALLED",
             description=f"Component action endpoint called for chat {chat_id}",
             context={
                 "enterprise_id": enterprise_id,
@@ -841,16 +810,16 @@ async def handle_component_action(
         if not component_id or not action_type:
             raise HTTPException(status_code=400, detail="'component_id' and 'action_type' fields are required.")
 
-        logger.info(f"📋 Received component action via HTTP: {component_id} -> {action_type}")
+        logger.info(f"?? Received component action via HTTP: {component_id} -> {action_type}")
 
         try:
             # Component actions are now handled by AG2 tools via the workflow system
             # The ContextVariablesAgent in the Generator workflow handles context updates
-            logger.info(f"📋 Component action received via HTTP: {component_id} -> {action_type}")
+            logger.info(f"?? Component action received via HTTP: {component_id} -> {action_type}")
             
             # Send this action as a tool event to the active workflow
-            await simple_transport.send_tool_event(
-                tool_id=component_id,
+            await simple_transport.send_ui_tool_event(
+                ui_tool_id=component_id,
                 payload={
                     "action_type": action_type,
                     "action_data": action_data,
@@ -860,10 +829,10 @@ async def handle_component_action(
                 chat_id=chat_id
             )
             
-            logger.info(f"✅ Component action forwarded to AG2 workflow via tool event")
+            logger.info(f"? Component action forwarded to AG2 workflow via tool event")
             
             log_business_event(
-                event_type="COMPONENT_ACTION_PROCESSED",
+                log_event_type="COMPONENT_ACTION_PROCESSED",
                 description=f"Component action processed successfully for chat {chat_id}",
                 context={"forwarded_to_workflow": True}
             )
@@ -875,13 +844,13 @@ async def handle_component_action(
             }
                 
         except Exception as action_error:
-            logger.error(f"❌ Component action forwarding failed (HTTP): {action_error}")
+            logger.error(f"? Component action forwarding failed (HTTP): {action_error}")
             raise HTTPException(status_code=500, detail=f"Component action forwarding failed: {action_error}")
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")
     except Exception as e:
-        logger.error(f"❌ Error handling component action for chat {chat_id}: {e}")
+        logger.error(f"? Error handling component action for chat {chat_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process component action: {e}")
 
 @app.post("/api/ui-tool/submit")
@@ -910,7 +879,7 @@ async def submit_ui_tool_response(request: Request):
         
         if success:
             log_business_event(
-                event_type="UI_TOOL_RESPONSE_SUBMITTED",
+                log_event_type="UI_TOOL_RESPONSE_SUBMITTED",
                 description=f"UI tool response submitted for event {event_id}",
                 context={
                     "event_id": event_id,
@@ -925,5 +894,5 @@ async def submit_ui_tool_response(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")
     except Exception as e:
-        logger.error(f"❌ Error submitting UI tool response: {e}")
+        logger.error(f"? Error submitting UI tool response: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to submit UI tool response: {e}")

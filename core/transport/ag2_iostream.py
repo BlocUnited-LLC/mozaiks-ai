@@ -177,17 +177,17 @@ class AG2StreamingIOStream(InputStream, OutputStream):
             if not transport:
                 raise RuntimeError("SimpleTransport not available - cannot collect user input")
                 
-            await transport.send_tool_event(
-                "user_input_request",
-                {
+            await transport.send_ui_tool_event(
+                ui_tool_id="user_input_request",
+                payload={
                     "input_request_id": input_request_id,
                     "prompt": prompt,
                     "password": password,
                     "agent_name": getattr(self, 'current_agent_name', 'Agent'),
                     "timestamp": datetime.utcnow().isoformat()
                 },
-                "inline",
-                self.chat_id
+                display="inline",
+                chat_id=self.chat_id
             )
             
             logger.info(f"📤 [IOStream] Sent user input request {input_request_id} to frontend")

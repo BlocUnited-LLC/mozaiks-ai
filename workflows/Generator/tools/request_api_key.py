@@ -1,6 +1,7 @@
 # ==============================================================================
 # FILE: workflows/Generator/tools/request_api_key.py
 # DESCRIPTION: API key request tool - single async function export
+# NOTE: 'description' in the 'payload' must be a property to use to display the agent's instructions, making the whole system easier to extend.
 # ==============================================================================
 
 import asyncio
@@ -55,8 +56,8 @@ async def emit_ui_tool_event(
     
     try:
         # Send the UI tool event through the transport system
-        await transport.send_tool_event(
-            tool_id=tool_id,
+        await transport.send_ui_tool_event(
+            ui_tool_id=tool_id,
             payload=ui_tool_event,
             display="inline"
         )
@@ -124,6 +125,9 @@ async def request_api_key(
     """
     business_logger.info(f"🔑 [REQUEST_API_KEY] Requesting API key for service: {service}")
     
+    # DEV NOTE: The 'description' key is the standardized way to pass the agent's
+    # contextual message to the corresponding UI component. All dynamic UI tools
+    # should follow this convention.
     # Prepare payload for AgentAPIKeyInput component
     payload = {
         "service": service,

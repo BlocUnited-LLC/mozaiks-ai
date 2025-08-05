@@ -79,7 +79,7 @@ class HandoffManager:
             business_logger.info(f"🔗 [HANDOFFS] Found {len(handoff_rules)} handoff rules for {workflow_name}")
             
             log_business_event(
-                event_type="HANDOFFS_YAML_LOADING_STARTED",
+                log_event_type="HANDOFFS_YAML_LOADING_STARTED",
                 description="Starting handoff application from YAML configuration",
                 context={
                     "workflow_name": workflow_name,
@@ -140,7 +140,7 @@ class HandoffManager:
             business_logger.info(f"✅ [HANDOFFS] Successfully applied handoffs to {applied_count} agents in {total_time:.1f}ms")
             
             log_business_event(
-                event_type="HANDOFFS_YAML_LOADING_COMPLETED",
+                log_event_type="HANDOFFS_YAML_LOADING_COMPLETED",
                 description="Handoff application from YAML completed successfully",
                 context={
                     "workflow_name": workflow_name,
@@ -153,7 +153,7 @@ class HandoffManager:
         except Exception as e:
             business_logger.error(f"❌ [HANDOFFS] Failed to apply handoffs for {workflow_name}: {e}", exc_info=True)
             log_business_event(
-                event_type="HANDOFFS_YAML_LOADING_FAILED",
+                log_event_type="HANDOFFS_YAML_LOADING_FAILED",
                 description="Handoff application from YAML failed",
                 context={
                     "workflow_name": workflow_name,

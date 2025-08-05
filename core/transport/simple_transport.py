@@ -68,112 +68,11 @@ class MessageFilter:
         return True
 
 # ==================================================================================
-# PERSISTENCE FUNCTIONALITY
+# PERSISTENCE FUNCTIONALITY - Now imported from persistence_manager.py
 # ==================================================================================
 
-class PersistenceManager:
-    """Simplified persistence for AG2 groupchat resume"""
-    
-    def __init__(self):
-        from core.core_config import get_mongo_client
-        self.client = get_mongo_client()
-        self.db = self.client['autogen_ai_agents']
-        self.workflows_collection = self.db['Workflows']
-    
-    async def save_ag2_state(
-        self,
-        chat_id: str,
-        enterprise_id: str,
-        groupchat: GroupChat,
-        manager: GroupChatManager
-    ) -> bool:
-        """Save AG2 groupchat state for resume"""
-        try:
-            # Note: manager parameter available for future use if needed
-            # Convert messages to AG2 format
-            ag2_messages = []
-            if hasattr(groupchat, 'messages') and groupchat.messages:
-                for msg in groupchat.messages:
-                    if isinstance(msg, dict):
-                        ag2_messages.append({
-                            "content": msg.get("content", str(msg)),
-                            "role": msg.get("role", "assistant"),
-                            "name": msg.get("name", msg.get("sender", "unknown"))
-                        })
-                    else:
-                        ag2_messages.append({
-                            "content": str(msg),
-                            "role": "assistant",
-                            "name": "unknown"
-                        })
-            
-            # Create persistence document
-            doc = {
-                "chat_id": chat_id,
-                "enterprise_id": enterprise_id,
-                "ag2_state": {
-                    "messages": ag2_messages,
-                    "message_count": len(ag2_messages),
-                    "can_resume": True
-                },
-                "last_updated": datetime.utcnow(),
-                "status": "active"
-            }
-            
-            await self.workflows_collection.update_one(
-                {"chat_id": chat_id, "enterprise_id": enterprise_id},
-                {"$set": doc},
-                upsert=True
-            )
-            
-            logger.info(f"💾 Saved AG2 state: {len(ag2_messages)} messages")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to save AG2 state: {e}")
-            return False
-    
-    async def load_ag2_state(self, chat_id: str, enterprise_id: str) -> Optional[Dict[str, Any]]:
-        """Load AG2 groupchat state for resume"""
-        try:
-            workflow = await self.workflows_collection.find_one(
-                {"chat_id": chat_id, "enterprise_id": enterprise_id}
-            )
-            
-            if workflow and workflow.get("ag2_state", {}).get("can_resume", False):
-                return workflow["ag2_state"]
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to load AG2 state: {e}")
-            return None
-    
-    async def resume_ag2_groupchat(
-        self,
-        chat_id: str,
-        enterprise_id: str,
-        groupchat: GroupChat,
-        manager: GroupChatManager
-    ) -> Tuple[bool, Optional[str]]:
-        """Resume AG2 groupchat using official patterns"""
-        try:
-            state = await self.load_ag2_state(chat_id, enterprise_id)
-            if not state:
-                return False, "No resumable state found"
-            
-            messages = state.get("messages", [])
-            if not messages:
-                return False, "No messages in state"
-            
-            # Restore messages using AG2's official method
-            groupchat.messages = messages.copy()
-            
-            logger.info(f"✅ AG2 groupchat resumed: {len(messages)} messages")
-            return True, None
-            
-        except Exception as e:
-            return False, f"Resume failed: {str(e)}"
+# Import centralized persistence functionality
+from core.data.persistence_manager import PersistenceManager, AG2PersistenceExtensions
 
 # ==================================================================================
 # MAIN TRANSPORT CLASS
@@ -188,15 +87,32 @@ class SimpleTransport:
     - AG2 groupchat persistence and resume
     - Transport-agnostic communication
     - Connection state tracking
+    - Thread-safe singleton pattern
     """
     
+    _instance = None
+    _lock = asyncio.Lock()
+    
+    def __new__(cls, *args, **kwargs):
+        """Thread-safe singleton implementation"""
+        if cls._instance is None:
+            cls._instance = super(SimpleTransport, cls).__new__(cls)
+        return cls._instance
+    
     def __init__(self, default_llm_config: Optional[Dict[str, Any]] = None):
+        # Prevent re-initialization of singleton
+        if hasattr(self, '_initialized'):
+            return
+            
         # LLM config is optional - transport doesn't need it for routing
         self.default_llm_config = default_llm_config or {}
         self.active_connections = {}
         self.connections: Dict[str, Dict[str, Any]] = {}
         self.message_filter = MessageFilter()
+        
+        # Initialize centralized persistence
         self.persistence = PersistenceManager()
+        self.ag2_persistence = AG2PersistenceExtensions(self.persistence)
         
         # User input collection mechanism
         self.pending_input_requests: Dict[str, asyncio.Future] = {}
@@ -206,8 +122,10 @@ class SimpleTransport:
         if self.default_llm_config.get("stream"):
             self._setup_ag2_streaming()
         
-        # Set this instance as the singleton for user input collection
-        self._set_as_instance()
+        # Mark as initialized
+        self._initialized = True
+        
+        logger.info("🚀 SimpleTransport singleton initialized")
         
     def format_agent_name_for_ui(self, agent_name: str) -> str:
         """Format agent names for better UI display"""
@@ -273,83 +191,39 @@ class SimpleTransport:
             return False
     
     @classmethod
-    def _get_instance(cls):
-        """Get the singleton instance of SimpleTransport"""
-        # This is a simple approach - in production you might use a proper singleton pattern
-        # For now, we'll store the instance as a class variable
-        return getattr(cls, '_instance', None)
+    async def get_instance(cls, default_llm_config: Optional[Dict[str, Any]] = None):
+        """Get the singleton instance with proper async initialization"""
+        async with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls(default_llm_config)
+            return cls._instance
     
-    def _set_as_instance(self):
-        """Set this instance as the singleton"""
-        SimpleTransport._instance = self
+    @classmethod
+    def _get_instance(cls):
+        """Get the singleton instance (synchronous)"""
+        return cls._instance
+    
+    @classmethod
+    async def reset_instance(cls):
+        """Reset singleton instance (for testing)"""
+        async with cls._lock:
+            cls._instance = None
         
     def _setup_ag2_streaming(self):
         """Set up AG2 streaming infrastructure for all active chat sessions"""
-        logger.info("Setting up AG2 streaming infrastructure...")
+        logger.info("AG2 streaming enabled in LLM config - ready for iostream integration")
         
-        try:
-            from core.transport.ag2_iostream import AG2StreamingManager
-            
-            # Set up streaming for all active connections
-            for chat_id, connection in self.connections.items():
-                enterprise_id = connection.get('enterprise_id', 'default')
-                user_id = connection.get('user_id', 'unknown')
-                workflow_name = connection.get('workflow_name', 'default')
-                
-                logger.info(f"Setting up AG2 streaming for chat {chat_id}")
-                
-                # Create streaming manager for this chat session
-                streaming_manager = AG2StreamingManager(
-                    chat_id=chat_id,
-                    enterprise_id=enterprise_id,
-                    user_id=user_id,
-                    workflow_name=workflow_name
-                )
-                
-                # Set up streaming with the transport instance
-                streaming_manager.setup_streaming(transport=self)
-                
-                # Store the streaming manager for this connection
-                connection['ag2_streaming_manager'] = streaming_manager
-            
-            logger.info("AG2 streaming infrastructure initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to set up AG2 streaming: {e}")
+        # AG2 streaming setup is now handled by AG2StreamingIOStream instances
+        # when they're created during workflow execution
+        
+        logger.info("AG2 streaming infrastructure ready")
             
     async def _setup_ag2_streaming_for_connection(self, chat_id: str, enterprise_id: str):
         """Set up AG2 streaming infrastructure for a single connection"""
-        try:
-            from core.transport.ag2_iostream import AG2StreamingManager
-            
-            connection = self.connections.get(chat_id)
-            if not connection:
-                logger.warning(f"No connection found for chat_id {chat_id}")
-                return
-                
-            user_id = connection.get('user_id', 'unknown')
-            workflow_name = connection.get('workflow_name', 'default')
-            
-            logger.info(f"Setting up AG2 streaming for new connection {chat_id}")
-            
-            # Create streaming manager for this chat session
-            streaming_manager = AG2StreamingManager(
-                chat_id=chat_id,
-                enterprise_id=enterprise_id,
-                user_id=user_id,
-                workflow_name=workflow_name
-            )
-            
-            # Set up streaming with the transport instance
-            streaming_manager.setup_streaming(transport=self)
-            
-            # Store the streaming manager for this connection
-            connection['ag2_streaming_manager'] = streaming_manager
-            
-            logger.info(f"AG2 streaming set up successfully for {chat_id}")
-            
-        except Exception as e:
-            logger.error(f"Failed to set up AG2 streaming for {chat_id}: {e}")
+        logger.info(f"AG2 streaming ready for connection {chat_id}")
+        
+        # Streaming IOStream instances are created during workflow orchestration
+        # No pre-setup needed here - AG2StreamingIOStream handles it directly
             
     def should_show_to_user(self, agent_name: Optional[str], chat_id: Optional[str] = None) -> bool:
         """Check if a message should be shown to the user interface"""
@@ -578,11 +452,15 @@ class SimpleTransport:
         manager: GroupChatManager,
     ) -> bool:
         """Save AG2 groupchat session for resume capability"""
-        return await self.persistence.save_ag2_state(
+        # Extract messages from groupchat
+        messages = []
+        if hasattr(groupchat, 'messages') and groupchat.messages:
+            messages = groupchat.messages
+        
+        return await self.ag2_persistence.save_ag2_groupchat_state(
             chat_id=chat_id,
             enterprise_id=enterprise_id,
-            groupchat=groupchat,
-            manager=manager
+            groupchat_messages=messages
         )
     
     async def resume_groupchat_session(
@@ -593,23 +471,24 @@ class SimpleTransport:
         manager: GroupChatManager
     ) -> Tuple[bool, Optional[str]]:
         """Resume AG2 groupchat session with proper state restoration"""
-        success, error = await self.persistence.resume_ag2_groupchat(
+        success, messages, error = await self.ag2_persistence.resume_ag2_groupchat(
             chat_id=chat_id,
-            enterprise_id=enterprise_id,
-            groupchat=groupchat,
-            manager=manager
+            enterprise_id=enterprise_id
         )
         
-        if success:
+        if success and messages:
+            # Restore messages to groupchat
+            groupchat.messages = messages
+            
             # Send restoration events to frontend
             await self.send_status(
-                f"Resumed session with {len(groupchat.messages)} messages",
+                f"Resumed session with {len(messages)} messages",
                 "resume_success",
                 chat_id
             )
             
             # Send message history for UI restoration using tool event
-            await self.send_tool_event(
+            await self.send_ui_tool_event(
                 "messages_restored",
                 {
                     "messages": groupchat.messages,
@@ -628,7 +507,7 @@ class SimpleTransport:
     ) -> Dict[str, Any]:
         """Get information about whether a chat can be resumed"""
         try:
-            state = await self.persistence.load_ag2_state(chat_id, enterprise_id)
+            state = await self.ag2_persistence.load_ag2_groupchat_state(chat_id, enterprise_id)
             
             if not state:
                 return {
@@ -1248,18 +1127,18 @@ class SimpleTransport:
                 except Exception as ws_error:
                     logger.warning(f"⚠️ Failed to send simple text to {chat_id}: {ws_error}")
     
-    async def send_tool_event(
+    async def send_ui_tool_event(
         self, 
-        tool_id: str, 
+        ui_tool_id: str, 
         payload: Dict[str, Any], 
         display: str = "inline",
         chat_id: Optional[str] = None
     ) -> None:
         """
-        Send tool UI event with clear routing.
+        Send UI tool event with clear routing.
         
         Args:
-            tool_id: Unique identifier for the tool/component
+            ui_tool_id: Unique identifier for the UI tool/component
             payload: Tool-specific data
             display: "inline" (in chat) or "artifact" (side panel)
             chat_id: Target chat ID
@@ -1267,7 +1146,7 @@ class SimpleTransport:
         event_data = {
             "type": "ui_tool",
             "data": {
-                "toolId": tool_id,
+                "toolId": ui_tool_id,
                 "payload": payload,
                 "display": display,
                 "chat_id": chat_id
@@ -1278,7 +1157,21 @@ class SimpleTransport:
         await self._broadcast_to_websockets(event_data, chat_id)
         
         display_location = "inline chat" if display == "inline" else "artifact panel"
-        logger.info(f"� Tool Event: {tool_id} → {display_location}")
+        logger.info(f"🔧 UI Tool Event: {ui_tool_id} → {display_location}")
+        
+        # Optionally emit through unified event dispatcher for tracking
+        try:
+            from core.events import emit_ui_tool_event
+            await emit_ui_tool_event(
+                ui_tool_id=ui_tool_id,
+                payload=payload,
+                workflow_name="transport_layer",
+                display=display,
+                chat_id=chat_id
+            )
+        except Exception as dispatcher_error:
+            # Don't fail UI interaction if dispatcher has issues
+            logger.debug(f"📊 Event dispatcher unavailable for UI tool tracking: {dispatcher_error}")
     
     async def send_backend_notification(
         self, 
