@@ -251,6 +251,13 @@ const ChatPage = () => {
         dynamicUIHandler.processUIEvent(data);
         return;
         
+      case 'ui_tool':
+      case 'UI_TOOL':
+        console.log('🔧 UI Tool received:', data);
+        // Handle direct UI tool messages (e.g., user_input_request)
+        dynamicUIHandler.processUIEvent(data);
+        return;
+        
       case 'token_exhausted':
       case 'TOKEN_EXHAUSTED':
         console.log('💰 Token exhausted event received:', data);
@@ -574,7 +581,7 @@ const ChatPage = () => {
         console.log('🎯 Processing UI tool response:', action);
         
         const payload = {
-          event_id: action.eventId || action.toolId, // Use eventId for tracking, fallback to toolId
+          event_id: action.eventId || action.ui_tool_id, // Use eventId for tracking, fallback to ui_tool_id
           response_data: action.response
         };
         

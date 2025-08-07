@@ -84,7 +84,7 @@ class CleanWorkflowConfig:
         config = self.get_config(workflow_name)
         return config.get("human_in_the_loop", False)
     
-    def get_chat_pane_agents(self, workflow_name: str) -> List[str]:
+    def get_inline_agents(self, workflow_name: str) -> List[str]:
         """Get list of agents that should appear in chat pane"""
         config = self.get_config(workflow_name)
         return config.get("chat_pane_agents", [])

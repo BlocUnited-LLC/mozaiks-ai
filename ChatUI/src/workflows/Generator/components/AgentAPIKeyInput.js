@@ -13,7 +13,7 @@ import React, { useState } from 'react';
  * dynamically determined by the AG2 agent's request.
  */
 const AgentAPIKeyInput = ({ 
-  toolId,
+  ui_tool_id,
   eventId,
   workflowName,
   onResponse,
@@ -76,7 +76,7 @@ const AgentAPIKeyInput = ({
           hasApiKey: true,
           keyLength: apiKey.length,
           submissionTime: new Date().toISOString(),
-          toolId,
+          ui_tool_id,
           eventId,
           workflowName
         }
@@ -101,7 +101,7 @@ const AgentAPIKeyInput = ({
           status: 'error',
           action: 'submit',
           error: error.message,
-          data: { service: config.service, toolId, eventId }
+          data: { service: config.service, ui_tool_id, eventId }
         });
       }
     } finally {
@@ -118,7 +118,7 @@ const AgentAPIKeyInput = ({
         data: {
           service: config.service,
           cancelTime: new Date().toISOString(),
-          toolId,
+          ui_tool_id,
           eventId,
           workflowName
         }
@@ -219,7 +219,7 @@ const AgentAPIKeyInput = ({
       {/* Debug info (only in development) */}
       {process.env.NODE_ENV === 'development' && (
         <div className="debug-info mt-4 p-2 bg-gray-800 rounded text-xs text-gray-400">
-          <div>Tool: {toolId} | Event: {eventId} | Workflow: {workflowName}</div>
+          <div>Tool: {ui_tool_id} | Event: {eventId} | Workflow: {workflowName}</div>
           <div>Service: {config.service} | Required: {config.required.toString()} | Component: {componentId}</div>
         </div>
       )}

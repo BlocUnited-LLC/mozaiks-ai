@@ -6,12 +6,11 @@
 /**
  * Dynamic UI Handler
  * Processes backend UI events and triggers appropriate frontend updates
- * Bridges transport system with event dispatcher and UI tool registry
+ * Bridges transport system with UI components (no duplication)
  */
 
 import { enterpriseApi } from '../adapters/api';
 import { DynamicArtifactManager } from '../utils/DynamicArtifactManager';
-import { handleEvent } from './eventDispatcher';
 
 export class DynamicUIHandler {
   constructor() {
@@ -266,29 +265,29 @@ export class DynamicUIHandler {
   }
 
   /**
-   * Handle UI tool events using the event dispatcher (NEW PATTERN)
-   * @param {Object} eventData - Event data from backend
+   * Handle UI tool action events - SIMPLIFIED (removed duplication)
+   * @param {Object} eventData - Event data from backend  
    * @param {Function} responseCallback - Callback to send response to backend
    */
   async handleUIToolEvent(eventData, responseCallback) {
     try {
       console.log('🎯 DynamicUIHandler: Processing UI tool event', eventData);
 
-      const { toolId, payload, eventId, workflowname } = eventData;
+      const { ui_tool_id, payload, eventId, workflowname } = eventData;
 
-      if (!toolId) {
-        console.error('❌ Missing toolId in UI tool event');
+      if (!ui_tool_id) {
+        console.error('❌ Missing ui_tool_id in UI tool event');
         return null;
       }
 
       // Create response handler that sends data back to backend
       const onResponse = async (response) => {
-        console.log(`📤 DynamicUIHandler: Sending UI tool response for ${toolId}`, response);
+        console.log(`📤 DynamicUIHandler: Sending UI tool response for ${ui_tool_id}`, response);
         
         if (responseCallback) {
           await responseCallback({
             type: 'ui_tool_response',
-            toolId,
+            ui_tool_id,
             eventId,
             workflowname,
             payload,
@@ -297,18 +296,20 @@ export class DynamicUIHandler {
         }
       };
 
-      // Use the event dispatcher to handle the event
-      const renderedComponent = handleEvent(eventData, onResponse);
-
-      // Notify UI callbacks about the component
-      this.notifyUICallbacks({
-        type: 'ui_tool_component',
-        toolId,
-        component: renderedComponent,
-        eventData
+      // SIMPLIFIED: Just notify UI callbacks - let ChatInterface handle rendering
+      // This eliminates duplication with eventDispatcher
+      this.notifyUIUpdate({
+        type: 'ui_tool_event',
+        ui_tool_id,
+        payload,
+        eventId,
+        workflowname,
+        onResponse
       });
 
-      return renderedComponent;
+      console.log(`✅ DynamicUIHandler: Notified UI callbacks for ${ui_tool_id}`);
+
+      return true; // Indicate successful processing
 
     } catch (error) {
       console.error('❌ DynamicUIHandler: Error handling UI tool event', error);

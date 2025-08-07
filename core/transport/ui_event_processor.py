@@ -49,59 +49,29 @@ class UIEventProcessor:
     
     async def _handle_input_request(self, event: InputRequestEvent) -> None:
         """
-        Handle AG2 InputRequestEvent by routing to our UI transport system.
-        This follows AG2's input handling pattern but integrates with our UI.
+        Handles generic AG2 InputRequestEvents by logging a warning and auto-skipping.
+        
+        This behavior enforces the architectural decision that all user interactions
+        should be handled by specific, defined UI tools (e.g., request_api_key) 
+        rather than generic `agent.input()` calls. Our custom `ag2_iostream.py`
+        is the designated handler for legitimate, non-tool-based input, so if an
+        input request reaches this processor, it's considered an anti-pattern.
         """
         try:
-            # Import transport layer locally to avoid circular dependency at startup
-            from .simple_transport import SimpleTransport
-            transport = SimpleTransport._get_instance()
-
-            if not transport:
-                self.logger.error(f"❌ [{self.chat_id}] SimpleTransport not available, cannot handle input request.")
-                # Fallback response to prevent AG2 from hanging
-                await event.content.respond("continue")  # type: ignore[attr-defined]
-                return
-
-            # Extract prompt and password from the event content, following AG2's pattern.
             prompt = event.content.prompt or "Input required:"  # type: ignore[attr-defined]
-            is_password = event.content.password or False  # type: ignore[attr-defined]
             
-            self.logger.info(f"🎯 [{self.chat_id}] AG2 input request: {prompt[:100]}...")
+            self.logger.warning(f"⚠️ [{self.chat_id}] Intercepted a generic `input()` call. This is an anti-pattern.")
+            self.logger.warning(f"   Prompt: '{prompt[:150]}...'")
+            self.logger.warning(f"   Auto-skipping to prevent workflow from hanging. Use a dedicated UI tool instead.")
             
-            # Generate unique request ID for tracking
-            input_request_id = str(uuid.uuid4())
-            
-            # Send UI tool event for input request
-            await transport.send_ui_tool_event(
-                ui_tool_id="user_input_request",
-                payload={
-                    "input_request_id": input_request_id,
-                    "prompt": prompt,
-                    "password": is_password,
-                    "chat_id": self.chat_id,
-                    "enterprise_id": self.enterprise_id,
-                    "timestamp": datetime.utcnow().isoformat()
-                },
-                display="inline",
-                chat_id=self.chat_id
-            )
-            
-            self.logger.info(f"📬 [{self.chat_id}] Sent input request {input_request_id} to UI")
-            
-            # Wait for user response via transport layer
-            user_response = await transport.wait_for_user_input(input_request_id)
-            
-            self.logger.info(f"✅ [{self.chat_id}] Received user response for {input_request_id}")
-            
-            # Respond to AG2 event
-            await event.content.respond(user_response)  # type: ignore[attr-defined]
-            self.logger.info(f"✅ [{self.chat_id}] Responded to AG2 input request")
+            # Auto-respond with an empty string to prevent the workflow from stalling.
+            await event.content.respond("")  # type: ignore[attr-defined]
 
         except Exception as e:
-            self.logger.error(f"❌ [{self.chat_id}] Failed to handle input via UI: {e}")
-            self.logger.error(f"❌ [{self.chat_id}] Traceback: {traceback.format_exc()}")
-            # Fallback response to prevent AG2 from hanging
-            await event.content.respond("continue")  # type: ignore[attr-defined]
+            self.logger.error(f"❌ [{self.chat_id}] Failed to auto-skip generic input request: {e}")
+            self.logger.error(f"   Traceback: {traceback.format_exc()}")
+            # Ensure fallback response to prevent AG2 from hanging under any circumstance.
+            if not event.content.is_responded:  # type: ignore[attr-defined]
+                await event.content.respond("")  # type: ignore[attr-defined]
 
 # End of UIEventProcessor - clean AG2-compliant implementation

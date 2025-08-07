@@ -1,16 +1,19 @@
 // ==============================================================================
-// FILE: ChatUI/src/eventDispatcher.js
-// DESCRIPTION: Handles UI tool events and renders appropriate components
+// FILE: ChatUI/src/core/eventDispatcher.js
+// DESCRIPTION: Handles UI tool events using the new dynamic WorkflowUIRouter
+// PURPOSE: Clean event dispatching without old registry system
 // ==============================================================================
 
 import React from 'react';
-import { getUiToolComponent, getToolMetadata } from './uiToolRegistry';
+import WorkflowUIRouter from './WorkflowUIRouter';
 
 /**
- * Event Dispatcher for UI Tools
+ * 🎯 EVENT DISPATCHER - CLEAN VERSION
  * 
- * Receives events from backend and renders the appropriate UI component
- * based on the toolId in the event payload.
+ * Receives events from backend and uses the new WorkflowUIRouter
+ * to dynamically load and render the appropriate UI component.
+ * 
+ * NO MORE GLOBAL REGISTRY - Uses dynamic component discovery!
  */
 
 class EventDispatcher {
@@ -22,37 +25,33 @@ class EventDispatcher {
 
   /**
    * Handle a UI tool event from the backend
-   * @param {Object} event - Event object with toolId and payload
+   * @param {Object} event - Event object with ui_tool_id and payload
    * @param {Function} onResponse - Callback to send response back to backend
    * @returns {React.Element|null} - Rendered component or null
    */
   handleEvent(event, onResponse = null) {
     try {
-      const { toolId, payload = {}, eventId, workflowName } = event;
+      const { ui_tool_id, payload = {}, eventId, workflow_name } = event;
 
-      if (!toolId) {
-        console.error('❌ EventDispatcher: Missing toolId in event', event);
+      if (!ui_tool_id) {
+        console.error('❌ EventDispatcher: Missing ui_tool_id in event', event);
         return null;
       }
 
-      console.log(`🎯 EventDispatcher: Handling event for tool '${toolId}'`);
+      console.log(`🎯 EventDispatcher: Routing event to WorkflowUIRouter for '${ui_tool_id}'`);
 
-      // Get the component for this tool
-      const Component = getUiToolComponent(toolId);
-      if (!Component) {
-        console.error(`❌ EventDispatcher: No component found for tool '${toolId}'`);
-        return this.renderErrorComponent(toolId, 'Component not found');
-      }
-
-      // Get metadata for additional context
-      const metadata = getToolMetadata(toolId);
+      // Extract workflow and component info from the payload
+      // Backend should send: { workflow_name: "Generator", component_type: "AgentAPIKeyInput", ... }
+      const workflowName = workflow_name || payload.workflow_name || payload.workflow || 'Unknown';
+      const componentType = payload.component_type || ui_tool_id;
 
       // Track this active event
       if (eventId) {
         this.activeEvents.set(eventId, {
-          toolId,
+          ui_tool_id,
           payload,
           workflowName,
+          componentType,
           startTime: Date.now(),
           status: 'active'
         });
@@ -60,16 +59,17 @@ class EventDispatcher {
 
       // Add to event history
       this.eventHistory.push({
-        toolId,
+        ui_tool_id,
         eventId,
         workflowName,
+        componentType,
         timestamp: new Date().toISOString(),
-        status: 'handled'
+        status: 'routed'
       });
 
       // Create response handler
       const responseHandler = (response) => {
-        console.log(`📤 EventDispatcher: Sending response for tool '${toolId}'`, response);
+        console.log(`📤 EventDispatcher: Response for tool '${ui_tool_id}'`, response);
         
         // Update active event status
         if (eventId && this.activeEvents.has(eventId)) {
@@ -85,29 +85,45 @@ class EventDispatcher {
         }
       };
 
-      // Render the component with enhanced props
-      return React.createElement(Component, {
-        ...payload,
-        toolId,
-        eventId,
-        workflowName,
-        metadata,
+      // Create cancel handler
+      const cancelHandler = (reason) => {
+        console.log(`❌ EventDispatcher: Cancelled tool '${ui_tool_id}'`, reason);
+        
+        // Update active event status
+        if (eventId && this.activeEvents.has(eventId)) {
+          const activeEvent = this.activeEvents.get(eventId);
+          activeEvent.status = 'cancelled';
+          activeEvent.endTime = Date.now();
+          activeEvent.cancelReason = reason;
+        }
+      };
+
+      // Use the new WorkflowUIRouter to handle the event
+      return React.createElement(WorkflowUIRouter, {
+        payload: {
+          ...payload,
+          workflow_name: workflowName,
+          component_type: componentType
+        },
         onResponse: responseHandler,
+        onCancel: cancelHandler,
+        ui_tool_id,
+        eventId
       });
 
     } catch (error) {
       console.error('❌ EventDispatcher: Error handling event', error);
-      return this.renderErrorComponent(event?.toolId, error.message);
+      return this.renderErrorComponent(event?.ui_tool_id, error.message);
     }
   }
 
   /**
    * Render an error component when tool loading fails
-   * @param {string} toolId - The tool that failed to load
+   * @param {string} ui_tool_id - The tool that failed to load
    * @param {string} errorMessage - Error description
    * @returns {React.Element} - Error component
    */
-  renderErrorComponent(toolId, errorMessage) {
+  renderErrorComponent(ui_tool_id, errorMessage) {
     return React.createElement('div', {
       className: 'ui-tool-error',
       style: {
@@ -118,7 +134,7 @@ class EventDispatcher {
         color: '#dc2626'
       }
     }, [
-      React.createElement('h4', { key: 'title' }, `UI Tool Error: ${toolId}`),
+      React.createElement('h4', { key: 'title' }, `UI Tool Error: ${ui_tool_id}`),
       React.createElement('p', { key: 'message' }, errorMessage),
       React.createElement('small', { key: 'help' }, 'Check console for more details.')
     ]);

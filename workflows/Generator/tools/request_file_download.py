@@ -21,7 +21,7 @@ class UIToolError(Exception):
     pass
 
 async def emit_ui_tool_event(
-    tool_id: str,
+    ui_tool_id: str,
     payload: Dict[str, Any],
     event_id: Optional[str] = None
 ) -> str:
@@ -32,7 +32,7 @@ async def emit_ui_tool_event(
     """
     # Generate event ID if not provided
     if not event_id:
-        event_id = f"{tool_id}_{str(uuid.uuid4())[:8]}"
+        event_id = f"{ui_tool_id}_{str(uuid.uuid4())[:8]}"
     
     # Import transport to send events
     try:
@@ -41,13 +41,13 @@ async def emit_ui_tool_event(
     except ImportError:
         raise UIToolError("SimpleTransport not available for event emission")
     
-    business_logger.info(f"🎯 [REQUEST_FILE_DOWNLOAD] Emitting UI tool event: {tool_id} (event: {event_id})")
+    business_logger.info(f"🎯 [REQUEST_FILE_DOWNLOAD] Emitting UI tool event: {ui_tool_id} (event: {event_id})")
     business_logger.debug(f"🔍 [REQUEST_FILE_DOWNLOAD] Event payload: {payload}")
     
     try:
         # Send the UI tool event through the transport system
         await transport.send_ui_tool_event(
-            ui_tool_id=tool_id,
+            ui_tool_id=ui_tool_id,
             payload=payload,
             display="inline"
         )
@@ -129,7 +129,7 @@ async def request_file_download(
     
     # Emit the UI tool event
     event_id = await emit_ui_tool_event(
-        tool_id="agent_file_download",  # Must match ui_event_processor.py toolId
+        ui_tool_id="request_file_download",  # Must match ui_event_processor.py ui_tool_id
         payload=payload
     )
     

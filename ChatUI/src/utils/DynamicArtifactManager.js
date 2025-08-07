@@ -1,161 +1,123 @@
 // ==============================================================================
-// FILE: ChatUI/src/modules/Chat/utils/DynamicArtifactManager.js
-// DESCRIPTION: Dynamic artifact manager based on workflow configuration
+// FILE: ChatUI/src/utils/DynamicArtifactManager.js
+// DESCRIPTION: Dynamic artifact manager using clean event preparation 
+// PURPOSE: Prepare artifact requests for the event system (no duplication)
 // ==============================================================================
-import workflowConfig from '../config/workflowConfig';
-import { getUiToolComponent, getToolMetadata } from '../core/uiToolRegistry';
 
 /**
- * Dynamic Artifact Manager
- * Handles artifact creation and routing based on workflow configuration
+ * 🎯 DYNAMIC ARTIFACT MANAGER - CLEAN VERSION
+ * 
+ * Prepares artifact requests for the event system.
+ * No rendering duplication - lets eventDispatcher handle all component loading!
  */
 class DynamicArtifactManager {
   constructor() {
     this.artifactHandlers = new Map();
-    // No default handlers - everything comes from workflow manifests
-    console.log('✅ Dynamic Artifact Manager initialized (workflow-agnostic)');
+    console.log('✅ Dynamic Artifact Manager initialized (using new architecture)');
   }
 
   /**
-   * Get artifact component from UI Tool Registry
-   * @param {string} componentType - The artifact component type
-   * @returns {React.Component|null} - The artifact component
+   * Get artifact component using the event system - SIMPLIFIED
+   * @param {string} workflowName - The workflow name
+   * @param {string} componentType - The artifact component type  
+   * @param {Object} payload - Additional payload data
+   * @returns {Object} - Event data for ChatInterface to handle
    */
-  async getArtifactComponent(componentType) {
+  async getArtifactComponent(workflowName, componentType, payload = {}) {
     try {
-      // Try direct component lookup first
-      let component = getUiToolComponent(componentType);
-      if (component) {
-        const metadata = getToolMetadata(componentType);
-        if (metadata?.category === 'artifact') {
-          return component;
-        }
-      }
-
-      // Try common artifact component patterns
-      const artifactToolIds = [
-        'file_download',
-        `${componentType}_artifact`,
-        `artifact_${componentType}`,
-        componentType
-      ];
-
-      for (const toolId of artifactToolIds) {
-        component = getUiToolComponent(toolId);
-        if (component) {
-          const metadata = getToolMetadata(toolId);
-          if (!metadata || metadata.category === 'artifact') {
-            console.log(`✅ Found artifact component: ${toolId}`);
-            return component;
-          }
-        }
-      }
-
-      console.warn(`Artifact component '${componentType}' not found in UI Tool Registry`);
-      return null;
-    } catch (error) {
-      console.error(`Error loading artifact component '${componentType}':`, error);
-      return null;
-    }
-  }
-
-  /**
-   * Get artifact agent for current workflow
-   * @param {string} workflowName - The workflow name
-   * @returns {string|null} - The agent name that handles artifacts
-   */
-  getArtifactAgent(workflowName) {
-    if (!workflowName) {
-      workflowName = workflowConfig.getDefaultWorkflow();
-    }
-    return workflowConfig.getArtifactAgent(workflowName);
-  }
-
-  /**
-   * Check if message is from artifact agent
-   * @param {Object} message - The chat message
-   * @param {string} workflowName - The workflow name
-   * @returns {boolean} - True if message is from artifact agent
-   */
-  isFromArtifactAgent(message, workflowName) {
-    const artifactAgent = this.getArtifactAgent(workflowName);
-    return message.agentName === artifactAgent || message.sender === artifactAgent;
-  }
-
-  /**
-   * Parse artifacts from message content
-   * @param {string} content - Message content
-   * @returns {Array} - Array of artifacts found
-   */
-  parseArtifacts(content) {
-    const artifacts = [];
-    const artifactRegex = /\[ARTIFACT:(\w+)\]/g;
-    let match;
-
-    while ((match = artifactRegex.exec(content)) !== null) {
-      const artifactType = match[1];
-      const handler = this.artifactHandlers.get(artifactType);
+      console.log(`🎨 DynamicArtifactManager: Preparing artifact ${workflowName}:${componentType}`);
       
-      if (handler) {
-        artifacts.push({
-          type: artifactType,
-          ...handler
-        });
-      }
+      // Instead of creating mock events, return structured data
+      // Let the ChatInterface handle the actual rendering via eventDispatcher
+      return {
+        type: 'artifact_request',
+        ui_tool_id: `${workflowName}_${componentType}`,
+        workflow_name: workflowName,
+        payload: {
+          ...payload,
+          workflow_name: workflowName,
+          component_type: componentType,
+          category: 'artifact'
+        },
+        eventId: `artifact_${Date.now()}`
+      };
+      
+    } catch (error) {
+      console.error(`❌ DynamicArtifactManager: Error preparing ${workflowName}:${componentType}`, error);
+      return null;
     }
-
-    return artifacts;
   }
 
   /**
-   * Create artifact message
-   * @param {string} baseMessage - Base message text
-   * @param {Array} artifacts - Array of artifact types to add
-   * @returns {Object} - Message with artifacts
+   * Register a custom artifact handler (for complex cases)
+   * @param {string} artifactType - The type of artifact
+   * @param {Function} handler - Handler function
    */
-  createArtifactMessage(baseMessage, artifacts = []) {
-    let messageContent = baseMessage;
-    const artifactData = {};
+  registerArtifactHandler(artifactType, handler) {
+    this.artifactHandlers.set(artifactType, handler);
+    console.log(`📝 DynamicArtifactManager: Registered handler for '${artifactType}'`);
+  }
 
-    artifacts.forEach(artifactType => {
-      const handler = this.artifactHandlers.get(artifactType);
-      if (handler) {
-        const marker = `[ARTIFACT:${artifactType}]`;
-        messageContent += ` ${marker}`;
-        artifactData[artifactType] = {
-          type: artifactType,
-          ...handler
-        };
+  /**
+   * Process an artifact creation request
+   * @param {Object} artifactData - Artifact data
+   * @returns {React.Element|null} - Rendered artifact component
+   */
+  async processArtifact(artifactData) {
+    try {
+      const { workflowName, componentType, ...payload } = artifactData;
+      
+      if (!workflowName || !componentType) {
+        console.error('❌ DynamicArtifactManager: Missing workflowName or componentType', artifactData);
+        return null;
       }
-    });
 
+      // Check for custom handler first
+      const customHandler = this.artifactHandlers.get(componentType);
+      if (customHandler) {
+        console.log(`🔧 DynamicArtifactManager: Using custom handler for ${componentType}`);
+        return customHandler(artifactData);
+      }
+
+      // Use the new dynamic system
+      return await this.getArtifactComponent(workflowName, componentType, payload);
+      
+    } catch (error) {
+      console.error('❌ DynamicArtifactManager: Error processing artifact', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get all registered artifact handlers
+   * @returns {Object} - Map of registered handlers
+   */
+  getRegisteredHandlers() {
+    return Object.fromEntries(this.artifactHandlers);
+  }
+
+  /**
+   * Clear all registered handlers
+   */
+  clearHandlers() {
+    const count = this.artifactHandlers.size;
+    this.artifactHandlers.clear();
+    console.log(`🧹 DynamicArtifactManager: Cleared ${count} handlers`);
+  }
+
+  /**
+   * Get manager statistics
+   * @returns {Object} - Manager stats
+   */
+  getStats() {
     return {
-      content: messageContent,
-      artifactData: artifactData,
-      sender: "assistant",
-      hasArtifacts: artifacts.length > 0
+      registeredHandlers: this.artifactHandlers.size,
+      handlerTypes: Array.from(this.artifactHandlers.keys())
     };
-  }
-
-  /**
-   * Register a custom artifact handler
-   * @param {string} type - Artifact type
-   * @param {Object} handler - Handler configuration
-   */
-  registerArtifactHandler(type, handler) {
-    this.artifactHandlers.set(type, handler);
-  }
-
-  /**
-   * Get all registered artifact types
-   * @returns {Array} - Array of artifact types
-   */
-  getAvailableArtifactTypes() {
-    return Array.from(this.artifactHandlers.keys());
   }
 }
 
-// Global instance
+// Export singleton instance
 export const dynamicArtifactManager = new DynamicArtifactManager();
 export { DynamicArtifactManager };
 export default dynamicArtifactManager;

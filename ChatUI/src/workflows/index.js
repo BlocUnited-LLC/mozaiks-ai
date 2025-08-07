@@ -1,192 +1,165 @@
 // ==============================================================================
 // FILE: ChatUI/src/workflows/index.js
-// DESCRIPTION: Workflow registry - automatically loads all workflow components
+// DESCRIPTION: Workflow metadata registry (CLEAN VERSION - API DRIVEN)
+// PURPOSE: Fetch workflow metadata from backend API (no duplication!)
 // ==============================================================================
 
-import uiToolRegistry from '../core/uiToolRegistry';
-
 /**
- * Workflow Registry
+ * 🎯 WORKFLOW REGISTRY - API DRIVEN CLEAN VERSION
  * 
- * Centralized workflow loading system that automatically discovers and loads
- * all workflow components by scanning the workflows directory structure.
- * Zero maintenance - just create a {workflowName}/index.js and it's auto-discovered!
+ * Registry for workflow metadata fetched from backend API.
+ * Single source of truth: YAML files in backend, accessed via /api/workflows
+ * No duplicate configuration files, no hardcoded metadata.
+ * 
+ * Benefits:
+ * - Single source of truth (backend YAML files)
+ * - No duplicate metadata
+ * - Real-time configuration updates
+ * - Clean separation of concerns
  */
 
 class WorkflowRegistry {
   constructor() {
     this.loadedWorkflows = new Map();
-    this.loading = false;
     this.initialized = false;
+    this.apiBaseUrl = '/api'; // Backend API base URL
   }
 
   /**
-   * Initialize all workflows
-   * Auto-discovers and loads workflow registrations
+   * Initialize all workflows by fetching from backend API
    */
   async initializeWorkflows() {
-    if (this.loading || this.initialized) {
-      console.log('⏭️ WorkflowRegistry: Already initialized or loading');
-      return;
+    if (this.initialized) {
+      console.log('⏭️ WorkflowRegistry: Already initialized');
+      return this.getWorkflowSummary();
     }
 
-    this.loading = true;
-    console.log('🚀 WorkflowRegistry: Initializing workflows...');
+    console.log('🚀 WorkflowRegistry: Fetching workflows from backend API...');
 
     try {
-      // Auto-discover all available workflows
-      const availableWorkflows = await this.discoverWorkflows();
-      console.log(`🔍 Discovered workflows: [${availableWorkflows.join(', ')}]`);
-
-      // Load all discovered workflows
-      for (const workflowName of availableWorkflows) {
-        try {
-          await this.loadWorkflow(workflowName);
-        } catch (error) {
-          console.warn(`⚠️ Failed to load workflow '${workflowName}':`, error.message);
-          // Continue loading other workflows even if one fails
-        }
+      // Fetch all workflow configurations from backend API
+      // This reads the YAML files from the backend (single source of truth)
+      const response = await fetch(`${this.apiBaseUrl}/workflows`);
+      
+      if (!response.ok) {
+        throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+      }
+      
+      const workflowConfigs = await response.json();
+      
+      // Process each workflow configuration
+      for (const [workflowName, config] of Object.entries(workflowConfigs)) {
+        const workflowInfo = {
+          name: workflowName,
+          displayName: config.name || workflowName,
+          description: `${config.name || workflowName} workflow`,
+          version: '1.0.0',
+          metadata: {
+            maxTurns: config.max_turns,
+            humanInTheLoop: config.human_in_the_loop,
+            startupMode: config.startup_mode,
+            orchestrationPattern: config.orchestration_pattern,
+            chatPaneAgents: config.chat_pane_agents || [],
+            artifactAgents: config.artifact_agents || [],
+            initialMessage: config.initial_message,
+            uiTools: config.ui_tools || {}
+          },
+          visualAgents: config.visual_agents || {},
+          tools: config.tools || {},
+          loadedAt: new Date().toISOString()
+        };
+        
+        this.loadedWorkflows.set(workflowName, workflowInfo);
+        console.log(`✅ Loaded workflow from API: ${workflowName}`);
       }
 
       this.initialized = true;
-      uiToolRegistry.markInitialized();
+      console.log(`✅ WorkflowRegistry: Loaded ${this.loadedWorkflows.size} workflows from backend`);
       
-      console.log(`✅ WorkflowRegistry: Initialized ${this.loadedWorkflows.size} workflows`);
-      console.log('📊 Registry Stats:', uiToolRegistry.getStats());
+      return this.getWorkflowSummary();
 
     } catch (error) {
-      console.error('❌ WorkflowRegistry: Failed to initialize workflows:', error);
-      throw error;
-    } finally {
-      this.loading = false;
-    }
-  }
-
-  /**
-   * Auto-discover available workflows by testing imports
-   * @returns {Array<string>} - Array of workflow names
-   */
-  async discoverWorkflows() {
-    try {
-      console.log('🔍 Auto-discovering workflows...');
-      const workflowNames = [];
-      
-      // Test common workflow names by attempting imports
-      const possibleWorkflows = ['Generator', 'Marketing', 'Analysis', 'Deployment'];
-      
-      for (const workflow of possibleWorkflows) {
-        try {
-          await import(`./${workflow}`);
-          workflowNames.push(workflow);
-          console.log(`  ✓ Found: ${workflow}`);
-        } catch (e) {
-          // Skip silently if workflow doesn't exist
-        }
-      }
-      
-      console.log(`🎯 Discovered workflows: [${workflowNames.join(', ')}]`);
-      return workflowNames.length > 0 ? workflowNames : ['Generator'];
-      
-    } catch (error) {
-      console.error('❌ Failed to discover workflows:', error);
-      return ['Generator'];
-    }
-  }
-
-  /**
-   * Load a specific workflow dynamically
-   * @param {string} workflowName - Name of the workflow to load
-   */
-  async loadWorkflow(workflowName) {
-    try {
-      console.log(`📦 Loading workflow: ${workflowName}...`);
-      
-      // Dynamic import using standard convention: ./{workflowName}/index.js
-      const workflowModule = await import(`./${workflowName}`);
-
-      // Store workflow info
-      this.loadedWorkflows.set(workflowName, {
-        name: workflowName,
-        module: workflowModule,
-        workflowInfo: workflowModule.workflowInfo || workflowModule.default,
-        loadedAt: new Date().toISOString()
-      });
-
-      console.log(`✅ Loaded workflow: ${workflowName}`);
-
-    } catch (error) {
-      console.error(`❌ Failed to load workflow '${workflowName}':`, error);
+      console.error('❌ WorkflowRegistry: Failed to fetch workflows from API:', error);
       throw error;
     }
   }
 
   /**
-   * Get information about loaded workflows
-   * @returns {Object} - Workflow information
+   * Get all loaded workflows
+   * @returns {Array} - Array of workflow info objects
    */
   getLoadedWorkflows() {
-    const workflows = {};
-    for (const [name, info] of this.loadedWorkflows) {
-      workflows[name] = {
-        name: info.name,
-        workflowInfo: info.workflowInfo,
-        loadedAt: info.loadedAt
-      };
-    }
-    return workflows;
+    return Array.from(this.loadedWorkflows.values());
   }
 
   /**
-   * Check if a specific workflow is loaded
-   * @param {string} workflowName - Workflow name to check
-   * @returns {boolean} - True if loaded
+   * Get specific workflow info
+   * @param {string} workflowName - Name of the workflow
+   * @returns {Object|null} - Workflow info or null
    */
-  isWorkflowLoaded(workflowName) {
-    return this.loadedWorkflows.has(workflowName);
+  getWorkflow(workflowName) {
+    return this.loadedWorkflows.get(workflowName) || null;
   }
 
   /**
-   * Get workflow registry statistics
-   * @returns {Object} - Registry statistics
+   * Get workflow summary for debugging
+   * @returns {Object} - Summary of all workflows
    */
-  getStats() {
+  getWorkflowSummary() {
     return {
-      totalWorkflows: this.loadedWorkflows.size,
-      loadedWorkflows: Array.from(this.loadedWorkflows.keys()),
       initialized: this.initialized,
-      loading: this.loading,
-      uiToolStats: uiToolRegistry.getStats()
+      workflowCount: this.loadedWorkflows.size,
+      workflows: this.getLoadedWorkflows().map(w => ({
+        name: w.name,
+        displayName: w.displayName,
+        version: w.version,
+        agentCount: Object.keys(w.visualAgents || {}).length,
+        hasHumanInLoop: w.metadata.humanInTheLoop
+      }))
     };
   }
 
   /**
-   * Reload all workflows (useful for development)
+   * Refresh workflows from backend (useful for development)
    */
-  async reload() {
-    console.log('🔄 WorkflowRegistry: Reloading workflows...');
+  async refresh() {
+    console.log('🔄 WorkflowRegistry: Refreshing workflows from backend...');
+    this.clear();
+    return await this.initializeWorkflows();
+  }
+
+  /**
+   * Clear all loaded workflows
+   */
+  clear() {
+    const count = this.loadedWorkflows.size;
     this.loadedWorkflows.clear();
     this.initialized = false;
-    uiToolRegistry.clear();
-    await this.initializeWorkflows();
+    console.log(`🧹 WorkflowRegistry: Cleared ${count} workflows`);
+  }
+
+  /**
+   * Get registry statistics
+   * @returns {Object} - Registry stats
+   */
+  getStats() {
+    return {
+      initialized: this.initialized,
+      loadedWorkflows: this.loadedWorkflows.size,
+      workflowNames: Array.from(this.loadedWorkflows.keys()),
+      apiEndpoint: `${this.apiBaseUrl}/workflows`
+    };
   }
 }
 
 // Create singleton instance
 const workflowRegistry = new WorkflowRegistry();
 
-// Auto-initialize workflows when this module is imported
-// This ensures components are registered before they're needed
-const initPromise = workflowRegistry.initializeWorkflows().catch(error => {
-  console.error('❌ Critical: Failed to initialize workflow registry:', error);
-});
-
-// Export the registry and key functions
+// Export both the instance and convenience methods
 export default workflowRegistry;
 
+export const initializeWorkflows = () => workflowRegistry.initializeWorkflows();
 export const getLoadedWorkflows = () => workflowRegistry.getLoadedWorkflows();
-export const isWorkflowLoaded = (name) => workflowRegistry.isWorkflowLoaded(name);
-export const getWorkflowStats = () => workflowRegistry.getStats();
-export const reloadWorkflows = () => workflowRegistry.reload();
-
-// Export the initialization promise for apps that need to wait
-export const workflowsInitialized = initPromise;
+export const getWorkflow = (name) => workflowRegistry.getWorkflow(name);
+export const getWorkflowSummary = () => workflowRegistry.getWorkflowSummary();
+export const refreshWorkflows = () => workflowRegistry.refresh();

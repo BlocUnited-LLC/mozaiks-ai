@@ -142,6 +142,28 @@ class SimpleTransport:
     # USER INPUT COLLECTION (Production-Ready)
     # ==================================================================================
     
+    async def send_user_input_request(
+        self,
+        input_request_id: str,
+        chat_id: str,
+        payload: Dict[str, Any]
+    ) -> None:
+        """
+        Send a dedicated user input request to the frontend.
+        This is decoupled from the ui_tool_event system.
+        """
+        event_data = {
+            "type": "user_input_request",
+            "data": {
+                "input_request_id": input_request_id,
+                "chat_id": chat_id,
+                "payload": payload,
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        await self._broadcast_to_websockets(event_data, chat_id)
+        logger.info(f"📤 Sent user input request {input_request_id} to chat {chat_id}")
+
     @classmethod
     async def wait_for_user_input(cls, input_request_id: str) -> str:
         """
@@ -267,6 +289,20 @@ class SimpleTransport:
         """Get the current enterprise context"""
         return getattr(self, 'current_enterprise_id', 'default')
     
+    def _is_agent_driven_startup(self, chat_id: str) -> bool:
+        """Check if the current chat session is using AgentDriven startup mode"""
+        try:
+            if chat_id in self.connections:
+                workflow_name = self.connections[chat_id].get("workflow_name")
+                if workflow_name:
+                    # For now, return True as a simple check - you can enhance this later
+                    # to check actual workflow config for startup mode
+                    return True
+            return False
+        except Exception as e:
+            logger.debug(f"Could not determine startup mode for {chat_id}: {e}")
+            return False
+    
     # ==================================================================================
     # CORE MESSAGE SENDING
     # ==================================================================================
@@ -285,6 +321,21 @@ class SimpleTransport:
         
         # Extract clean content from AG2 UUID-formatted messages
         clean_message = self._extract_clean_content(message)
+        
+        # Filter out unwanted system messages before any processing
+        if isinstance(clean_message, str):
+            # For AgentDriven startup mode, don't show initial_message
+            if chat_id and self._is_agent_driven_startup(chat_id):
+                if "Initializing the automated" in clean_message or "initial_message" in str(message):
+                    logger.debug(f"🚫 Filtered initial message for AgentDriven mode: {clean_message[:50]}...")
+                    return
+        
+        # If agent_name is generic (Unknown Agent, Assistant, system), try to extract from message content
+        if agent_name in [None, "Unknown Agent", "Assistant", "system"] and isinstance(message, str):
+            extracted_agent = self._extract_agent_name_from_uuid_content(message)
+            if extracted_agent and extracted_agent not in ["user", "chat_manager", "system"]:
+                agent_name = extracted_agent
+                logger.debug(f"🔍 [SimpleTransport] Extracted agent name: {agent_name} from message content")
         
         # For simple strings, apply traditional filtering
         if isinstance(clean_message, str):
@@ -358,6 +409,28 @@ class SimpleTransport:
                 return str(message.content)
             # Fallback to string representation
             return str(message)
+        
+    def _extract_agent_name_from_uuid_content(self, content: str) -> Optional[str]:
+        """Extract actual agent name from AG2 UUID-formatted message content."""
+        import re
+        
+        # AG2 format: "uuid=UUID('...') content='...' sender='AgentName' recipient='...'"
+        # Look for sender='AgentName' pattern
+        sender_match = re.search(r"sender='([^']+)'", content)
+        if sender_match:
+            agent_name = sender_match.group(1)
+            # Filter out non-agent senders
+            if agent_name not in ['user', 'chat_manager', 'system']:
+                return agent_name
+        
+        # Fallback patterns if above doesn't work
+        sender_match_quotes = re.search(r'sender="([^"]+)"', content)
+        if sender_match_quotes:
+            agent_name = sender_match_quotes.group(1)
+            if agent_name not in ['user', 'chat_manager', 'system']:
+                return agent_name
+        
+        return None  # no agent found
         
     async def _broadcast_to_websockets(self, event_data: Dict[str, Any], target_chat_id: Optional[str] = None) -> None:
         """Broadcast event to WebSocket connections only"""
@@ -1146,7 +1219,7 @@ class SimpleTransport:
         event_data = {
             "type": "ui_tool",
             "data": {
-                "toolId": ui_tool_id,
+                "ui_tool_id": ui_tool_id,
                 "payload": payload,
                 "display": display,
                 "chat_id": chat_id

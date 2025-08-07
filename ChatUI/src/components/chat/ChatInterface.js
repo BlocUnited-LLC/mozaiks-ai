@@ -3,15 +3,15 @@ import ChatMessage from "./ChatMessage";
 import LoadingSpinner from "../../utils/LoadingSpinner";
 import ConnectionStatus from "./ConnectionStatus";
 import { useNavigate, useParams } from "react-router-dom";
-import UIToolRenderer from "../ui/UIToolRenderer";
+import UIToolRenderer from "../../core/ui/UIToolRenderer";
 
 // UI Tool Renderer - handles workflow-agnostic UI tool events
 const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse }) => {
-  if (!uiToolEvent || !uiToolEvent.toolId) {
+  if (!uiToolEvent || !uiToolEvent.ui_tool_id) {
     return null;
   }
 
-  console.log('🎯 Rendering UI tool event:', uiToolEvent.toolId);
+  console.log('🎯 Rendering UI tool event:', uiToolEvent.ui_tool_id);
   
   return (
     <div className="my-4 p-4 border border-cyan-400/20 rounded-lg bg-gradient-to-r from-cyan-500/5 to-purple-500/5">
@@ -241,7 +241,7 @@ const ModernChatInterface = ({
                       // Use the handleAgentAction function to process the response
                       handleAgentAction({
                         type: 'ui_tool_response',
-                        toolId: chat.uiToolEvent.toolId,
+                        ui_tool_id: chat.uiToolEvent.ui_tool_id,
                         eventId: chat.uiToolEvent.eventId, // Include eventId for proper tracking
                         response: response
                       });

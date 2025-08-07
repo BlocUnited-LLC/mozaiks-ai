@@ -9,6 +9,7 @@ import logging
 import time
 import asyncio
 import threading
+import traceback
 from datetime import datetime
 
 from autogen import ConversableAgent, UserProxyAgent
@@ -336,7 +337,15 @@ async def run_workflow_orchestration(
             chat_id=chat_id,
             user_id=user_id
         )
+        
+        # 🔥 ENSURE COMPREHENSIVE SESSION DOCUMENT EXISTS
+        session_created = await chat_manager.ensure_session_exists()
+        if not session_created:
+            business_logger.error(f"❌ [{workflow_name_upper}] Failed to create session document")
+            raise Exception("Failed to create comprehensive session document")
+        
         business_logger.info(f"✅ [{workflow_name_upper}] Centralized chat manager initialized with session: {chat_manager.session_id}")
+        business_logger.info(f"✅ [{workflow_name_upper}] Comprehensive session document verified in database")
 
         # ===================================================================
         # SKIP HOOK REGISTRATION - Using event streaming instead
@@ -823,17 +832,153 @@ async def run_workflow_orchestration(
                 
                 # Start AG2 group chat with event streaming
                 business_logger.info(f"🚀 [{workflow_name_upper}] Calling a_run_group_chat...")
-                
+
+
+                    # result = await asyncio.wait_for(
+                    #     a_run_group_chat(
+                    #         pattern=pattern,
+                    #         messages=final_initial_message,
+                    #         max_rounds=max_turns
+                    #     ),
+                    #     timeout=120.0  # second timeout
+                    # )
+
                 try:
                     # Add timeout to prevent infinite hanging
-                    result = await asyncio.wait_for(
-                        a_run_group_chat(
-                            pattern=pattern,
-                            messages=final_initial_message,
-                            max_rounds=max_turns
-                        ),
-                        timeout=60.0  # 60 second timeout
+                    
+                    response = await a_run_group_chat(
+                        pattern=pattern, 
+                        messages=final_initial_message, 
+                        max_rounds=max_turns
                     )
+
+                    # Process AG2 events with proper logging and UI routing
+                    event_count = 0
+                    async for event in response.events:
+                        event_count += 1
+                        
+                        # DEBUG: Log the event structure to understand AG2 event format
+                        event_type_name = type(event).__name__
+                        business_logger.info(f"🔍 [[AG2 Event]] [{workflow_name_upper}] Raw event {event_count}: type={event_type_name}")
+                        
+                        # Log all available attributes for debugging
+                        if hasattr(event, '__dict__'):
+                            event_attrs = {k: str(v)[:100] + '...' if len(str(v)) > 100 else v 
+                                          for k, v in event.__dict__.items() if not k.startswith('_')}
+                            business_logger.debug(f"🔍 [[AG2 Event]] [{workflow_name_upper}] Event attributes: {event_attrs}")
+                        
+                        # Log event with structured information
+                        business_logger.info(f"🎯 [[AG2 Event]] [{workflow_name_upper}] Processing Event {event_count}: {event_type_name}")
+                        
+                            # Route different event types appropriately
+                        try:
+                            # Extract the actual agent name from AG2 event based on event type
+                            actual_agent_name = "system"  # default fallback
+                            event_message_content = f"AG2 Event: {event}"
+                            
+                            # Get event type - AG2 events have a 'type' attribute
+                            event_type_name = type(event).__name__.lower()
+                            business_logger.debug(f"🔍 [[AG2 Event]] [{workflow_name_upper}] Event type: {event_type_name}")
+                            
+                            # AG2 Event Structure Analysis (corrected):
+                            # - TextEvent: has .sender and .content attributes
+                            # - GroupChatRunChatEvent: has .speaker attribute  
+                            # - InputRequestEvent: system event, no specific agent
+                            
+                            if 'textevent' in event_type_name:
+                                # TextEvent: extract from sender attribute - THIS IS THE MAIN AGENT MESSAGE EVENT
+                                # DEBUG: Log what sender attribute actually contains
+                                sender_attr = getattr(event, 'sender', None)
+                                business_logger.info(f"🔍 [[DEBUG]] [{workflow_name_upper}] TextEvent sender attribute: {sender_attr} (type: {type(sender_attr)})")
+                                
+                                actual_agent_name = getattr(event, 'sender', 'system')
+                                # Safely extract content and ensure it's a string
+                                raw_content = getattr(event, 'content', None)
+                                if raw_content is not None:
+                                    event_message_content = str(raw_content)
+                                else:
+                                    event_message_content = str(event)
+                                business_logger.info(f"� [[AG2 TextEvent]] [{workflow_name_upper}] From: {actual_agent_name} | Content: {len(event_message_content)} chars")
+                                
+                                # 🔥 REAL-TIME PERSISTENCE: Store agent messages immediately
+                                # TEMPORARILY REMOVED SYSTEM FILTER FOR DEBUGGING
+                                if event_message_content and len(event_message_content.strip()) > 0:
+                                    try:
+                                        await chat_manager.add_message_to_history(
+                                            sender=actual_agent_name,
+                                            content=event_message_content,
+                                            role="assistant"
+                                        )
+                                        business_logger.info(f"💾 REAL-TIME PERSIST SUCCESS: Stored {actual_agent_name} message ({len(event_message_content)} chars)")
+                                    except Exception as persist_error:
+                                        business_logger.error(f"❌ REAL-TIME PERSIST FAILED: {persist_error}")
+                                
+                            elif 'groupchatrunchatevent' in event_type_name:
+                                # GroupChatRunChatEvent: AG2 internal coordination event - LOG ONLY, don't send to UI
+                                actual_agent_name = getattr(event, 'speaker', 'system')
+                                business_logger.debug(f"🔄 [[AG2 GroupChat]] [{workflow_name_upper}] Speaker turn: {actual_agent_name}")
+                                
+                                # Skip sending GroupChatRunChatEvent to UI - it's internal AG2 coordination
+                                continue
+                                
+                            elif 'inputrequestevent' in event_type_name:
+                                # InputRequestEvent: system event requesting user input
+                                actual_agent_name = "system"
+                                prompt = getattr(event, 'prompt', 'User input requested')
+                                event_message_content = f"Input request: {prompt[:100]}..."
+                                business_logger.debug(f"🔍 [[AG2 InputRequest]] [{workflow_name_upper}] Prompt: {prompt[:50]}...")
+                                
+                            else:
+                                # Fallback: try common attributes
+                                actual_agent_name = (getattr(event, 'sender', None) or 
+                                                   getattr(event, 'speaker', None) or
+                                                   getattr(event, 'name', None) or
+                                                   'system')
+                                business_logger.debug(f"🔍 [[AG2 Unknown]] [{workflow_name_upper}] Type: {event_type_name}, Name: {actual_agent_name}")
+                            
+                            business_logger.info(f"🎯 [[AG2 Event]] [{workflow_name_upper}] Event {event_count}: {event_type_name} from {actual_agent_name}")
+                            
+                            # Send events to UI via transport if available
+                            from core.transport.simple_transport import SimpleTransport
+                            transport = SimpleTransport._get_instance()
+                            if transport:
+                                await transport.send_to_ui(
+                                    message=event_message_content,
+                                    agent_name=actual_agent_name,  # Use actual agent name instead of hardcoded "system"
+                                    message_type="system_event" if actual_agent_name == "system" else "agent_message",
+                                    chat_id=chat_id,
+                                    metadata={
+                                        "event_type": type(event).__name__, 
+                                        "event_count": event_count,
+                                        "original_agent": actual_agent_name,
+                                        "ag2_event_type": event_type_name
+                                    }
+                                )
+                            
+                            # Also log the full event details for debugging
+                            business_logger.debug(f"🔍 [[AG2 Event]] [{workflow_name_upper}] Event {event_count} details: Agent={actual_agent_name}, Content={event_message_content[:100]}...")
+                            
+                        except Exception as event_error:
+                            business_logger.error(f"❌ [{workflow_name_upper}] Failed to process event {event_count}: {event_error}")
+                            business_logger.error(f"❌ [{workflow_name_upper}] Event type: {type(event).__name__}")
+                            business_logger.error(f"❌ [{workflow_name_upper}] Event attributes: {list(event.__dict__.keys()) if hasattr(event, '__dict__') else 'No __dict__'}")
+                            import traceback
+                            business_logger.error(f"❌ [{workflow_name_upper}] Error traceback: {traceback.format_exc()}")
+                            # Fallback to console for debugging
+                            print(f"[DEBUG] AG2 Event {event_count}: {event}")
+                    
+                    business_logger.info(f"✅ [{workflow_name_upper}] Processed {event_count} AG2 events")
+                    
+                    
+                    
+                    # result = await asyncio.wait_for(
+                    #     a_run_group_chat(
+                    #         pattern=pattern,
+                    #         messages=final_initial_message,
+                    #         max_rounds=max_turns
+                    #     ),
+                    #     timeout=120.0  # second timeout
+                    # )
                     business_logger.info(f"✅ [{workflow_name_upper}] a_run_group_chat completed, processing events...")
                 except asyncio.TimeoutError:
                     business_logger.error(f"❌ [{workflow_name_upper}] AG2 execution timed out after 60 seconds!")
@@ -853,8 +998,17 @@ async def run_workflow_orchestration(
                     # Use custom UI event processor to route input requests to our UI
                     from core.transport.ui_event_processor import UIEventProcessor
                     ui_processor = UIEventProcessor(chat_id=chat_id, enterprise_id=enterprise_id)
-                    
-                    await result.process(processor=ui_processor)  # Use our custom processor
+
+
+
+
+                    await response.process(processor=ui_processor)  # Use our custom processor     
+
+
+                    # await result.process(processor=ui_processor)  # Use our custom processor
+
+
+
                     business_logger.info(f"✅ [{workflow_name_upper}] AG2 result.process() completed with UI processor")
                 except Exception as process_error:
                     business_logger.error(f"❌ [{workflow_name_upper}] AG2 result.process() failed: {process_error}")
@@ -862,7 +1016,18 @@ async def run_workflow_orchestration(
                     business_logger.error(f"❌ [{workflow_name_upper}] Process error traceback: {traceback.format_exc()}")
                     # Try fallback without processor
                     try:
-                        await result.process()  # Fallback to default processor
+
+
+                        await response.process()  # Fallback to default processor
+
+
+
+                        # await result.process()  # Fallback to default processor
+
+
+
+
+
                         business_logger.info(f"✅ [{workflow_name_upper}] AG2 result.process() completed with default processor")
                     except Exception as fallback_error:
                         business_logger.error(f"❌ [{workflow_name_upper}] Both processors failed: {fallback_error}")
@@ -870,14 +1035,43 @@ async def run_workflow_orchestration(
                 
                 # STEP 2: Extract messages from AG2 result (this is the native AG2 way)
                 business_logger.info(f"📋 [{workflow_name_upper}] Extracting messages from AG2 result...")
-                business_logger.info(f"🔍 [{workflow_name_upper}] Result object type: {type(result)}")
-                business_logger.info(f"🔍 [{workflow_name_upper}] Result attributes: {[attr for attr in dir(result) if not attr.startswith('_')]}")
+
+
+                business_logger.info(f"🔍 [{workflow_name_upper}] Result object type: {type(response)}")
+                business_logger.info(f"🔍 [{workflow_name_upper}] Result attributes: {[attr for attr in dir(response) if not attr.startswith('_')]}")
                 
+
+
+                # business_logger.info(f"🔍 [{workflow_name_upper}] Result object type: {type(result)}")
+                # business_logger.info(f"🔍 [{workflow_name_upper}] Result attributes: {[attr for attr in dir(result) if not attr.startswith('_')]}")
+                
+
+
                 try:
                     # Debug: Check what the result object contains
-                    if hasattr(result, 'messages'):
-                        business_logger.info(f"🔍 [{workflow_name_upper}] result.messages type: {type(result.messages)}")
-                        all_messages = await result.messages  # Await the messages property
+
+
+
+                    if hasattr(response, 'messages'):
+
+
+
+
+                    # if hasattr(result, 'messages'):
+
+
+
+
+                        business_logger.info(f"🔍 [{workflow_name_upper}] result.messages type: {type(response.messages)}")
+                        all_messages = await response.messages  # Await the messages property
+
+
+
+                        # business_logger.info(f"🔍 [{workflow_name_upper}] result.messages type: {type(result.messages)}")
+                        # all_messages = await result.messages  # Await the messages property
+
+
+
                         business_logger.info(f"🔍 [{workflow_name_upper}] all_messages type: {type(all_messages)}")
                         message_list = list(all_messages) if all_messages else []
                         business_logger.info(f"✅ [{workflow_name_upper}] Found {len(message_list)} messages in result")
@@ -1070,7 +1264,12 @@ async def run_workflow_orchestration(
         )
         
         business_logger.info(f"✅ [{workflow_name_upper}] CONSOLIDATED workflow orchestration completed successfully")
-        return result  # Return AG2's native result directly
+
+        return response  # Return AG2's native result directly
+
+        # return result  # Return AG2's native result directly
+        
+
         
     except Exception as e:
         duration = time.time() - start_time

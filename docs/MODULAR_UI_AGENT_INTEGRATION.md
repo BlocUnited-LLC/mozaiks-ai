@@ -150,7 +150,7 @@ In `ChatUI/src/workflows/Generator/index.js`:
 
 ```javascript
 registerUiTool(
-  'your_tool_id',
+  'ui_tool_id',
   YourComponent,
   { /* metadata */ }
 );

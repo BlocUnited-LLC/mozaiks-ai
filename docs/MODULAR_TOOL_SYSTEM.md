@@ -53,7 +53,7 @@ Tools that interact with the frontend through UI components via the transport la
 
 **Execution:**
 - Tool calls `send_tool_event()` to emit UI event
-- Frontend renders React component based on `tool_id` 
+- Frontend renders React component based on `ui_tool_id` 
 - User interacts with component
 - Response sent back via `/api/ui-tool/submit` endpoint
 - Original tool function receives response through `wait_for_ui_tool_response()`
@@ -64,7 +64,7 @@ Tools that interact with the frontend through UI components via the transport la
 
 **Required Fields:**
 - `path`: Python function path
-- `tool_id`: Maps to React component in frontend
+- `ui_tool_id`: Maps to React component in frontend
 - `display`: Where to render the UI component
 - `description`: Tool purpose and usage
 
@@ -116,7 +116,7 @@ async def request_api_key(
     # Emit UI tool event to frontend
     await transport.send_tool_event({
         "type": "ui_tool_event",
-        "toolId": "api_key_input",
+        "ui_tool_id": "api_key_input",
         "eventId": event_id,
         "workflowname": workflow_name,
         "payload": {
@@ -201,11 +201,11 @@ class WorkflowToolRegistry:
 - Backend tools execute directly when called by agents
 - UI tools use event emission pattern via transport layer
 - Lifecycle tools hook into specific system moments
-- `tool_id` field maps UI events to React components
+- `ui_tool_id` field maps UI events to React components
 
 ### 4. **Transport-Layer Integration**
 - UI tools emit events through `send_tool_event()`
-- Frontend renders components based on `tool_id` mapping
+- Frontend renders components based on `ui_tool_id` mapping
 - User responses handled via `/api/ui-tool/submit` endpoint
 - Async response collection through `wait_for_ui_tool_response()`
 
@@ -242,7 +242,7 @@ The system has been successfully implemented with:
 2. ✅ **Updated workflow.json**: Clear categorization with backend_tools, ui_tools, lifecycle_tools
 3. ✅ **Tool registry integration**: WorkflowToolRegistry parses JSON configuration
 4. ✅ **Clean imports**: All tools importable via individual modules
-5. ✅ **Event-driven UI system**: UI tools emit events via transport layer with `tool_id` mapping
+5. ✅ **Event-driven UI system**: UI tools emit events via transport layer with `ui_tool_id` mapping
 6. ✅ **Display options**: `"inline"` and `"artifact"` rendering locations
 7. ✅ **Lifecycle events**: System hooks with precise timing control via `lifecycle_event` field
 
@@ -275,7 +275,7 @@ workflows/Generator/
 ## Key Changes Made
 
 1. **Removed Trigger System**: No more `trigger` field in tool configuration
-2. **Added `tool_id` Field**: UI tools now map to React components via `tool_id`
+2. **Added `ui_tool_id` Field**: UI tools now map to React components via `ui_tool_id`
 3. **Replaced `ui_routing` with `display`**: Display location specified as `"inline"` or `"artifact"`
 4. **Event-Driven UI**: UI tools use transport layer's `send_tool_event()` and `wait_for_ui_tool_response()`
 5. **Simplified Backend Tools**: No trigger needed - agents call when needed

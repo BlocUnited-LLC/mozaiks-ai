@@ -7,6 +7,7 @@ import json
 import logging
 import importlib
 import inspect
+import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Callable, Optional
 from enum import Enum
@@ -36,7 +37,7 @@ class ToolConfig:
     
     🔧 TOOL CONFIG DEBUGGING:
     - If new tool fields aren't being recognized, check the __init__ method below
-    - The **kwargs pattern captures UI-specific fields like tool_id, display, etc.
+    - The **kwargs pattern captures UI-specific fields like ui_tool_id, display, etc.
     - This was essential for supporting the transition from agent_tool_map to backend_tools/ui_tools schema
     """
     def __init__(self, path: str, trigger: str = "on_demand", description: str = "", **kwargs):
@@ -46,13 +47,13 @@ class ToolConfig:
         self.function = None  # Will be loaded dynamically
         
         # Store additional UI-specific fields (for ui_tools in workflow.json)
-        self.tool_id = kwargs.get('tool_id', None)
+        self.ui_tool_id = kwargs.get('ui_tool_id', None)
         self.display = kwargs.get('display', None)
         
         # Store any other additional parameters from workflow.json
         # This ensures new tool config fields don't break the system
         for key, value in kwargs.items():
-            if key not in ['tool_id', 'display']:
+            if key not in ['ui_tool_id', 'display']:
                 setattr(self, key, value)
         
     def load_function(self) -> Callable:
@@ -175,7 +176,7 @@ class WorkflowToolRegistry:
         - This will show detailed registration steps and any failures
         - Essential for diagnosing AG2 tool system issues
         """
-        ENABLE_TOOL_DEBUG = False  # Set to True for detailed tool registration debugging
+        ENABLE_TOOL_DEBUG = True  # Set to True for detailed tool registration debugging
         
         for tool_config in tools:
             try:
@@ -185,6 +186,8 @@ class WorkflowToolRegistry:
                     logger.info(f"🔍 [TOOL-DEBUG] Registering '{function.__name__}' for agent '{agent.name}'")
                     logger.info(f"🔍 [TOOL-DEBUG] Tool description: {tool_config.description}")
                     logger.info(f"🔍 [TOOL-DEBUG] Agent type: {type(agent).__name__}")
+                    logger.info(f"🔍 [TOOL-DEBUG] Function type: {type(function)}")
+                    logger.info(f"🔍 [TOOL-DEBUG] Is async? {asyncio.iscoroutinefunction(function)}")
                 
                 # Use AG2's modern Tool class if available
                 if Tool is not None:

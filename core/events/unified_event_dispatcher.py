@@ -170,37 +170,20 @@ class UIToolHandler(EventHandler):
         return event.category == "ui_tool"
     
     async def handle(self, event: EventType) -> bool:
-        """Handle UI tool events"""
+        """Handle UI tool events - LOG ONLY to prevent circular dependencies"""
         if not isinstance(event, UIToolEvent):
             return False
             
         try:
-            # Process UI tool event through transport layer
-            business_logger.debug(f"🔧 UI Tool event: {event.ui_tool_id} for workflow {event.workflow_name}")
+            # LOG the UI tool event but DO NOT send it back through transport
+            # This prevents the circular dependency that was causing infinite loops
+            business_logger.debug(f"🔧 UI Tool event logged: {event.ui_tool_id} for workflow {event.workflow_name}")
             
-            # Try to import transport layer for UI event emission
-            try:
-                from core.transport.simple_transport import SimpleTransport
-                
-                # Get transport instance and send UI tool event
-                transport = SimpleTransport._get_instance()
-                if transport:
-                    await transport.send_ui_tool_event(
-                        ui_tool_id=event.ui_tool_id,
-                        payload=event.payload,
-                        display=event.display,
-                        chat_id=event.chat_id
-                    )
-                    return True
-                else:
-                    # Transport not available but event was processed
-                    business_logger.warning(f"⚠️ Transport not available for UI tool event {event.ui_tool_id}")
-                    return True
-                    
-            except ImportError as import_error:
-                # Transport dependencies not available, but event was processed
-                business_logger.warning(f"⚠️ Transport import failed for UI tool event {event.ui_tool_id}: {import_error}")
-                return True
+            # Log the event payload for debugging
+            business_logger.debug(f"🔧 UI Tool payload: {event.payload}")
+            
+            # Mark as successfully processed - the transport layer should handle actual UI updates directly
+            return True
             
         except Exception as e:
             logger.error(f"❌ Failed to handle UI tool event {event.ui_tool_id}: {e}")

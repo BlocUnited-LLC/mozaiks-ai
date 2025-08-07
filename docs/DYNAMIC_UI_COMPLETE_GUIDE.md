@@ -103,7 +103,7 @@ async def request_api_key(
     # Construct UI tool event following spec
     ui_tool_event = {
         "type": "ui_tool_event",
-        "toolId": "api_key_input",          # Maps to React component
+        "ui_tool_id": "api_key_input",          # Maps to React component
         "eventId": event_id,                # Unique identifier
         "workflowname": workflow_name,      # Context for frontend
         "timestamp": datetime.utcnow().isoformat(),
@@ -211,9 +211,9 @@ class UiToolRegistry {
         this.metadata = new Map();
     }
     
-    register(toolId, component, options = {}) {
-        this.registry.set(toolId, component);
-        this.metadata.set(toolId, {
+    register(ui_tool_id, component, options = {}) {
+        this.registry.set(ui_tool_id, component);
+        this.metadata.set(ui_tool_id, {
             workflow: options.workflow || 'default',
             category: options.category || 'input',
             description: options.description || '',
@@ -221,26 +221,26 @@ class UiToolRegistry {
             registeredAt: new Date().toISOString()
         });
         
-        console.log(`📋 Registered UI tool: ${toolId}`, options);
+        console.log(`📋 Registered UI tool: ${ui_tool_id}`, options);
     }
     
-    get(toolId) {
-        return this.registry.get(toolId);
+    get(ui_tool_id) {
+        return this.registry.get(ui_tool_id);
     }
     
     list() {
         return Array.from(this.registry.keys());
     }
     
-    getMetadata(toolId) {
-        return this.metadata.get(toolId);
+    getMetadata(ui_tool_id) {
+        return this.metadata.get(ui_tool_id);
     }
 }
 
 export const uiToolRegistry = new UiToolRegistry();
-export const registerUiTool = (toolId, component, options) => 
-    uiToolRegistry.register(toolId, component, options);
-export const getUiToolComponent = (toolId) => uiToolRegistry.get(toolId);
+export const registerUiTool = (ui_tool_id, component, options) => 
+    uiToolRegistry.register(ui_tool_id, component, options);
+export const getUiToolComponent = (ui_tool_id) => uiToolRegistry.get(ui_tool_id);
 ```
 
 **Event Dispatcher:**
@@ -256,18 +256,18 @@ export class EventDispatcher {
     }
     
     handleUiToolEvent(event) {
-        const { toolId, eventId, payload, workflowname } = event;
+        const { ui_tool_id, eventId, payload, workflowname } = event;
         
         // Get registered component
-        const Component = getUiToolComponent(toolId);
+        const Component = getUiToolComponent(ui_tool_id);
         if (!Component) {
-            console.error(`❌ No component registered for toolId: ${toolId}`);
+            console.error(`❌ No component registered for ui_tool_id: ${ui_tool_id}`);
             return null;
         }
         
         // Track active event
         this.activeEvents.set(eventId, {
-            toolId,
+            ui_tool_id,
             payload,
             workflowname,
             startTime: Date.now()

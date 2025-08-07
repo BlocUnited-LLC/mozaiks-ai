@@ -13,7 +13,7 @@ import React, { useState } from 'react';
  */
 const FileDownloadCenter = ({ 
   payload = {},
-  toolId,
+  ui_tool_id,
   eventId,
   workflowName,
   onResponse,
@@ -41,7 +41,7 @@ const FileDownloadCenter = ({
           fileId: fileId,
           filename: filename,
           downloadTime: new Date().toISOString(),
-          toolId,
+          ui_tool_id,
           eventId,
           workflowName,
           // Additional context for agent decision making
@@ -77,7 +77,7 @@ const FileDownloadCenter = ({
           status: 'error',
           action: 'download',
           error: error.message,
-          data: { fileId, filename, toolId, eventId },
+          data: { fileId, filename, ui_tool_id, eventId },
           agentContext: {
             nextAction: 'retry_or_skip',
             userEngagement: 'neutral',
@@ -100,7 +100,7 @@ const FileDownloadCenter = ({
           fileCount: config.files.length,
           files: config.files.map(f => ({ id: f.id, name: f.name, size: f.size })),
           downloadTime: new Date().toISOString(),
-          toolId,
+          ui_tool_id,
           eventId,
           workflowName,
           // Additional context for agents
@@ -140,7 +140,7 @@ const FileDownloadCenter = ({
           status: 'error',
           action: 'download_all',
           error: error.message,
-          data: { fileCount: config.files.length, toolId, eventId },
+          data: { fileCount: config.files.length, ui_tool_id, eventId },
           agentContext: {
             nextAction: 'troubleshoot_bulk_download',
             userEngagement: 'frustrated',
@@ -158,7 +158,7 @@ const FileDownloadCenter = ({
       onResponse({
         status: 'cancelled',
         action: 'cancel',
-        data: { toolId, eventId, workflowName },
+        data: { ui_tool_id, eventId, workflowName },
         // Rich cancellation context for agents
         agentContext: {
           nextAction: 'ask_about_alternatives',  // Agent should ask what user wants instead
@@ -240,7 +240,7 @@ const FileDownloadCenter = ({
       {/* Debug info (only in development) */}
       {process.env.NODE_ENV === 'development' && (
         <div className="debug-info mt-4 p-2 bg-gray-800 rounded text-xs text-gray-400">
-          <div>Tool: {toolId} | Event: {eventId} | Workflow: {workflowName}</div>
+          <div>Tool: {ui_tool_id} | Event: {eventId} | Workflow: {workflowName}</div>
           <div>Files: {config.files.length} | Component: {componentId}</div>
         </div>
       )}

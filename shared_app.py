@@ -639,11 +639,11 @@ async def get_workflow_ui_tools_manifest(workflow_name: str):
                     module = importlib.import_module(tool_class.__module__)
                     if hasattr(module, 'get_ui_tool_registry'):
                         registry = module.get_ui_tool_registry()
-                        for tool_id, tool_info in registry.items():
+                        for ui_tool_id, tool_info in registry.items():
                             # Avoid duplicates
-                            if not any(item["toolId"] == tool_id for item in manifest):
+                            if not any(item["ui_tool_id"] == ui_tool_id for item in manifest):
                                 manifest.append({
-                                    "toolId": tool_id,
+                                    "ui_tool_id": ui_tool_id,
                                     "description": tool_info.get("description", ""),
                                     "payloadSchema": tool_info.get("payloadSchema", {}),
                                     "workflow": workflow_name
@@ -655,9 +655,9 @@ async def get_workflow_ui_tools_manifest(workflow_name: str):
             "workflow_name": workflow_name,
             "ui_tools_count": len(manifest),
             "ui_tools": manifest,
-            "documentation": f"Each toolId must have a corresponding React component in the frontend. "
+            "documentation": f"Each ui_tool_id must have a corresponding React component in the frontend. "
                            f"Use the payloadSchema to implement the component's props interface.",
-            "usage": f"Backend emits: await channel.send_ui_tool(toolId, payload)"
+            "usage": f"Backend emits: await channel.send_ui_tool(ui_tool_id, payload)"
         }
         
     except Exception as e:
@@ -884,7 +884,7 @@ async def submit_ui_tool_response(request: Request):
                 context={
                     "event_id": event_id,
                     "response_status": response_data.get("status", "unknown"),
-                    "tool_id": response_data.get("data", {}).get("toolId", "unknown")
+                    "ui_tool_id": response_data.get("data", {}).get("ui_tool_id", "unknown")
                 }
             )
             return {"status": "success", "message": "UI tool response submitted successfully"}

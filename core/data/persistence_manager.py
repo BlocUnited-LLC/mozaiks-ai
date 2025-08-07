@@ -94,7 +94,6 @@ class PersistenceManager:
                     "workflow_name": workflow_name,
                     
                     # VE-style session state tracking
-                    "status": 0,  # 0 = in progress, 1 = completed
                     "is_complete": False,
                     "connection_state": "active",
                     "can_resume": True,
@@ -103,7 +102,7 @@ class PersistenceManager:
                     
                     # VE-style workflow-specific status and state tracking
                     "workflow_status": {
-                        workflow_name: 0  # Per-workflow status tracking
+                        workflow_name: 0  # Per-workflow status tracking (0 = in progress, 1 = completed)
                     },
                     "workflow_state": {
                         workflow_name: {
@@ -402,11 +401,10 @@ class PersistenceManager:
                 "enterprise_id": eid,
                 "user_id": "unknown",  # Default user_id for upsert cases
                 "workflow_name": "default",
-                "status": 0,
                 "is_complete": False,
                 "connection_state": "active",
                 "can_resume": True,
-                "workflow_status": {},
+                "workflow_status": {"default": 0},  # Default workflow status
                 "workflow_state": {},
                 "agent_history": [],
                 "agents": [],
@@ -746,20 +744,18 @@ class PersistenceManager:
             session = await self.chat_sessions_collection.find_one(
                 {"chat_id": chat_id, "enterprise_id": eid},
                 {f"workflow_state.{workflow_name}": 1, f"workflow_status.{workflow_name}": 1, 
-                 "is_complete": 1, "can_resume": 1, "status": 1, "resume_attempts": 1, 
+                 "is_complete": 1, "can_resume": 1, "resume_attempts": 1, 
                  "max_resume_attempts": 1, "connection_state": 1}
             )
             
             if not session:
                 return False, "Session not found"
             
-            # Check completion status
-            workflow_status = session.get("workflow_status", {}).get(workflow_name)
-            main_status = session.get("status", 0)
-            status = workflow_status if workflow_status is not None else main_status
+            # Check completion status using workflow-specific status
+            workflow_status = session.get("workflow_status", {}).get(workflow_name, 0)
             
-            if status >= 1:
-                return False, f"Workflow completed with status {status}"
+            if workflow_status >= 1:
+                return False, f"Workflow completed with status {workflow_status}"
             
             # Check if session is marked complete
             if session.get("is_complete", False):
@@ -785,7 +781,7 @@ class PersistenceManager:
             if not workflow_state.get("can_resume", False):
                 return False, f"Workflow {workflow_name} marked as non-resumable"
             
-            logger.info(f"🔄 Session {chat_id} can be resumed (status: {status})")
+            logger.info(f"🔄 Session {chat_id} can be resumed (workflow_status: {workflow_status})")
             return True, "Session can be resumed"
             
         except Exception as e:
@@ -833,9 +829,7 @@ class PersistenceManager:
             workflow_agent_history = [entry for entry in agent_history if entry.get("workflow_name", "default") == workflow_name]
             
             state = session.get("workflow_state", {}).get(workflow_name, {})
-            workflow_status = session.get("workflow_status", {}).get(workflow_name)
-            main_status = session.get("status", 0)
-            status = workflow_status if workflow_status is not None else main_status
+            workflow_status = session.get("workflow_status", {}).get(workflow_name, 0)
             
             resume_data = {
                 "can_resume": True,
@@ -852,7 +846,7 @@ class PersistenceManager:
                 "conversation": conversation,
                 "agent_history": workflow_agent_history,
                 "state": state,
-                "status": status,
+                "status": workflow_status,
                 "workflow_name": workflow_name,
                 "agents": session.get("agents", []),
                 "current_speaker": session.get("current_speaker"),
@@ -866,7 +860,7 @@ class PersistenceManager:
             
             logger.info(f"🔄 Successfully resumed {workflow_name} chat {chat_id}")
             logger.info(f"   - {len(conversation)} messages, {len(workflow_agent_history)} agent outputs")
-            logger.info(f"   - Status: {status}, State: {state.get('current_step', 'unknown')}")
+            logger.info(f"   - Status: {workflow_status}, State: {state.get('current_step', 'unknown')}")
             logger.info(f"   - Resume attempt: {resume_data['resume_attempts']}/{resume_data['max_resume_attempts']}")
             
             return True, resume_data
@@ -965,7 +959,7 @@ class PersistenceManager:
             sessions = await self.chat_sessions_collection.find(
                 query,
                 {
-                    "chat_id": 1, "user_id": 1, "workflow_name": 1, "status": 1,
+                    "chat_id": 1, "user_id": 1, "workflow_name": 1, "workflow_status": 1,
                     "connection_state": 1, "created_at": 1, "last_activity": 1,
                     "current_speaker": 1, "round_count": 1, "can_resume": 1
                 }
@@ -1214,12 +1208,12 @@ class PersistenceManager:
             
             session = await self.chat_sessions_collection.find_one(
                 {"chat_id": chat_id, "enterprise_id": eid},
-                {f"workflow_status.{workflow_name}": 1, "status": 1}
+                {f"workflow_status.{workflow_name}": 1}
             )
             
             if session:
-                # Try workflow-specific status first, then fall back to main status
-                return session.get("workflow_status", {}).get(workflow_name) or session.get("status", 0)
+                # Return workflow-specific status
+                return session.get("workflow_status", {}).get(workflow_name, 0)
             
             return 0
             
@@ -1337,7 +1331,7 @@ class PersistenceManager:
             session = await self.chat_sessions_collection.find_one(
                 {"chat_id": chat_id, "enterprise_id": eid},
                 {f"workflow_state.{workflow_name}": 1, f"workflow_status.{workflow_name}": 1, 
-                 "is_complete": 1, "can_resume": 1, "status": 1}
+                 "is_complete": 1, "can_resume": 1}
             )
             
             if not session:
@@ -1374,7 +1368,7 @@ class PersistenceManager:
                 eid = await self._validate_enterprise_exists(enterprise_id)
                 session = await self.chat_sessions_collection.find_one(
                     {"chat_id": chat_id, "enterprise_id": eid},
-                    {f"workflow_status.{workflow_name}": 1, "status": 1}
+                    {f"workflow_status.{workflow_name}": 1}
                 )
                 
                 if session:
@@ -1558,10 +1552,6 @@ class PersistenceManager:
             logger.error(f"❌ Failed to update workflow stats: {e}")
             return False
 
-    # ==================================================================================
-    # REMOVED: load_chat_state method - replaced by event-driven persistence system
-    # ==================================================================================
-
 # ===================================================================
 # CENTRALIZED WORKFLOW CHAT MANAGER
 # ===================================================================
@@ -1579,7 +1569,7 @@ class WorkflowChatManager:
         self.workflow_name = workflow_name
         self.enterprise_id = enterprise_id
         self.chat_id = chat_id
-        self.user_id = user_id
+        self.user_id = user_id or "unknown"
         
         # Use provided persistence manager or create new one
         self.persistence_manager = persistence_manager or PersistenceManager()
@@ -1588,7 +1578,6 @@ class WorkflowChatManager:
         self.agent_history: List[Dict[str, Any]] = []
         
         # Token tracking integration
-        import time
         self.session_id = str(int(time.time() * 1000))  # Unique session ID
         self.cumulative_tokens = 0
         self.cumulative_cost = 0.0
@@ -1598,6 +1587,43 @@ class WorkflowChatManager:
         self.last_speaker = None
         
         logger.info(f"🏗️ WorkflowChatManager initialized: {workflow_name} | {chat_id} | session: {self.session_id}")
+        
+    async def ensure_session_exists(self) -> bool:
+        """
+        Ensure comprehensive session document exists in database.
+        This creates the full session structure if it doesn't exist.
+        """
+        try:
+            # Check if session already exists
+            eid = await self.persistence_manager._validate_enterprise_exists(self.enterprise_id)
+            existing_session = await self.persistence_manager.chat_sessions_collection.find_one({
+                "chat_id": self.chat_id,
+                "enterprise_id": eid
+            })
+            
+            if existing_session:
+                logger.debug(f"✅ Session already exists: {self.chat_id}")
+                return True
+            
+            # Create comprehensive session document
+            success = await self.persistence_manager.create_chat_session(
+                chat_id=self.chat_id,
+                enterprise_id=self.enterprise_id,
+                user_id=self.user_id,
+                workflow_name=self.workflow_name
+            )
+            
+            if success:
+                logger.info(f"✅ Created comprehensive session document: {self.chat_id}")
+                return True
+            else:
+                logger.error(f"❌ Failed to create session document: {self.chat_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error ensuring session exists: {e}")
+            return False
+
     
     async def add_message_to_history(self, sender: str, content: str, role: str = "assistant") -> Optional[Dict[str, Any]]:
         """
@@ -1916,17 +1942,35 @@ def create_event_driven_message_processor(chat_manager: WorkflowChatManager) -> 
         """
         try:
             async for event in events:
-                if event.type == "message":
+                event_type = getattr(event, 'type', type(event).__name__.replace('Event', '').lower())
+                
+                if event_type == "text" or event_type == "message":
+                    # TextEvent contains actual agent messages - this is what we want to persist
+                    agent_name = getattr(event, 'sender', 'Unknown')
+                    content = getattr(event, 'content', str(event))
+                    
+                    logger.debug(f"🎯 EVENT STREAM: Processing TextEvent from '{agent_name}' (content: {len(content)} chars)")
+                    
                     await process_event_message({
-                        "sender": event.data.get("name", "Unknown"),
-                        "content": event.data.get("content", ""),
+                        "sender": agent_name,
+                        "content": content,
                         "type": "message"
                     })
-                elif event.type == "input_request":
+                    
+                elif event_type == "group_chat_run_chat":
+                    # GroupChatRunChatEvent indicates turn changes - log but don't persist as message
+                    speaker = getattr(event, 'speaker', 'Unknown')
+                    logger.debug(f"🔄 EVENT STREAM: Group chat turn for '{speaker}'")
+                    
+                elif event_type == "input_request":
                     logger.debug(f"🔄 EVENT: Input request received")
-                elif event.type == "termination":
+                    
+                elif event_type == "termination":
                     logger.info(f"🏁 EVENT: Workflow termination received")
                     break
+                    
+                else:
+                    logger.debug(f"🔍 EVENT STREAM: Unhandled event type '{event_type}': {type(event).__name__}")
         except Exception as stream_error:
             logger.error(f"❌ EVENT STREAM ERROR: {stream_error}")
             raise

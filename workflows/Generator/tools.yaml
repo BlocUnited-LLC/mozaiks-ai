@@ -12,13 +12,13 @@ backend_tools:
 ui_tools:
   APIKeyAgent:
     - path: workflows.Generator.tools.request_api_key.request_api_key
-      tool_id: api_key_input
+      ui_tool_id: request_api_key
       display: inline
       description: "Request API key from user - renders UI component"
 
   UserFeedbackAgent:
     - path: workflows.Generator.tools.request_file_download.request_file_download
-      tool_id: file_download_center
+      ui_tool_id: request_file_download
       display: artifact
       description: "Request file download - renders FileDownloadCenter.js component"
 
