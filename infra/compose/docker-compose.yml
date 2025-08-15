@@ -1,0 +1,46 @@
+services:
+  app:
+    build:
+      context: ../.. # repo root
+      dockerfile: infra/docker/Dockerfile
+    image: mozaiksai-app:latest
+    container_name: mozaiksai-app
+    env_file:
+      - ../../.env
+    ports:
+      - "8000:8000"
+    environment:
+      # Override to true to enable OpenLIT/OTEL
+      OPENLIT_ENABLED: "true"
+      # Points to collector service name on docker network
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      # Mongo connection for local dev (override via .env if needed)
+      MONGO_URI: mongodb://mongo:27017
+      # Hint logging to write to /app/logs (mounted)
+      DOCKERIZED: "true"
+    depends_on:
+      - otel-collector
+      - mongo
+    volumes:
+      - ../../logs/logs:/app/logs/logs
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.98.0
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ../otel/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+
+  mongo:
+    image: mongo:6
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:

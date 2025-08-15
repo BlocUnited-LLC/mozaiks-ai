@@ -4,8 +4,8 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Import Google Fonts for Mission Control Interface */
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&display=swap');
+/* Import Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Rajdhani:wght@300;400;500;600;700&display=swap');
 
 /* Font Face Declarations */
 @font-face {
@@ -52,7 +52,8 @@
 }
 
 .oxanium {
-  font-family: "Oxanium", sans-serif;
+  /* Map legacy class to new heading font */
+  font-family: "Orbitron", "Rajdhani", sans-serif;
 }
 
 .fbs {
@@ -61,6 +62,38 @@
 
 .hyperjump {
   font-family: "Hyperjump", sans-serif;
+}
+
+/* Theme color variables (Mozaiks Website palette) */
+:root {
+  --color-primary: #6d28d9;
+  --color-secondary: #06b6d4;
+  --color-accent: #f59e0b;
+  --color-dark: #030712;
+  --color-light: #f8fafc;
+  --color-card: #0f172a;
+  --color-border: #1e293b;
+}
+
+/* Global base styles */
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-dark text-light;
+    font-family: 'Rajdhani', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Noto Sans', 'Helvetica Neue', Arial, sans-serif;
+  }
+  h1, h2, h3, h4, h5, h6, .heading-font {
+    font-family: 'Orbitron', 'Rajdhani', ui-sans-serif, system-ui, sans-serif;
+    color: var(--color-light);
+  }
+  .logo-font {
+    font-family: 'Fagrak Inline', 'Rajdhani', ui-sans-serif, system-ui, sans-serif;
+  }
+  /* Card and border helpers */
+  .card-bg { background-color: var(--color-card); }
+  .border-default { border-color: var(--color-border); }
 }
 
 /* Text Shadows and Effects */
@@ -87,6 +120,188 @@
   background-repeat: no-repeat;
   overflow: hidden;
   position: relative;
+}
+
+/* ==========================
+   Futuristic Chat Message Styles
+   ========================== */
+
+/* User chat bubble (subtler) */
+.user-message {
+  background: linear-gradient(145deg, #00ffe7, #0066ff);
+  border: 1px solid rgba(0, 255, 255, 0.45);
+  box-shadow: none; /* remove outer glow to compress visual weight */
+  color: #ffffff;
+  font-family: 'Oxanium', 'Rajdhani', monospace; /* use Oxanium like connection status */
+  font-weight: 500;
+  padding: 4px 8px; /* even smaller padding for shorter bubbles */
+  line-height: 1.06; /* tighter line spacing */
+  font-size: 0.9rem;
+  border-radius: 8px;
+  display: inline-block;
+  max-width: 62%;
+  white-space: pre-wrap;           /* preserve newlines, allow wrapping */
+  overflow-wrap: anywhere;         /* break long words anywhere if needed */
+  word-break: break-word;          /* legacy-friendly fallback */
+  hyphens: auto;                   /* optional hyphenation */
+}
+
+/* User name label */
+.user-name {
+  font-size: 12px;
+  color: #00ffe7;
+  text-shadow: 0 0 3px rgba(0, 255, 255, 0.36);
+  font-family: 'Orbitron', sans-serif; /* names use Orbitron */
+  font-weight: 600;
+}
+
+/* Agent chat bubble (subtler) */
+.agent-message {
+  background: linear-gradient(145deg, #0a0a1f, #001133);
+  border: 1px solid rgba(0, 100, 255, 0.32);
+  box-shadow: none; /* remove outer glow */
+  color: #ffffff;
+  font-family: 'Oxanium', 'Rajdhani', monospace; /* use Oxanium like connection status */
+  padding: 4px 8px; /* smaller padding */
+  line-height: 1.06;
+  font-size: 0.9rem;
+  border-radius: 8px;
+  display: inline-block;
+  max-width: 62%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  hyphens: auto;
+}
+
+/* Agent name label */
+.agent-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #4da6ff;
+  text-shadow: 0 0 3px rgba(77, 166, 255, 0.5);
+  letter-spacing: 0.2px;
+  font-family: 'Orbitron', sans-serif; /* names use Orbitron */
+}
+
+.agent-name:hover {
+  text-decoration: underline;
+  text-decoration-color: #00ffe7;
+}
+
+/* Textarea typed text should match chat message font, placeholder keeps original preview font */
+.transmission-typing-font {
+  font-family: 'Oxanium', 'Rajdhani', monospace; /* typed text matches messages */
+  font-weight: 500;
+  font-size: 0.95rem;
+  line-height: 1.08;
+}
+.transmission-typing-font::placeholder {
+  /* keep the original preview font look (slightly different weight/spacing) */
+  font-family: 'Orbitron', 'Rajdhani', sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.6px;
+  color: rgba(56,189,248,0.55);
+}
+
+/* Desktop artifact hover glow utility */
+.artifact-hover-glow:hover {
+  filter: drop-shadow(0 0 8px rgba(51, 240, 250, 0.6));
+}
+
+/* Artifact CTA button: thicker border + shadow to look more tactile */
+.artifact-cta {
+  border-width: 2px !important;
+  border-color: rgba(51, 240, 250, 0.65) !important;
+  box-shadow:
+    0 0 0 1px rgba(51, 240, 250, 0.15) inset,
+    0 4px 14px rgba(51, 240, 250, 0.22),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+  transition: box-shadow 200ms ease, transform 150ms ease, border-color 200ms ease;
+}
+.artifact-cta:hover {
+  border-color: rgba(51, 240, 250, 0.9) !important;
+  box-shadow:
+    0 0 0 1px rgba(51, 240, 250, 0.25) inset,
+    0 6px 18px rgba(51, 240, 250, 0.35),
+    0 4px 10px rgba(0, 0, 0, 0.45);
+  transform: translateY(-0.5px) scale(1.02);
+}
+.artifact-cta:active {
+  transform: translateY(0) scale(0.98);
+}
+.artifact-cta:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px rgba(8, 145, 178, 0.9),
+    0 0 0 4px rgba(51, 240, 250, 0.35),
+    0 6px 16px rgba(51, 240, 250, 0.28);
+}
+
+/* Responsive tweaks for small screens */
+@media (max-width: 640px) {
+  /* Compact bubbles and stronger left/right separation on narrow screens */
+  .user-message,
+  .agent-message {
+    padding: 10px 12px;
+    font-size: 0.98rem;
+  width: 90% !important;     /* balanced span on mobile */
+  max-width: none !important; /* remove cap */
+  }
+
+  .user-name, .agent-name {
+    font-size: 14px;
+  }
+
+  /* Push user bubbles to the right and agent bubbles to the left with larger gutters */
+  .user-message {
+    margin-left: auto;
+    margin-right: .01px; /* balanced gap to right edge */
+    text-align: left;
+    /* asymmetric radius to visually anchor to the right */
+    border-radius: 14px 14px 6px 14px; /* TL TR BR BL */
+    box-shadow: 0 0 12px rgba(0,230,255,0.16); /* softened neon */
+  }
+
+  .agent-message {
+    margin-right: auto;
+    margin-left: .01px; /* balanced gap to left edge */
+    text-align: left;
+    /* asymmetric radius to visually anchor to the left */
+    border-radius: 14px 14px 14px 6px;
+    box-shadow: 0 0 8px rgba(77,166,255,0.10); /* reduced glow */
+  }
+
+  /* Tighter vertical rhythm between stacked messages */
+  .my-scroll1 > * + * {
+    margin-top: 8px !important;
+  }
+
+  /* Anchor name labels so they appear next to the bubble side */
+  .user-name {
+    text-align: right;
+    margin-right: 22px;
+  }
+  .agent-name {
+    text-align: left;
+    margin-left: 22px;
+  }
+
+  /* Make the input field slightly more distinct on mobile */
+  .transmission-input-tight textarea.transmission-typing-font,
+  .transmission-input-tight .transmission-typing-font {
+    border: 1px solid rgba(56,189,248,0.20);
+    background: rgba(0,0,0,0.28);
+  }
+}
+
+/* Desktop: use a fixed length for all messages (no max—uniform width) */
+@media (min-width: 1024px) {
+  .user-message,
+  .agent-message {
+  width: 72% !important;   /* slightly shorter than before per feedback */
+    max-width: none !important; /* remove cap */
+  }
 }
 
 .mozaik-box-overlay {
@@ -127,6 +342,35 @@
 .mozaikportal-button:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+}
+
+/* ConnectionStatus spacing tweaks */
+.connection-status .status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.connection-status .status-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.connection-status .retry-button {
+  margin-left: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(77,166,255,0.08);
+}
+
+@media (max-width: 640px) {
+  .connection-status .status-main {
+    gap: 6px;
+  }
+  .connection-status .retry-button {
+    margin-left: 6px;
+    padding: 6px;
+  }
 }
 
 /* Card Component Styles */
@@ -196,13 +440,13 @@
 /* Mission Control Agent Message - Cosmic Command Interface */
 .design-mission-message-send {
   background: rgba(15, 25, 50, 0.6);
-  border: 1px solid rgba(51, 240, 250, 0.4);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  box-shadow: 
-    0 0 20px rgba(51, 240, 250, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 8px 32px rgba(157, 78, 255, 0.1);
+  border: 1px solid rgba(51, 240, 250, 0.28);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow:
+    0 0 10px rgba(51, 240, 250, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 6px 20px rgba(157, 78, 255, 0.06);
   position: relative;
 }
 
@@ -213,10 +457,10 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: linear-gradient(135deg, 
-    rgba(51, 240, 250, 0.05) 0%, 
-    transparent 50%, 
-    rgba(157, 78, 255, 0.05) 100%);
+  background: linear-gradient(135deg,
+    rgba(51, 240, 250, 0.03) 0%,
+    transparent 50%,
+    rgba(157, 78, 255, 0.03) 100%);
   border-radius: inherit;
   pointer-events: none;
 }
@@ -288,6 +532,44 @@
 
 .my-scroll1::-webkit-scrollbar-thumb:hover {
   background: #555;
+}
+
+/* Tighter message spacing globally */
+.message {
+  margin-top: 0.125rem;
+  margin-bottom: 0.125rem;
+}
+.message-container {
+  margin-bottom: 0.125rem;
+}
+.message {
+  margin-top: 0.0625rem; /* ~1px */
+  margin-bottom: 0.0625rem;
+}
+
+.message-container {
+  margin-bottom: 0.0625rem;
+}
+
+/* Mobile adjustments for denser bubbles */
+@media (max-width: 640px) {
+  .user-message, .agent-message {
+    padding: 8px 10px;
+    font-size: 0.92rem;
+  }
+  .user-name, .agent-name {
+    font-size: 12px;
+  }
+}
+
+/* Tighten chat message spacing for mobile */
+.message {
+  margin-top: 0.25rem; /* small overall spacing */
+  margin-bottom: 0.25rem;
+}
+
+.message-container {
+  margin-bottom: 0.25rem;
 }
 
 /* Cosmic Chat Theme - Agent UI Components with Solid Textures */
@@ -570,6 +852,51 @@
   pointer-events: none;
 }
 
+/* Mobile-specific adjustments to prevent glow clipping and tighten header */
+@media (max-width: 640px) {
+  /* Only apply mobile adjustments to chat modules, not artifact panels */
+  .cosmic-ui-module:not(.artifact-panel) {
+    overflow: visible; /* allow glows to render outside rounded bounds */
+  padding: 6px; /* tighter interior padding on phones */
+    border-radius: 12px;
+  margin-top: 28px; /* moderate inner offset to show neon outline while not over-spacing */
+  }
+
+  /* Slightly reduce module header spacing on phones */
+  .cosmic-module-header {
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+
+  /* Connection status tightness: reduce padding so the mobile M doesn't push height */
+  .connection-status-tight-mobile {
+    padding: 6px 8px !important;
+    gap: 6px !important;
+  }
+
+  /* Tighter transmission input container on phones */
+  .transmission-input-tight {
+    padding: 8px !important;
+  }
+
+  .transmission-input-tight .tx-inner {
+    gap: 8px !important;
+  }
+
+  /* Ensure clean spacing between header and chat content on mobile */
+  .flex-1.flex.flex-col.min-h-0.overflow-hidden {
+    padding-top: 1.5rem !important; /* match fixed header height for clean gap */
+  }
+}
+
+/* Make the neon glow able to extend a few pixels above the module on small viewports */
+@media (max-width: 640px) {
+  .cosmic-ui-module::before {
+  top: -12px;
+  bottom: 0px;
+  }
+}
+
 /* 🎯 Module Header */
 .cosmic-module-header {
   display: flex;
@@ -589,6 +916,193 @@
   filter: var(--space-depth);
 }
 
+/* ==========================================================
+   Neon Sci‑Fi Chat Bubbles (User / Agent)
+   Matches landing page glow + space theme
+   Classes used by ChatMessage.js: .user-message, .agent-message,
+   .user-name, .agent-name
+   Fonts: Orbitron (user), Rajdhani (agent)
+========================================================== */
+
+/* Import Google fonts (guarded in case not already loaded) */
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&family=Rajdhani:wght@400;600;700&display=swap');
+
+/* Pulse animation for holographic glow */
+@keyframes glowPulse {
+  0% {
+    box-shadow: 0 0 8px rgba(0, 255, 255, 0.25), 0 0 16px rgba(0, 255, 255, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(0, 255, 255, 0.7), 0 0 40px rgba(0, 200, 255, 0.35);
+  }
+  100% {
+    box-shadow: 0 0 8px rgba(0, 255, 255, 0.25), 0 0 16px rgba(0, 255, 255, 0.15);
+  }
+}
+
+/* User bubble */
+.user-message {
+  position: relative;
+  color: #ffffff;
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 700;
+  border-radius: 12px;
+  padding: 10px 15px;
+  border: 1px solid rgba(0, 255, 255, 0.6);
+  background: linear-gradient(145deg, rgba(0, 191, 255, 0.22), rgba(0, 255, 231, 0.20));
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  text-shadow: 0 0 6px rgba(0, 255, 255, 0.45);
+  animation: glowPulse 3s ease-in-out infinite;
+}
+
+/* soft aura */
+.user-message::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: radial-gradient(closest-side, rgba(0, 255, 255, 0.35), transparent 70%);
+  filter: blur(10px);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* User name styling */
+.user-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: #00ffe7;
+  text-shadow: 0 0 6px rgba(0, 255, 255, 0.8), 0 0 12px rgba(0, 255, 255, 0.35);
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  font-family: 'Orbitron', sans-serif;
+}
+
+/* Agent bubble */
+.agent-message {
+  position: relative;
+  color: #ffffff;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  border-radius: 12px;
+  padding: 10px 15px;
+  border: 1px solid rgba(0, 100, 255, 0.4);
+  background: linear-gradient(145deg, rgba(10, 15, 44, 0.85), rgba(46, 0, 95, 0.65));
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 0 15px rgba(0, 100, 255, 0.5), 0 0 24px rgba(185, 102, 255, 0.25);
+}
+
+.agent-message::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: radial-gradient(closest-side, rgba(77, 166, 255, 0.35), transparent 70%);
+  filter: blur(12px);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Agent name styling */
+.agent-name {
+  font-size: 16px;
+  font-weight: 700;
+  /* Gradient text fallback to solid if unsupported */
+  background: linear-gradient(90deg, #9d4eff 0%, #4da6ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 0 6px rgba(185, 102, 255, 0.9), 0 0 12px rgba(77, 166, 255, 0.35);
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  font-family: 'Rajdhani', sans-serif;
+}
+
+.agent-name:hover {
+  text-decoration: underline;
+  text-decoration-color: #00ffe7;
+}
+
+/* ==========================
+   Current Transmission Highlight
+   - latest message gets a slow neon pulse
+   - previous messages get a muted glow
+   Note: We use a dedicated keyframes name to avoid
+         clashing with existing `@keyframes pulse`
+========================== */
+
+@keyframes transmissionPulse {
+  0%, 100% { box-shadow: 0 0 10px #00f0ff, 0 0 20px #00f0ff; }
+  50% { box-shadow: 0 0 20px #00f0ff, 0 0 40px #00f0ff; }
+}
+
+/* base message container utility applied by ChatMessage */
+.message {
+  will-change: box-shadow;
+  transition: box-shadow 0.3s ease;
+}
+
+.message.latest {
+  animation: transmissionPulse 2s infinite;
+}
+
+.message:not(.latest) {
+  box-shadow: 0 0 6px rgba(0, 240, 255, 0.3) !important;
+}
+
+/* Responsive tweaks */
+@media (max-width: 768px) {
+  .user-message, .agent-message {
+    padding: 10px 12px;
+    font-size: 0.95rem;
+  }
+  .user-name, .agent-name {
+    font-size: 13px;
+  }
+}
+
+
+/* Make subtle the input ping if present */
+.transmission-input-tight .animate-ping {
+  /* fallback: reduce default Tailwind ping intensity */
+  animation-duration: 1.6s !important;
+  opacity: 0.6 !important;
+}
+
+/* Custom smaller/subtle ping for the input prompt */
+.input-prompt-ping {
+  width: 8px;
+  height: 8px;
+  background-color: #00d1ff;
+}
+
+@media (max-width: 640px) {
+  .input-prompt-ping {
+    width: 5px;
+    height: 5px;
+  }
+}
+
+.subtle-ping {
+  animation: subtle-ping 1.6s cubic-bezier(.4,0,.2,1) infinite;
+}
+
+@keyframes subtle-ping {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  60% {
+    transform: scale(1.25);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
 /* 🛸 Upload Pod - Holographic Drop Zone */
 .cosmic-upload-pod {
   background: rgba(10, 20, 40, 0.8);
@@ -922,7 +1436,7 @@
 }
 
 .status-bar {
-  display: flex;
+  display: flexs;
   justify-content: space-between;
   align-items: center;
 }
@@ -939,6 +1453,17 @@
 
 .status-text {
   font-weight: 600;
+}
+
+/* Ensure connection status text and chat messages use identical font rendering */
+.connection-status .status-text,
+.user-message,
+.agent-message {
+  font-family: 'Oxanium', monospace !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-ligatures: none;
+  text-rendering: optimizeLegibility;
 }
 
 .transport-type,
@@ -1027,6 +1552,23 @@
   border-radius: 0.5rem;
 }
 
+/* Extra-tight variant for mobile to reduce header height */
+@media (max-width: 640px) {
+  .connection-status-tight-mobile {
+    padding: 0.25rem 0.5rem !important;
+  }
+  .connection-status-tight-mobile .status-main {
+    gap: 0.25rem !important;
+  }
+  .connection-status-tight-mobile .status-text {
+    font-weight: 500;
+    font-size: 0.7rem;
+  }
+  .connection-status-tight-mobile .transport-type {
+    display: none; /* hide extra text on very small screens */
+  }
+}
+
 .connection-status-compact .status-main {
   gap: 0.375rem;
 }
@@ -1057,4 +1599,9 @@
 
 .connection-status-compact .error-message {
   font-size: 0.6rem;
+}
+
+/* Small UX utility: subtle hover glow for artifact toggle (desktop) */
+.artifact-hover-glow:hover {
+  filter: drop-shadow(0 0 8px rgba(51, 240, 250, 0.6));
 }

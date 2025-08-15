@@ -3,16 +3,14 @@ OpenLit Observability Module
 Proper separation of observability from business persistence
 """
 
-from .openlit_integration import (
-    OpenLitObservability,
-    OpenLitConfig,
-    get_openlit_observability,
-    export_workflow_observability
+from .performance_manager import (
+    PerformanceManager,
+    PerformanceConfig,
+    get_performance_manager,
 )
 
 __all__ = [
-    "OpenLitObservability",
-    "OpenLitConfig", 
-    "get_openlit_observability",
-    "export_workflow_observability"
+    "PerformanceManager",
+    "PerformanceConfig",
+    "get_performance_manager",
 ]

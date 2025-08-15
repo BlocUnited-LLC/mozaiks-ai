@@ -163,10 +163,6 @@ def get_workflow_handler(workflow_name: str) -> Callable[..., Awaitable[Any]] | 
         logger.error(f"❌ [CLEAN-REGISTRY] Failed to create handler for {workflow_name}: {e}")
         return None
 
-def get_registered_workflows() -> Dict[str, Dict[str, Any]]:
-    """Get all registered workflows and their metadata"""
-    return {name: _WORKFLOW_METADATA.get(name, {}) for name in _WORKFLOW_HANDLERS.keys()}
-
 def get_workflow_metadata(workflow_name: str) -> Dict[str, Any]:
     """Get metadata for a specific workflow"""
     return _WORKFLOW_METADATA.get(workflow_name, {})
@@ -224,11 +220,6 @@ def get_or_discover_workflow_handler(workflow_name: str) -> Callable[..., Awaita
     This is an alias for get_workflow_handler for backward compatibility.
     """
     return get_workflow_handler(workflow_name)
-
-def workflow_human_loop(workflow_name: str) -> bool:
-    """Check if workflow requires human interaction"""
-    metadata = _WORKFLOW_METADATA.get(workflow_name, {})
-    return metadata.get('human_loop', False)
 
 # ==============================================================================
 # CLEAN REGISTRY - SELF-CONTAINED, NO CIRCULAR DEPENDENCIES

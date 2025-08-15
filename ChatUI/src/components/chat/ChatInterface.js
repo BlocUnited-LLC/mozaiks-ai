@@ -11,7 +11,7 @@ const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse }) => {
     return null;
   }
 
-  console.log('🎯 Rendering UI tool event:', uiToolEvent.ui_tool_id);
+  // console.debug('Rendering UI tool event:', uiToolEvent.ui_tool_id);
   
   return (
     <div className="my-4 p-4 border border-cyan-400/20 rounded-lg bg-gradient-to-r from-cyan-500/5 to-purple-500/5">
@@ -47,16 +47,12 @@ const ModernChatInterface = ({
   const navigate = useNavigate();
   const renderCountRef = useRef(0);
   
-  // Increment render count and log every render
-  renderCountRef.current += 1;
-  console.log(`🔄 ModernChatInterface render #${renderCountRef.current} with ${messages?.length || 0} messages`);
-  
-  // Add logging for messages prop
-  useEffect(() => {
-    console.log('🖥️ ModernChatInterface received messages:');
-    console.log('  Count:', messages?.length || 0);
-    console.log('  Messages:', messages?.map(m => ({ id: m.id, sender: m.sender, content: m.content?.substring(0, 30) + '...' })) || []);
-  }, [messages]);
+  // Optional debug: enable to trace renders
+  // renderCountRef.current += 1;
+  // console.debug(`ModernChatInterface render #${renderCountRef.current} with ${messages?.length || 0} messages`);
+  // useEffect(() => {
+  //   console.debug('ModernChatInterface received messages:', messages?.length || 0);
+  // }, [messages]);
   
   // Chat flow UI tool event handling
   // This keeps the main chat interface clean and avoids hook violations.
@@ -136,27 +132,42 @@ const ModernChatInterface = ({
   }, []);
 
   return (
-    <div className="flex flex-col h-full rounded-2xl border border-cyan-400/30 overflow-hidden shadow-2xl bg-gradient-to-br from-white/5 to-cyan-500/5 backdrop-blur-sm cosmic-ui-module">
+    <div className="flex flex-col h-full rounded-2xl border border-cyan-400/30 md:overflow-hidden overflow-visible shadow-2xl bg-gradient-to-br from-white/5 to-cyan-500/5 backdrop-blur-sm cosmic-ui-module">
       {loading && <LoadingSpinner />}
       
       {/* Fixed Command Center Header - Never moves */}
-      <div className="flex-shrink-0 px-4 py-3 border-b border-cyan-400/20 bg-gradient-to-r from-cyan-500/5 to-purple-500/5 backdrop-blur-xl shadow-lg rounded-2xl mx-2 mt-2 mb-1">
+  <div className="flex-shrink-0 px-3 py-1 md:px-4 md:py-2 border-b border-cyan-400/20 bg-gradient-to-r from-cyan-500/5 to-purple-500/5 backdrop-blur-xl shadow-lg rounded-lg md:rounded-xl mx-1 md:mx-2 mt-1 md:mt-2 mb-1">
         <div className="flex items-center justify-between">
           <div className="flex-1">
-            <div className="cosmic-module-header">
+            <div className="cosmic-module-header text-sm md:text-base leading-tight">
               <span className="text-cyan-300">🚀</span>
               {workflowName ? workflowName.charAt(0).toUpperCase() + workflowName.slice(1) : 'Command Center Interface'}
             </div>
-            {/* Connection Status under workflow title */}
             {connectionStatus && (
-              <div className="mt-1 w-fit">
+              <div className="relative mt-1 w-full flex items-center gap-2 pr-24">
                 <ConnectionStatus
                   status={connectionStatus}
                   transportType={transportType}
                   workflowName={workflowName}
                   onRetry={onRetry}
-                  className="text-xs"
+                  onArtifactToggle={onArtifactToggle}
+                  className="connection-status-compact connection-status-tight-mobile text-xs"
                 />
+                {/* Mobile-only artifact button rendered as a separate, prominent control, absolutely positioned so it doesn't add height */}
+                {onArtifactToggle && (
+                  <button
+                    onClick={onArtifactToggle}
+                    className="md:hidden absolute right-1 top-[calc(50%-18px)] -translate-y-1/2 w-14 h-14 rounded-2xl border bg-gradient-to-r from-cyan-500/15 to-purple-500/15 backdrop-blur-sm artifact-hover-glow artifact-cta flex items-center justify-center transition-all duration-300 z-10"
+                    title="Artifact Canvas"
+                    aria-label="Open Artifact Canvas"
+                  >
+                    <img 
+                      src="/mozaik_logo.svg" 
+                      className="w-8 h-8 opacity-95 -mt-0.5" 
+                      alt="Artifact"
+                    />
+                  </button>
+                )}
               </div>
             )}
             {/* Initial Message - only show for UserDriven workflows and if message exists */}
@@ -193,7 +204,7 @@ const ModernChatInterface = ({
                 */}
                 <button
                   onClick={onArtifactToggle}
-                  className="group relative p-3 rounded-lg bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-400/20 hover:border-cyan-400/40 transition-all duration-300 backdrop-blur-sm"
+                  className="hidden md:block group relative p-3 rounded-lg bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border transition-all duration-300 backdrop-blur-sm artifact-hover-glow artifact-cta"
                   title="Toggle Artifact Canvas"
                 >
                   <img 
@@ -209,16 +220,28 @@ const ModernChatInterface = ({
         </div>
       </div>
       
-      {/* Chat Messages Area - ONLY THIS SCROLLS */}
-      <div className="flex-1 relative overflow-hidden">
+    {/* Chat Messages Area - ONLY THIS SCROLLS */}
+    <div className="flex-1 relative overflow-hidden">
         <div 
           ref={chatContainerRef}
-          className="absolute inset-0 overflow-y-auto p-6 space-y-4 my-scroll1"
+  className="absolute inset-0 overflow-y-auto px-2 py-2 md:p-6 space-y-3 md:space-y-4 my-scroll1"
         >
-          {messages?.map((chat, index) => {
-            console.log(`🎨 Rendering message ${index}:`, { id: chat?.id, sender: chat?.sender, content: chat?.content?.substring(0, 50) + '...' });
+      {/* Messages render below */}
+          {(() => {
+            // Determine the last chat index with a primary content message
+            let lastContentIndex = -1;
+            if (Array.isArray(messages)) {
+              messages.forEach((m, i) => {
+                if (m && m.content && !m.isTokenMessage && !m.isWarningMessage) {
+                  lastContentIndex = i;
+                }
+              });
+            }
+
+            return messages?.map((chat, index) => {
+            // console.debug('Rendering message', index, chat?.id);
             if (!chat) {
-              console.warn(`⚠️ Message at index ${index} is null/undefined`);
+              // console.warn(`Message at index ${index} is null/undefined`);
               return null;
             }
             
@@ -230,6 +253,7 @@ const ModernChatInterface = ({
                   agentName={chat.agentName}
                   isTokenMessage={chat.isTokenMessage}
                   isWarningMessage={chat.isWarningMessage}
+                  isLatest={index === lastContentIndex}
                 />
                 
                 {/* Render UI Tool Events */}
@@ -237,7 +261,7 @@ const ModernChatInterface = ({
                   <UIToolEventRenderer 
                     uiToolEvent={chat.uiToolEvent}
                     onResponse={(response) => {
-                      console.log('📤 UI tool response from chat:', response);
+                      // console.debug('UI tool response from chat');
                       // Use the handleAgentAction function to process the response
                       handleAgentAction({
                         type: 'ui_tool_response',
@@ -250,7 +274,8 @@ const ModernChatInterface = ({
                 )}
               </div>
             );
-          })}
+            });
+          })()}
           <div ref={chatEndRef} />
         </div>
 
@@ -259,19 +284,18 @@ const ModernChatInterface = ({
           <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-10">
             <button
               onClick={scrollToBottom}
-              className="flex items-center space-x-2 px-4 py-2 bg-cyan-500/95 hover:bg-cyan-400/95 text-white rounded-full shadow-lg hover:shadow-cyan-500/50 transition-all duration-300 techfont font-bold text-sm border border-cyan-400/50 backdrop-blur-sm"
+              className="px-4 py-2 bg-cyan-500/95 hover:bg-cyan-400/95 text-white rounded-full shadow-lg hover:shadow-cyan-500/50 transition-all duration-300 techfont font-bold text-sm border border-cyan-400/50 backdrop-blur-sm"
             >
-              <span>📩 You're viewing older messages</span>
-              <span className="bg-white/20 px-2 py-1 rounded-full text-xs">Jump to Present</span>
+              Jump to Present
             </button>
           </div>
         )}
       </div>
 
-      {/* Fixed Transmission Input Area - Never moves */}
-      <div className={`flex-shrink-0 p-4 border-t border-cyan-400/20 bg-gradient-to-r from-cyan-500/5 to-purple-500/5 backdrop-blur-xl shadow-lg transition-all duration-500 ${!hasUserInteracted ? 'ring-2 ring-cyan-400/30 animate-pulse' : ''}`}>
-        <form onSubmit={onSubmitClick} className="flex items-center gap-3">
-          <div className="flex-1 relative">
+  {/* Fixed Transmission Input Area - Never moves */}
+            <div className={`flex-shrink-0 p-1.5 md:p-3 border-t border-cyan-400/20 bg-gradient-to-r from-cyan-500/5 to-purple-500/5 backdrop-blur-xl shadow-lg transition-all duration-500 transmission-input-tight`}> 
+        <form onSubmit={onSubmitClick} className="flex gap-3 flex-row items-center">
+          <div className="flex-1 relative min-w-0 flex items-center">
             <textarea
               value={message}
               onChange={(e) => {
@@ -283,40 +307,48 @@ const ModernChatInterface = ({
               }}
               onKeyPress={handleKeyPress}
               onFocus={() => setHasUserInteracted(true)}
-              placeholder={tokensExhausted ? "Tokens exhausted - please upgrade to continue..." : "Type transmission..."}
+              placeholder={tokensExhausted ? "Tokens exhausted - please upgrade to continue..." : "Transmit your message..."}
               disabled={buttonText === 'NEXT' || tokensExhausted}
               rows={1}
-              className={`w-full bg-white/10 border-2 rounded-2xl px-4 py-3 text-cyan-50 placeholder-cyan-400/80 focus:outline-none resize-none transition-all duration-300 oxanium min-h-[48px] max-h-[120px] my-scroll1 backdrop-blur-sm ${
+              className={`w-full bg-white/10 border-2 rounded-xl px-3 py-2 mt-0.5 text-cyan-50 placeholder-cyan-400/80 focus:outline-none resize-none transition-all duration-300 transmission-typing-font min-h-[40px] max-h-[120px] my-scroll1 backdrop-blur-sm ${
                 hasUserInteracted 
                   ? 'border-cyan-400/50 focus:border-cyan-400/80 focus:bg-white/15 focus:shadow-[0_0_25px_rgba(51,240,250,0.4)]' 
                   : 'border-cyan-400/30 focus:border-cyan-400/70 focus:bg-white/15 focus:shadow-[0_0_30px_rgba(51,240,250,0.5)] shadow-[0_0_15px_rgba(51,240,250,0.2)]'
               }`}
               style={{ 
-                height: '48px',
+                height: '40px',
                 overflowY: message.split('\n').length > 2 || message.length > 100 ? 'auto' : 'hidden'
               }}
             />
             {!hasUserInteracted && (
-              <div className="absolute -top-2 -right-2 w-3 h-3 bg-cyan-400 rounded-full animate-ping"></div>
+              <div className="absolute -top-1 -right-1 md:-top-2 md:-right-2 input-prompt-ping rounded-full subtle-ping" aria-hidden="true"></div>
             )}
           </div>
           
-          {/* Command Button */}
+          {/* Command Button - icon-only for simplicity */}
           <button
             type="submit"
             disabled={!message.trim() || tokensExhausted}
             className={`
-              px-6 py-3 rounded-xl transition-all duration-300 min-w-[100px] h-12 oxanium uppercase font-bold text-[14px] flex items-center justify-center letter-spacing-wide border-2
+              px-2 py-1.5 rounded-md transition-all duration-300 min-w-[40px] w-auto h-9 oxanium font-bold text-[13px] flex items-center justify-center letter-spacing-wide border-2
               ${(!message.trim() || tokensExhausted)
                 ? 'bg-gray-800/50 text-gray-400 cursor-not-allowed border-gray-600/50' 
-                : 'bg-gradient-to-r from-cyan-500/80 to-blue-500/80 hover:from-cyan-400/90 hover:to-blue-400/90 text-white border-cyan-400/50 hover:border-cyan-300/70 shadow-lg shadow-cyan-500/20 hover:shadow-cyan-400/30 hover:scale-105 active:scale-95'
+                : 'bg-gradient-to-r from-cyan-500/80 to-blue-500/80 hover:from-cyan-400/90 hover:to-blue-400/90 text-white border-cyan-400/50 hover:border-cyan-300/70 shadow-sm shadow-cyan-500/10 hover:shadow-cyan-400/20 hover:scale-105 active:scale-95'
               }
             `}
           >
-            {tokensExhausted ? '💰 UPGRADE' : (buttonText === 'NEXT' ? '🚀 LAUNCH' : '📡 TRANSMIT')}
+            {tokensExhausted ? (
+              <span className="text-lg" aria-label="Upgrade required" role="img">💰</span>
+            ) : buttonText === 'NEXT' ? (
+              <span className="text-lg" aria-label="Launch" role="img">🚀</span>
+            ) : (
+              <span className="text-lg" aria-label="Transmit" role="img">📡</span>
+            )}
           </button>
         </form>
       </div>
+
+  {/* Mobile artifact button now lives in ConnectionStatus row */}
     </div>
   );
 };

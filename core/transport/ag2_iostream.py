@@ -13,8 +13,6 @@
 # 1. ✅ AG2 Native Streaming - Forward llm_config={"stream": True} tokens to WebSocket
 # 2. ✅ AG2 Official WebSocket Architecture - IOWebsockets.run_server_in_thread()
 # 3. ✅ Official on_connect Pattern - Simple iostream setup only
-# 4. ❌ NO groupchat creation (belongs in groupchat_manager.py)
-# 5. ❌ NO TokenManager integration (not needed for streaming)
 # ==============================================================================
 import asyncio
 import uuid
@@ -96,20 +94,8 @@ class AG2StreamingIOStream(InputStream, OutputStream):
         agent_logger = logging.getLogger('chat.agent_messages')
         agent_logger.info(f"AGENT_OUTPUT | Chat: {self.chat_id} | Agent: {agent_name} | Content: {clean_content}")
         
-        # CRITICAL: Persist message to database in real-time (not just at end of workflow)
-        try:
-            # Create task for async persistence but don't block - ensure the coroutine is properly handled
-            try:
-                loop = asyncio.get_running_loop()
-                # Create the task and don't await it to avoid blocking AG2
-                task = asyncio.create_task(self._persist_message_to_db_async(agent_name, clean_content))
-                # Add error handling callback to the task
-                task.add_done_callback(lambda t: logger.error(f"DB persistence failed: {t.exception()}") if t.exception() else None)
-            except RuntimeError:
-                # No event loop running, skip persistence to avoid blocking AG2 flow
-                logger.debug(f"⚠️ No event loop available for persistence, skipping: {agent_name}")
-        except Exception as e:
-            logger.error(f"Failed to persist message to database: {e}")
+        # CRITICAL: Persistence is now handled by UIEventProcessor.
+        # This class is only for forwarding print() calls to the UI.
         
         # Send content to WebSocket (AG2 handles the streaming)
         try:
@@ -134,7 +120,7 @@ class AG2StreamingIOStream(InputStream, OutputStream):
         try:
             # Import SimpleTransport for WebSocket communication
             from .simple_transport import SimpleTransport
-            transport = SimpleTransport._get_instance()
+            transport = await SimpleTransport.get_instance()
             if transport:
                 agent_name = getattr(self, 'current_agent_name', 'Assistant')
                 await transport.send_to_ui(
@@ -146,190 +132,90 @@ class AG2StreamingIOStream(InputStream, OutputStream):
                 logger.warning("SimpleTransport not available for WebSocket communication")
         except Exception as e:
             logger.error(f"Error sending to WebSocket: {e}")
-    
-    async def _persist_message_to_db_async(self, agent_name: str, content: str) -> None:
-        """Persist agent message to database in real-time during AG2 execution."""
+
+    def send(self, message: BaseEvent) -> None:
+        """
+        AG2-compliant send method.
+        This is less commonly used than print() for streaming, but is required by the protocol.
+        We can forward this data as a generic event to the UI.
+        """
+        logger.debug(f"AG2StreamingIOStream.send() called with event: {type(message).__name__}")
         try:
-            # Import chat manager for database persistence
-            from core.data.persistence_manager import WorkflowChatManager
-            
-            # Extract actual agent name from AG2 UUID-formatted content
-            actual_agent_name = self._extract_agent_name_from_content(content)
-            if not actual_agent_name or actual_agent_name == 'system':
-                actual_agent_name = agent_name  # fallback to passed agent name
-            
-            logger.debug(f"🔍 [AG2 Persistence] Extracted agent: '{actual_agent_name}' from content: {content[:100]}...")
-            logger.info(f"🔍 [AG2 Persistence] DEBUG: Extracted agent: '{actual_agent_name}' from content: {content[:100]}...")
-            
-            # Create chat manager instance with current context
-            chat_manager = WorkflowChatManager(
-                workflow_name=self.workflow_name,
-                enterprise_id=self.enterprise_id,
-                chat_id=self.chat_id,
-                user_id=self.user_id
-            )
-            
-            # Store message immediately to database using async method with correct agent name
-            await chat_manager.add_message_to_history(
-                sender=actual_agent_name,
-                content=content,
-                role="assistant"
-            )
-            
-            logger.debug(f"✅ Persisted message from {agent_name} to database: {len(content)} chars")
-                
+            loop = asyncio.get_running_loop()
+            task = asyncio.create_task(self._send_generic_event_to_websocket(message))
+            task.add_done_callback(lambda t: logger.error(f"WebSocket send (generic) failed: {t.exception()}") if t.exception() else None)
+        except RuntimeError:
+            logger.debug("⚠️ No event loop available for WebSocket, skipping generic send")
         except Exception as e:
-            logger.error(f"❌ Failed to persist message to database: {e}")
-            # Don't raise - persistence failure shouldn't break AG2 flow
-    
-    def _extract_agent_name_from_content(self, content: str) -> str:
-        """Extract actual agent name from AG2 UUID-formatted message content."""
-        import re
-        
-        # AG2 format: "uuid=UUID('...') content='...' sender='AgentName' recipient='...'"
-        # Look for sender='AgentName' pattern
-        sender_match = re.search(r"sender='([^']+)'", content)
-        if sender_match:
-            agent_name = sender_match.group(1)
-            # Filter out non-agent senders
-            if agent_name not in ['user', 'chat_manager', 'system']:
-                return agent_name
-        
-        # Fallback patterns if above doesn't work
-        sender_match_quotes = re.search(r'sender="([^"]+)"', content)
-        if sender_match_quotes:
-            agent_name = sender_match_quotes.group(1)
-            if agent_name not in ['user', 'chat_manager', 'system']:
-                return agent_name
-        
-        return "system"  # fallback
-    
-    def send(self, message: Any) -> None:
-        """
-        Handle AG2 BaseEvent objects - forward to print method.
-        
-        CRITICAL: This method MUST be synchronous and return None to comply with AG2.
-        """
-        try:
-            # Check if message has content attribute
-            if hasattr(message, 'content') and message.content is not None:
-                content = message.content
-                
-                # Validate that content is not a coroutine
-                if asyncio.iscoroutine(content):
-                    logger.error(f"❌ Received coroutine object in send(): {content}. Converting to safe string.")
-                    content = f"<coroutine {content.__name__ if hasattr(content, '__name__') else 'unknown'}>"
-                
-                self.print(content)
-            else:
-                # Convert entire message to string
-                message_str = str(message)
-                
-                # Validate that message_str is not somehow a coroutine
-                if asyncio.iscoroutine(message):
-                    logger.error(f"❌ Received coroutine object as message in send(): {message}. Converting to safe string.")
-                    message_str = f"<coroutine {message.__name__ if hasattr(message, '__name__') else 'unknown'}>"
-                
-                self.print(message_str)
-        except Exception as e:
-            logger.error(f"Error in send method: {e}")
-        
-        # IMPORTANT: Explicitly return None to ensure AG2 compliance
-        return None
-    
-    def input(self, prompt: str = "", *, password: bool = False) -> str:
-        """
-        Handle user input requests from AG2 agents for web UI integration.
-        
-        This is the crucial method that enables UserProxyAgent to work with web UI.
-        Note: This must be synchronous to match IOStreamProtocol, but we handle async internally.
-        """
-        # Input validation
-        if not isinstance(prompt, str):
-            prompt = str(prompt) if prompt is not None else ""
-        if not isinstance(password, bool):
-            password = bool(password)
-            
-        logger.info(f"🔄 [IOStream] User input requested with prompt: '{prompt[:100]}{'...' if len(prompt) > 100 else ''}'")
-        
-        # Run the async implementation synchronously
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're in an async context, need to create a new thread
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, self._handle_input_async(prompt, password))
-                    return future.result()
-            else:
-                # We can use asyncio.run directly
-                return asyncio.run(self._handle_input_async(prompt, password))
-        except Exception as e:
-            logger.error(f"❌ [IOStream] Error in synchronous input method: {e}")
-            raise RuntimeError(f"Failed to collect user input: {e}")
-    
-    async def _handle_input_async(self, prompt: str, password: bool) -> str:
-        """
-        Production-ready user input handling for AG2 workflows.
-        
-        This method integrates with the web UI to collect actual user input
-        when agents request it (like UserFeedbackAgent asking for feedback).
-        """
-        logger.info(f"🎯 [IOStream] Input request received: prompt='{prompt[:50]}{'...' if len(prompt) > 50 else ''}', password={password}")
-        
-        # Validate chat context
-        if not self.chat_id or not self.enterprise_id:
-            raise ValueError("IOStream not properly initialized with chat_id and enterprise_id")
-        
-        # Create unique input request ID
-        input_request_id = str(uuid.uuid4())
-        
-        # Send input request to frontend via WebSocket using tool event
+            logger.error(f"Failed to send generic data to WebSocket: {e}")
+
+    async def _send_generic_event_to_websocket(self, event: BaseEvent):
+        """Asynchronously sends generic data to the WebSocket."""
         try:
             from .simple_transport import SimpleTransport
-            transport = SimpleTransport._get_instance()
+            transport = await SimpleTransport.get_instance()
+            if transport:
+                # Use the send_event_to_ui method for proper serialization
+                await transport.send_event_to_ui(
+                    event=event,
+                    chat_id=self.chat_id
+                )
+        except Exception as e:
+            logger.error(f"Error sending generic event to WebSocket: {e}")
+
+    def input(self, prompt: str = "", *, password: bool = False) -> str:
+        """
+        AG2-compliant input method - request user input via WebSocket.
+        
+        This is the method that AG2 agents call when they need input from the user.
+        It sends a request to the frontend and waits for the user's response.
+        This method is synchronous and bridges to the async transport layer.
+        """
+        if password:
+            logger.warning("Password-protected input was requested, but this feature is not implemented in the current transport. The input will be treated as regular text.")
+
+        input_request_id = str(uuid.uuid4())
+        
+        try:
+            loop = asyncio.get_running_loop()
+            future = asyncio.run_coroutine_threadsafe(self._get_user_input(input_request_id, prompt), loop)
+        except RuntimeError:
+            logger.error("❌ No running event loop to handle user input. This is a critical error in the application's threading model.")
+            return "Error: Backend misconfiguration - cannot process user input."
+
+        try:
+            # Block and wait for the user's input from the event loop thread.
+            user_input = future.result()
+            logger.info(f"✅ Received user input for request {input_request_id}")
+            return user_input
+        except Exception as e:
+            logger.error(f"❌ Failed to get user input for {input_request_id}: {e}")
+            return "Error: Could not get user input."
+
+    async def _get_user_input(self, input_request_id: str, prompt: str) -> str:
+        """Helper async method to handle the full user input flow."""
+        try:
+            from .simple_transport import SimpleTransport
+            transport = await SimpleTransport.get_instance()
+
             if not transport:
-                raise RuntimeError("SimpleTransport not available - cannot collect user input")
-                
-            # NEW ARCHITECTURE: Send a dedicated user_input_request event, not a generic ui_tool_event.
-            # This decouples standard agent input from custom UI components.
+                logger.warning("SimpleTransport not available for user input request")
+                return "Error: Transport not available."
+
+            # Send the request to the UI
             await transport.send_user_input_request(
                 input_request_id=input_request_id,
                 chat_id=self.chat_id,
-                payload={
-                    "prompt": prompt,
-                    "password": password,
-                    "agent_name": getattr(self, 'current_agent_name', 'Agent'),
-                }
+                payload={"prompt": prompt}
             )
-            
-            logger.info(f"📤 [IOStream] Sent user input request {input_request_id} to frontend")
-            
+
+            # Wait for the response from the UI
+            user_input = await transport.wait_for_user_input(input_request_id)
+            return user_input
         except Exception as e:
-            logger.error(f"❌ [IOStream] Failed to send input request: {e}")
-            raise RuntimeError(f"Failed to send user input request to frontend: {e}")
-        
-        # Wait for user input response from the transport layer
-        try:
-            user_input = await SimpleTransport.wait_for_user_input(input_request_id)
-            
-            if user_input is None:
-                raise ValueError("User input was None")
-            
-            user_input_str = str(user_input).strip()
-            
-            logger.info(f"✅ [IOStream] Received user input for request {input_request_id}")
-            chat_logger.info(f"USER_INPUT | Chat: {self.chat_id} | Input: {user_input_str[:100]}{'...' if len(user_input_str) > 100 else ''}")
-            
-            return user_input_str
-            
-        except asyncio.TimeoutError:
-            logger.error(f"⏰ [IOStream] Timeout waiting for user input {input_request_id}")
-            raise RuntimeError("Timeout waiting for user input - conversation can be resumed later")
-        except Exception as e:
-            logger.error(f"❌ [IOStream] Error waiting for user input {input_request_id}: {e}")
-            raise RuntimeError(f"Failed to collect user input: {e}")
-    
+            logger.error(f"Error during user input flow: {e}")
+            return "Error: Failed to receive user input."
+
     def set_agent_context(self, agent_name: str):
         """Set the current agent for better streaming metadata."""
         self.current_agent_name = agent_name

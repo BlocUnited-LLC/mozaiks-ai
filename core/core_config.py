@@ -138,6 +138,32 @@ enterprises_collection = db1['Enterprises']
 # ==============================================================================
 # FREE TRIAL CONFIGURATION
 # ==============================================================================
+# NOTE: Subscription/token gating hook points (no-op for now):
+# - Start gate (cheap, before allocating resources):
+#   Implement checks in shared_app.start_chat to enforce plan/limits before
+#   generating chat_id. Examples:
+#     * Verify MozaiksDB.Wallets (VE schema: EnterpriseId, UserId, Balance)
+#       has sufficient Balance or trial status allows start
+#     * Enforce per-plan concurrency and daily session caps
+# - Run-time gate (accurate usage control):
+#   Implement hard/soft enforcement in AG2PersistenceManager.debit_tokens.
+#   When Balance < required delta:
+#     * Hard stop: raise INSUFFICIENT_TOKENS to end the session
+#     * Soft degrade: switch to cheaper model or reduce max_turns
+# - Warnings/UX nudges:
+#   Use get_free_trial_config().get("warning_threshold") to emit low-balance
+#   warnings via logs or tool-driven UI events without blocking execution.
+# - Suggested feature flags (env):
+#     ENFORCE_TOKENS=true|false
+#     ENFORCE_RATE_LIMITS=true|false
+#     ALLOW_FREE_TRIAL=true|false
+#     DEGRADE_ON_INSUFFICIENT=true|false
+#   These can toggle checks in the two hook points above without redesign.
+# - Data model reminder:
+#   Wallets collection uses VE uppercase schema by default:
+#     { EnterpriseId, UserId, Balance, Transactions, CreatedAt, UpdatedAt }
+#   ChatSessions should not mirror balances; only track usage aggregates.
+# ------------------------------------------------------------------------------
 
 def get_free_trial_config() -> Dict[str, Any]:
     """Get free trial configuration from environment variables"""
@@ -146,19 +172,6 @@ def get_free_trial_config() -> Dict[str, Any]:
         "default_tokens": int(os.getenv("FREE_TRIAL_DEFAULT_TOKENS", "1000")),
         "auto_upgrade_prompt": os.getenv("AUTO_UPGRADE_PROMPT_ENABLED", "true").lower() == "true",
         "warning_threshold": int(os.getenv("TRIAL_WARNING_THRESHOLD", "100"))
-    }
-
-def get_token_config() -> Dict[str, Any]:
-    """Get token configuration including available (paid) tokens"""
-    return {
-        "available_tokens_default": int(os.getenv("AVAILABLE_TOKENS_DEFAULT", "0")),
-        "purchase_minimum": int(os.getenv("AVAILABLE_TOKENS_PURCHASE_MINIMUM", "1000"))
-    }
-
-def get_token_pricing() -> Dict[str, str]:
-    """Get token pricing configuration - AG2 handles actual costs"""
-    return {
-        "note": "Token costs are handled by AG2 observability system"
     }
 
 def get_rate_limits() -> Dict[str, str]:

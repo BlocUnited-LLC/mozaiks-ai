@@ -8,9 +8,7 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject",
-    "build-workflows": "node src/workflows/build-workflows-simple.js",
-    "prebuild": "npm run build-workflows"
+    "eject": "react-scripts eject"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

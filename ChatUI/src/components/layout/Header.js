@@ -10,7 +10,7 @@ const Header = ({
 }) => {
   // Default user if none provided (for standalone mode)
   const defaultUser = {
-    id: "user123",
+    id: "56132",
     firstName: "John Doe",
     userPhoto: null
   };
@@ -19,6 +19,7 @@ const Header = ({
   const [isProfileDropdownOpen, setIsProfileDropdownOpen] = useState(false);
   const [isNotificationDropdownOpen, setIsNotificationDropdownOpen] = useState(false);
   const [notificationCount, setNotificationCount] = useState(3); // TODO: Mock notification count
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
   const dropdownRef = useRef(null);
 
@@ -40,6 +41,29 @@ const Header = ({
     
     return () => clearInterval(interval);
   }, []);
+
+  // Close dropdowns when clicking outside or pressing Escape
+  useEffect(() => {
+    const handleGlobalPointer = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        if (isProfileDropdownOpen) setIsProfileDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (isProfileDropdownOpen) setIsProfileDropdownOpen(false);
+        if (isNotificationDropdownOpen) setIsNotificationDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleGlobalPointer);
+    document.addEventListener('touchstart', handleGlobalPointer, { passive: true });
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleGlobalPointer);
+      document.removeEventListener('touchstart', handleGlobalPointer);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isProfileDropdownOpen, isNotificationDropdownOpen]);
 
   const toggleProfileDropdown = () => {
     setIsProfileDropdownOpen(!isProfileDropdownOpen);
@@ -64,6 +88,8 @@ const Header = ({
     onDiscoverClick();
   };
 
+  const toggleMobileMenu = () => setMobileMenuOpen(v => !v);
+
   return (
     <header className={`
       fixed top-0 left-0 right-0 z-50 transition-all duration-300 
@@ -84,7 +110,7 @@ const Header = ({
       <div className="relative h-16 flex items-center justify-between px-6 lg:px-8">
         
         {/* LEFT SECTION - Mission Control Branding */}
-        <div className="flex flex-col items-start space-y-1">
+  <div className="flex flex-col items-start space-y-1">
           {/* Top Row: Logo + Brand */}
           <div className="flex items-center space-x-3">
             <a 
@@ -108,7 +134,7 @@ const Header = ({
           </div>
           
           {/* Bottom Row: Mission Breadcrumbs */}
-          <div className="hidden md:flex items-center space-x-2 text-xs text-cyan-400/70">
+          <div className="hidden md:flex items-center space-x-2 text-xs text-cyan-400/70 mt-1 ml-2">
             <button 
               onClick={handleMyAppsClick}
               className="flex items-center space-x-1 hover:text-cyan-300 transition-colors duration-200 group"
@@ -134,8 +160,8 @@ const Header = ({
           {/* Center space reserved for future features */}
         </div>
 
-        {/* RIGHT SECTION - Command Console Cluster */}
-        <div className="flex items-center space-x-1">
+  {/* RIGHT SECTION - Command Console Cluster */}
+  <div className="flex items-center space-x-1">
           
           {/* Command Cluster Container */}
           <div className="flex items-center bg-white/5 border border-cyan-400/30 rounded-2xl backdrop-blur-md p-1 space-x-2">
@@ -255,7 +281,7 @@ const Header = ({
             {/* Discovery Pod - toned down for visual harmony */}
             <button
               onClick={handleDiscoverClick}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-slate-900/80 via-cyan-900/60 to-slate-900/80 border border-cyan-400/40 text-cyan-100 font-semibold oxanium hover:bg-cyan-400/10 hover:border-cyan-300/80 transition-all duration-200 text-base tracking-wide shadow focus:outline-none focus:ring-2 focus:ring-cyan-300"
+              className="hidden md:flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-slate-900/80 via-cyan-900/60 to-slate-900/80 border border-cyan-400/40 text-cyan-100 font-semibold oxanium hover:bg-cyan-400/10 hover:border-cyan-300/80 transition-all duration-200 text-base tracking-wide shadow focus:outline-none focus:ring-2 focus:ring-cyan-300"
               style={{ boxShadow: '0 2px 12px 0 rgba(0,255,255,0.10)' }}
               title="Discover New Features"
             >
@@ -265,34 +291,79 @@ const Header = ({
               </svg>
               <span className="font-semibold text-cyan-100 drop-shadow-[0_0_4px_rgba(34,211,238,0.3)]">Discover</span>
             </button>
+            {/* Mobile discover icon inside the same rounded cluster */}
+            <button
+              onClick={handleDiscoverClick}
+              className="md:hidden p-2 rounded-xl bg-white/5 border border-cyan-400/30 text-cyan-100 hover:bg-cyan-400/10 transition-all duration-200"
+              title="Discover"
+            >
+              <svg className="w-5 h-5 text-cyan-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.343 17.657l-1.414 1.414m12.728 0l-1.414-1.414M6.343 6.343L4.929 4.929" />
+                <circle cx="12" cy="12" r="5" stroke="currentColor" strokeWidth="2" />
+              </svg>
+            </button>
           </div>
         </div>
+        
       </div>
 
       {/* Mobile Command Interface */}
-      <div className="lg:hidden px-4 pb-3">
+      {/* Show only on small screens to avoid duplication with desktop breadcrumbs */}
+      <div className="md:hidden px-4 pb-3">
         <div className="flex items-center justify-between gap-2">
-          {/* Mobile Breadcrumb */}
-          <button 
-            onClick={handleMyAppsClick}
-            className="flex items-center space-x-2 text-cyan-400 hover:text-cyan-300 transition-colors duration-200"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          {/* Mobile Breadcrumb: My Workflows > {Workflow} */}
+          <div className="flex items-center space-x-2 text-xs text-cyan-400/70">
+            <button 
+              onClick={handleMyAppsClick}
+              className="flex items-center space-x-1 hover:text-cyan-300 transition-colors duration-200"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+              <span className="oxanium">My Workflows</span>
+            </button>
+
+            <svg className="w-3 h-3 text-cyan-500/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
-            <span className="text-xs oxanium">Back to Workflows</span>
-          </button>
-          {/* Mobile Discover Button */}
-          <button
-            onClick={handleDiscoverClick}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-gradient-to-r from-cyan-400 via-blue-500 to-fuchsia-500 text-white font-bold shadow-md border border-cyan-300 hover:from-cyan-300 hover:to-fuchsia-400 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-cyan-300 transition-all duration-200 text-sm tracking-wide drop-shadow-[0_0_6px_rgba(0,255,255,0.3)] animate-pulse-slow min-w-[90px]"
-            style={{ boxShadow: '0 0 10px 1px rgba(0,255,255,0.18)' }}
-            title="Discover New Features"
-          >
-            <span className="text-lg">✨</span>
-            <span className="oxanium font-bold">Discover</span>
-          </button>
+
+            <span className="oxanium text-cyan-200 font-medium">
+              {workflowName ? workflowName.charAt(0).toUpperCase() + workflowName.slice(1) : 'Command Center Interface'}
+            </span>
+          </div>
         </div>
+        {mobileMenuOpen && (
+          <div className="mt-2 rounded-2xl border border-cyan-400/30 bg-white/5 backdrop-blur-md p-2 space-y-2">
+            <button
+              onClick={() => { handleDiscoverClick(); setMobileMenuOpen(false); }}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-gradient-to-r from-slate-900/80 via-cyan-900/60 to-slate-900/80 border border-cyan-400/40 text-cyan-100 font-semibold oxanium hover:bg-cyan-400/10 hover:border-cyan-300/80 transition-all duration-200 text-sm"
+            >
+              <svg className="w-5 h-5 text-cyan-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.343 17.657l-1.414 1.414m12.728 0l-1.414-1.414M6.343 6.343L4.929 4.929" />
+                <circle cx="12" cy="12" r="5" stroke="currentColor" strokeWidth="2" />
+              </svg>
+              Discover
+            </button>
+            <button
+              onClick={() => { toggleNotificationDropdown(); setMobileMenuOpen(false); }}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl border border-cyan-400/30 text-cyan-100 hover:bg-cyan-400/10 transition-all duration-200 text-sm"
+            >
+              <svg
+                className="w-5 h-5 text-cyan-300"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                strokeWidth={1.8}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+              </svg>
+              Notifications
+              {notificationCount > 0 && (
+                <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/80">{notificationCount}</span>
+              )}
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );

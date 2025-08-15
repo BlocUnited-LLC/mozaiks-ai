@@ -37,7 +37,13 @@ class WorkflowConfig {
         
         // Store each workflow configuration directly
         for (const workflow of workflows) {
+          // Store under original key
           this.configs.set(workflow.workflow_name, workflow);
+          // Also store a lowercase alias to allow case-insensitive lookups
+          const lowerKey = workflow.workflow_name.toLowerCase();
+          if (!this.configs.has(lowerKey)) {
+            this.configs.set(lowerKey, workflow);
+          }
         }
         
         console.log('✅ Loaded workflow configs:', workflows.map(w => w.workflow_name));
@@ -82,7 +88,16 @@ class WorkflowConfig {
    * Get workflow configuration by type
    */
   getWorkflowConfig(workflowname) {
-    return this.configs.get(workflowname) || null;
+    if (!workflowname) return null;
+    // Direct hit (exact case or lowercase alias already inserted)
+    const direct = this.configs.get(workflowname);
+    if (direct) return direct;
+    // Fallback: case-insensitive scan (handles legacy entries if any)
+    const target = workflowname.toLowerCase();
+    for (const [k, v] of this.configs.entries()) {
+      if (k.toLowerCase() === target) return v;
+    }
+    return null;
   }
 
   /**

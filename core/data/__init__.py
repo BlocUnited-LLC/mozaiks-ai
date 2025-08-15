@@ -1,18 +1,12 @@
 """
 Data & Persistence Module - Clean Architecture
-Handles database operations and business performance tracking.
+Provides database access and real-time AG2 persistence utilities.
+Updated: Removed deprecated performance_manager exports.
 """
 
-from .persistence_manager import PersistenceManager
-from .performance_manager import (
-    BusinessPerformanceManager,
-    performance_tracking_context,
-    create_performance_manager
-)
+from .persistence_manager import PersistenceManager, AG2PersistenceManager
 
 __all__ = [
-    'PersistenceManager',
-    'BusinessPerformanceManager',
-    'performance_tracking_context',
-    'create_performance_manager'
+    "PersistenceManager",
+    "AG2PersistenceManager",
 ]

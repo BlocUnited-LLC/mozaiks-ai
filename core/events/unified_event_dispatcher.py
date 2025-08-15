@@ -32,7 +32,6 @@ business_logger = get_business_logger("event_dispatcher")
 class EventCategory(Enum):
     """Clear event category definitions"""
     BUSINESS = "business"      # Application lifecycle and monitoring  
-    RUNTIME = "runtime"        # AG2 agent workflow execution
     UI_TOOL = "ui_tool"       # User interface interactions
 
 # ==============================================================================
@@ -51,17 +50,6 @@ class BusinessLogEvent:
     category: str = field(default="business")
 
 @dataclass
-class RuntimeEvent:
-    """AG2 runtime events from agent workflows"""  
-    ag2_event_type: str
-    agent_name: str
-    content: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=lambda: datetime.utcnow())
-    event_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    category: str = field(default="runtime")
-
-@dataclass
 class UIToolEvent:
     """UI interaction events for dynamic components"""
     ui_tool_id: str
@@ -78,7 +66,7 @@ class UIToolEvent:
 # ==============================================================================
 
 # Type alias for all event types
-EventType = Union[BusinessLogEvent, RuntimeEvent, UIToolEvent]
+EventType = Union[BusinessLogEvent, UIToolEvent]
 
 class EventHandler(ABC):
     """Abstract base class for event handlers"""
@@ -118,49 +106,6 @@ class BusinessLogHandler(EventHandler):
             
         except Exception as e:
             logger.error(f"❌ Failed to handle business event {event.log_event_type}: {e}")
-            return False
-
-class RuntimeEventHandler(EventHandler):
-    """Handler for AG2 runtime events (workflow execution)"""
-    
-    def can_handle(self, event: EventType) -> bool:
-        return event.category == "runtime"
-    
-    async def handle(self, event: EventType) -> bool:
-        """Handle AG2 runtime events with proper persistence integration"""
-        if not isinstance(event, RuntimeEvent):
-            return False
-            
-        try:
-            # Process AG2 runtime event
-            business_logger.debug(f"🔄 AG2 Runtime event: {event.ag2_event_type} from {event.agent_name}")
-            
-            # Try to import persistence manager for event processing
-            try:
-                from core.data.persistence_manager import PersistenceManager, AG2PersistenceExtensions
-                
-                # Get persistence manager instance
-                persistence = PersistenceManager()
-                ag2_persistence = AG2PersistenceExtensions(persistence)
-                
-                # Process the runtime event through persistence layer
-                await ag2_persistence.process_runtime_event({
-                    "event_type": event.ag2_event_type,
-                    "agent_name": event.agent_name,
-                    "content": event.content,
-                    "metadata": event.metadata,
-                    "timestamp": event.timestamp.isoformat(),
-                    "event_id": event.event_id
-                })
-                
-            except (ImportError, AttributeError) as e:
-                # Persistence not available or method doesn't exist, but event was processed
-                business_logger.warning(f"⚠️ Persistence processing failed for runtime event {event.ag2_event_type}: {e}")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to handle runtime event {event.ag2_event_type}: {e}")
             return False
 
 class UIToolHandler(EventHandler):
@@ -210,7 +155,6 @@ class UnifiedEventDispatcher:
             "events_failed": 0,
             "events_by_category": {
                 "business": 0,
-                "runtime": 0,
                 "ui_tool": 0
             }
         }
@@ -222,7 +166,6 @@ class UnifiedEventDispatcher:
         """Setup default handlers for each event category"""
         self.handlers = [
             BusinessLogHandler(),
-            RuntimeEventHandler(), 
             UIToolHandler()
         ]
         
@@ -264,7 +207,8 @@ class UnifiedEventDispatcher:
             # Update metrics
             if success:
                 self.metrics["events_processed"] += 1
-                self.metrics["events_by_category"][event.category] += 1
+                if event.category in self.metrics["events_by_category"]:
+                    self.metrics["events_by_category"][event.category] += 1
             else:
                 self.metrics["events_failed"] += 1
             
@@ -305,23 +249,6 @@ class UnifiedEventDispatcher:
             description=description,
             context=context or {},
             level=level
-        )
-        
-        return await self.dispatch(event)
-    
-    async def emit_runtime_event(
-        self,
-        ag2_event_type: str,
-        agent_name: str,
-        content: str,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> bool:
-        """Emit an AG2 runtime event"""
-        event = RuntimeEvent(
-            ag2_event_type=ag2_event_type,
-            agent_name=agent_name,
-            content=content,
-            metadata=metadata or {}
         )
         
         return await self.dispatch(event)
@@ -372,16 +299,6 @@ async def emit_business_event(
     """Convenience function to emit business events through dispatcher"""
     dispatcher = get_event_dispatcher()
     return await dispatcher.emit_business_event(log_event_type, description, context, level)
-
-async def emit_runtime_event(
-    ag2_event_type: str,
-    agent_name: str,
-    content: str,
-    metadata: Optional[Dict[str, Any]] = None
-) -> bool:
-    """Convenience function to emit AG2 runtime events through dispatcher"""
-    dispatcher = get_event_dispatcher()
-    return await dispatcher.emit_runtime_event(ag2_event_type, agent_name, content, metadata)
 
 async def emit_ui_tool_event(
     ui_tool_id: str,

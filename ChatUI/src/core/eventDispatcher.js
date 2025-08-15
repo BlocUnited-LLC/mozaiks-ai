@@ -40,8 +40,8 @@ class EventDispatcher {
 
       console.log(`🎯 EventDispatcher: Routing event to WorkflowUIRouter for '${ui_tool_id}'`);
 
-      // Extract workflow and component info from the payload
-      // Backend should send: { workflow_name: "Generator", component_type: "AgentAPIKeyInput", ... }
+  // Extract workflow and component info from the payload
+  // Backend should send: { workflow_name: "<Workflow>", component_type: "<ComponentName>", ... }
       const workflowName = workflow_name || payload.workflow_name || payload.workflow || 'Unknown';
       const componentType = payload.component_type || ui_tool_id;
 

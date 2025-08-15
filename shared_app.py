@@ -2,40 +2,31 @@
 # FILE: shared_app.py
 # DESCRIPTION: FastAPI app - workflow agnostic, tools handled by workflows
 # ==============================================================================
+import logging
 import os
 import sys
-import json
-import asyncio
-import logging
-import traceback
 from typing import Optional, Dict, Any
 from datetime import datetime
 from pathlib import Path
 # Ensure project root is on Python path for workflow imports
 sys.path.insert(0, str(Path(__file__).parent))
-import importlib
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+import json
+import asyncio
+from fastapi import FastAPI, HTTPException, Request, WebSocket, Response
 from starlette.middleware.cors import CORSMiddleware
 from bson.objectid import ObjectId
 from uuid import uuid4
+import autogen
 from pydantic import BaseModel
+
 
 from core.core_config import make_llm_config, get_mongo_client
 from core.transport.simple_transport import SimpleTransport
-from core.workflow.init_registry import get_initialization_coroutines, get_registered_workflows, workflow_status_summary, get_workflow_transport, get_workflow_tools, workflow_human_loop
-from core.data.persistence_manager import PersistenceManager
-
-# Simple mock functions for token management (TODO: replace with real token service)
-def _mock_get_remaining(user_id: str, enterprise_id: str = "default") -> Dict[str, Any]:
-    """Mock function for getting user token balance"""
-    return {"remaining": 10000, "user_id": user_id, "enterprise_id": enterprise_id}
-
-def _mock_consume_tokens(user_id: str, enterprise_id: str, amount: int) -> Dict[str, Any]:
-    """Mock function for consuming user tokens"""
-    return {"success": True, "remaining": 9000, "consumed": amount, "user_id": user_id}
+from core.workflow.init_registry import  workflow_status_summary, get_workflow_transport, get_workflow_tools
+from core.data.persistence_manager import AG2PersistenceManager
 
 # Initialize persistence manager
-mongodb_manager = PersistenceManager()
+persistence_manager = AG2PersistenceManager()
 
 # Request model for starting a chat session
 class StartChatRequest(BaseModel):
@@ -67,6 +58,8 @@ else:
         description="Development logging configuration applied"
     )
 
+# (Startup log moved below after business_logger is defined)
+
 # Set autogen library logging to DEBUG for detailed output
 import autogen
 logging.getLogger('autogen').setLevel(logging.DEBUG)
@@ -80,10 +73,16 @@ logger = logging.getLogger(__name__)
 # Log AG2 version for debugging
 business_logger.info(f"🔍 autogen version: {getattr(autogen, '__version__', 'unknown')}")
 
+# Emit an explicit startup log line so file logging can be verified quickly
+business_logger.info("SERVER_STARTUP_INIT: Starting MozaiksAI in %s mode", env)
+
 # Initialize unified event dispatcher
 from core.events import get_event_dispatcher
 event_dispatcher = get_event_dispatcher()
 business_logger.info("🎯 Unified Event Dispatcher initialized")
+
+# Initialize OpenLit Observability
+from core.observability.performance_manager import get_performance_manager
 
 # FastAPI app
 app = FastAPI(
@@ -105,6 +104,24 @@ app.add_middleware(
 mongo_client = get_mongo_client()
 simple_transport: Optional[SimpleTransport] = None
 
+
+# # ------------------------------------------------------------------------------
+# # SERVICE REGISTRY (backend-agnostic routing for artifact modules)
+# # Map logical service names -> base URLs. Change via env vars per environment.
+# # ------------------------------------------------------------------------------
+# import httpx  # HTTP client for proxying requests
+# SERVICE_REGISTRY = {
+#     # Most of your app is .NET — point this to your .NET gateway/base URL.
+#     # e.g., "http://localhost:5000" or "https://api.mycorp.internal"
+#     "dotnet": os.getenv("DOTNET_BASE", "http://localhost:5000"),
+
+#     # Your FastAPI (this app) can also be targeted by name if you want:
+#     "fastapi": os.getenv("FASTAPI_BASE", "http://localhost:8000"),
+#     # Add more services as needed:
+#     # "java": os.getenv("JAVA_BASE", "http://java-service:8080"),
+# }
+
+
 @app.on_event("startup")
 async def startup():
     """Initialize application on startup"""
@@ -112,17 +129,20 @@ async def startup():
     startup_start = datetime.utcnow()
 
     try:
-        # Initialize simple transport with basic LLM config
+        # Initialize performance / observability
+        perf_mgr = await get_performance_manager()
+        await perf_mgr.initialize()
+
+        # Initialize simple transport
         streaming_start = datetime.utcnow()
-        _, streaming_llm_config = await make_llm_config()
-        simple_transport = SimpleTransport(streaming_llm_config)
+        simple_transport = await SimpleTransport.get_instance()
         
         streaming_time = (datetime.utcnow() - streaming_start).total_seconds() * 1000
         log_performance_metric(
             metric_name="streaming_config_init_duration",
             value=streaming_time,
             context={
-                "config_keys": list(streaming_llm_config.keys()) if streaming_llm_config else [],
+                "config_keys": [],
                 "streaming_enabled": True
             }
         )
@@ -159,7 +179,7 @@ async def startup():
             unit="ms"
         )
 
-        # Component system is event-driven
+        # Component system is event-driven, no upfront initialization needed.
         registry_start = datetime.utcnow()
         
         registry_time = (datetime.utcnow() - registry_start).total_seconds() * 1000
@@ -169,55 +189,6 @@ async def startup():
             unit="ms"
         )
         
-        # Run initialization coroutines
-        init_start = datetime.utcnow()
-        
-        init_coroutines = get_initialization_coroutines()
-        successful_inits = 0
-        failed_inits = 0
-        
-        for init_coro in init_coroutines:
-            coro_start = datetime.utcnow()
-            try:
-                await init_coro()
-                coro_time = (datetime.utcnow() - coro_start).total_seconds() * 1000
-                
-                log_performance_metric(
-                    metric_name="initializer_duration",
-                    value=coro_time,
-                    unit="ms",
-                    context={"initializer": init_coro.__name__}
-                )
-                
-                successful_inits += 1
-                
-            except Exception as e:
-                coro_time = (datetime.utcnow() - coro_start).total_seconds() * 1000
-                
-                log_business_event(
-                    log_event_type="INITIALIZER_FAILED",
-                    description=f"Plugin initializer failed: {init_coro.__name__}",
-                    context={
-                        "initializer": init_coro.__name__,
-                        "error": str(e),
-                        "duration_ms": coro_time
-                    },
-                    level="ERROR"
-                )
-                failed_inits += 1
-        
-        init_time = (datetime.utcnow() - init_start).total_seconds() * 1000
-        log_performance_metric(
-            metric_name="total_initialization_duration",
-            value=init_time,
-            unit="ms",
-            context={
-                "successful_inits": successful_inits,
-                "failed_inits": failed_inits,
-                "total_inits": len(init_coroutines)
-            }
-        )
-
         # Log workflow and tool summary
         status = workflow_status_summary()
         
@@ -272,12 +243,11 @@ async def shutdown():
     
     try:
         if simple_transport:
-            simple_transport.disconnect()
-            business_logger.info("?? Simple transport cleaned up")
+            # No explicit disconnect needed for websockets with this transport design
+            pass
         
         if mongo_client:
             mongo_client.close()
-            business_logger.info("?? MongoDB client closed")
         
         # Calculate shutdown time and log metrics
         shutdown_time = (datetime.utcnow() - shutdown_start).total_seconds() * 1000
@@ -344,7 +314,62 @@ async def _import_workflow_modules():
 # ============================================================================
 # API ENDPOINTS (WebSocket and workflow handling)
 # ============================================================================
-# API ENDPOINTS (WebSocket and workflow handling)
+# # ============================================================================
+# # Artifact Proxy: Backend-agnostic proxy for artifact modules
+# # ============================================================================
+
+# @app.post("/api/proxy")
+# async def artifact_proxy(request: Request):
+#     """
+#     Backend-agnostic PROXY for the artifact host/modules.
+#     Modules call POST /api/proxy with JSON: { service, path, init? }
+#       - service: logical name from SERVICE_REGISTRY (e.g., "dotnet", "fastapi")
+#       - path:    the path on that service (e.g., "/users/current")
+#       - init:    { method, headers, body } similar to fetch()
+#     We forward to the real backend and stream the response back.
+
+#     IMPORTANT: If `service == "dotnet"`, this is where we call your .NET backend.
+#     """
+#     body = await request.json()
+#     service = body.get("service")
+#     path = body.get("path", "/")
+#     init = body.get("init") or {}
+
+#     if not service or service not in SERVICE_REGISTRY:
+#         raise HTTPException(status_code=400, detail=f"Unknown or missing service: {service}")
+
+#     target_base = SERVICE_REGISTRY[service]
+#     target_url = f"{target_base}{path}"
+
+#     method  = (init.get("method") or "GET").upper()
+#     headers = init.get("headers") or {}
+#     data    = init.get("body")
+
+#     # Optionally forward the Authorization header from the original request
+#     # so your downstream services can do auth consistently.
+#     auth = request.headers.get("Authorization")
+#     if auth and "authorization" not in {k.lower(): v for k, v in headers.items()}:
+#         headers["Authorization"] = auth
+
+#     # ---------------------------- .NET ROUTING HAPPENS HERE --------------------
+#     # If service == "dotnet", target_url points at your .NET API (see SERVICE_REGISTRY).
+#     # --------------------------------------------------------------------------
+#     try:
+#         async with httpx.AsyncClient(timeout=30.0) as client:
+#             resp = await client.request(method, target_url, headers=headers, content=data)
+#         return Response(
+#             content=resp.content,
+#             status_code=resp.status_code,
+#             media_type=resp.headers.get("content-type", "application/json"),
+#         )
+#     except httpx.RequestError as e:
+#         # Central place to log/observe failed downstream calls
+#         logger.error(f"Proxy error -> {service} {target_url}: {e}")
+#         raise HTTPException(status_code=502, detail=f"Proxy to {service} failed")
+
+
+# ============================================================================
+# Metrics and Health Check
 # ============================================================================
 
 @app.get("/api/events/metrics")
@@ -378,8 +403,9 @@ async def health_check():
         status = workflow_status_summary()
         
         # Get active connections from simple transport
-        connection_info = simple_transport.get_connection_info() if simple_transport else {
-            "websocket_connections": 0, "total_connections": 0
+        connection_info = {
+            "websocket_connections": len(simple_transport.connections) if simple_transport else 0,
+            "total_connections": len(simple_transport.connections) if simple_transport else 0
         }
 
         # Calculate health check time
@@ -417,42 +443,66 @@ async def health_check():
         logger.error(f"? Health check failed: {e}")
         raise HTTPException(status_code=500, detail=f"Health check failed: {e}")
 
+# ============================================================================
+# Chat Management Endpoints
+# ============================================================================
+
 @app.post("/api/chats/{enterprise_id}/{workflow_name}/start")
 async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
     """Start a new chat session for a workflow"""
     try:
         data = await request.json()
         user_id = data.get("user_id")
-        
+        required_min_tokens = int(data.get("required_min_tokens", 0))
         if not user_id:
             raise HTTPException(status_code=400, detail="user_id is required")
-        
-        # Generate a new chat ID
+
+        # Ensure wallet exists and get balance
+        await persistence_manager.ensure_wallet(user_id, enterprise_id, initial_balance=0)
+        balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
+        if required_min_tokens and balance < required_min_tokens:
+            raise HTTPException(status_code=402, detail="Insufficient tokens to start workflow")
+
+        # Generate a new chat ID (session will be created on conversation start)
         chat_id = str(uuid4())
-        
+        # NOTE: Do not create the session here to avoid duplicates with termination_handler.on_conversation_start
+        # await persistence_manager.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
+
+        # Initialize performance tracking early (in-memory state) so first turn deltas are clean
+        try:
+            perf_mgr = await get_performance_manager()
+            # We only create in-memory state here; session DB row still created by termination handler later
+            await perf_mgr.record_workflow_start(chat_id, enterprise_id, workflow_name, user_id)
+        except Exception as perf_e:
+            logger.debug(f"perf_start skipped {chat_id}: {perf_e}")
+
         log_business_event(
             log_event_type="CHAT_SESSION_STARTED",
-            description=f"New chat session started for workflow {workflow_name}",
+            description=f"New chat session initiated for workflow {workflow_name}",
             context={
                 "enterprise_id": enterprise_id,
                 "workflow_name": workflow_name,
                 "user_id": user_id,
-                "chat_id": chat_id
+                "chat_id": chat_id,
+                "starting_balance": balance,
             }
         )
-        
+
         return {
             "success": True,
             "chat_id": chat_id,
             "workflow_name": workflow_name,
             "enterprise_id": enterprise_id,
             "user_id": user_id,
+            "remaining_balance": balance,
             "websocket_url": f"/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}",
-            "message": "Chat session created successfully"
+            "message": "Chat session initialized; connect to websocket to start."
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"? Failed to start chat session: {e}")
+        logger.error(f"❌ Failed to start chat session: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to start chat: {e}")
 
 @app.get("/api/chats/{enterprise_id}/{workflow_name}")
@@ -466,7 +516,7 @@ async def list_chats(enterprise_id: str, workflow_name: str):
             eid = enterprise_id
             
         # Query chat sessions collection with the refactored schema
-        cursor = mongodb_manager.chat_sessions_collection.find(
+        cursor = persistence_manager.chat_sessions_collection.find(
             {"enterprise_id": eid, "workflow_name": workflow_name}
         ).sort("created_at", -1)
         docs = await cursor.to_list(length=20)
@@ -492,6 +542,35 @@ async def websocket_endpoint(
         return
 
     business_logger.info(f"?? New WebSocket connection for workflow '{workflow_name}'")
+
+    # Auto-start AgentDriven workflows once the socket is accepted and registered
+    async def _auto_start_if_needed():
+        try:
+            from core.workflow.workflow_config import workflow_config
+            cfg = workflow_config.get_config(workflow_name)
+            if cfg.get("startup_mode", "AgentDriven") == "AgentDriven":
+                # Wait briefly until SimpleTransport registers the websocket
+                local_transport = simple_transport
+                if not local_transport:
+                    return
+                for _ in range(20):  # up to ~2s
+                    if (
+                        chat_id in local_transport.connections
+                        and local_transport.connections[chat_id].get("websocket") is not None
+                    ):
+                        break
+                    await asyncio.sleep(0.1)
+                await local_transport.handle_user_input_from_api(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    workflow_name=workflow_name,
+                    message=None,
+                    enterprise_id=enterprise_id,
+                )
+        except Exception as e:
+            logger.error(f"Auto-start failed for {workflow_name}/{chat_id}: {e}")
+
+    asyncio.create_task(_auto_start_if_needed())
     
     await simple_transport.handle_websocket(
         websocket=websocket,
@@ -530,14 +609,33 @@ async def handle_user_input(
         )
         
         if not message:
-            raise HTTPException(status_code=400, detail="'message' field is required.")
+            raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
         result = await simple_transport.handle_user_input_from_api(
             chat_id=chat_id, 
             user_id=user_id, 
             workflow_name=workflow_name,
-            message=message
+            message=message,
+            enterprise_id=enterprise_id
         )
+
+        # After processing user input, attempt a cumulative usage capture (agents list resolved via transport cache if available)
+        try:
+            perf_mgr = await get_performance_manager()
+            # Try to access agents collection from transport (implementation-specific; uses protected attr fallback)
+            agents = []
+            try:
+                if hasattr(simple_transport, "_agent_cache"):
+                    cache = getattr(simple_transport, "_agent_cache")
+                    wf_agents = cache.get(chat_id) if isinstance(cache, dict) else None
+                    if wf_agents:
+                        # wf_agents might be dict name->agent
+                        agents = list(wf_agents.values()) if isinstance(wf_agents, dict) else wf_agents
+            except Exception:
+                pass
+            await perf_mgr.capture_cumulative_usage(chat_id, agents, workflow_name, enterprise_id, user_id)
+        except Exception as perf_turn_e:
+            logger.debug(f"perf_turn skipped {chat_id}: {perf_turn_e}")
         
         log_business_event(
             log_event_type="USER_INPUT_PROCESSED",
@@ -674,64 +772,39 @@ async def get_workflow_ui_tools_manifest(workflow_name: str):
 # ==============================================================================
 
 @app.get("/api/tokens/{user_id}/balance")
-async def get_user_token_balance(user_id: str, appid: str = "default"):
-    """Get user token balance"""
+async def get_user_token_balance(user_id: str, appid: str = "default", enterprise_id: Optional[str] = None):
+    """Get user token balance from wallets collection"""
     try:
-        log_business_event(
-            log_event_type="TOKEN_BALANCE_REQUEST",
-            description=f"Token balance requested for user {user_id}, app {appid}"
-        )
-        
-        # Use the mock function for token balance
-        result = _mock_get_remaining(user_id, appid)
-
-        # For now, use mock data for free trial info since the TokenManager interface changed
-        # TODO: Update TokenManager to provide proper budget/trial methods
-        is_free_trial = False
-        free_loops_remaining = None
-
-        # Map the response to client expectations
-        response = {
-            "balance": result.get("remaining", 0),
-            "remaining": result.get("remaining", 0),  # Also provide as 'remaining'
-            "user_id": user_id,
-            "app_id": appid,
-            "is_free_trial": is_free_trial,
-            "free_loops_remaining": free_loops_remaining
-        }
-
-        business_logger.info(f"Token balance retrieved for user {user_id}: {response['balance']} tokens")
-        return response
-        
+        if not enterprise_id:
+            raise HTTPException(status_code=400, detail="enterprise_id is required")
+        balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
+        business_logger.info(f"Token balance retrieved for user {user_id}: {balance} tokens")
+        return {"balance": balance, "remaining": balance, "user_id": user_id, "enterprise_id": enterprise_id}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting token balance for user {user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/tokens/{user_id}/consume")
 async def consume_user_tokens(user_id: str, request: Request):
-    """
-    Consume user tokens.
-    """
+    """Consume user tokens from wallets collection (atomic debit)."""
     try:
         body = await request.json()
-        amount = body.get("amount", 0)
-        app_id = body.get("app_id", "default")
-        
-        log_business_event(
-            log_event_type="TOKEN_CONSUMPTION_REQUEST",
-            description=f"Token consumption requested: {amount} tokens for user {user_id}, app {app_id}"
-        )
-        
-        # Use the mock function (or could be real API call)
-        result = _mock_consume_tokens(user_id, app_id, amount)
-        
-        if result.get("success"):
-            business_logger.info(f"Consumed {amount} tokens for user {user_id}. Remaining: {result.get('remaining')}")
-        else:
-            business_logger.warning(f"Failed to consume {amount} tokens for user {user_id}: {result.get('error')}")
-        
-        return result
-        
+        amount = int(body.get("amount", 0))
+        enterprise_id = body.get("enterprise_id")
+        reason = body.get("reason", "manual_consume")
+        if not enterprise_id:
+            raise HTTPException(status_code=400, detail="enterprise_id is required")
+        new_bal = await persistence_manager.debit_tokens(user_id, enterprise_id, amount, reason=reason, strict=True)
+        business_logger.info(f"Consumed {amount} tokens for user {user_id}. Remaining: {new_bal}")
+        return {"success": True, "remaining": new_bal}
+    except ValueError as ve:
+        if str(ve) == "INSUFFICIENT_TOKENS":
+            raise HTTPException(status_code=402, detail="Insufficient tokens")
+        raise
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error consuming tokens for user {user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -813,39 +886,47 @@ async def handle_component_action(
         logger.info(f"?? Received component action via HTTP: {component_id} -> {action_type}")
 
         try:
-            # Component actions are now handled by AG2 tools via the workflow system
-            # The ContextVariablesAgent in the Generator workflow handles context updates
-            logger.info(f"?? Component action received via HTTP: {component_id} -> {action_type}")
-            
-            # Send this action as a tool event to the active workflow
-            await simple_transport.send_ui_tool_event(
-                ui_tool_id=component_id,
-                payload={
-                    "action_type": action_type,
-                    "action_data": action_data,
-                    "source": "http_endpoint"
-                },
-                display="inline",
-                chat_id=chat_id
+            # This endpoint receives user interactions from UI components.
+            # The correct action is to submit this data as a response to a waiting agent tool,
+            # not to send a new UI event. We use submit_ui_tool_response for this.
+            # The 'component_id' from the frontend corresponds to the 'event_id' that the agent is waiting for.
+            event_id = component_id
+
+            # Package the rest of the data into the response_data dictionary.
+            response_data = {
+                "action_type": action_type,
+                "action_data": action_data,
+                "source": "http_endpoint"
+            }
+
+            success = await simple_transport.submit_ui_tool_response(
+                event_id=event_id,
+                response_data=response_data
             )
+
+            if not success:
+                # The event_id might not be found if the agent is no longer waiting
+                # or if the frontend sent a stale/incorrect ID.
+                logger.warning(f"UI tool event '{event_id}' not found or already completed for chat {chat_id}.")
+                raise HTTPException(status_code=404, detail=f"UI tool event '{event_id}' not found or already completed.")
             
-            logger.info(f"? Component action forwarded to AG2 workflow via tool event")
+            logger.info(f"? Component action for event '{event_id}' submitted successfully.")
             
             log_business_event(
                 log_event_type="COMPONENT_ACTION_PROCESSED",
                 description=f"Component action processed successfully for chat {chat_id}",
-                context={"forwarded_to_workflow": True}
+                context={"event_id": event_id, "submitted_to_workflow": True}
             )
             
             return {
                 "status": "success",
-                "message": "Component action forwarded to workflow",
+                "message": "Component action submitted to workflow",
                 "timestamp": datetime.utcnow().isoformat()
             }
                 
         except Exception as action_error:
-            logger.error(f"? Component action forwarding failed (HTTP): {action_error}")
-            raise HTTPException(status_code=500, detail=f"Component action forwarding failed: {action_error}")
+            logger.error(f"? Component action submission failed (HTTP): {action_error}")
+            raise HTTPException(status_code=500, detail=f"Component action submission failed: {action_error}")
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")

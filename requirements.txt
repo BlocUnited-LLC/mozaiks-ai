@@ -14,3 +14,4 @@ jinja2
 pyyaml>=6.0
 flake8
 openlit
+httpx

@@ -1,26 +1,23 @@
 # ==============================================================================
 # FILE: core/transport/simple_transport.py
-# DESCRIPTION: Complete transport system with AG2 resume functionality
+# DESCRIPTION: Lean transport system for real-time UI communication
 # ==============================================================================
-import json
 import logging
+import asyncio
 import re
+import json
+import traceback
 from typing import Dict, Any, Optional, Union, Tuple, List
 from fastapi import WebSocket
 from fastapi.responses import StreamingResponse
 from datetime import datetime
-import asyncio
-import time
 
-# AG2 imports for resume functionality
-from autogen import Agent, GroupChatManager
-from autogen.agentchat.groupchat import GroupChat
+# AG2 imports for event type checking
+from autogen.events import BaseEvent
 
 # Import workflow configuration for agent visibility filtering
 from core.workflow.workflow_config import workflow_config
-
-# Import core configuration for token management
-from core.core_config import get_free_trial_config
+from core.workflow.helpers import get_formatted_agent_name
 
 # Logging setup
 logger = logging.getLogger(__name__)
@@ -29,12 +26,10 @@ logger = logging.getLogger(__name__)
 from logs.logging_config import get_chat_logger
 
 # Get our chat logger (logging setup happens in main app)
-chat_logger = get_chat_logger("agent_messages")  # Specific logger for agent messages
+chat_logger = get_chat_logger("agent_messages")
 
 # ==================================================================================
-# COMMUNICATION CHANNEL WRAPPER
-# ==================================================================================
-# MESSAGE FILTERING
+# COMMUNICATION CHANNEL WRAPPER & MESSAGE FILTERING
 # ==================================================================================
 
 class MessageFilter:
@@ -68,59 +63,45 @@ class MessageFilter:
         return True
 
 # ==================================================================================
-# PERSISTENCE FUNCTIONALITY - Now imported from persistence_manager.py
-# ==================================================================================
-
-# Import centralized persistence functionality
-from core.data.persistence_manager import PersistenceManager, AG2PersistenceExtensions
-
-# ==================================================================================
 # MAIN TRANSPORT CLASS
 # ==================================================================================
 
 class SimpleTransport:
     """
-    Complete transport system with AG2 resume functionality.
+    Lean transport system focused solely on real-time UI communication.
     
     Features:
     - Message filtering (removes AutoGen noise)
-    - AG2 groupchat persistence and resume
-    - Transport-agnostic communication
-    - Connection state tracking
+    - WebSocket connection management
+    - Event forwarding to the UI
     - Thread-safe singleton pattern
     """
     
     _instance = None
     _lock = asyncio.Lock()
     
-    def __new__(cls, *args, **kwargs):
-        """Thread-safe singleton implementation"""
+    @classmethod
+    async def get_instance(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(SimpleTransport, cls).__new__(cls)
+            async with cls._lock:
+                if cls._instance is None:
+                    # Call __new__ and __init__ inside the lock
+                    instance = super().__new__(cls)
+                    instance.__init__(*args, **kwargs)
+                    cls._instance = instance
         return cls._instance
-    
-    def __init__(self, default_llm_config: Optional[Dict[str, Any]] = None):
+
+    def __init__(self):
         # Prevent re-initialization of singleton
         if hasattr(self, '_initialized'):
             return
             
-        # LLM config is optional - transport doesn't need it for routing
-        self.default_llm_config = default_llm_config or {}
-        self.active_connections = {}
         self.connections: Dict[str, Dict[str, Any]] = {}
         self.message_filter = MessageFilter()
         
-        # Initialize centralized persistence
-        self.persistence = PersistenceManager()
-        self.ag2_persistence = AG2PersistenceExtensions(self.persistence)
-        
         # User input collection mechanism
         self.pending_input_requests: Dict[str, asyncio.Future] = {}
-        
-        # AG2 streaming setup - if streaming is enabled in config
-        self.ag2_streaming_manager = None
-        if self.default_llm_config.get("stream"):
-            self._setup_ag2_streaming()
+        self.pending_ui_tool_responses: Dict[str, asyncio.Future] = {}
         
         # Mark as initialized
         self._initialized = True
@@ -128,15 +109,8 @@ class SimpleTransport:
         logger.info("🚀 SimpleTransport singleton initialized")
         
     def format_agent_name_for_ui(self, agent_name: str) -> str:
-        """Format agent names for better UI display"""
-        if not agent_name:
-            return "Assistant"
-        
-        # Convert CamelCase to Title Case
-        import re
-        formatted = re.sub(r'([A-Z])', r' \1', agent_name).strip()
-        formatted = formatted.replace("Agent", "").strip()
-        return formatted or "Assistant"
+        """DEPRECATED: Use get_formatted_agent_name from helpers instead."""
+        return get_formatted_agent_name(agent_name)
         
     # ==================================================================================
     # USER INPUT COLLECTION (Production-Ready)
@@ -213,39 +187,15 @@ class SimpleTransport:
             return False
     
     @classmethod
-    async def get_instance(cls, default_llm_config: Optional[Dict[str, Any]] = None):
-        """Get the singleton instance with proper async initialization"""
-        async with cls._lock:
-            if cls._instance is None:
-                cls._instance = cls(default_llm_config)
-            return cls._instance
-    
-    @classmethod
     def _get_instance(cls):
-        """Get the singleton instance (synchronous)"""
+        if cls._instance is None:
+            raise RuntimeError("SimpleTransport has not been initialized. Call get_instance() first.")
         return cls._instance
     
     @classmethod
     async def reset_instance(cls):
-        """Reset singleton instance (for testing)"""
         async with cls._lock:
             cls._instance = None
-        
-    def _setup_ag2_streaming(self):
-        """Set up AG2 streaming infrastructure for all active chat sessions"""
-        logger.info("AG2 streaming enabled in LLM config - ready for iostream integration")
-        
-        # AG2 streaming setup is now handled by AG2StreamingIOStream instances
-        # when they're created during workflow execution
-        
-        logger.info("AG2 streaming infrastructure ready")
-            
-    async def _setup_ag2_streaming_for_connection(self, chat_id: str, enterprise_id: str):
-        """Set up AG2 streaming infrastructure for a single connection"""
-        logger.info(f"AG2 streaming ready for connection {chat_id}")
-        
-        # Streaming IOStream instances are created during workflow orchestration
-        # No pre-setup needed here - AG2StreamingIOStream handles it directly
             
     def should_show_to_user(self, agent_name: Optional[str], chat_id: Optional[str] = None) -> bool:
         """Check if a message should be shown to the user interface"""
@@ -259,49 +209,34 @@ class SimpleTransport:
         
         # If we have workflow type, use visual_agents filtering
         if workflow_name:
-            visible_agents = workflow_config.get_visible_agents(workflow_name)
-            is_visible = agent_name in visible_agents
-            
-            if not is_visible:
-                logger.debug(f"🚫 Agent '{agent_name}' not in visual_agents for workflow '{workflow_name}' - filtering from UI")
-                return False
-            else:
-                logger.debug(f"✅ Agent '{agent_name}' is in visual_agents for workflow '{workflow_name}' - showing in UI")
+            try:
+                config = workflow_config.get_config(workflow_name)
+                visual_agents = config.get("visual_agents")
+                
+                # If visual_agents is defined, only show messages from those agents
+                if isinstance(visual_agents, list):
+                    # Normalize both the agent name and visual_agents list for comparison
+                    # This matches the frontend normalization logic in ChatPage.js
+                    def normalize_agent(name):
+                        if not name:
+                            return ''
+                        return str(name).lower().replace('agent', '').replace(' ', '').strip()
+                    
+                    normalized_agent = normalize_agent(agent_name)
+                    normalized_visual_agents = [normalize_agent(va) for va in visual_agents]
+                    
+                    is_allowed = normalized_agent in normalized_visual_agents
+                    logger.debug(f"🔍 Backend visual_agents check: '{agent_name}' -> '{normalized_agent}' in {normalized_visual_agents} = {is_allowed}")
+                    return is_allowed
+            except FileNotFoundError:
+                # If no specific config, default to showing the message
+                pass
         
         return True
         
     def format_agent_name(self, agent_name: Optional[str]) -> str:
-        """Format agent name for display"""
-        if agent_name is None:
-            return "System"
-        return self.format_agent_name_for_ui(agent_name)
-    
-    # ==================================================================================
-    # CONTEXT MANAGEMENT
-    # ==================================================================================
-    
-    def set_enterprise_context(self, enterprise_id: str) -> None:
-        """Set the current enterprise context for this transport instance"""
-        self.current_enterprise_id = enterprise_id
-        logger.debug(f"🏢 Enterprise context set to: {enterprise_id}")
-    
-    def get_enterprise_context(self) -> str:
-        """Get the current enterprise context"""
-        return getattr(self, 'current_enterprise_id', 'default')
-    
-    def _is_agent_driven_startup(self, chat_id: str) -> bool:
-        """Check if the current chat session is using AgentDriven startup mode"""
-        try:
-            if chat_id in self.connections:
-                workflow_name = self.connections[chat_id].get("workflow_name")
-                if workflow_name:
-                    # For now, return True as a simple check - you can enhance this later
-                    # to check actual workflow config for startup mode
-                    return True
-            return False
-        except Exception as e:
-            logger.debug(f"Could not determine startup mode for {chat_id}: {e}")
-            return False
+        """Format agent name for display using the centralized helper."""
+        return get_formatted_agent_name(agent_name)
     
     # ==================================================================================
     # CORE MESSAGE SENDING
@@ -313,7 +248,8 @@ class SimpleTransport:
         agent_name: Optional[str] = None,
         message_type: str = "chat_message",
         chat_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        bypass_filter: bool = False,
     ) -> None:
         """
         Send messages to UI via WebSocket broadcast.
@@ -323,34 +259,44 @@ class SimpleTransport:
         clean_message = self._extract_clean_content(message)
         
         # Filter out unwanted system messages before any processing
-        if isinstance(clean_message, str):
-            # For AgentDriven startup mode, don't show initial_message
-            if chat_id and self._is_agent_driven_startup(chat_id):
-                if "Initializing the automated" in clean_message or "initial_message" in str(message):
-                    logger.debug(f"🚫 Filtered initial message for AgentDriven mode: {clean_message[:50]}...")
+        if not bypass_filter:
+            if isinstance(clean_message, str):
+                if not self.message_filter.should_stream_message(agent_name or "system", clean_message):
                     return
         
         # If agent_name is generic (Unknown Agent, Assistant, system), try to extract from message content
         if agent_name in [None, "Unknown Agent", "Assistant", "system"] and isinstance(message, str):
-            extracted_agent = self._extract_agent_name_from_uuid_content(message)
-            if extracted_agent and extracted_agent not in ["user", "chat_manager", "system"]:
-                agent_name = extracted_agent
-                logger.debug(f"🔍 [SimpleTransport] Extracted agent name: {agent_name} from message content")
+            extracted_name = self._extract_agent_name_from_uuid_content(message)
+            if extracted_name:
+                agent_name = extracted_name
         
-        # For simple strings, apply traditional filtering
-        if isinstance(clean_message, str):
-            if not self.should_show_to_user(agent_name, chat_id):
-                logger.debug(f"🚫 Filtered message from {agent_name}: {clean_message[:50]}...")
-                return
+        # Additional extraction for stringified content that didn't match UUID pattern
+        if agent_name in [None, "Unknown Agent", "Assistant", "system"] and isinstance(clean_message, str):
+            # Try to extract from various AG2 format patterns
+            import re
+            # Pattern: sender='AgentName'
+            sender_match = re.search(r"sender='([^']+)'", clean_message)
+            if not sender_match:
+                sender_match = re.search(r'sender="([^"]+)"', clean_message)
+            if sender_match:
+                extracted = sender_match.group(1)
+                if extracted and extracted not in ["user", "system"]:
+                    agent_name = extracted
+        
+        # For simple strings, apply traditional visibility filtering
+        if not bypass_filter:
+            if isinstance(clean_message, str):
+                if not self.should_show_to_user(agent_name, chat_id):
+                    return
         
         # Format agent name
         formatted_agent = self.format_agent_name(agent_name)
         
         # Log agent message to agent_chat.log for tracking
         if isinstance(clean_message, str) and formatted_agent and formatted_agent != "Assistant":
-            chat_logger.info(f"AGENT_MESSAGE | Chat: {chat_id or 'unknown'} | Agent: {formatted_agent} | Message: {str(clean_message)[:200]}{'...' if len(str(clean_message)) > 200 else ''}")
+            chat_logger.info(f"AGENT_MESSAGE | Chat: {chat_id} | Agent: {formatted_agent} | Message: {clean_message}")
         elif isinstance(clean_message, str):
-            chat_logger.info(f"SYSTEM_MESSAGE | Chat: {chat_id or 'unknown'} | Type: {message_type} | Message: {str(clean_message)[:200]}{'...' if len(str(clean_message)) > 200 else ''}")
+            chat_logger.info(f"SYSTEM_MESSAGE | Chat: {chat_id} | Message: {clean_message}")
         
         # Create event data
         event_data = {
@@ -369,45 +315,93 @@ class SimpleTransport:
         await self._broadcast_to_websockets(event_data, chat_id)
         
         logger.info(f"📤 {formatted_agent}: {str(clean_message)[:100]}...")
+
+        # After sending an agent (or system) message, attempt real-time token usage capture
+        if chat_id and formatted_agent not in (None, "", "SYSTEM"):
+            try:
+                from core.observability.performance_manager import get_performance_manager
+                perf_mgr = await get_performance_manager()
+                # Retrieve agents mapping stored on connection (if any)
+                agents_map = None
+                if chat_id in self.connections:
+                    agents_map = self.connections[chat_id].get('agents')
+                if agents_map:
+                    enterprise_id = self.connections[chat_id].get('enterprise_id') or "unknown_enterprise"
+                    workflow_name = self.connections[chat_id].get('workflow_name') or "unknown_workflow"
+                    user_id = self.connections[chat_id].get('user_id')
+                    await perf_mgr.capture_cumulative_usage(
+                        chat_id=chat_id,
+                        agents=list(agents_map.values()),
+                        workflow_name=workflow_name,
+                        enterprise_id=enterprise_id,
+                        user_id=user_id or "unknown"
+                    )
+            except Exception as _cap_err:
+                logger.debug(f"token capture skip: {_cap_err}")
         
+    # ==================================================================================
+    # AG2 EVENT SENDING
+    # ==================================================================================
+    
+    async def send_event_to_ui(self, event: Any, chat_id: Optional[str] = None) -> None:
+        """
+        Serializes and sends a raw AG2 event to the UI.
+        This is the primary method for forwarding AG2 native events.
+        """
+        try:
+            # Filter events based on agent visibility before sending
+            agent_name = None
+            if hasattr(event, 'sender') and hasattr(event.sender, 'name'): # type: ignore
+                agent_name = event.sender.name # type: ignore
+            
+            if not self.should_show_to_user(agent_name, chat_id):
+                logger.debug(f"🚫 Filtered out AG2 event from agent '{agent_name}' for chat {chat_id}")
+                return
+
+            # Basic serialization for UI consumption
+            # In a real-world scenario, you might use Pydantic's .dict() or a custom serializer
+            if isinstance(event, BaseEvent):
+                try:
+                    payload = event.dict()
+                except Exception:
+                    # Try pydantic v2
+                    try:
+                        payload = event.model_dump()  # type: ignore[attr-defined]
+                    except Exception:
+                        payload = {
+                            "event_type": type(event).__name__,
+                            "content": self._stringify_unknown(getattr(event, "content", None)),
+                        }
+            else:
+                # Fallback for non-pydantic objects
+                payload = {"event_type": type(event).__name__, "content": self._stringify_unknown(event)}
+
+            event_data = {
+                "type": "ag2_event",
+                "data": payload,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            await self._broadcast_to_websockets(event_data, chat_id)
+            logger.debug(f"📤 Forwarded AG2 event {type(event).__name__} to chat {chat_id}")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to serialize or send AG2 event: {e}\n{traceback.format_exc()}")
+
     def _extract_clean_content(self, message: Union[str, Dict[str, Any], Any]) -> str:
         """Extract clean content from AG2 UUID-formatted messages or other formats."""
         
         # Handle string messages (most common case)
         if isinstance(message, str):
-            # Check if it's a UUID-formatted AG2 message
-            if 'uuid=UUID(' in message and 'content=' in message:
-                # Extract content using regex
-                import re
-                # Try both single and double quotes
-                content_match = re.search(r"content='([^']*)'|content=\"([^\"]*)\"", message)
-                if content_match:
-                    extracted_content = content_match.group(1) or content_match.group(2)
-                    # Unescape common escape sequences
-                    extracted_content = extracted_content.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\')
-                    return extracted_content
-                else:
-                    # Fallback: return the original message if parsing fails
-                    return message
-            else:
-                # Regular string message
-                return message
-        
-        # Handle dict messages
+            # Check for AG2's UUID format and extract only the 'content' part
+            match = re.search(r"content='(.*?)'", message, re.DOTALL)
+            if match:
+                return match.group(1)
+            return message  # Return original string if not in UUID format
         elif isinstance(message, dict):
-            # Try common content keys
-            for key in ['content', 'message', 'text', 'body']:
-                if key in message:
-                    return str(message[key])
-            # Fallback to string representation
-            return str(message)
-        
-        # Handle other object types
+            # Handle dictionary messages
+            return message.get('content', str(message))
         else:
-            # Check if object has content attribute
-            if hasattr(message, 'content'):
-                return str(message.content)
-            # Fallback to string representation
+            # Handle any other type by converting to string
             return str(message)
         
     def _extract_agent_name_from_uuid_content(self, content: str) -> Optional[str]:
@@ -418,60 +412,52 @@ class SimpleTransport:
         # Look for sender='AgentName' pattern
         sender_match = re.search(r"sender='([^']+)'", content)
         if sender_match:
-            agent_name = sender_match.group(1)
-            # Filter out non-agent senders
-            if agent_name not in ['user', 'chat_manager', 'system']:
-                return agent_name
+            return sender_match.group(1)
         
         # Fallback patterns if above doesn't work
         sender_match_quotes = re.search(r'sender="([^"]+)"', content)
         if sender_match_quotes:
-            agent_name = sender_match_quotes.group(1)
-            if agent_name not in ['user', 'chat_manager', 'system']:
-                return agent_name
+            return sender_match_quotes.group(1)
         
         return None  # no agent found
         
     async def _broadcast_to_websockets(self, event_data: Dict[str, Any], target_chat_id: Optional[str] = None) -> None:
-        """Broadcast event to WebSocket connections only"""
+        """Broadcast event data to relevant WebSocket connections."""
+        active_connections = list(self.connections.items())
+        
+        # If a chat_id is specified, only send to that connection
+        if target_chat_id:
+            connection_info = self.connections.get(target_chat_id)
+            if connection_info and connection_info.get("websocket"):
+                try:
+                    await connection_info["websocket"].send_json(event_data)
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to send to WebSocket for chat {target_chat_id}: {e}")
+            return
+
+        # Otherwise, broadcast to all connections
+        for chat_id, info in active_connections:
+            websocket = info.get("websocket")
+            if websocket:
+                try:
+                    await websocket.send_json(event_data)
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to send to WebSocket for chat {chat_id}: {e}", exc_info=False)
+
+    def _stringify_unknown(self, obj: Any) -> str:
+        """Safely convert any object to a string for logging/transport."""
         try:
-            if target_chat_id:
-                # Send to specific chat's WebSocket
-                if target_chat_id in self.connections:
-                    connection_data = self.connections[target_chat_id]
-                    if "websocket" in connection_data and connection_data.get("active", False):
-                        try:
-                            websocket = connection_data["websocket"]
-                            # Send raw JSON for WebSocket clients to parse directly
-                            await websocket.send_text(json.dumps(event_data))
-                            logger.debug(f"📡 Broadcasted to WebSocket for chat {target_chat_id}")
-                        except Exception as ws_error:
-                            logger.warning(f"⚠️ Failed to send to WebSocket {target_chat_id}: {ws_error}")
-                            # Mark WebSocket as inactive if send fails
-                            connection_data["active"] = False
-                            connection_data.pop("websocket", None)
-                
-            else:
-                # Broadcast to all WebSocket connections
-                websocket_count = 0
-                for chat_id, connection_data in self.connections.items():
-                    if "websocket" in connection_data and connection_data.get("active", False):
-                        try:
-                            websocket = connection_data["websocket"]
-                            # Send raw JSON for WebSocket clients to parse directly
-                            await websocket.send_text(json.dumps(event_data))
-                            websocket_count += 1
-                        except Exception as ws_error:
-                            logger.warning(f"⚠️ Failed to send to WebSocket {chat_id}: {ws_error}")
-                            # Mark WebSocket as inactive if send fails
-                            connection_data["active"] = False
-                            if "websocket" in connection_data:
-                                del connection_data["websocket"]
-                
-                logger.debug(f"📡 Broadcasted to {websocket_count} WebSocket connections")
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to broadcast event: {e}")
+            if obj is None:
+                return ""
+            if isinstance(obj, (str, int, float, bool)):
+                return str(obj)
+            # Try JSON first with default=str to preserve structure
+            return json.dumps(obj, default=str)
+        except Exception:
+            try:
+                return str(obj)
+            except Exception:
+                return "<unserializable>"
         
     async def send_error(
         self,
@@ -514,319 +500,8 @@ class SimpleTransport:
         logger.info(f"ℹ️ Status: {status_message}")
     
     # ==================================================================================
-    # AG2 GROUPCHAT RESUME FUNCTIONALITY
-    # ==================================================================================
-    
-    async def save_groupchat_session(
-        self,
-        chat_id: str,
-        enterprise_id: str,
-        groupchat: GroupChat,
-        manager: GroupChatManager,
-    ) -> bool:
-        """Save AG2 groupchat session for resume capability"""
-        # Extract messages from groupchat
-        messages = []
-        if hasattr(groupchat, 'messages') and groupchat.messages:
-            messages = groupchat.messages
-        
-        return await self.ag2_persistence.save_ag2_groupchat_state(
-            chat_id=chat_id,
-            enterprise_id=enterprise_id,
-            groupchat_messages=messages
-        )
-    
-    async def resume_groupchat_session(
-        self,
-        chat_id: str,
-        enterprise_id: str,
-        groupchat: GroupChat,
-        manager: GroupChatManager
-    ) -> Tuple[bool, Optional[str]]:
-        """Resume AG2 groupchat session with proper state restoration"""
-        success, messages, error = await self.ag2_persistence.resume_ag2_groupchat(
-            chat_id=chat_id,
-            enterprise_id=enterprise_id
-        )
-        
-        if success and messages:
-            # Restore messages to groupchat
-            groupchat.messages = messages
-            
-            # Send restoration events to frontend
-            await self.send_status(
-                f"Resumed session with {len(messages)} messages",
-                "resume_success",
-                chat_id
-            )
-            
-            # Send message history for UI restoration using tool event
-            await self.send_ui_tool_event(
-                "messages_restored",
-                {
-                    "messages": groupchat.messages,
-                    "count": len(groupchat.messages)
-                },
-                "inline",
-                chat_id
-            )
-        
-        return success, error
-    
-    async def get_resume_info(
-        self,
-        chat_id: str,
-        enterprise_id: str
-    ) -> Dict[str, Any]:
-        """Get information about whether a chat can be resumed"""
-        try:
-            state = await self.ag2_persistence.load_ag2_groupchat_state(chat_id, enterprise_id)
-            
-            if not state:
-                return {
-                    "can_resume": False,
-                    "reason": "no_existing_session",
-                    "is_new_chat": True
-                }
-            
-            message_count = state.get("message_count", 0)
-            
-            return {
-                "can_resume": message_count > 0,
-                "message_count": message_count,
-                "is_new_chat": message_count == 0,
-                "reason": "messages_found" if message_count > 0 else "no_messages"
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to get resume info: {e}")
-            return {
-                "can_resume": False,
-                "reason": f"error: {str(e)}",
-                "is_new_chat": True
-            }
-    
-    # ==================================================================================
-    # SESSION MANAGEMENT
-    # ==================================================================================
-    
-    async def create_session(
-        self,
-        chat_id: str,
-        enterprise_id: str,
-        check_resume: bool = True
-    ) -> Dict[str, Any]:
-        """Create or resume a session"""
-        try:
-            # Check if we can resume existing session
-            if check_resume:
-                resume_info = await self.get_resume_info(chat_id, enterprise_id)
-                
-                if resume_info.get("can_resume", False):
-                    logger.info(f"📥 Resumable session found for {chat_id}: {resume_info['message_count']} messages")
-                    
-                    session_info = {
-                        "chat_id": chat_id,
-                        "enterprise_id": enterprise_id,
-                        "session_type": "resumed",
-                        "resume_info": resume_info,
-                        "created_at": datetime.utcnow().isoformat()
-                    }
-                else:
-                    logger.info(f"🆕 Starting new session for {chat_id}: {resume_info.get('reason', 'no existing state')}")
-                    
-                    session_info = {
-                        "chat_id": chat_id,
-                        "enterprise_id": enterprise_id,
-                        "session_type": "new",
-                        "resume_info": resume_info,
-                        "created_at": datetime.utcnow().isoformat()
-                    }
-            else:
-                session_info = {
-                    "chat_id": chat_id,
-                    "enterprise_id": enterprise_id,
-                    "session_type": "new_forced",
-                    "created_at": datetime.utcnow().isoformat()
-                }
-            
-            # Store session locally
-            self.connections[chat_id] = {
-                "enterprise_id": enterprise_id,
-                "session_info": session_info,
-                "created_at": datetime.utcnow(),
-                "active": True
-            }
-            
-            # Set up AG2 streaming for this new connection if streaming is enabled
-            if self.default_llm_config.get("stream"):
-                await self._setup_ag2_streaming_for_connection(chat_id, enterprise_id)
-            
-            await self.send_status(
-                "Session initialized",
-                "session_created",
-                chat_id
-            )
-            
-            logger.info(f"✅ Session created: {chat_id} ({session_info['session_type']})")
-            return session_info
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to create session: {e}")
-            raise
-    
-    # ==================================================================================
     # CONNECTION MANAGEMENT METHODS
     # ==================================================================================
-    
-    def disconnect(self) -> None:
-        """Disconnect and cleanup all active connections"""
-        try:
-            # Close all active connections
-            for connection_id, connection_data in self.connections.items():
-                if connection_data.get("active", False):
-                    connection_data["active"] = False
-                    
-                    # Close WebSocket if present
-                    if "websocket" in connection_data:
-                        try:
-                            websocket = connection_data["websocket"]
-                            # Close the WebSocket connection (sync in FastAPI)
-                            websocket.close()
-                            logger.debug(f"🔌 Closed WebSocket connection: {connection_id}")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Error during WebSocket cleanup for {connection_id}: {e}")
-                        finally:
-                            del connection_data["websocket"]
-                    
-                    logger.info(f"🔌 Disconnected connection: {connection_id}")
-            
-            # Clear active connections
-            self.active_connections.clear()
-            self.connections.clear()
-            
-            logger.info("✅ All transport connections disconnected")
-            
-        except Exception as e:
-            logger.error(f"❌ Error during disconnect: {e}")
-    
-    def get_connection_info(self) -> Dict[str, int]:
-        """Get information about active connections"""
-        try:
-            websocket_count = 0
-            websocket_count = 0
-            
-            # Count active connections by type
-            for connection_data in self.connections.values():
-                if connection_data.get("active", False):
-                    if "websocket" in connection_data:
-                        websocket_count += 1
-            
-            total_count = websocket_count
-            
-            return {
-                "websocket_connections": websocket_count,
-                "total_connections": total_count
-            }
-        except Exception as e:
-            logger.error(f"❌ Error getting connection info: {e}")
-            return {"websocket_connections": 0, "total_connections": 0}
-    
-    async def check_user_tokens(self, user_id: str, enterprise_id: str, chat_id: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
-        """
-        Check if user has tokens available for AI usage.
-        Returns (has_tokens, token_info)
-        """
-        try:
-            from core.data.persistence_manager import PersistenceManager
-            
-            persistence = PersistenceManager()
-            token_data = await persistence.get_user_tokens(user_id, enterprise_id)
-            
-            if not token_data:
-                return False, None
-            
-            trial_config = get_free_trial_config()
-            
-            trial_tokens = token_data.get("available_trial_tokens", 0)
-            available_tokens = token_data.get("available_tokens", 0)
-            total_tokens = trial_tokens + available_tokens
-            
-            # Check if user is running low on trial tokens
-            is_trial_user = token_data.get("free_trial", False)
-            near_trial_limit = is_trial_user and trial_tokens <= trial_config["warning_threshold"]
-            
-            token_info = {
-                "total_available": total_tokens,
-                "trial_tokens": trial_tokens,
-                "available_tokens": available_tokens,
-                "is_trial_user": is_trial_user,
-                "near_trial_limit": near_trial_limit,
-                "warning_threshold": trial_config["warning_threshold"]
-            }
-            
-            return total_tokens > 0, token_info
-            
-        except Exception as e:
-            logger.error(f"❌ Error checking user tokens: {e}")
-            return False, None
-    
-    async def send_token_exhausted_message(self, chat_id: str, token_info: Optional[Dict[str, Any]] = None) -> None:
-        """Send token exhausted message to user via WebSocket"""
-        trial_config = get_free_trial_config()
-        
-        # Determine message based on user type
-        if token_info and token_info.get("is_trial_user", False):
-            message = (
-                "🚀 **Your free trial tokens have been used up!**\n\n"
-                "To continue using MozaiksAI, please upgrade to a paid plan. "
-                "You'll get more tokens and access to all features."
-            )
-        else:
-            message = (
-                "💰 **You've run out of tokens!**\n\n"
-                "Please purchase more tokens to continue your conversation."
-            )
-        
-        await self.send_chat_message(
-            message,
-            "System",
-            chat_id
-        )
-        
-        # Send structured token exhausted event
-        await self.send_to_ui({
-            "type": "token_exhausted",
-            "data": {
-                "message": message,
-                "token_info": token_info,
-                "upgrade_available": trial_config.get("auto_upgrade_prompt", True),
-                "chat_paused": True
-            }
-        }, chat_id)
-    
-    async def send_low_tokens_warning(self, chat_id: str, token_info: Dict[str, Any]) -> None:
-        """Send low tokens warning to user"""
-        remaining = token_info.get("total_available", 0)
-        
-        if token_info.get("is_trial_user", False):
-            message = (
-                f"⚠️ **Trial tokens running low!**\n\n"
-                f"You have {remaining} tokens remaining in your free trial. "
-                f"Consider upgrading to continue unlimited conversations."
-            )
-        else:
-            message = (
-                f"⚠️ **Low token balance!**\n\n"
-                f"You have {remaining} tokens remaining. "
-                f"Consider purchasing more tokens to avoid interruption."
-            )
-        
-        await self.send_chat_message(
-            message,
-            "System",
-            chat_id
-        )
     
     async def handle_websocket(
         self,
@@ -837,162 +512,25 @@ class SimpleTransport:
         enterprise_id: Optional[str] = None
     ) -> None:
         """Handle WebSocket connection for real-time communication"""
+        await websocket.accept()
+        self.connections[chat_id] = {
+            "websocket": websocket,
+            "user_id": user_id,
+            "workflow_name": workflow_name,
+            "enterprise_id": enterprise_id,
+            "active": True,
+        }
+        logger.info(f"🔌 WebSocket connected for chat_id: {chat_id}")
         try:
-            # Accept the WebSocket connection
-            await websocket.accept()
-            logger.info(f"🔌 WebSocket connected for chat_id: {chat_id}, workflow: {workflow_name}")
-            
-            # Set enterprise context if provided
-            if enterprise_id:
-                self.set_enterprise_context(enterprise_id)
-            
-            # Create session if it doesn't exist
-            if chat_id not in self.connections:
-                effective_enterprise_id = self.get_enterprise_context()
-                await self.create_session(chat_id, effective_enterprise_id, check_resume=True)
-            
-            # Mark connection as active and store WebSocket
-            self.connections[chat_id]["websocket"] = websocket
-            self.connections[chat_id]["active"] = True
-            
-            # Send initial connection event
-            await websocket.send_text(json.dumps({
-                "type": "status",
-                "data": {
-                    "status": "connected",
-                    "chat_id": chat_id,
-                    "workflow_name": workflow_name,
-                    "connection_type": "websocket"
-                },
-                "timestamp": datetime.utcnow().isoformat()
-            }))
-            # Auto-start workflow execution if configured (no initial user message)
-            try:
-                await self.handle_user_input_from_api(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    workflow_name=workflow_name,
-                    message=None
-                )
-            except Exception as e:
-                logger.error(f"❌ Auto-start workflow failed for {chat_id}: {e}")
-            
-            try:
-                while True:
-                    # Receive message from WebSocket
-                    data = await websocket.receive_text()
-                    message_data = json.loads(data)
-                    
-                    if message_data.get("type") == "user_message":
-                        user_input = message_data.get("message", "")
-                        if user_input.strip():
-                            # Send user message to UI following your event system
-                            await self.send_chat_message(
-                                user_input,
-                                "User", 
-                                chat_id
-                            )
-                            
-                            # Process message through workflow system
-                            from core.workflow.init_registry import get_or_discover_workflow_handler
-                            
-                            # Determine workflow type from message or use default
-                            workflow_name = message_data.get("workflow_name", "chat")
-                            
-                            # Process through workflow handler
-                            workflow_handler = get_or_discover_workflow_handler(workflow_name)
-                            if workflow_handler:
-                                try:
-                                    result = await self.handle_user_input_from_api(
-                                        chat_id=chat_id,
-                                        user_id=user_id,
-                                        workflow_name=workflow_name,
-                                        message=user_input
-                                    )
-                                    
-                                    await websocket.send_text(json.dumps({
-                                        "type": "workflow_result",
-                                        "result": result,
-                                        "timestamp": datetime.utcnow().isoformat()
-                                    }))
-                                except Exception as e:
-                                    logger.error(f"❌ Workflow processing failed: {e}")
-                                    await websocket.send_text(json.dumps({
-                                        "type": "error",
-                                        "error": str(e),
-                                        "timestamp": datetime.utcnow().isoformat()
-                                    }))
-                            else:
-                                # Fallback: send acknowledgment
-                                await websocket.send_text(json.dumps({
-                                    "type": "message_received",
-                                    "status": "processed",
-                                    "timestamp": datetime.utcnow().isoformat()
-                                }))
-                    
-                    elif message_data.get("type") == "user_input_response":
-                        # Handle user input response for AG2 IOStream
-                        input_request_id = message_data.get("input_request_id")
-                        user_input = message_data.get("user_input", "")
-                        
-                        if input_request_id:
-                            success = await self.submit_user_input(input_request_id, user_input)
-                            if success:
-                                logger.info(f"✅ User input submitted for request {input_request_id}")
-                                await websocket.send_text(json.dumps({
-                                    "type": "user_input_response_ack",
-                                    "status": "success",
-                                    "input_request_id": input_request_id,
-                                    "timestamp": datetime.utcnow().isoformat()
-                                }))
-                            else:
-                                logger.warning(f"⚠️ Failed to submit user input for request {input_request_id}")
-                                await websocket.send_text(json.dumps({
-                                    "type": "user_input_response_ack",
-                                    "status": "error",
-                                    "input_request_id": input_request_id,
-                                    "message": "Input request not found or already completed",
-                                    "timestamp": datetime.utcnow().isoformat()
-                                }))
-                        else:
-                            logger.warning("⚠️ User input response missing input_request_id")
-                    
-                    elif message_data.get("type") == "ping":
-                        # Respond to ping with pong
-                        await websocket.send_text(json.dumps({
-                            "type": "pong",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }))
-                    
-            except Exception as e:
-                logger.error(f"❌ WebSocket error for {chat_id}: {e}")
-            
+            while True:
+                # Keep the connection alive, processing is handled by the API
+                await asyncio.sleep(1)
         except Exception as e:
-            logger.error(f"❌ Failed to handle WebSocket: {e}")
+            logger.warning(f"WebSocket error for chat {chat_id}: {e}")
         finally:
-            # Proper disconnection handling for AG2 resume functionality
-            try:
-                # Import and use the real persistence manager for disconnection handling
-                from core.data.persistence_manager import PersistenceManager
-                real_persistence = PersistenceManager()
-                
-                if enterprise_id:
-                    await real_persistence.handle_websocket_disconnection(
-                        chat_id=chat_id,
-                        enterprise_id=enterprise_id,
-                        reason="websocket_disconnected"
-                    )
-                    logger.info(f"💾 Saved disconnection state for resume: {chat_id}")
-            except Exception as save_error:
-                logger.error(f"❌ Failed to save disconnection state: {save_error}")
-            
-            # Cleanup connection
             if chat_id in self.connections:
-                self.connections[chat_id]["active"] = False
-                if "websocket" in self.connections[chat_id]:
-                    del self.connections[chat_id]["websocket"]
-            
-            logger.info(f"🔌 WebSocket disconnected for {chat_id}")
+                del self.connections[chat_id]
+                logger.info(f"🔌 WebSocket disconnected for chat_id: {chat_id}")
 
     # ==================================================================================
     # WORKFLOW INTEGRATION METHODS
@@ -1003,7 +541,8 @@ class SimpleTransport:
         chat_id: str, 
         user_id: Optional[str], 
         workflow_name: str, 
-        message: Optional[str]
+        message: Optional[str],
+        enterprise_id: str
     ) -> Dict[str, Any]:
         """
         Handle user input from the POST API endpoint
@@ -1013,151 +552,30 @@ class SimpleTransport:
             message: User message or None for auto-start without user input
         """
         try:
-            # Only send user message event if there's an actual message
-            if message is not None:
-                await self.send_chat_message(
-                    message,
-                    "User", 
-                    chat_id
-                )
-            else:
-                # For auto-start without user input, just log
-                logger.info(f"🚀 Starting workflow '{workflow_name}' for {chat_id} without initial user message")
+            from core.workflow.orchestration_patterns import run_workflow_orchestration
             
-            # Create session if it doesn't exist, with resume capability
-            if chat_id not in self.connections:
-                # Extract enterprise_id from context or use default
-                enterprise_id = getattr(self, 'current_enterprise_id', 'default')
-                
-                session_info = await self.create_session(
-                    chat_id=chat_id, 
-                    enterprise_id=enterprise_id,
-                    check_resume=True
-                )
-                logger.info(f"🆕 Created session for API input: {session_info['session_type']}")
-            
-            # Integrate with actual workflow system
-            if message:
-                logger.info(f"🚀 Starting workflow '{workflow_name}' for message: {message[:50]}...")
-            else:
-                logger.info(f"🚀 Starting workflow '{workflow_name}' with auto-start (no initial message)")
-            
-            # Send status update
-            await self.send_status(
-                "processing",
-                "info",
-                chat_id
+            # This is now the single entry point for any workflow
+            result = await run_workflow_orchestration(
+                workflow_name=workflow_name,
+                enterprise_id=enterprise_id,
+                chat_id=chat_id,
+                user_id=user_id,
+                initial_message=message
             )
             
-            # Get the actual workflow handler and execute it
-            from core.workflow.init_registry import get_or_discover_workflow_handler
-            
-            workflow_handler = get_or_discover_workflow_handler(workflow_name)
-            if not workflow_handler:
-                error_msg = f"Workflow '{workflow_name}' not found in registry"
-                logger.error(f"❌ {error_msg}")
-                await self.send_error(
-                    error_msg,
-                    "WORKFLOW_NOT_FOUND",
-                    chat_id
-                )
-                return {
-                    "status": "error",
-                    "message": error_msg,
-                    "workflow_name": workflow_name
-                }
-            
-            # Execute the workflow with proper parameters
-            try:
-                # Extract enterprise_id from context or use default
-                enterprise_id = getattr(self, 'current_enterprise_id', 'default')
-                
-                # 🎯 CHECK USER TOKENS BEFORE WORKFLOW EXECUTION
-                has_tokens, token_info = await self.check_user_tokens(
-                    user_id=user_id or "unknown",
-                    enterprise_id=enterprise_id,
-                    chat_id=chat_id
-                )
-                
-                if not has_tokens:
-                    logger.warning(f"⚠️ User {user_id} has no tokens available for chat {chat_id}")
-                    await self.send_token_exhausted_message(chat_id, token_info)
-                    
-                    return {
-                        "status": "token_exhausted",
-                        "message": "No tokens available for AI processing",
-                        "workflow_name": workflow_name,
-                        "token_info": token_info
-                    }
-                
-                # Send low tokens warning if needed
-                if token_info and token_info.get("near_trial_limit", False):
-                    await self.send_low_tokens_warning(chat_id, token_info)
-                
-                # Log workflow start to agent_chat.log
-                chat_logger.info(f"WORKFLOW_START | Chat: {chat_id} | Workflow: {workflow_name} | User: {user_id or 'unknown'} | HasMessage: {message is not None}")
-                
-                result = await workflow_handler(
-                    enterprise_id=enterprise_id,
-                    chat_id=chat_id,
-                    user_id=user_id or "unknown",
-                    initial_message=message
-                )
-                
-                logger.info(f"✅ Workflow '{workflow_name}' completed successfully")
-                
-                # Log workflow completion to agent_chat.log
-                chat_logger.info(f"WORKFLOW_COMPLETE | Chat: {chat_id} | Workflow: {workflow_name} | Result: {str(result)[:100] if result else 'None'}")
-                
-                # Send completion status
-                await self.send_status(
-                    "completed",
-                    "info",
-                    chat_id
-                )
-                
-                return {
-                    "status": "processed",
-                    "workflow_name": workflow_name,
-                    "message_id": f"{chat_id}_{int(time.time())}",
-                    "result": result if result else "completed"
-                }
-                
-            except Exception as workflow_error:
-                error_msg = f"Workflow execution failed: {str(workflow_error)}"
-                logger.error(f"❌ {error_msg}", exc_info=True)
-                
-                # Log workflow error to agent_chat.log
-                chat_logger.error(f"WORKFLOW_ERROR | Chat: {chat_id} | Workflow: {workflow_name} | Error: {str(workflow_error)[:200]}")
-                
-                await self.send_error(
-                    error_msg,
-                    "WORKFLOW_EXECUTION_ERROR",
-                    chat_id
-                )
-                
-                return {
-                    "status": "error",
-                    "message": error_msg,
-                    "workflow_name": workflow_name
-                }
+            # The result from AG2 is now a rich object, but for the API response,
+            # we can return a simple success message. The UI will get all details
+            # via WebSocket events in real-time.
+            return {"status": "success", "chat_id": chat_id, "message": "Workflow started successfully."}
             
         except Exception as e:
-            error_msg = f"Failed to process API message: {str(e)}"
-            logger.error(f"❌ API workflow execution failed: {e}", exc_info=True)
-            
-            # Send error event following the documented event system
+            logger.error(f"❌ Workflow execution failed for chat {chat_id}: {e}\n{traceback.format_exc()}")
             await self.send_error(
-                error_msg,
-                "API_PROCESSING_ERROR",
-                chat_id
+                error_message=f"An internal error occurred: {e}",
+                error_code="WORKFLOW_EXECUTION_FAILED",
+                chat_id=chat_id
             )
-            
-            return {
-                "status": "error", 
-                "message": error_msg,
-                "workflow_name": workflow_name
-            }
+            return {"status": "error", "chat_id": chat_id, "message": str(e)}
 
     # ==================================================================================
     # SIMPLIFIED EVENT API - WEBSOCKET ONLY
@@ -1179,141 +597,80 @@ class SimpleTransport:
         Based on: https://docs.ag2.ai/latest/docs/_blogs/2025-01-10-WebSockets/
         """
         if chat_id and chat_id in self.connections:
-            connection_data = self.connections[chat_id]
-            if "websocket" in connection_data and connection_data.get("active", False):
-                try:
-                    websocket = connection_data["websocket"]
-                    
-                    # For AG2 simple text approach, we can send structured data as JSON
-                    # The frontend will parse it and handle display accordingly
-                    message_data = {
-                        "type": "simple_text",
-                        "content": content,
-                        "agent_name": agent_name or "Agent",
-                        "timestamp": asyncio.get_event_loop().time(),
-                        "chat_id": chat_id
-                    }
-                    
-                    # Send as JSON for proper parsing
-                    await websocket.send_text(json.dumps(message_data))
-                    logger.debug(f"📤 Simple text sent to {chat_id} from {agent_name}: {content[:100]}...")
-                except Exception as ws_error:
-                    logger.warning(f"⚠️ Failed to send simple text to {chat_id}: {ws_error}")
+            # This method is now simplified as the main send_to_ui handles formatting
+            await self.send_chat_message(content, agent_name or "Assistant", chat_id)
+    
+    # ==================================================================================
+    # UI TOOL EVENT HANDLING (Companion to user input)
+    # ==================================================================================
     
     async def send_ui_tool_event(
-        self, 
-        ui_tool_id: str, 
-        payload: Dict[str, Any], 
-        display: str = "inline",
-        chat_id: Optional[str] = None
+        self,
+        event_id: str,
+        chat_id: Optional[str],
+        tool_name: str,
+        component_name: str,
+        display_type: str,
+        payload: Dict[str, Any]
     ) -> None:
         """
-        Send UI tool event with clear routing.
-        
-        Args:
-            ui_tool_id: Unique identifier for the UI tool/component
-            payload: Tool-specific data
-            display: "inline" (in chat) or "artifact" (side panel)
-            chat_id: Target chat ID
+        Send a dedicated event to the frontend to render a specific UI component.
         """
         event_data = {
-            "type": "ui_tool",
+            "type": "ui_tool_event",
             "data": {
-                "ui_tool_id": ui_tool_id,
+                "event_id": event_id,
+                "chat_id": chat_id,
+                "tool_name": tool_name,
+                "component_name": component_name,
+                "display_type": display_type,
                 "payload": payload,
-                "display": display,
-                "chat_id": chat_id
             },
             "timestamp": datetime.utcnow().isoformat()
         }
-        
         await self._broadcast_to_websockets(event_data, chat_id)
-        
-        display_location = "inline chat" if display == "inline" else "artifact panel"
-        logger.info(f"🔧 UI Tool Event: {ui_tool_id} → {display_location}")
-        
-        # Optionally emit through unified event dispatcher for tracking
-        try:
-            from core.events import emit_ui_tool_event
-            await emit_ui_tool_event(
-                ui_tool_id=ui_tool_id,
-                payload=payload,
-                workflow_name="transport_layer",
-                display=display,
-                chat_id=chat_id
-            )
-        except Exception as dispatcher_error:
-            # Don't fail UI interaction if dispatcher has issues
-            logger.debug(f"📊 Event dispatcher unavailable for UI tool tracking: {dispatcher_error}")
-    
-    async def send_backend_notification(
-        self, 
-        action: str, 
-        status: str, 
-        data: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """
-        Send backend-only notification (not for chat UI).
-        Used for system events, saves, etc.
-        """
-        logger.info(f"� Backend Action: {action} → {status}")
-        if data:
-            logger.debug(f"   Data: {data}")
-    
-    # ==================================================================================
-    # UI TOOL RESPONSE COLLECTION (For Dynamic UI System)
-    # ==================================================================================
-    
+        logger.info(f"📤 Sent UI tool event {event_id} ({component_name}) to chat {chat_id}")
+
     @classmethod
     async def wait_for_ui_tool_response(cls, event_id: str) -> Dict[str, Any]:
         """
-        Wait indefinitely for UI tool response for a specific event.
+        Wait indefinitely for a response from a UI tool component.
         
-        This is called by UI tool functions when they emit events and need responses.
-        The frontend will call submit_ui_tool_response() to provide the response.
-        No timeout - like ChatGPT, users can take their time to interact with UI components.
+        This is called by agent tools after they emit a UI tool event.
+        The frontend will call submit_ui_tool_response() to provide the data.
         """
-        # Access the singleton instance
         instance = cls._get_instance()
         if not instance:
             raise RuntimeError("SimpleTransport instance not available")
             
-        if not hasattr(instance, 'pending_ui_tool_responses'):
-            instance.pending_ui_tool_responses = {}
-            
         if event_id not in instance.pending_ui_tool_responses:
-            # Create a future to wait for the response
             instance.pending_ui_tool_responses[event_id] = asyncio.Future()
         
         try:
-            # Wait indefinitely for the UI tool response - no timeout
-            response = await instance.pending_ui_tool_responses[event_id]
-            return response
+            response_data = await instance.pending_ui_tool_responses[event_id]
+            return response_data
         finally:
-            # Clean up the pending response
             if event_id in instance.pending_ui_tool_responses:
                 del instance.pending_ui_tool_responses[event_id]
-    
+
     async def submit_ui_tool_response(self, event_id: str, response_data: Dict[str, Any]) -> bool:
         """
-        Submit UI tool response for a pending event.
+        Submit response data for a pending UI tool event.
         
-        This method is called by the API endpoint when the frontend submits UI tool responses.
+        This method is called by an API endpoint when the frontend submits data
+        from an interactive UI component.
         """
-        if not hasattr(self, 'pending_ui_tool_responses'):
-            self.pending_ui_tool_responses = {}
-            
         if event_id in self.pending_ui_tool_responses:
             future = self.pending_ui_tool_responses[event_id]
             if not future.done():
                 future.set_result(response_data)
-                logger.info(f"✅ [UI_TOOL] Submitted UI tool response for event {event_id}")
+                logger.info(f"✅ [UI_TOOL] Submitted response for event {event_id}")
                 return True
             else:
                 logger.warning(f"⚠️ [UI_TOOL] Event {event_id} already completed")
                 return False
         else:
-            logger.warning(f"⚠️ [UI_TOOL] No pending UI tool response found for {event_id}")
+            logger.warning(f"⚠️ [UI_TOOL] No pending event found for {event_id}")
             return False
 
 

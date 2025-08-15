@@ -26,7 +26,7 @@ export class MockAuthAdapter extends AuthAdapter {
   constructor() {
     super();
     this.currentUser = {
-      id: 'user123',
+      id: '56132',
       username: 'John Doe',
       email: 'john.doe@example.com',
       avatar: '/default-avatar.png',

@@ -1,4 +1,4 @@
 visual_agents:
-  - OrchestratorAgent
+  - user
   - APIKeyAgent
   - UserFeedbackAgent

@@ -29,6 +29,10 @@ export class DynamicUIHandler {
     this.registerHandler('ui_tool', this.handleUIToolEvent.bind(this));
     this.registerHandler('UI_TOOL', this.handleUIToolEvent.bind(this));
     
+  // User input requests (bridge to UI tool rendering)
+  this.registerHandler('user_input_request', this.handleUserInputRequest.bind(this));
+  this.registerHandler('USER_INPUT_REQUEST', this.handleUserInputRequest.bind(this));
+    
     // Component update events
     this.registerHandler('component_update', this.handleComponentUpdate.bind(this));
     this.registerHandler('COMPONENT_UPDATE', this.handleComponentUpdate.bind(this));
@@ -313,6 +317,49 @@ export class DynamicUIHandler {
 
     } catch (error) {
       console.error('❌ DynamicUIHandler: Error handling UI tool event', error);
+      return null;
+    }
+  }
+
+  /**
+  * Bridge simple user_input_request events into a standardized ui_tool_event
+  * so the chat can render an inline component based on backend-provided metadata.
+   */
+  async handleUserInputRequest(data) {
+    try {
+      const { input_request_id, chat_id, payload = {} } = data || {};
+
+  // Only route to UI if the backend explicitly provides a tool/component
+  const prompt = payload.prompt || '';
+  const uiToolId = payload.ui_tool_id || payload.component_type || null;
+
+      // If we can't infer a component, don't inject anything; let chat text stand
+      if (!uiToolId) {
+        console.warn('⚠️ DynamicUIHandler: user_input_request did not match a known UI tool; skipping component injection');
+        return false;
+      }
+
+      // Emit a unified ui_tool_event for UI consumers
+      this.notifyUIUpdate({
+        type: 'ui_tool_event',
+        ui_tool_id: uiToolId,
+        eventId: input_request_id,
+        workflowname: payload.workflow_name || payload.workflow,
+        payload: {
+          ...payload,
+          chat_id,
+          // Ensure router has needed routing hints
+          workflow_name: payload.workflow_name || payload.workflow,
+          workflow: payload.workflow_name || payload.workflow,
+          component_type: uiToolId,
+          // Surface the original prompt so it can be displayed next to the UI control
+          description: prompt
+        }
+      });
+
+      return true;
+    } catch (error) {
+      console.error('❌ DynamicUIHandler: Error handling user_input_request', error);
       return null;
     }
   }

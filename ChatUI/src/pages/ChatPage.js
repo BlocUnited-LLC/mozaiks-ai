@@ -2,12 +2,31 @@ import React, { useEffect, useState, useRef, useCallback } from "react";
 import Header from "../components/layout/Header";
 import Footer from "../components/layout/Footer";
 import ChatInterface from "../components/chat/ChatInterface";
-import ArtifactInterface from "../components/chat/ArtifactInterface";
+import ArtifactPanel from "../components/chat/ArtifactPanel";
 import { useParams } from "react-router-dom";
 import { useChatUI } from "../context/ChatUIContext";
 // agentManager removed - using workflow system
 import workflowConfig from '../config/workflowConfig';
 import { dynamicUIHandler } from '../core/dynamicUIHandler';
+
+// Lightweight debug toggle for logging all agent outputs
+const DEBUG_LOG_ALL_AGENT_OUTPUT = true;
+const shouldDebugAllAgents = () => {
+  try {
+    const v = localStorage.getItem('mozaiks.debug_all_agents');
+    if (v != null) return v === '1' || v === 'true';
+  } catch {}
+  return DEBUG_LOG_ALL_AGENT_OUTPUT;
+};
+const logAgentOutput = (phase, agentName, content, meta = {}) => {
+  if (!shouldDebugAllAgents()) return;
+  try {
+    const preview = typeof content === 'string' ? content.slice(0, 2000) : JSON.stringify(content);
+    console.log(`🛰️ [${phase}]`, { agent: agentName || 'Unknown', content: preview, ...meta });
+  } catch {
+    console.log(`🛰️ [${phase}]`, { agent: agentName || 'Unknown', content });
+  }
+};
 
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
@@ -20,11 +39,8 @@ const ChatPage = () => {
   const setMessagesWithLogging = useCallback((updater) => {
     setMessages(prev => {
       const newMessages = typeof updater === 'function' ? updater(prev) : updater;
-      console.log('🔄 MESSAGES STATE UPDATE:');
-      console.log('  Previous count:', prev.length);
-      console.log('  New count:', newMessages.length);
-      console.log('  Previous messages:', prev.map(m => ({ id: m.id, sender: m.sender, content: m.content?.substring(0, 30) + '...' })));
-      console.log('  New messages:', newMessages.map(m => ({ id: m.id, sender: m.sender, content: m.content?.substring(0, 30) + '...' })));
+      // Optional debug: enable if you need to trace state transitions
+      // console.debug('Messages state update', { prev: prev.length, next: newMessages.length });
       return newMessages;
     });
   }, []);
@@ -39,21 +55,184 @@ const ChatPage = () => {
   const { enterpriseId, workflowName: urlWorkflowName } = useParams();
   const { user, api, config } = useChatUI();
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
+  const [forceOverlay, setForceOverlay] = useState(false); // landscape/short-height overlay
 
-  // Use workflowName from URL params first, then config, then default to Generator
+  // Use workflowName from URL params first, then config (no hardcoded defaults)
   const currentEnterpriseId = enterpriseId || config?.chat?.defaultEnterpriseId || '68542c1109381de738222350';
   const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
-  const defaultWorkflow = urlWorkflowName || config?.chat?.defaultWorkflow || 'Generator'; // Default to Generator
-  const [currentWorkflowName, setCurrentWorkflowName] = useState(defaultWorkflow?.toLowerCase() || 'generator'); // Dynamic workflow detection
+  // Preserve original case; backend keys can be case sensitive, we resolve case-insensitively in workflowConfig
+  const defaultWorkflow = (urlWorkflowName || config?.chat?.defaultWorkflow || workflowConfig.getDefaultWorkflow() || '');
+  const [currentWorkflowName, setCurrentWorkflowName] = useState(defaultWorkflow); // Dynamic workflow detection
   const [tokensExhausted, setTokensExhausted] = useState(false); // Track token exhaustion state
   
-  // Dynamic UI updates state
+  // Dynamic UI updates state - disabled eslint warning as this is used for debugging
+  // eslint-disable-next-line no-unused-vars
   const [dynamicUIUpdates, setDynamicUIUpdates] = useState([]);
+
+  // Track recently seen messages to avoid duplicates from both chat_message and ag2_event
+  const messagesSeenRef = useRef(new Set());
+  const contentsSeenRef = useRef(new Set()); // content-based dedupe across event types
+  const uiToolEventIdsSeenRef = useRef(new Set()); // dedupe ui_tool_event insertions
+  const dedupeLimit = 500; // cap to avoid unbounded growth
+  const fingerprintMessage = (content, agentName) => {
+    try {
+      const normContent = (content || '').toString().trim();
+      const normAgent = (agentName || 'Agent').toString().trim();
+      // Use a bounded slice to keep the key stable but not too large
+      return `${normAgent}|${normContent.slice(0, 1000)}`;
+    } catch {
+      return `${agentName}|${String(content)}`;
+    }
+  };
+  const normalizeAgent = (name) => {
+    try {
+      if (!name) return '';
+      return String(name)
+        .toLowerCase()
+        .replace(/agent$/i, '')
+        .replace(/\s+/g, '')
+        .trim();
+    } catch { return String(name || '').toLowerCase(); }
+  };
+  const addMessageIfNew = useCallback((chatMessage) => {
+  // Always log raw agent output even if we later filter it from UI
+  logAgentOutput('UI_ADD_ATTEMPT', chatMessage?.agentName, chatMessage?.content, { sender: chatMessage?.sender, filtered: false });
+    // Enforce visual_agents filtering from workflow config if present
+    try {
+      // Always allow user/system or special system notices
+  if (chatMessage?.sender === 'user' || chatMessage?.sender === 'system' || chatMessage?.isTokenMessage || chatMessage?.isWarningMessage || chatMessage?.uiToolEvent) {
+        // proceed without filtering
+        logAgentOutput('BYPASS_FILTERING', chatMessage?.agentName, null, { reason: 'user/system/special', sender: chatMessage?.sender });
+      } else {
+      // If currentWorkflowName not yet set, try fallback default
+      const wfName = currentWorkflowName || workflowConfig.getDefaultWorkflow();
+      const wfCfg = workflowConfig?.getWorkflowConfig(wfName);
+      const visualAgents = wfCfg?.visual_agents;
+      logAgentOutput('FILTERING_DEBUG', chatMessage?.agentName, null, { 
+        workflowName: wfName, 
+        visualAgents, 
+        agentName: chatMessage?.agentName,
+        hasConfig: !!wfCfg
+      });
+      if (Array.isArray(visualAgents) && chatMessage?.agentName) {
+        // agentName in UI is formatted; compare case-insensitively against raw list
+        const target = normalizeAgent(chatMessage.agentName);
+        const allow = visualAgents.some(a => normalizeAgent(a) === target);
+        logAgentOutput('VISUAL_AGENTS_CHECK', chatMessage?.agentName, null, { 
+          target, 
+          visualAgents, 
+          normalizedVisualAgents: visualAgents.map(a => normalizeAgent(a)),
+          allow 
+        });
+        if (!allow) {
+          logAgentOutput('FILTERED_BY_VISUAL_AGENTS', chatMessage?.agentName, chatMessage?.content, { workflow: currentWorkflowName });
+          return; // drop non-visual agent message
+        }
+      }
+      
+      // Filter out initial workflow kickoff from UserProxy only when AgentDriven (workflow-agnostic)
+      if (messages.length === 0) {
+        const wfCfg = workflowConfig?.getWorkflowConfig(currentWorkflowName);
+        const startupMode = wfCfg?.startup_mode;
+        const cfgInitialToUser = (wfCfg?.initial_message_to_user || '').toString().trim();
+        const cfgInitialKickoff = (wfCfg?.initial_message || '').toString().trim();
+
+        const agent = (chatMessage?.agentName || '').toLowerCase();
+        const content = (chatMessage?.content || '').toString().trim();
+        const isUserProxySender = (
+          agent === 'user' || agent === 'userproxy' || agent === 'userproxyagent' ||
+          /sender=['"]?(user|UserProxy)['"]?/.test(content)
+        );
+
+        // UserDriven: don't suppress the configured initial_message_to_user
+        if (startupMode === 'UserDriven') {
+          // Pass through; if the backend sends initial_message_to_user, the UI will show it
+        } else if (startupMode === 'AgentDriven') {
+          // Suppress only the UserProxy kickoff; if an explicit initial_message is configured, match it; otherwise suppress any first UserProxy text
+          const matchesCfgKickoff = !!cfgInitialKickoff && (
+            content === cfgInitialKickoff || content.startsWith(cfgInitialKickoff.slice(0, 64))
+          );
+          if (isUserProxySender && (matchesCfgKickoff || !cfgInitialKickoff)) {
+            logAgentOutput('FILTERED_INITIAL_SYSTEM_MESSAGE', chatMessage?.agentName, chatMessage?.content, { reason: 'agentDriven_userproxy_kickoff' });
+            return;
+          }
+        }
+      }
+      }
+    } catch (e) {
+      logAgentOutput('FILTERING_ERROR', chatMessage?.agentName, null, { error: e.message });
+    }
+
+    const key = fingerprintMessage(chatMessage.content, chatMessage.agentName);
+    if (!messagesSeenRef.current.has(key)) {
+      // Maintain set size cap
+      if (messagesSeenRef.current.size > dedupeLimit) {
+        messagesSeenRef.current.clear();
+        contentsSeenRef.current.clear();
+      }
+      messagesSeenRef.current.add(key);
+
+      // Content-based dedupe as a second layer (helps when agentName differs)
+      const normContent = (chatMessage?.content || '').toString().trim();
+      if (normContent) {
+        // Use a more resilient content key by slicing and normalizing
+        const contentKey = normContent.slice(0, 1000).replace(/\s+/g, ' ');
+        if (contentsSeenRef.current.has(contentKey)) {
+          logAgentOutput('DUPLICATE_CONTENT', chatMessage?.agentName, chatMessage?.content, { contentKey });
+          return; // already showed this textual content recently
+        }
+        contentsSeenRef.current.add(contentKey);
+      }
+      
+      setMessages(prev => [...prev, chatMessage]);
+      logAgentOutput('UI_ADDED', chatMessage?.agentName, chatMessage?.content, { id: chatMessage?.id });
+    } else {
+        logAgentOutput('DUPLICATE_FINGERPRINT', chatMessage?.agentName, chatMessage?.content, { key });
+    }
+  }, [currentWorkflowName]);
+
+  // After workflow configs load, if we don't have a current workflow name set, adopt default
+  useEffect(() => {
+    if (workflowConfigLoaded) {
+      if (!currentWorkflowName && workflowConfig.getDefaultWorkflow()) {
+        setCurrentWorkflowName(workflowConfig.getDefaultWorkflow());
+        console.log('🔁 Synchronized currentWorkflowName to default after configs load:', workflowConfig.getDefaultWorkflow());
+      }
+    }
+  }, [workflowConfigLoaded, currentWorkflowName]);
+
+  // Helper: extract clean text from AG2 stringified payloads or objects
+  const extractCleanContent = (raw) => {
+    try {
+      if (raw == null) return '';
+      if (typeof raw === 'object') {
+        if ('content' in raw) return raw.content ?? '';
+        return '';
+      }
+      const text = String(raw).trim();
+      if (!text || text === 'None') return '';
+      if (text.includes('content=')) {
+        let m = text.match(/content='([^']*)'/s) || text.match(/content="([^"]*)"/s);
+        if (m) return m[1];
+        m = text.match(/content=([^,)]+)/s);
+        if (m) {
+          let extracted = m[1].trim();
+          if ((extracted.startsWith("'") && extracted.endsWith("'")) || (extracted.startsWith('"') && extracted.endsWith('"'))) {
+            extracted = extracted.slice(1, -1);
+          }
+          return extracted === 'None' ? '' : extracted;
+        }
+      }
+      return text;
+    } catch {
+      return String(raw ?? '');
+    }
+  };
 
   // Subscribe to dynamic UI updates
   useEffect(() => {
     const unsubscribe = dynamicUIHandler.onUIUpdate((updateData) => {
-      console.log('🔔 Received dynamic UI update:', updateData);
+  // console.debug('Dynamic UI update:', updateData);
       
       // Handle different types of UI updates
       switch (updateData.type) {
@@ -62,20 +241,45 @@ const ChatPage = () => {
           break;
           
         case 'show_notification':
-          console.log('📢 Notification:', updateData.message);
+          // console.debug('Notification:', updateData.message);
           break;
           
         case 'component_update':
-          console.log('🔄 Component update for:', updateData.componentId);
+          // console.debug('Component update for:', updateData.componentId);
           break;
           
         case 'status_update':
           // Could update connection status or other UI elements
-          console.log('📊 Status:', updateData.status);
+          // console.debug('Status:', updateData.status);
           break;
           
+    case 'ui_tool_event': {
+          // Insert a synthetic chat message that carries the UI tool info to render inline
+          const evtId = updateData.eventId || updateData.ui_tool_id;
+          if (evtId) {
+            if (uiToolEventIdsSeenRef.current.has(evtId)) {
+              break; // already rendered
+            }
+            if (uiToolEventIdsSeenRef.current.size > dedupeLimit) {
+              uiToolEventIdsSeenRef.current.clear();
+            }
+            uiToolEventIdsSeenRef.current.add(evtId);
+          }
+          const toolMsg = {
+            id: `${updateData.eventId || Date.now()}-ui-tool`,
+            sender: 'agent',
+            agentName: updateData?.payload?.agent_name || 'Assistant',
+            content: updateData?.payload?.description || 'Please provide the requested information.',
+            timestamp: Date.now(),
+            isStreaming: false,
+            uiToolEvent: updateData
+          };
+          addMessageIfNew(toolMsg);
+          break;
+        }
+
         default:
-          console.log('🔔 Unknown UI update type:', updateData.type);
+          // console.debug('Unknown UI update type:', updateData.type);
       }
       
       // Store update for debugging/history
@@ -83,7 +287,7 @@ const ChatPage = () => {
     });
 
     return unsubscribe;
-  }, []);
+  }, [addMessageIfNew]);
 
   // Token handling functions
   const handleTokenExhausted = useCallback((data) => {
@@ -167,7 +371,11 @@ const ChatPage = () => {
         return; // Wait for config to load or skip if chat already exists
       }
 
-      const workflowName = urlWorkflowName || workflowConfig.getDefaultWorkflow() || 'Generator';
+      const workflowName = urlWorkflowName || workflowConfig.getDefaultWorkflow();
+      if (!workflowName) {
+        console.log('⏳ Unknown startup_mode or waiting for workflow configuration...');
+        return;
+      }
       const config = workflowConfig.getWorkflowConfig(workflowName);
       
       // Check startup_mode to determine if WebSocket chat should start
@@ -202,27 +410,31 @@ const ChatPage = () => {
 
   // Unified incoming message handler for WebSocket only
   const handleIncoming = useCallback((data) => {
-    console.log("Received stream message:", data);
-    console.log("Message type:", data.type, "Data:", data.data);
-    console.log("Current messages count:", messages.length);
+  // console.debug('Stream message:', data?.type);
+    try {
+      const type = data?.type || 'unknown';
+      const agentName = data?.agent_name || data?.data?.agent_name || 'Agent';
+      const raw = data?.data?.message || data?.message || data?.content || data?.data || data;
+      logAgentOutput('INCOMING', agentName, raw, { type });
+    } catch {}
     
     // Handle dynamic UI event types from backend
     switch (data.type) {
       case 'route_to_artifact':
       case 'ROUTE_TO_ARTIFACT':
-        console.log('🎯 Routing to artifact:', data.data);
+  // console.debug('Routing to artifact');
         dynamicUIHandler.processUIEvent(data);
         return;
         
       case 'ui_tool_action':
       case 'UI_TOOL_ACTION':
-        console.log('🔧 UI Tool Action:', data.data);
+  // console.debug('UI Tool Action');
         dynamicUIHandler.processUIEvent(data);
         return;
         
       case 'status':
       case 'STATUS':
-        console.log('📊 Status Update:', data.data);
+  // console.debug('Status Update');
         dynamicUIHandler.processUIEvent(data);
         return;
         
@@ -234,76 +446,66 @@ const ChatPage = () => {
         
       case 'route_to_chat':
       case 'ROUTE_TO_CHAT':
-        console.log('💬 Routing to chat:', data.data);
+  // console.debug('Routing to chat');
         dynamicUIHandler.processUIEvent(data);
         return;
         
       case 'component_update':
       case 'COMPONENT_UPDATE':
-        console.log('🔄 Component Update:', data.data);
+  // console.debug('Component Update');
         dynamicUIHandler.processUIEvent(data);
         return;
         
       case 'ui_tool_event':
       case 'UI_TOOL_EVENT':
-        console.log('🎯 UI Tool Event received:', data);
+  // console.debug('UI Tool Event received');
         // Handle UI tool events from the backend (DYNAMIC_UI_COMPLETE_GUIDE.md specification)
         dynamicUIHandler.processUIEvent(data);
         return;
         
       case 'ui_tool':
       case 'UI_TOOL':
-        console.log('🔧 UI Tool received:', data);
+  // console.debug('UI Tool received');
         // Handle direct UI tool messages (e.g., user_input_request)
         dynamicUIHandler.processUIEvent(data);
         return;
         
       case 'token_exhausted':
       case 'TOKEN_EXHAUSTED':
-        console.log('💰 Token exhausted event received:', data);
+  // console.debug('Token exhausted event received');
         handleTokenExhausted(data);
         return;
         
       case 'token_warning':
       case 'TOKEN_WARNING':
-        console.log('⚠️ Token warning event received:', data);
+  // console.debug('Token warning event received');
         handleTokenWarning(data);
         return;
         
       case 'simple_text':
         // Handle simple text messages following AG2's official approach (reduced logging)
-        if (data.content && data.content.trim() !== '') {
-          // Get agent name from structured data or parse from raw content
-          let cleanContent = data.content;
-          let agentName = data.agent_name || 'Agent';
-          let isUserProxy = false;
-          
-          // Check if this is a raw AG2 message object that needs parsing
-          if (typeof data.content === 'string' && data.content.includes('uuid=UUID(')) {
-            // Extract agent name from sender field
-            const senderMatch = data.content.match(/sender='([^']+)'/);
-            if (senderMatch) {
-              const sender = senderMatch[1];
-              if (sender === 'user' || sender === 'UserProxy') {
-                isUserProxy = true;
-                return; // Skip user proxy messages
-              }
-              agentName = sender;
-            }
-            
-            // Extract clean content
-            const contentMatch = data.content.match(/content='([^']+)'|content="([^"]+)"/);
-            if (contentMatch) {
-              cleanContent = contentMatch[1] || contentMatch[2];
+        const maybeContent = data.content;
+        const agentNameFromData = data.agent_name || 'Agent';
+        let agentName = agentNameFromData;
+        let isUserProxy = false;
+        // Extract agent if embedded in stringified payload
+        if (typeof maybeContent === 'string') {
+          const senderMatch = maybeContent.match(/sender='([^']+)'|sender="([^"]+)"/);
+          if (senderMatch) {
+            const sender = senderMatch[1] || senderMatch[2];
+            if (sender === 'user' || sender === 'UserProxy') {
+              isUserProxy = true;
+            } else {
+              agentName = sender || agentNameFromData;
             }
           }
-          
-          // Skip empty content, initial system messages, or user proxy messages
-          if (!cleanContent || cleanContent.trim() === '' || isUserProxy) {
-            return;
-          }
-          
-          const textMessage = {
+        }
+        const cleanContent = extractCleanContent(maybeContent);
+        // Skip empty/system or user proxy messages
+        if (!cleanContent || cleanContent.trim() === '' || isUserProxy) {
+          return;
+        }
+        const textMessage = {
             id: data.timestamp || Date.now(),
             content: cleanContent,
             sender: 'agent',
@@ -311,57 +513,36 @@ const ChatPage = () => {
             timestamp: data.timestamp || Date.now(),
             isStreaming: false
           };
-          setMessages(prev => [...prev, textMessage]);
-        }
+          logAgentOutput('PARSED_SIMPLE_TEXT', agentName, cleanContent);
+          addMessageIfNew(textMessage);
         return;
         
       case 'chat_message':
-        console.log('💬 Chat message received:', data);
+  // console.debug('Chat message received');
         // Handle chat messages (including UUID-formatted AG2 messages)
-        const messageContent = data.data?.message || data.message || '';
+  const messageContent = data.data?.message || data.message || '';
         
         // Check if this is a UUID-formatted AG2 message that needs parsing
-        if (typeof messageContent === 'string' && messageContent.includes('uuid=UUID(') && messageContent.includes('content=')) {
-          console.log('🔧 Parsing UUID-formatted AG2 message:', messageContent);
-          const contentMatch = messageContent.match(/content='([^']+)'|content="([^"]+)"/);
-          if (contentMatch) {
-            const extractedContent = contentMatch[1] || contentMatch[2];
-            const agentName = data.data?.agent_name || data.agent_name || 'Agent';
-            
-            // Skip empty or None content
-            if (extractedContent && extractedContent !== 'None' && extractedContent.trim() !== '') {
-              const chatMessage = {
-                id: data.timestamp || Date.now(),
-                content: extractedContent,
-                sender: 'agent',
-                agentName: agentName,
-                timestamp: data.timestamp || Date.now(),
-                isStreaming: false
-              };
-              console.log('✅ Successfully parsed UUID message:', chatMessage);
-              setMessages(prev => [...prev, chatMessage]);
-            } else {
-              console.log('⏭️ Skipping empty/None content message');
-            }
-          }
-        } else if (messageContent && messageContent.trim() !== '' && messageContent !== 'None') {
+    const extracted = extractCleanContent(messageContent);
+    if (extracted && extracted.trim() !== '') {
           // Handle regular chat messages
-          const chatMessage = {
+  const chatMessage = {
             id: data.timestamp || Date.now(),
-            content: messageContent,
+      content: extracted,
             sender: 'agent',
             agentName: data.data?.agent_name || data.agent_name || 'Agent',
             timestamp: data.timestamp || Date.now(),
             isStreaming: false
           };
-          setMessages(prev => [...prev, chatMessage]);
+  logAgentOutput('PARSED_CHAT_MESSAGE', chatMessage.agentName, chatMessage.content);
+      addMessageIfNew(chatMessage);
         }
         return;
         
       case 'agent_message':
-        console.log('🤖 Agent message received:', data);
+  // console.debug('Agent message received');
         // Handle parsed AG2 messages directly
-        const agentMessage = {
+  const agentMessage = {
           id: data.timestamp || Date.now(),
           content: data.content,
           sender: 'agent',
@@ -369,11 +550,63 @@ const ChatPage = () => {
           timestamp: data.timestamp || Date.now(),
           isStreaming: false
         };
-        setMessages(prev => [...prev, agentMessage]);
+  logAgentOutput('AGENT_MESSAGE', agentMessage.agentName, agentMessage.content);
+  addMessageIfNew(agentMessage);
+        return;
+      
+      case 'ag2_event': {
+        // Fallback: render AG2 events directly when they contain TextEvent
+        const payload = data.data || {};
+        const eventType = payload.event_type || payload.type;
+        if (eventType === 'TextEvent') {
+          let raw = payload.content;
+          let extractedContent = '';
+          let agentName = data.data?.agent_name || data.agent_name || 'Agent';
+          extractedContent = extractCleanContent(raw);
+          // Extract agent if available in stringified payload
+          if (typeof raw === 'string') {
+            const senderMatch = raw.match(/sender='([^']+)'|sender="([^"]+)"/);
+            if (senderMatch) agentName = senderMatch[1] || senderMatch[2] || agentName;
+          } else if (raw && typeof raw === 'object' && raw.sender) {
+            agentName = raw.sender || agentName;
+          }
+          // Early duplicate suppression using same normalization as addMessageIfNew
+          try {
+            const normContent = (extractedContent || '').toString().trim();
+            if (normContent) {
+              const contentKey = normContent.slice(0, 1000).replace(/\s+/g, ' ');
+              if (contentsSeenRef.current.has(contentKey)) {
+                logAgentOutput('DROPPED_AG2_DUPLICATE', agentName, extractedContent, { contentKey });
+                return; // Skip adding duplicate from ag2_event when chat_message already handled it
+              }
+            }
+          } catch {}
+          if (extractedContent && extractedContent !== 'None' && extractedContent.trim() !== '') {
+            const chatMessage = {
+              id: data.timestamp || Date.now(),
+              content: extractedContent,
+              sender: 'agent',
+              agentName: agentName || 'Agent',
+              timestamp: data.timestamp || Date.now(),
+              isStreaming: false
+            };
+            logAgentOutput('PARSED_AG2_TEXTEVENT', chatMessage.agentName, chatMessage.content);
+            addMessageIfNew(chatMessage);
+          }
+        } else {
+          // console.debug('Non-TextEvent ag2_event received, ignoring for chat render:', eventType);
+        }
+        return;
+      }
+
+      case 'user_input_request':
+        // Route user input requests to the dynamic UI handler
+  // console.debug('User input request received');
+        dynamicUIHandler.processUIEvent(data);
         return;
         
       default:
-        console.log('🔍 Unhandled message type:', data.type, data);
+  // console.debug('Unhandled message type:', data.type);
         break;
     }
     
@@ -389,9 +622,10 @@ const ChatPage = () => {
         timestamp: Date.now(),
         isStreaming: false
       };
-      setMessagesWithLogging(prev => [...prev, newMessage]);
+      // Use unified path so visual_agents filtering and dedupe always apply
+      addMessageIfNew(newMessage);
     }
-  }, [messages.length, setMessagesWithLogging]);
+  }, [messages.length, setMessagesWithLogging, addMessageIfNew, handleTokenExhausted, handleTokenWarning]);
 
   // Connect to streaming when API becomes available and chat ID exists
   useEffect(() => {
@@ -399,23 +633,23 @@ const ChatPage = () => {
     
     // Wait for workflow configuration to be loaded before connecting
     if (!workflowConfigLoaded) {
-      console.log('⏳ Waiting for workflow configuration to load...');
+  // console.debug('Waiting for workflow configuration to load...');
       return;
     }
     
     // Require chat ID to connect
     if (!currentChatId) {
-      console.log('⏳ Waiting for chat ID to be available...');
+  // console.debug('Waiting for chat ID to be available...');
       return;
     }
     
     // Prevent duplicate connections
     if (connectionInitialized || connectionInProgressRef.current) {
-      console.log('🔄 Connection already initialized or in progress, skipping...');
+  // console.debug('Connection already initialized or in progress, skipping...');
       return;
     }
     
-    console.log('🔌 Establishing WebSocket connection with chat ID:', currentChatId);
+  // console.debug('Establishing WebSocket connection');
     
     // Mark connection as in progress immediately to prevent duplicates
     connectionInProgressRef.current = true;
@@ -432,14 +666,18 @@ const ChatPage = () => {
       setConnectionStatus('connecting');
       setTransportType('websocket');
 
-      const workflowName = urlWorkflowName || workflowConfig.getDefaultWorkflow() || 'Generator';
+      const workflowName = urlWorkflowName || workflowConfig.getDefaultWorkflow();
+      if (!workflowName) {
+        console.warn('⚠️ No workflow available to connect');
+        return () => {};
+      }
       
       const connection = api.createWebSocketConnection(
         currentEnterpriseId,
         currentUserId,
         {
           onOpen: () => {
-            console.log("WebSocket connection established");
+            // console.debug('WebSocket connection established');
             setConnectionStatus('connected');
             setLoading(false);
           },
@@ -450,7 +688,7 @@ const ChatPage = () => {
             setLoading(false);
           },
           onClose: () => {
-            console.log("WebSocket connection closed");
+            // console.debug('WebSocket connection closed');
             setConnectionStatus('disconnected');
           }
         },
@@ -459,11 +697,11 @@ const ChatPage = () => {
       );
 
       setWs(connection);
-      console.log('🔌 WebSocket connection established:', ws ? 'Active' : 'Inactive');
+  // console.debug('WebSocket connection established:', !!ws);
       return () => {
         if (connection) {
           connection.close();
-          console.log('🔌 WebSocket connection closed');
+          // console.debug('WebSocket connection closed');
         }
       };
     };
@@ -472,23 +710,31 @@ const ChatPage = () => {
     const connectWithCorrectTransport = async () => {
       try {
         // Use URL workflow name first, then fall back to dynamic discovery or default
-        const workflowName = urlWorkflowName || workflowConfig.getDefaultWorkflow() || 'Generator';
-        console.log(`🎯 Using workflow name: ${workflowName} (from ${urlWorkflowName ? 'URL' : 'discovery/default'})`);
+        const workflowName = urlWorkflowName || workflowConfig.getDefaultWorkflow();
+        if (!workflowName) {
+          throw new Error('No workflow available');
+        }
+  // console.debug('Using workflow name:', workflowName);
         
+        // eslint-disable-next-line no-unused-vars
         const transportInfo = await api.getWorkflowTransport(workflowName);
-        console.log('📡 Transport info for', workflowName, ':', transportInfo);
+  // console.debug('Transport info for', workflowName);
         
         // Always use WebSocket transport
-        console.log('Using WebSocket transport for', workflowName);
+  // console.debug('Using WebSocket transport for', workflowName);
         setTransportType('websocket');
         setCurrentWorkflowName(workflowName);
         return connectWebSocket();
       } catch (error) {
         console.error('Error querying workflow transport:', error);
         // Fallback to WebSocket
-        const defaultWorkflow = workflowConfig.getDefaultWorkflow() || 'Generator';
+        const fallbackWf = workflowConfig.getDefaultWorkflow();
+        if (!fallbackWf) {
+          console.warn('⚠️ No default workflow available for fallback');
+          return () => {};
+        }
         setTransportType('websocket');
-        setCurrentWorkflowName(defaultWorkflow);
+        setCurrentWorkflowName(fallbackWf);
         return connectWebSocket();
       }
     };
@@ -513,7 +759,7 @@ const ChatPage = () => {
 
   // Retry connection function
   const retryConnection = useCallback(() => {
-    console.log('🔄 Retrying connection...');
+  // console.debug('Retrying connection...');
     setConnectionInitialized(false);
     connectionInProgressRef.current = false;
     setConnectionStatus('disconnected');
@@ -605,7 +851,7 @@ const ChatPage = () => {
       }
       
       // Handle other agent action types
-      console.log('🔄 Agent action handled through workflow system:', action);
+    // console.debug('Agent action handled through workflow system');
       // Other response types will come through WebSocket from backend
     } catch (error) {
       console.error('❌ Error handling agent action:', error);
@@ -613,24 +859,53 @@ const ChatPage = () => {
   };
 
   const handleMyAppsClick = () => {
-    console.log("Navigate to My Apps");
+  // console.debug('Navigate to My Apps');
   };
 
   const handleCommunityClick = () => {
-    console.log('Navigate to community');
+  // console.debug('Navigate to community');
   };
 
   const handleNotificationClick = () => {
-    console.log('Show notifications');
+  // console.debug('Show notifications');
   };
 
   const handleDiscoverClick = () => {
-    console.log("Discovery clicked");
+  // console.debug('Discovery clicked');
   };
 
   const toggleSidePanel = () => {
-    setIsSidePanelOpen(!isSidePanelOpen);
+    setIsSidePanelOpen((open) => !open);
   };
+
+  // Decide when to force overlay (mobile landscape or short height)
+  useEffect(() => {
+    const compute = () => {
+      try {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        const isSmallWidth = w < 768; // md breakpoint
+        const isShort = h < 500; // landscape phones/tablets
+        setForceOverlay(isSmallWidth || isShort);
+      } catch {}
+    };
+    compute();
+    window.addEventListener('resize', compute);
+    window.addEventListener('orientationchange', compute);
+    return () => {
+      window.removeEventListener('resize', compute);
+      window.removeEventListener('orientationchange', compute);
+    };
+  }, []);
+
+  // Lock body scroll when overlay is open
+  useEffect(() => {
+    if (isSidePanelOpen && forceOverlay) {
+      const { overflow } = document.body.style;
+      document.body.style.overflow = 'hidden';
+      return () => { document.body.style.overflow = overflow; };
+    }
+  }, [isSidePanelOpen, forceOverlay]);
 
   return (
     <div className="flex flex-col h-screen overflow-hidden relative">
@@ -649,8 +924,8 @@ const ChatPage = () => {
       />
       
       {/* Main content area that fills remaining screen height - no scrolling */}
-      <div className="flex-1 flex flex-col min-h-0 overflow-hidden pt-16">
-        <div className={`flex flex-col md:flex-row flex-1 w-full min-h-0 overflow-hidden transition-all duration-300`}>
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden pt-16 sm:pt-20 md:pt-16">{/* Extra padding on mobile for cleaner spacing */}
+  <div className={`flex flex-col md:flex-row flex-1 w-full min-h-0 overflow-hidden transition-all duration-300`}>
           {/* Chat Pane - 50% width when artifact is open, 100% when closed */}
           <div className={`flex flex-col px-4 flex-1 min-h-0 overflow-hidden transition-all duration-300 ${isSidePanelOpen ? 'md:w-1/2' : 'w-full'}`}>
             
@@ -670,17 +945,25 @@ const ChatPage = () => {
             />
           </div>
           
-          {/* Artifact Panel - 50% width, slides in from right */}
-          {isSidePanelOpen && (
-            <ArtifactInterface onClose={toggleSidePanel} />
+          {/* Artifact Panel - 50% width, slides in from right (desktop only when not forcing overlay) */}
+          {isSidePanelOpen && !forceOverlay && (
+            <div className="hidden md:flex md:w-1/2 min-h-0 h-full px-4">
+              <ArtifactPanel onClose={toggleSidePanel} />
+            </div>
           )}
         </div>
       </div>
+
+      {/* Mobile full-screen Artifact modal (md:hidden handled inside component) */}
+      {isSidePanelOpen && forceOverlay && (
+        <ArtifactPanel onClose={toggleSidePanel} isMobile={true} />
+      )}
 
       {/* Footer - positioned at bottom without affecting flex layout */}
       <div className="flex-shrink-0">
         <Footer />
       </div>
+
     </div>
   );
 };

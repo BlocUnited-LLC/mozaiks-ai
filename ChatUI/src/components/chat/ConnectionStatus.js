@@ -11,7 +11,8 @@ function ConnectionStatus({
   error, 
   onRetry, 
   workflowName,
-  className = '' 
+  className = '',
+  onArtifactToggle
 }) {
   const getStatusIcon = () => {
     switch (status) {
@@ -70,13 +71,18 @@ function ConnectionStatus({
           )}
         </div>
 
+        {/* Mobile-only Artifact button inside status row */}
+  {/* Artifact toggle is rendered separately in ChatInterface on mobile */}
+
         {showRetryButton && onRetry && (
           <button 
             onClick={onRetry}
-            className="retry-button"
+            className="retry-button flex items-center justify-center ml-3"
             title="Retry connection"
+            aria-label="Retry connection"
           >
-            🔄 Retry
+            <span className="md:hidden" role="img" aria-label="Retry">🔄</span>
+            <span className="hidden md:inline">🔄 Retry</span>
           </button>
         )}
       </div>

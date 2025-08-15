@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+ENV/
+env/
+build/
+dist/
+.git/
+.gitignore
+ChatUI/node_modules/
+node_modules/
+ChatUI/build/
+# Keep the 'logs' package (source) but ignore its generated log output folder
+!logs/
+logs/logs/
+**/.DS_Store
+**/Thumbs.db
+*.log
+.vscode/
+.azure/
+.env
