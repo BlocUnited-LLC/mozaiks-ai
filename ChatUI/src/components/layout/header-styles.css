@@ -118,7 +118,7 @@
   background: #00d1ff;
 }
 
-/* Futuristic Header Styles - 2035 UI/UX - Enhanced */
+/* Sleeker Header Styles */
 
 /* Refined sci-fi animations */
 @keyframes cosmic-glow {
@@ -165,8 +165,8 @@
 /* Enhanced geometric clip-paths for reference image style */
 .geometric-nav-button {
   clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 100%, 12px 100%);
-  background: linear-gradient(135deg, rgba(0, 209, 255, 0.08), rgba(0, 150, 255, 0.04));
-  border: 1px solid rgba(0, 209, 255, 0.25);
+  background: linear-gradient(135deg, rgba(0, 209, 255, 0.06), rgba(0, 150, 255, 0.03));
+  border: 1px solid rgba(0, 209, 255, 0.2);
   position: relative;
   overflow: hidden;
 }
@@ -182,11 +182,7 @@
   animation: scan-line 2s ease-in-out infinite;
 }
 
-.geometric-nav-button:hover {
-  background: linear-gradient(135deg, rgba(0, 209, 255, 0.15), rgba(0, 150, 255, 0.08));
-  border-color: rgba(0, 209, 255, 0.4);
-  transform: translateY(-1px);
-}
+.geometric-nav-button:hover { border-color: rgba(0, 209, 255, 0.35); }
 
 /* Enhanced Discovery Button - Solid Elongated Hexagon with Purple Theme */
 .discovery-enhanced {
@@ -203,11 +199,7 @@
   /* Strong purple border for definition */
   border: 2px solid rgba(147, 51, 234, 0.9);
   
-  /* Enhanced purple shadows for depth */
-  box-shadow: 
-    0 0 25px rgba(147, 51, 234, 0.5),
-    0 4px 15px rgba(126, 34, 206, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
     
   position: relative;
   overflow: hidden;
@@ -256,14 +248,7 @@
   
   border-color: rgba(168, 85, 247, 1);
   
-  /* Lift effect */
-  transform: translateY(-2px) scale(1.02);
-  
-  /* Enhanced purple glow */
-  box-shadow: 
-    0 0 35px rgba(147, 51, 234, 0.7),
-    0 6px 20px rgba(126, 34, 206, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 /* My Apps Button - Architectural Unique Styling */
@@ -291,10 +276,7 @@ button[style*="clipPath"]:hover {
   backdrop-filter: blur(10px);
 }
 
-.profile-enhanced:hover {
-  background: rgba(0, 0, 0, 0.4);
-  border-color: rgba(0, 209, 255, 0.4);
-}
+.profile-enhanced:hover { border-color: rgba(0, 209, 255, 0.35); }
 
 /* Header backdrop effects */
 .cosmic-header {
@@ -319,13 +301,9 @@ button[style*="clipPath"]:hover {
 }
 
 /* Enhanced glow effects */
-.glow-cyan {
-  animation: cosmic-glow 2s ease-in-out infinite alternate;
-}
+.glow-cyan { animation: none; }
 
-.float-animation {
-  animation: float 3s ease-in-out infinite;
-}
+.float-animation { animation: none; }
 
 /* Neural interface styling */
 .neural-button {
@@ -357,8 +335,8 @@ button[style*="clipPath"]:hover {
 }
 
 .neural-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 10px 25px rgba(0, 209, 255, 0.2);
+  transform: none;
+  box-shadow: none;
   border-color: rgba(0, 209, 255, 0.6);
 }
 
@@ -415,10 +393,17 @@ button[style*="clipPath"]:hover {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 2px;
-  text-shadow: 0 0 8px rgba(197, 255, 248, 0.5);
+  text-shadow: none;
   font-size: inherit;
   margin-bottom: 0;
   color: inherit;
+}
+
+/* Minimal header utility container */
+.header-minimal {
+  background: rgba(0,0,0,0.15);
+  border-bottom: 1px solid rgba(34,211,238,0.15);
+  backdrop-filter: blur(8px);
 }
 
 /* Responsive futuristic adjustments */

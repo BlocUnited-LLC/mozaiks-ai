@@ -179,7 +179,7 @@
   font-size: 12px;
   font-weight: 700;
   color: #4da6ff;
-  text-shadow: 0 0 3px rgba(77, 166, 255, 0.5);
+  /* text-shadow: 0 0 3px rgba(77,166,255,0.5); */
   letter-spacing: 0.2px;
   font-family: 'Orbitron', sans-serif; /* names use Orbitron */
 }
@@ -238,6 +238,67 @@
     0 6px 16px rgba(51, 240, 250, 0.28);
 }
 
+/* In-bubble header + name pill styles */
+.message-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between; /* default; overridden per bubble side below */
+  margin-bottom: 6px;
+}
+
+/* Align header and body based on bubble side */
+.user-message .message-header { justify-content: flex-end; }
+.agent-message .message-header { justify-content: flex-start; }
+.user-message .message-body { text-align: right; }
+.agent-message .message-body { text-align: left; }
+
+.name-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  font-family: 'Orbitron', sans-serif;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset;
+}
+
+.name-pill.user {
+  color: #04212a;
+  background: linear-gradient(135deg, rgba(0,255,231,0.9), rgba(0,200,255,0.9));
+  border: 1px solid rgba(0, 255, 255, 0.35);
+}
+
+.name-pill.agent {
+  color: #dbeafe;
+  background: linear-gradient(135deg, rgba(13, 26, 56, 0.75), rgba(0, 17, 51, 0.75));
+  border: 1px solid rgba(77,166,255,0.25);
+}
+
+.message-body { 
+  color: #e6f6ff; 
+}
+
+/* Remove legacy standalone name alignment (replaced by in-bubble header) */
+.user-name, .agent-name { display: none !important; }
+
+/* Subtle entry animation for latest message */
+.message.latest { animation: rise-in 260ms ease-out; }
+@keyframes rise-in { from { opacity: 0; transform: translateY(4px) scale(0.995); } to { opacity: 1; transform: translateY(0) scale(1); } }
+
+/* Mobile: ensure pill alignment follows bubble side */
+@media (max-width: 640px) {
+  .message-header { margin-bottom: 8px; }
+}
+
+/* Desktop: tighter line-height inside bubbles */
+@media (min-width: 1024px) {
+  .message-body { line-height: 1.1; }
+}
+
 /* Responsive tweaks for small screens */
 @media (max-width: 640px) {
   /* Compact bubbles and stronger left/right separation on narrow screens */
@@ -257,7 +318,7 @@
   .user-message {
     margin-left: auto;
     margin-right: .01px; /* balanced gap to right edge */
-    text-align: left;
+    text-align: right; /* ensure user text is right-aligned on mobile */
     /* asymmetric radius to visually anchor to the right */
     border-radius: 14px 14px 6px 14px; /* TL TR BR BL */
     box-shadow: 0 0 12px rgba(0,230,255,0.16); /* softened neon */
@@ -266,7 +327,7 @@
   .agent-message {
     margin-right: auto;
     margin-left: .01px; /* balanced gap to left edge */
-    text-align: left;
+  text-align: left; /* explicit for clarity */
     /* asymmetric radius to visually anchor to the left */
     border-radius: 14px 14px 14px 6px;
     box-shadow: 0 0 8px rgba(77,166,255,0.10); /* reduced glow */
@@ -550,6 +611,11 @@
 .message-container {
   margin-bottom: 0.0625rem;
 }
+
+/* Always align user messages to the right, agent to the left */
+.message-container { display: flex; }
+.message-container .user-message { margin-left: auto; }
+.message-container .agent-message { margin-right: auto; }
 
 /* Mobile adjustments for denser bubbles */
 @media (max-width: 640px) {
@@ -1605,3 +1671,35 @@
 .artifact-hover-glow:hover {
   filter: drop-shadow(0 0 8px rgba(51, 240, 250, 0.6));
 }
+
+/* Sleek Jump to Present pill */
+.jump-present {
+  padding: 8px 14px;
+  border-radius: 9999px;
+  background: rgba(12, 30, 45, 0.55);
+  border: 1px solid rgba(56,189,248,0.28);
+  color: #c8f3ff;
+  font-family: 'Techfont','Rajdhani',sans-serif;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: .3px;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 10px rgba(0,0,0,.25);
+  transition: all .25s ease;
+}
+.jump-present:hover { 
+  background: rgba(20, 60, 80, 0.6);
+  border-color: rgba(56,189,248,0.45);
+  color: #e9fdff;
+  box-shadow: 0 6px 16px rgba(0, 180, 255, .15);
+}
+.jump-present:active { transform: translateY(1px); }
+
+/* Harden alignment: ensure flex containers push messages */
+.message-container { display: flex; width: 100%; }
+.message-container .user-message { margin-left: auto !important; margin-right: 0 !important; }
+.message-container .agent-message { margin-right: auto !important; margin-left: 0 !important; }
+
+/* Also set text alignment inside bubbles appropriately */
+.user-message { text-align: left; }
+.agent-message { text-align: left; }

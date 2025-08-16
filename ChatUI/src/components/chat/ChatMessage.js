@@ -1,3 +1,7 @@
+import React from "react";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
+
 function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarningMessage, isLatest = false }) {
   // Debug (disabled by default): uncomment to trace renders
   // console.debug('ChatMessage render:', { message: message?.substring(0, 50) + '...', message_from, agentName, hasMessage: !!message, isTokenMessage, isWarningMessage });
@@ -23,6 +27,15 @@ function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarni
 
   const systemStyles = getSystemMessageStyles();
 
+  const renderMarkdown = (text) => {
+    try {
+      const html = marked.parse(String(text || ""), { breaks: true });
+      return { __html: DOMPurify.sanitize(html) };
+    } catch {
+      return { __html: DOMPurify.sanitize(String(text || "")) };
+    }
+  };
+
   return (
     <>
   {message_from === "user" ? (
@@ -31,10 +44,13 @@ function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarni
             className={`mt-1 user-message message ${isLatest ? 'latest' : ''}`}
           >
             <div className="flex flex-col">
-              <div className="user-name">You</div>
+              {/* In-bubble header for name (right-aligned for user) */}
+              <div className="message-header justify-end">
+                <span className="name-pill user"><span className="pill-avatar" aria-hidden>🧑</span> You</span>
+              </div>
               {message && (
-                <div className="w-full flex">
-                  <div className="w-full">{message}</div>
+                <div className="message-body w-full flex justify-end text-right">
+                  <div className="w-full" dangerouslySetInnerHTML={renderMarkdown(message)} />
                 </div>
               )}
             </div>
@@ -51,7 +67,7 @@ function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarni
               </div>
               {message && (
                 <div className={`sm:w-full flex pr-2 oxanium md:text-[16px] text-[10px] font-bold ${systemStyles.text}`}>
-                  <div className="w-full">{message}</div>
+                  <div className="w-full" dangerouslySetInnerHTML={renderMarkdown(message)} />
                 </div>
               )}
             </div>
@@ -64,9 +80,12 @@ function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarni
               className={`mt-1 agent-message message ${isLatest ? 'latest' : ''}`}
             >
               <div className="flex flex-col">
-                <div className="agent-name">{agentName || 'Agent'}</div>
-                <div className="w-full flex">
-                  <div className="w-full">{message}</div>
+                {/* In-bubble header for name (left-aligned for agent) */}
+                <div className="message-header">
+                  <span className="name-pill agent"><span className="pill-avatar" aria-hidden>🤖</span> {agentName || 'Agent'}</span>
+                </div>
+                <div className="message-body w-full flex">
+                  <div className="w-full" dangerouslySetInnerHTML={renderMarkdown(message)} />
                 </div>
               </div>
             </div>

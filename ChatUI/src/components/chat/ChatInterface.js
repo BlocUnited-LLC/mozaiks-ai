@@ -221,11 +221,14 @@ const ModernChatInterface = ({
       </div>
       
     {/* Chat Messages Area - ONLY THIS SCROLLS */}
-    <div className="flex-1 relative overflow-hidden">
+    <div className="flex-1 relative overflow-hidden" role="log" aria-live="polite" aria-relevant="additions">
+        {/* Dim the galaxy background slightly for readability across the entire scroll area */}
+        <div className="absolute inset-0 pointer-events-none bg-[rgba(0,0,0,0.45)] z-0" />
         <div 
           ref={chatContainerRef}
-  className="absolute inset-0 overflow-y-auto px-2 py-2 md:p-6 space-y-3 md:space-y-4 my-scroll1"
+  className="absolute inset-0 overflow-y-auto px-2 py-2 md:p-6 space-y-3 md:space-y-4 my-scroll1 z-10"
         >
+        <div className="relative">
       {/* Messages render below */}
           {(() => {
             // Determine the last chat index with a primary content message
@@ -276,15 +279,28 @@ const ModernChatInterface = ({
             );
             });
           })()}
+          {/* Typing indicator slot (rendered when loading without messages updating) */}
+          {loading && (
+            <div className="flex justify-start px-0 message-container">
+              <div className="agent-message message">
+                <div className="flex items-center gap-2">
+                  <span className="typing-dot" />
+                  <span className="typing-dot delay-150" />
+                  <span className="typing-dot delay-300" />
+                </div>
+              </div>
+            </div>
+          )}
           <div ref={chatEndRef} />
+        </div>
         </div>
 
         {/* Jump to Present Button - Positioned over the messages area */}
         {isScrolledUp && (
-          <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-10">
+      <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-10">
             <button
               onClick={scrollToBottom}
-              className="px-4 py-2 bg-cyan-500/95 hover:bg-cyan-400/95 text-white rounded-full shadow-lg hover:shadow-cyan-500/50 transition-all duration-300 techfont font-bold text-sm border border-cyan-400/50 backdrop-blur-sm"
+        className="jump-present"
             >
               Jump to Present
             </button>
