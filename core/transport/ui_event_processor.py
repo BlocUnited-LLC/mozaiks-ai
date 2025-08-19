@@ -9,33 +9,38 @@ import inspect
 import traceback
 import uuid
 import time
-from typing import TYPE_CHECKING, Any, Union, Optional, cast
-import autogen
 import re
+from typing import Any, Optional, cast
+
 from autogen.events import BaseEvent
 from autogen.events.agent_events import InputRequestEvent, TextEvent
 from autogen.events.client_events import UsageSummaryEvent
 from autogen.io.run_response import AsyncRunResponseProtocol
 
 from core.data.persistence_manager import AG2PersistenceManager
-from logs.logging_config import get_business_logger
+from logs.logging_config import get_workflow_logger
 from core.observability.performance_manager import get_performance_manager
+
 
 class UIEventProcessor:
     """
     AG2-compliant event processor that follows AsyncEventProcessorProtocol pattern.
     Routes events to the UI and handles persistence, following AG2 best practices.
     """
-    
+
     def __init__(self, chat_id: str, enterprise_id: str, user_id: str, workflow_name: str):
         # Core identifiers
         self.chat_id = chat_id
         self.enterprise_id = enterprise_id
         self.user_id = user_id
         self.workflow_name = workflow_name
-
-        # Logging and persistence
-        self.logger = get_business_logger("ui_event_processor")
+        # Logging and persistence (include workflow/chat context so breadcrumbs go to workflows.log)
+        self.logger = get_workflow_logger(
+            self.workflow_name,
+            chat_id=self.chat_id,
+            enterprise_id=self.enterprise_id,
+            component="ui_event_processor",
+        )
         self.persistence_manager = AG2PersistenceManager()
 
         # Lazy-initialized performance manager (async accessor)
@@ -50,13 +55,14 @@ class UIEventProcessor:
         self._cum_prompt_tokens = 0
         self._cum_completion_tokens = 0
         self._cum_total_tokens = 0
-        
+        self._cum_total_cost = 0.0
+        # Some providers emit only total or only actual. We track which we last used.
+        self._last_usage_mode = None  # 'total' | 'actual'
+
     async def process(self, response: "AsyncRunResponseProtocol") -> None:
         """
-        Process AG2 events - follows AG2's AsyncEventProcessorProtocol pattern.
-        This is the main entry point called by AG2's run response system.
+        Optional helper to iterate the response events.
         """
-        # Ensure performance manager knows about this workflow/chat
         if self._perf_mgr is None:
             self._perf_mgr = await get_performance_manager()
         await self._perf_mgr.record_workflow_start(
@@ -67,7 +73,7 @@ class UIEventProcessor:
         )
         async for event in response.events:
             await self.process_event(event)
-    
+
     async def process_event(self, event: BaseEvent) -> None:
         """
         Process individual AG2 events, persisting and forwarding them to the UI.
@@ -80,75 +86,113 @@ class UIEventProcessor:
             try:
                 if hasattr(event, "content"):
                     resolved = await self._resolve_maybe_awaitable(getattr(event, "content"))
-                    # Only assign back if changed to avoid side effects
                     if resolved is not getattr(event, "content"):
                         try:
                             setattr(event, "content", resolved)
                         except Exception:
-                            # Some Pydantic models may be frozen; ignore if not assignable
                             pass
             except Exception as _resolve_err:
-                # Never break processing due to resolver hiccups; log at debug level
                 self.logger.debug(f"content resolver skipped: {_resolve_err}")
-            # 0. Latency start heuristic: first TextEvent marks agent output start
-            if isinstance(event, TextEvent) and not self._turn_active:
-                self._turn_active = True
-                self._turn_started_at = time.perf_counter()
-                self._turn_agent_name = self._infer_agent_name(event)
 
-            # 1. Persist the event in real-time (includes token updates + wallet debit)
-            await self.persistence_manager.save_event(
-                event=event,
-                chat_id=self.chat_id,
-                enterprise_id=self.enterprise_id,
-                workflow_name=self.workflow_name,
-                user_id=self.user_id
-            )
+            # 0. Agent turn timing: start on TextEvent; switch closes previous turn
+            if isinstance(event, TextEvent):
+                agent = self._infer_agent_name(event) or "unknown"
+                now = time.perf_counter()
+                if not self._turn_active:
+                    self._turn_active = True
+                    self._turn_started_at = now
+                    self._turn_agent_name = agent
+                    # Breadcrumb: mark that a turn started (no message content)
+                    try:
+                        self.logger.info("turn_summary started", agent_name=agent, status="started")
+                    except Exception:
+                        pass
+                elif self._turn_agent_name and agent != self._turn_agent_name:
+                    # Close previous turn
+                    try:
+                        duration = max(0.0, now - (self._turn_started_at or now))
+                        if self._perf_mgr is None:
+                            self._perf_mgr = await get_performance_manager()
+                        await self._perf_mgr.record_agent_turn(
+                            chat_id=self.chat_id,
+                            agent_name=self._turn_agent_name,
+                            duration_sec=duration,
+                            model=None,
+                        )
+                        # Breadcrumb: mark completed turn without exposing content
+                        try:
+                            self.logger.info("turn_summary", agent_name=self._turn_agent_name, duration_seconds=duration, status="completed")
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        self.logger.debug(f"record_agent_turn failed: {e}")
+                    # Start new turn window
+                    self._turn_started_at = now
+                    self._turn_agent_name = agent
+
+            # 1. Persist the event in real-time (save_event handles TextEvent; no-op for others)
+            try:
+                await self.persistence_manager.save_event(
+                    event=event,
+                    chat_id=self.chat_id,
+                    enterprise_id=self.enterprise_id,
+                    workflow_name=self.workflow_name,
+                    user_id=self.user_id,
+                )
+            except Exception as pe:
+                self.logger.debug(f"save_event failed: {pe}")
 
             # 1.5 Usage + Latency: UsageSummaryEvent carries model + token counts.
-            # Use it to compute token deltas in real time and record latency.
             if isinstance(event, UsageSummaryEvent):
                 try:
                     if self._perf_mgr is None:
                         self._perf_mgr = await get_performance_manager()
 
-                    content = getattr(event, "content", None)
-                    model = None
-                    prompt_tokens = completion_tokens = total_tokens = 0
-                    total_cost = 0.0
-                    if isinstance(content, dict):
-                        model = content.get("model") or content.get("model_name")
-                        # AG2 UsageSummaryEvent content often includes token counts
-                        prompt_tokens = int(content.get("prompt_tokens", 0) or 0)
-                        completion_tokens = int(content.get("completion_tokens", 0) or 0)
-                        total_tokens = int(content.get("total_tokens", prompt_tokens + completion_tokens) or 0)
-                        # cost may be absent; treat missing as 0.0
-                        try:
-                            total_cost = float(content.get("total_cost", 0.0) or 0.0)
-                        except Exception:
-                            total_cost = 0.0
+                    model, p, c, t, total_cost = self._parse_usage_summary_event(event)
 
-                    # Compute deltas vs. our last cumulative snapshot
-                    delta_prompt = max(0, prompt_tokens - self._cum_prompt_tokens)
-                    delta_completion = max(0, completion_tokens - self._cum_completion_tokens)
-                    delta_total = max(0, total_tokens - self._cum_total_tokens)
+                    # Compute deltas against cumulative counters
+                    delta_p = max(0, p - self._cum_prompt_tokens)
+                    delta_c = max(0, c - self._cum_completion_tokens)
+                    delta_t = max(0, t - self._cum_total_tokens)
+                    prev_total_cost = float(self._cum_total_cost or 0.0)
+                    delta_cost = max(0.0, float(total_cost or 0.0) - prev_total_cost)
 
-                    # Update our cumulative snapshots
-                    self._cum_prompt_tokens = max(self._cum_prompt_tokens, prompt_tokens)
-                    self._cum_completion_tokens = max(self._cum_completion_tokens, completion_tokens)
-                    self._cum_total_tokens = max(self._cum_total_tokens, total_tokens)
+                    # Update cumulative snapshots
+                    self._cum_prompt_tokens = max(self._cum_prompt_tokens, p)
+                    self._cum_completion_tokens = max(self._cum_completion_tokens, c)
+                    self._cum_total_tokens = max(self._cum_total_tokens, t)
+                    self._cum_total_cost = max(prev_total_cost, float(total_cost or 0.0))
 
                     # Record token deltas immediately for wallet + UI token_update
-                    if delta_total > 0:
+                    if delta_t > 0 or delta_cost > 0.0:
                         await self._perf_mgr.record_token_usage(
                             chat_id=self.chat_id,
-                            prompt_tokens=delta_prompt,
-                            completion_tokens=delta_completion,
+                            prompt_tokens=delta_p,
+                            completion_tokens=delta_c,
                             model=model,
-                            cost=0.0  # Per-turn granular cost often not provided; wallet debits by tokens
+                            cost=delta_cost,
                         )
 
-                    # Latency end only when a turn was active
+                    # If provider marked this as total aggregate, persist final snapshot
+                    mode = getattr(event, "mode", None) or getattr(event, "usage_type", None)
+                    if isinstance(mode, str) and mode.lower() == "total":
+                        summary_dict = {
+                            "total_tokens": t,
+                            "prompt_tokens": p,
+                            "completion_tokens": c,
+                            "total_cost": float(total_cost or 0.0),
+                            "model": model,
+                        }
+                        await self._perf_mgr.record_final_token_usage(self.chat_id, summary_dict)
+                        await self.persistence_manager.save_usage_summary(
+                            summary=summary_dict,
+                            chat_id=self.chat_id,
+                            enterprise_id=self.enterprise_id,
+                            user_id=self.user_id,
+                            workflow_name=self.workflow_name,
+                        )
+
+                    # Close the active turn on usage summary (end of output)
                     if self._turn_active:
                         duration_sec = 0.0
                         if self._turn_started_at is not None:
@@ -159,16 +203,17 @@ class UIEventProcessor:
                             agent_name=agent_name,
                             duration_sec=duration_sec,
                             model=model,
-                            prompt_tokens=0,
-                            completion_tokens=0,
-                            cost=0.0,
                         )
-                finally:
-                    # Reset latency state only; keep cumulative token snapshot across turns
-                    if self._turn_active:
+                        # Breadcrumb: end-of-output turn summary (no content)
+                        try:
+                            self.logger.info("turn_summary", agent_name=agent_name, duration_seconds=duration_sec, status="completed")
+                        except Exception:
+                            pass
                         self._turn_active = False
                         self._turn_started_at = None
                         self._turn_agent_name = None
+                except Exception as e:
+                    self.logger.debug(f"usage processing failed: {e}")
 
             # 2. Handle specific events for UI interaction or filtering
             if isinstance(event, InputRequestEvent):
@@ -176,7 +221,7 @@ class UIEventProcessor:
                 return  # Stop processing here, as it's handled
 
             # Filter out internal or noisy events that shouldn't go to the UI
-            if event_type_name in ['GroupChatRunChatEvent', 'PrintEvent']:
+            if event_type_name in ["GroupChatRunChatEvent", "PrintEvent"]:
                 self.logger.debug(f"🔇 Skipping internal/noisy event for UI: {event_type_name}")
                 return
 
@@ -184,42 +229,39 @@ class UIEventProcessor:
             try:
                 if self._perf_mgr is None:
                     self._perf_mgr = await get_performance_manager()
-
                 tool_name = self._infer_tool_name(event)
                 if tool_name:
                     await self._perf_mgr.record_tool_call(
                         chat_id=self.chat_id,
                         tool_name=tool_name,
                         duration_sec=0.0,
-                        success=True
+                        success=True,
                     )
             except Exception as hook_err:
-                # Never let hooks break event flow
                 self.logger.debug(f"perf hook skipped: {hook_err}")
 
-            # 3. Forward all other relevant events to the UI
+            # 3. Forward events to the UI
             from core.transport.simple_transport import SimpleTransport
             transport = SimpleTransport._get_instance()
             if transport:
-                # For plain TextEvent, also emit a chat_message for the UI message list
                 if isinstance(event, TextEvent):
                     try:
                         agent_name = self._turn_agent_name or self._infer_agent_name(event) or "Assistant"
-                        # Sanitize content for UI (AG2 sometimes stringifies with uuid/sender)
                         clean_content = self._extract_clean_content(getattr(event, "content", ""))
-                        if not clean_content:
-                            return
-                        await transport.send_to_ui(
-                            message=clean_content,
-                            agent_name=agent_name,
-                            chat_id=self.chat_id,
-                            message_type="chat_message",
-                            bypass_filter=False,  # Let visual_agents filtering apply
-                        )
+                        if clean_content:
+                            await transport.send_to_ui(
+                                message=clean_content,
+                                agent_name=agent_name,
+                                chat_id=self.chat_id,
+                                message_type="chat_message",
+                                bypass_filter=False,
+                            )
                     except Exception as chat_err:
                         self.logger.debug(f"text forward skipped: {chat_err}")
-                # Always forward the raw AG2 event for advanced clients
-                await transport.send_event_to_ui(event, self.chat_id)
+                try:
+                    await transport.send_event_to_ui(event, self.chat_id)
+                except Exception:
+                    pass
 
         except Exception as e:
             self.logger.error(f"❌ Failed during event processing for {event_type_name}: {e}\n{traceback.format_exc()}")
@@ -245,28 +287,25 @@ class UIEventProcessor:
                     out[k] = await self._resolve_maybe_awaitable(v)
                 return out
         except Exception:
-            # If anything fails, fall back to original value
             return value
         return value
 
     def _infer_agent_name(self, event: BaseEvent) -> Optional[str]:
         """Best-effort extraction of agent name from diverse AG2 events."""
         try:
-            # Direct attributes first
             for attr in ("agent_name", "name", "sender", "agent"):
                 val = getattr(event, attr, None)
                 if isinstance(val, str) and val.strip():
                     return val.strip()
-            # Nested content object/dict
             content = getattr(event, "content", None)
             if isinstance(content, dict):
                 for key in ("agent_name", "name", "sender", "agent"):
                     val = content.get(key)
                     if isinstance(val, str) and val.strip():
                         return val.strip()
-            else:
+            elif content is not None:
                 for attr in ("agent_name", "name", "sender", "agent"):
-                    val = getattr(content, attr, None) if content is not None else None
+                    val = getattr(content, attr, None)
                     if isinstance(val, str) and val.strip():
                         return val.strip()
         except Exception:
@@ -276,7 +315,6 @@ class UIEventProcessor:
     def _infer_tool_name(self, event: BaseEvent) -> Optional[str]:
         """Best-effort extraction of tool name from tool-call related events."""
         et = type(event).__name__
-        # Quick prefilter: only attempt for likely tool events
         if not ("Tool" in et or "Function" in et or "Call" in et):
             return None
         try:
@@ -290,9 +328,9 @@ class UIEventProcessor:
                     val = content.get(key)
                     if isinstance(val, str) and val.strip():
                         return val.strip()
-            else:
+            elif content is not None:
                 for attr in ("tool_name", "function_name", "name"):
-                    val = getattr(content, attr, None) if content is not None else None
+                    val = getattr(content, attr, None)
                     if isinstance(val, str) and val.strip():
                         return val.strip()
         except Exception:
@@ -300,66 +338,109 @@ class UIEventProcessor:
         return None
 
     def _extract_clean_content(self, raw: Any) -> str:
-        """Extract only the human-visible message text from diverse AG2 payload shapes.
-
-        Handles:
-        - dicts with 'content'
-        - objects with .content
-        - stringified events like "uuid=UUID('...'), sender='X', content='...')"
-        - gracefully returns '' for None or 'None' values
-        """
+        """Extract only the human-visible message text from diverse AG2 payload shapes."""
         try:
             if raw is None:
                 return ""
-            # Dict-like
             if isinstance(raw, dict):
                 val = raw.get("content")
                 return "" if val in (None, "None") else str(val)
-            # Object with attribute
             if hasattr(raw, "content"):
                 val = getattr(raw, "content")
                 return "" if val in (None, "None") else str(val)
-            # Already a plain string without AG2 metadata
             if isinstance(raw, str):
                 text = raw.strip()
                 if text in ("", "None"):
                     return ""
-                # If it looks like a repr with content=... pattern, extract
                 if "content=" in text:
-                    # Try common quoted forms first
                     m = re.search(r"content='([^']*)'", text, flags=re.DOTALL)
                     if not m:
                         m = re.search(r'content="([^"]*)"', text, flags=re.DOTALL)
                     if m:
                         return m.group(1)
-                    # Fallback: unquoted until comma or )
                     m = re.search(r"content=([^,\)]+)", text, flags=re.DOTALL)
                     if m:
                         extracted = m.group(1).strip()
-                        # Strip surrounding quotes if present
-                        if (extracted.startswith("'") and extracted.endswith("'")) or (extracted.startswith('"') and extracted.endswith('"')):
+                        if (extracted.startswith("'") and extracted.endswith("'")) or (
+                            extracted.startswith('"') and extracted.endswith('"')
+                        ):
                             extracted = extracted[1:-1]
                         return "" if extracted in ("", "None") else extracted
-                # Otherwise assume it's already the message
                 return text
         except Exception:
             pass
-        # Last resort
         try:
             return str(raw)
         except Exception:
             return ""
 
+    def _parse_usage_summary_event(self, event: UsageSummaryEvent) -> tuple[Optional[str], int, int, int, float]:
+        """Extract model, prompt/completion/total tokens and total_cost from UsageSummaryEvent."""
+        model: Optional[str] = None
+        prompt_tokens = completion_tokens = total_tokens = 0
+        total_cost = 0.0
+
+        try:
+            mode_val = getattr(event, "mode", None) or getattr(event, "usage_type", None) or "both"
+            total_obj = getattr(event, "total", None)
+            actual_obj = getattr(event, "actual", None)
+            use_total = str(mode_val).lower() in ("both", "total") and total_obj is not None
+            use_actual = str(mode_val).lower() in ("both", "actual") and actual_obj is not None
+
+            usages_list = None
+            if use_total and getattr(total_obj, "usages", None) is not None:
+                usages_list = getattr(total_obj, "usages", None)
+                try:
+                    total_cost = float(getattr(total_obj, "total_cost", 0.0) or 0.0)
+                except Exception:
+                    total_cost = 0.0
+                self._last_usage_mode = "total"
+            elif use_actual and getattr(actual_obj, "usages", None) is not None:
+                usages_list = getattr(actual_obj, "usages", None)
+                try:
+                    total_cost = float(getattr(actual_obj, "total_cost", 0.0) or 0.0)
+                except Exception:
+                    total_cost = 0.0
+                self._last_usage_mode = "actual"
+
+            if usages_list is not None:
+                for item in usages_list or []:
+                    try:
+                        m = getattr(item, "model", None) if not isinstance(item, dict) else item.get("model")
+                        pt = getattr(item, "prompt_tokens", 0) if not isinstance(item, dict) else item.get("prompt_tokens", 0)
+                        ct = getattr(item, "completion_tokens", 0) if not isinstance(item, dict) else item.get("completion_tokens", 0)
+                        tt = getattr(item, "total_tokens", None) if not isinstance(item, dict) else item.get("total_tokens", None)
+                        if tt is None:
+                            tt = (int(pt or 0) + int(ct or 0))
+                        total_tokens += int(tt or 0)
+                        prompt_tokens += int(pt or 0)
+                        completion_tokens += int(ct or 0)
+                        if model is None and isinstance(m, str) and m:
+                            model = m
+                    except Exception:
+                        continue
+                return model, int(prompt_tokens), int(completion_tokens), int(total_tokens), float(total_cost)
+        except Exception:
+            pass
+
+        # Fallback: dict-like
+        try:
+            content = getattr(event, "content", None)
+            if isinstance(content, dict):
+                model = content.get("model") or content.get("model_name")
+                prompt_tokens = int(content.get("prompt_tokens", 0) or 0)
+                completion_tokens = int(content.get("completion_tokens", 0) or 0)
+                total_tokens = int(content.get("total_tokens", prompt_tokens + completion_tokens) or 0)
+                try:
+                    total_cost = float(content.get("total_cost", 0.0) or 0.0)
+                except Exception:
+                    total_cost = 0.0
+        except Exception:
+            pass
+        return model, int(prompt_tokens), int(completion_tokens), int(total_tokens), float(total_cost)
+
     async def _handle_input_request(self, event: InputRequestEvent) -> None:
-        """
-        Handles generic AG2 InputRequestEvents by logging a warning and auto-skipping.
-        
-        This behavior enforces the architectural decision that all user interactions
-        should be handled by specific, defined UI tools (e.g., request_api_key) 
-        rather than generic `agent.input()` calls. Our custom `ag2_iostream.py`
-        is the designated handler for legitimate, non-tool-based input, so if an
-        input request reaches this processor, it's considered an anti-pattern.
-        """
+        """Generic AG2 InputRequestEvents are discouraged; log and auto-respond."""
         try:
             prompt = getattr(event.content, "prompt", None) or "Input required:"  # type: ignore[attr-defined]
             from core.transport.simple_transport import SimpleTransport
@@ -368,8 +449,7 @@ class UIEventProcessor:
                 self.logger.warning("SimpleTransport not available; responding with empty string")
                 await event.content.respond("")  # type: ignore[attr-defined]
                 return
-
-            # Echo the prompt as an agent chat message so users see the agent's intent
+            # Optionally show the prompt in the UI
             try:
                 agent_name = self._turn_agent_name or self._infer_agent_name(cast(BaseEvent, event)) or "Assistant"
                 await transport.send_to_ui(
@@ -377,30 +457,22 @@ class UIEventProcessor:
                     agent_name=agent_name,
                     chat_id=self.chat_id,
                     message_type="chat_message",
-                    bypass_filter=False,  # Let visual_agents filtering apply
+                    bypass_filter=False,
                 )
             except Exception:
                 pass
-
-            # Route through UI and await real user input
+            # Wait for a user response via transport, or auto-empty if not provided
             input_request_id = str(uuid.uuid4())
             await transport.send_user_input_request(
                 input_request_id=input_request_id,
                 chat_id=self.chat_id,
-                payload={"prompt": prompt}
+                payload={"prompt": prompt},
             )
             user_input = await transport.wait_for_user_input(input_request_id)
             await event.content.respond(user_input)  # type: ignore[attr-defined]
-            self.logger.info(f"✅ [{self.chat_id}] Provided user input to InputRequestEvent")
-
         except Exception as e:
-            self.logger.error(f"❌ [{self.chat_id}] Failed to handle InputRequestEvent: {e}")
-            self.logger.error(f"   Traceback: {traceback.format_exc()}")
-            # Ensure fallback response to prevent AG2 from hanging under any circumstance.
+            self.logger.error(f"❌ Failed to handle InputRequestEvent: {e}")
             try:
-                if not getattr(event.content, "is_responded", True):  # type: ignore[attr-defined]
-                    await event.content.respond("")  # type: ignore[attr-defined]
+                await event.content.respond("")  # type: ignore[attr-defined]
             except Exception:
                 pass
-
-# End of UIEventProcessor - clean AG2-compliant implementation

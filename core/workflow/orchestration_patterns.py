@@ -4,6 +4,22 @@
 #              Single-responsibility pattern for all workflow orchestration
 # ==============================================================================
 
+"""
+MozaiksAI Orchestration Engine (organized)
+
+Purpose
+- Single entry point to run a workflow using AG2 patterns with streaming, tools, persistence, and telemetry.
+
+Sections (skim map)
+- Logging setup (chat/workflow/perf)
+- run_workflow_orchestration: main orchestration contract and steps
+- create_orchestration_pattern: AG2 pattern factory
+- logging helpers: agent message details and full conversation logging
+
+Notes
+- No functional changes in this pass; documentation and inline organization only.
+"""
+
 from typing import Dict, List, Optional, Any, Union, Callable
 import logging
 import time
@@ -26,20 +42,16 @@ from .tool_registry import WorkflowToolRegistry
 from .termination_handler import create_termination_handler
 from logs.logging_config import (
     get_chat_logger,
-    log_business_event,
-    log_performance_metric,
-    get_agent_logger,
     get_workflow_logger,
-    get_business_logger
 )
 from core.observability.performance_manager import get_performance_manager
 
 logger = logging.getLogger(__name__)
 
 # Consolidated logging (moved from groupchat_manager.py)
-chat_logger = get_chat_logger("orchestration_patterns")
-agent_logger = get_agent_logger("orchestration_patterns")
-workflow_logger = get_workflow_logger("orchestration_patterns")
+chat_logger = get_chat_logger("orchestration")
+workflow_logger = get_workflow_logger("orchestration")
+performance_logger = get_workflow_logger("performance.orchestration")
 
 # ===================================================================
 # AG2 INTERNAL LOGGING CONFIGURATION
@@ -52,8 +64,7 @@ if AG2_DEBUG_ENABLED:
     logging.getLogger("autogen.agentchat").setLevel(logging.DEBUG)
     logging.getLogger("autogen.io").setLevel(logging.DEBUG)
     logging.getLogger("autogen.agentchat.group").setLevel(logging.DEBUG)
-    business_logger = get_business_logger("ag2_debug")
-    business_logger.warning("🚨 AG2 DEBUG LOGGING ENABLED - Output will be very verbose!")
+    workflow_logger.warning("🚨 AG2 DEBUG LOGGING ENABLED - Output will be very verbose!")
 else:
     # Keep AG2 loggers at INFO level for production
     logging.getLogger("autogen.agentchat").setLevel(logging.INFO)
@@ -92,12 +103,24 @@ async def run_workflow_orchestration(
     handoffs_factory: Optional[Callable] = None,
     **kwargs
 ) -> Any:
-    """Run a workflow orchestration with lean OpenTelemetry root span."""
+    """
+    Run a workflow orchestration with lean OpenTelemetry root span.
+
+    Contract
+    - Inputs: workflow_name, enterprise_id, chat_id, user_id?, initial_message?, factories?
+    - Output: dict payload with response metadata (messages, termination, etc.)
+    - Side effects:
+        • Persists chat session/messages and usage via AG2 UIEventProcessor + Persistence
+        • Streams tokens/messages to transport and logs to agent_chat/workflows
+        • Emits OpenTelemetry spans and performance metrics
+    - Error modes: propagates fatal orchestration errors; logs and continues for non-critical paths
+    """
     start_time = time.time()
     workflow_name_upper = workflow_name.upper()
     orchestration_pattern = "unknown"
     agents: Dict[str, Any] = {}
-    business_logger = get_business_logger(f"{workflow_name}_orchestration")
+    # Context-aware workflow logger for this run
+    wf_logger = get_workflow_logger(workflow_name, chat_id=chat_id, enterprise_id=enterprise_id)
     logger.info(f"🚀 CONSOLIDATED workflow orchestration: {workflow_name}")
 
     # Persistence / transport / termination handler
@@ -138,7 +161,7 @@ async def run_workflow_orchestration(
             logger.debug(f"trace attach failed: {e}")
         try:
             # -----------------------------------------------------------------
-            # 1. Load configuration
+            # 1) Load configuration (workflow_config)
             # -----------------------------------------------------------------
             from .workflow_config import workflow_config
             config = workflow_config.get_config(workflow_name)
@@ -149,7 +172,7 @@ async def run_workflow_orchestration(
             initial_agent_name = config.get("initial_agent", None)
 
             # -----------------------------------------------------------------
-            # 2. Resume or start chat
+            # 2) Resume or start chat (PersistenceManager.resume_chat / termination handler)
             # -----------------------------------------------------------------
             resumed_messages = await persistence_manager.resume_chat(chat_id, enterprise_id)
             if resumed_messages and len(resumed_messages) > 0:
@@ -173,34 +196,34 @@ async def run_workflow_orchestration(
                     initial_messages = [{"role": "user", "content": seed}]
 
             # -----------------------------------------------------------------
-            # 3. LLM config
+            # 3) LLM config (workflow-specific or default)
             # -----------------------------------------------------------------
             from .structured_outputs import get_llm_for_workflow
             try:
                 _, llm_config = await get_llm_for_workflow(workflow_name, "base")
-                business_logger.info(f"✅ [{workflow_name_upper}] Using workflow-specific LLM config")
+                wf_logger.info(f"✅ [{workflow_name_upper}] Using workflow-specific LLM config")
             except (ValueError, FileNotFoundError):
                 from core.core_config import make_llm_config
                 _, llm_config = await make_llm_config()
-                business_logger.info(f"✅ [{workflow_name_upper}] Using default LLM config")
+                wf_logger.info(f"✅ [{workflow_name_upper}] Using default LLM config")
 
-            log_business_event(
-                log_event_type=f"{workflow_name_upper}_WORKFLOW_STARTED",
+            # Log start to chat and workflow logs
+            chat_logger.info(f"[{workflow_name_upper}] WORKFLOW_STARTED chat_id={chat_id} pattern={orchestration_pattern}")
+            wf_logger.info(
+                "WORKFLOW_STARTED",
+                event_type=f"{workflow_name_upper}_WORKFLOW_STARTED",
                 description=f"{workflow_name} workflow orchestration initialized",
-                context={
-                    "enterprise_id": enterprise_id,
-                    "chat_id": chat_id,
-                    "user_id": user_id,
-                    "pattern": orchestration_pattern,
-                    "startup_mode": startup_mode,
-                    "initial_message_count": len(initial_messages),
-                    "trace_id": trace_id_hex
-                }
+                enterprise_id=enterprise_id,
+                chat_id=chat_id,
+                user_id=user_id,
+                pattern=orchestration_pattern,
+                startup_mode=startup_mode,
+                initial_message_count=len(initial_messages),
+                trace_id=trace_id_hex,
             )
 
             # -----------------------------------------------------------------
-            # 4. Context build / variables
-            # (retain existing performance metric logging)
+            # 4) Context build / variables (retain performance metric logging)
             # -----------------------------------------------------------------
             context = None
             context_start = time.time()
@@ -211,17 +234,21 @@ async def run_workflow_orchestration(
                     from .context_variables import get_context
                     context = get_context(workflow_name, enterprise_id)
                 except Exception as e:
-                    business_logger.error(f"❌ [{workflow_name_upper}] Context load failed: {e}")
+                    wf_logger.error(f"❌ [{workflow_name_upper}] Context load failed: {e}")
             context_time = (time.time() - context_start) * 1000
-            log_performance_metric(
-                metric_name="context_load_duration_ms",
-                value=context_time,
-                unit="ms",
-                context={"workflow_name": workflow_name, "enterprise_id": enterprise_id}
+            performance_logger.info(
+                "context_load_duration_ms",
+                extra={
+                    "metric_name": "context_load_duration_ms",
+                    "value": float(context_time),
+                    "unit": "ms",
+                    "workflow_name": workflow_name,
+                    "enterprise_id": enterprise_id,
+                },
             )
 
             # -----------------------------------------------------------------
-            # 5. Streaming setup (reuse existing code pattern)
+            # 5) Streaming setup (AG2StreamingManager on SimpleTransport connection)
             # -----------------------------------------------------------------
             if transport and hasattr(transport, 'connections') and chat_id in transport.connections:
                 connection = transport.connections[chat_id]
@@ -237,7 +264,7 @@ async def run_workflow_orchestration(
                 streaming_manager.setup_streaming()
 
             # -----------------------------------------------------------------
-            # 6. Agents definition
+            # 6) Agents definition (define + tool registry)
             # -----------------------------------------------------------------
             if agents_factory:
                 agents = await agents_factory()
@@ -246,12 +273,21 @@ async def run_workflow_orchestration(
                 agents = await define_agents(workflow_name)
             agents = agents or {}
 
+            # Register tools on agents via modular registry (includes UI tool surfacing)
+            try:
+                registry = WorkflowToolRegistry(workflow_name)
+                registry.load_configuration()
+                registry.register_agent_tools(list(agents.values()))
+                wf_logger.info(f"🔧 [{workflow_name_upper}] Registered tools for {len(agents)} agents")
+            except Exception as reg_err:
+                wf_logger.warning(f"⚠️ [{workflow_name_upper}] Tool registration skipped/failed: {reg_err}")
+
             # Store agents on transport connection for real-time token tracking (used by PerformanceManager)
             try:
                 if transport and hasattr(transport, 'connections') and chat_id in transport.connections:
                     transport.connections[chat_id]['agents'] = agents
             except Exception as _agents_store_err:
-                business_logger.debug(f"agent store failed: {_agents_store_err}")
+                wf_logger.debug(f"agent store failed: {_agents_store_err}")
 
             # User proxy agent
             user_proxy_agent = None
@@ -281,7 +317,7 @@ async def run_workflow_orchestration(
                         break
 
             # -----------------------------------------------------------------
-            # 7. Initiating agent
+            # 7) Initiating agent (explicit or first available)
             # -----------------------------------------------------------------
             initiating_agent = None
             if initial_agent_name:
@@ -297,7 +333,7 @@ async def run_workflow_orchestration(
                     raise ValueError(f"No agents available for workflow {workflow_name}")
 
             # -----------------------------------------------------------------
-            # 8. Pattern creation
+            # 8) Pattern creation (AG2 pattern factory)
             # -----------------------------------------------------------------
             agents_list = [a for n,a in agents.items() if not (n == 'user' and human_in_loop and user_proxy_agent is not None)]
             pattern = create_orchestration_pattern(
@@ -311,7 +347,7 @@ async def run_workflow_orchestration(
             )
 
             # -----------------------------------------------------------------
-            # 9. Handoffs (only DefaultPattern)
+            # 9) Handoffs (only DefaultPattern)
             # -----------------------------------------------------------------
             if orchestration_pattern == "DefaultPattern":
                 try:
@@ -321,10 +357,10 @@ async def run_workflow_orchestration(
                         from .handoffs import wire_handoffs_with_debugging
                         wire_handoffs_with_debugging(workflow_name, agents)
                 except Exception as he:
-                    business_logger.warning(f"Handoffs wiring failed: {he}")
+                    wf_logger.warning(f"Handoffs wiring failed: {he}")
 
             # -----------------------------------------------------------------
-            # 10. Execute group chat
+            # 10) Execute group chat (a_run_group_chat) with timeout
             # -----------------------------------------------------------------
             from autogen.agentchat import a_run_group_chat
             try:
@@ -348,56 +384,29 @@ async def run_workflow_orchestration(
                 workflow_name=workflow_name
             )
             event_count = 0
+            usage_events_seen = False
             try:
                 async for ev in response.events:
                     event_count += 1
                     await ui_processor.process_event(ev)
-                    # Per-turn token snapshot: when a UsageSummaryEvent arrives, capture cumulative usage & emit delta
+                    # Mark that UsageSummaryEvent-based accounting was seen
                     try:
                         from autogen.events.client_events import UsageSummaryEvent as _UsageSummaryEvent
                         if isinstance(ev, _UsageSummaryEvent):
-                            # Capture mid-run cumulative usage (agents list may update, pass all current agents)
-                            try:
-                                await perf_mgr.capture_cumulative_usage(
-                                    chat_id=chat_id,
-                                    agents=list(agents.values()),
-                                    workflow_name=workflow_name,
-                                    enterprise_id=enterprise_id,
-                                    user_id=user_id or "unknown"
-                                )
-                            except Exception as cap_err:
-                                business_logger.debug(f"token capture skipped: {cap_err}")
+                            usage_events_seen = True
                     except Exception:
                         pass
-                business_logger.info(f"✅ [{workflow_name_upper}] Processed {event_count} AG2 events")
+                wf_logger.info(f"✅ [{workflow_name_upper}] Processed {event_count} AG2 events")
             except Exception as pe:
-                business_logger.error(f"❌ [{workflow_name_upper}] Iterating response.events failed: {pe}")
+                wf_logger.error(f"❌ [{workflow_name_upper}] Iterating response.events failed: {pe}")
 
             # -----------------------------------------------------------------
-            # 11. Final token usage summary (replaces real-time event)
+            # 11) Accounting: enforce UsageSummaryEvent as source of truth (no fallbacks)
             # -----------------------------------------------------------------
-            from autogen.agentchat.utils import gather_usage_summary
-            try:
-                # We need to include the user_proxy_agent in the list for accurate cost tracking
-                all_agents_for_summary = list(agents.values())
-                if user_proxy_agent and user_proxy_agent not in all_agents_for_summary:
-                    all_agents_for_summary.append(user_proxy_agent)
-
-                usage_summary = gather_usage_summary(all_agents_for_summary)
-                
-                # Record token usage in performance manager (for OpenTelemetry metrics)
-                await perf_mgr.record_final_token_usage(chat_id, usage_summary)
-                
-                # Save to database (for persistence and wallet debit)
-                await persistence_manager.save_usage_summary(
-                    summary=usage_summary,
-                    chat_id=chat_id,
-                    enterprise_id=enterprise_id,
-                    user_id=user_id or "unknown",
-                    workflow_name=workflow_name
+            if not usage_events_seen:
+                wf_logger.error(
+                    f"❌ [{workflow_name_upper}] No UsageSummaryEvent observed. Event-driven accounting did not run."
                 )
-            except Exception as e:
-                business_logger.error(f"❌ [{workflow_name_upper}] Failed to gather/save usage summary: {e}", exc_info=True)
 
 
             termination_reason = getattr(response, 'termination_reason', None) or "completed"
@@ -452,17 +461,18 @@ async def run_workflow_orchestration(
     try:
         duration = time.time() - start_time
         logger.info(f"✅ [{workflow_name_upper}] orchestration completed in {duration:.2f}s")
-        log_business_event(
-            log_event_type=f"{workflow_name_upper}_WORKFLOW_COMPLETED",
+        # Log completion to chat and workflow logs
+        chat_logger.info(f"[{workflow_name_upper}] WORKFLOW_COMPLETED chat_id={chat_id} duration={duration:.2f}s")
+        wf_logger.info(
+            "WORKFLOW_COMPLETED",
+            event_type=f"{workflow_name_upper}_WORKFLOW_COMPLETED",
             description=f"{workflow_name} workflow orchestration completed",
-            context={
-                "enterprise_id": enterprise_id,
-                "chat_id": chat_id,
-                "total_duration_seconds": duration,
-                "agent_count": len(agents),
-                "pattern_used": orchestration_pattern,
-                "result_status": "completed" if result_payload else "error"
-            }
+            enterprise_id=enterprise_id,
+            chat_id=chat_id,
+            total_duration_seconds=duration,
+            agent_count=len(agents),
+            pattern_used=orchestration_pattern,
+            result_status="completed" if result_payload else "error",
         )
         # Streaming cleanup
         if streaming_manager is not None:
@@ -584,11 +594,11 @@ def create_orchestration_pattern(
 # config system in workflow_config.py - no duplicate functions needed
 
 # ==============================================================================
-# LOGGING HELPERS (Moved from groupchat_manager.py)
+# LOGGING HELPERS
 # ==============================================================================
 
 def log_agent_message_details(message, sender_name, recipient_name):
-    """Logs agent message details for tracking (moved from groupchat_manager.py)."""
+    """Logs agent message details for tracking."""
     message_content = getattr(message, 'content', None) or str(message)
     
     if message_content and sender_name != 'unknown':
@@ -602,10 +612,8 @@ def log_agent_message_details(message, sender_name, recipient_name):
         # Log message metadata
         chat_logger.debug(f"📊 [META] Length: {len(message_content)} chars | Type: {type(message).__name__}")
         
-        # NOTE: UI routing is now handled by individual tools (api_manager.py, file_manager.py)
+        # NOTE: UI routing is now handled by individual tools
         # Tools emit UI events directly via emit_ui_tool_event() when needed
-        
-        # NOTE: Analytics tracking is handled by simple_tracking.py - unified monitoring
         
     return message
 

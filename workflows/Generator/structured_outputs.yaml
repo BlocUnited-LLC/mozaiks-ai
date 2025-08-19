@@ -17,7 +17,7 @@ structured_outputs:
           values: ["ALWAYS", "NEVER", "TERMINATE"]
         max_consecutive_auto_reply:
           type: int
-          default: 1
+          default: 10
 
     AgentsOutput:
       type: model
@@ -32,15 +32,16 @@ structured_outputs:
         name:
           type: str
           description: "Variable name"
-        source:
+        extraction_code:
           type: str
-          description: "Data source for this variable"
+          description: "Python code to extract value (e.g., \"concept_data.get('ProjectTitle', '')\")"
         description:
           type: str
           description: "Description of what this variable represents"
         default_value:
           type: str
           description: "Default value if extraction fails"
+          default: "''"
 
     ContextVariablesOutput:
       type: model
@@ -57,19 +58,18 @@ structured_outputs:
           description: "Source agent name"
         target_agent:
           type: str
-          description: "Target agent name, 'user', or 'terminate'"
+          description: "Target agent name or 'user' for user handoff"
         handoff_type:
           type: literal
-          values: ["after_work", "condition"]
-          description: "Type of handoff"
+          values: ["llm_condition", "after_work"]
+          description: "Type of handoff condition"
         condition:
           type: optional_str
           default: null
-          description: "Condition for handoff (if handoff_type is condition)"
-        transition_target:
-          type: optional_str
-          default: null
-          description: "Specific transition target for complex routing"
+          description: "LLM condition prompt if handoff_type is llm_condition"
+        description:
+          type: str
+          description: "Human-readable description of the handoff rule"
 
     HandoffsOutput:
       type: model
@@ -107,8 +107,95 @@ structured_outputs:
           default: null
           description: "Initial workflow message (null for UserDriven)"
 
+    StructuredModelField:
+      # Hints for authors (not enforced by schema):
+      agent: "Agent's name this structured output supports"
+      agent_defnition: "Definition/model name for that agent"
+      type: model
+      fields:
+        name:
+          type: str
+          description: "Field name"
+        type:
+          type: str
+          description: "Type (e.g., str, int, bool, list, optional_str)"
+        description:
+          type: str
+          description: "Brief description of what this field represents"
+
+    StructuredModelDefinition:
+      type: model
+      fields:
+        model_name:
+          type: str
+          description: "Model/definition name"
+        fields:
+          type: list
+          items: StructuredModelField
+
+    StructuredAgentOutputs:
+      type: model
+      fields:
+        models:
+          type: list
+          items: StructuredModelDefinition
+        registry:
+          type: list
+          items:
+            type: model
+            fields:
+              agent:
+                type: str
+                description: "Agent's name the model is for"
+              agent_defnition:
+                type: str
+                description: "Definition/model name linked to that agent"
+
+    FileSpec:
+      type: model
+      fields:
+        filename:
+          type: str
+          description: "Relative filename to create inside the workflow folder"
+        filecontent:
+          type: str
+          description: "Complete file contents to write"
+        language:
+          type: optional_str
+          default: null
+          description: "Optional hint for code type (e.g., 'python' for .py, 'javascript' for .js)"
+        purpose:
+          type: optional_str
+          default: null
+          description: "Optional short purpose of this file"
+
+    ToolsAgentOutput:
+      type: model
+      fields:
+        files:
+          type: list
+          items: FileSpec
+        visual_agents:
+          type: list
+          items: str
+
+    ToolsManagerAgentOutput:
+      type: model
+      fields:
+        tools_config:
+          type: str
+          description: "JSON string containing tools configuration (ui_tools, lifecycle_tools, backend_tools)"
+        ui_config:
+          type: str
+          description: "JSON string containing UI config (visual_agents, ui_capable_agents)"
+
+# Registry for structured outputs
+
   registry:
     ContextVariablesAgent: ContextVariablesOutput
     AgentsAgent: AgentsOutput
     HandoffsAgent: HandoffsOutput
     OrchestratorAgent: OrchestratorOutput
+    StructuredOutputsAgent: StructuredAgentOutputs
+    ToolsAgent: ToolsAgentOutput
+    ToolsManagerAgent: ToolsManagerAgentOutput

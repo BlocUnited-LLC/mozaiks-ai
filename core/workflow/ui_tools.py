@@ -9,13 +9,12 @@ import asyncio
 import uuid
 import logging
 from typing import Dict, Any, Optional
+import uuid
 
 # Import SimpleTransport for direct communication and UnifiedEventDispatcher for logging
 from core.transport.simple_transport import SimpleTransport
 from core.events.unified_event_dispatcher import emit_ui_tool_event as dispatch_ui_tool_event
-from logs.logging_config import get_business_logger
-
-business_logger = get_business_logger("ui_tools")
+from logs.logging_config import get_workflow_logger, get_chat_logger
 
 class UIToolError(Exception):
     """Custom exception for UI tool errors."""
@@ -45,14 +44,16 @@ async def emit_ui_tool_event(
         The unique event ID for this interaction.
     """
     event_id = f"{tool_id}_{str(uuid.uuid4())[:8]}"
+    wf_logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id)
+    chat_logger = get_chat_logger("ui_tools")
     
     try:
         transport = await SimpleTransport.get_instance()
     except Exception as e:
-        business_logger.error(f"❌ [UI_TOOLS] Failed to get SimpleTransport instance: {e}")
+        wf_logger.error(f"❌ [UI_TOOLS] Failed to get SimpleTransport instance: {e}")
         raise UIToolError(f"SimpleTransport not available: {e}")
 
-    business_logger.info(f"🎯 [UI_TOOLS] Emitting UI tool event: {tool_id} (Event: {event_id}, Display: {display})")
+    chat_logger.info(f"🎯 UI tool event: {tool_id} (event={event_id}, display={display})")
     
     try:
         # 1. Send the event to the UI for immediate rendering
@@ -74,11 +75,11 @@ async def emit_ui_tool_event(
             chat_id=chat_id
         )
         
-        business_logger.info(f"✅ [UI_TOOLS] Successfully emitted and logged UI tool event: {event_id}")
+        wf_logger.info(f"✅ [UI_TOOLS] Emitted + logged UI tool event: {event_id}")
         return event_id
         
     except Exception as e:
-        business_logger.error(f"❌ [UI_TOOLS] Failed to emit UI tool event '{event_id}': {e}", exc_info=True)
+        wf_logger.error(f"❌ [UI_TOOLS] Failed to emit UI tool event '{event_id}': {e}", exc_info=True)
         raise UIToolError(f"Failed to emit UI tool event: {e}")
 
 async def wait_for_ui_tool_response(event_id: str) -> Dict[str, Any]:
@@ -91,18 +92,20 @@ async def wait_for_ui_tool_response(event_id: str) -> Dict[str, Any]:
     Returns:
         The response data submitted by the user from the UI component.
     """
-    business_logger.info(f"⏳ [UI_TOOLS] Waiting for UI tool response for event: {event_id}")
+    wf_logger = get_workflow_logger(workflow_name="unknown")
+    chat_logger = get_chat_logger("ui_tools")
+    wf_logger.info(f"⏳ [UI_TOOLS] Waiting for UI tool response for event: {event_id}")
     
     try:
         transport = await SimpleTransport.get_instance()
         
         # The transport layer manages the futures for waiting.
         response = await transport.wait_for_ui_tool_response(event_id)
-        
-        business_logger.info(f"✅ [UI_TOOLS] Received UI tool response for event: {event_id}")
-        business_logger.debug(f"🔍 [UI_TOOLS] Response data: {response}")
+        chat_logger.info(f"📨 UI tool response received (event={event_id})")
+        wf_logger.info(f"✅ [UI_TOOLS] Received UI tool response for event: {event_id}")
+        wf_logger.debug(f"🔍 [UI_TOOLS] Response data: {response}")
         
         return response
     except Exception as e:
-        business_logger.error(f"❌ [UI_TOOLS] Error waiting for UI tool response for event '{event_id}': {e}", exc_info=True)
+        wf_logger.error(f"❌ [UI_TOOLS] Error waiting for UI tool response for event '{event_id}': {e}", exc_info=True)
         raise UIToolError(f"Error waiting for UI tool response: {e}")

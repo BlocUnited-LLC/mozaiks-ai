@@ -6,9 +6,9 @@ Your project currently uses "events" in three distinct contexts that need to be 
 
 ### 1. **Business Logic Events** (Logging/Monitoring)
 - **Purpose**: Application lifecycle and monitoring
-- **Location**: `logs/logging_config.py` - `log_business_event()`
+- **Location**: `core/events/unified_event_dispatcher.py` via `emit_business_event()`
 - **Examples**: `SERVER_STARTUP_COMPLETED`, `WORKFLOW_SYSTEM_READY`
-- **Type**: **Logging events** for observability
+- **Type**: **Logging events** for observability (handled by BusinessLogHandler)
 
 ### 2. **AG2 Runtime Events** (Core Workflow Events)
 - **Purpose**: Real AG2 agent communication and workflow execution
@@ -26,7 +26,7 @@ Your project currently uses "events" in three distinct contexts that need to be 
 
 1. **Terminology Confusion**: All three use "event_type" but serve different purposes
 2. **Mixed Responsibilities**: Events are used for logging, persistence, AND UI interaction
-3. **Legacy Code**: `load_chat_state` is outdated and can be removed
+3. **Legacy Code**: `load_chat_state` is outdated and should be removed
 4. **Inconsistent Patterns**: Different event handling patterns across the system
 
 ## Proposed Unified Architecture
@@ -66,7 +66,7 @@ ui_tool_id="agent_api_key_input"        # UI interaction
 │  │ Log Files       │  │ Event Stream    │  │ WebSocket/API   │  │
 │  │ • business.log  │  │ • Persistence   │  │ • Transport     │  │
 │  │ • performance   │  │ • Real-time     │  │ • Component     │  │
-│  │ • errors.log    │  │ • Recovery      │  │   Registry      │  │
+│  │ • workflows.log │  │ • Recovery      │  │   Registry      │  │
 │  └─────────────────┘  └─────────────────┘  └─────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -74,8 +74,8 @@ ui_tool_id="agent_api_key_input"        # UI interaction
 ### 3. **Implementation Plan**
 
 #### Phase 1: Remove Legacy Code
-- Remove `load_chat_state` from `shared_app.py` (only uses for debugging API)
-- Clean up any backward compatibility code
+- Remove `load_chat_state` from `shared_app.py` (only used for a deprecated debugging API)
+- Remove any backward-compat shims and transitional branches
 
 #### Phase 2: Rename Event Types for Clarity
 - Business events: `log_event_type`
@@ -85,7 +85,7 @@ ui_tool_id="agent_api_key_input"        # UI interaction
 #### Phase 3: Consolidate Event Handlers
 - Create unified event dispatcher
 - Separate concerns cleanly
-- Maintain backward compatibility during transition
+- Do not retain backward-compat layers; migrate in place for simplicity
 
 #### Phase 4: Documentation and Testing
 - Update all documentation

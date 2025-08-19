@@ -20,15 +20,12 @@ from .file_manager import workflow_file_manager
 
 # Import enhanced logging
 from logs.logging_config import (
-    get_business_logger, 
-    get_performance_logger,
-    log_business_event,
-    log_performance_metric
+    get_workflow_logger,
 )
 
 # Get specialized loggers
-business_logger = get_business_logger("workflow_handoffs")
-performance_logger = get_performance_logger("workflow_handoffs")
+business_logger = get_workflow_logger("workflow_handoffs")
+performance_logger = get_workflow_logger("performance.workflow_handoffs")
 logger = logging.getLogger(__name__)
 
 class HandoffManager:
@@ -78,14 +75,11 @@ class HandoffManager:
             
             business_logger.info(f"🔗 [HANDOFFS] Found {len(handoff_rules)} handoff rules for {workflow_name}")
             
-            log_business_event(
-                log_event_type="HANDOFFS_YAML_LOADING_STARTED",
-                description="Starting handoff application from YAML configuration",
-                context={
-                    "workflow_name": workflow_name,
-                    "rules_count": len(handoff_rules),
-                    "agent_count": len(agents)
-                }
+            business_logger.info(
+                "HANDOFFS_YAML_LOADING_STARTED: Starting handoff application from YAML configuration",
+                workflow_name=workflow_name,
+                rules_count=len(handoff_rules),
+                agent_count=len(agents),
             )
             
             # Group rules by source agent for efficient processing
@@ -126,40 +120,32 @@ class HandoffManager:
             
             total_time = (time.time() - handoff_start) * 1000
             
-            log_performance_metric(
+            performance_logger.info(
+                "handoffs_yaml_application_duration",
                 metric_name="handoffs_yaml_application_duration",
-                value=total_time,
+                value=float(total_time),
                 unit="ms",
-                context={
-                    "workflow_name": workflow_name,
-                    "rules_count": len(handoff_rules),
-                    "agents_configured": applied_count
-                }
+                workflow_name=workflow_name,
+                rules_count=len(handoff_rules),
+                agents_configured=applied_count,
             )
             
             business_logger.info(f"✅ [HANDOFFS] Successfully applied handoffs to {applied_count} agents in {total_time:.1f}ms")
             
-            log_business_event(
-                log_event_type="HANDOFFS_YAML_LOADING_COMPLETED",
-                description="Handoff application from YAML completed successfully",
-                context={
-                    "workflow_name": workflow_name,
-                    "rules_applied": len(handoff_rules),
-                    "agents_configured": applied_count,
-                    "duration_ms": total_time
-                }
+            business_logger.info(
+                "HANDOFFS_YAML_LOADING_COMPLETED: Handoff application from YAML completed successfully",
+                workflow_name=workflow_name,
+                rules_applied=len(handoff_rules),
+                agents_configured=applied_count,
+                duration_ms=total_time,
             )
             
         except Exception as e:
             business_logger.error(f"❌ [HANDOFFS] Failed to apply handoffs for {workflow_name}: {e}", exc_info=True)
-            log_business_event(
-                log_event_type="HANDOFFS_YAML_LOADING_FAILED",
-                description="Handoff application from YAML failed",
-                context={
-                    "workflow_name": workflow_name,
-                    "error": str(e)
-                },
-                level="ERROR"
+            business_logger.error(
+                "HANDOFFS_YAML_LOADING_FAILED: Handoff application from YAML failed",
+                workflow_name=workflow_name,
+                error=str(e),
             )
             # Don't raise - handoffs are optional and shouldn't break the workflow
     

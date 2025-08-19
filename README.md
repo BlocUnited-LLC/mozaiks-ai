@@ -26,7 +26,7 @@ Our architecture is designed around a "strategically lean" philosophy, ensuring 
 -   Python 3.10+
 -   MongoDB instance
 -   Node.js and npm (for the ChatUI)
--   An OpenAI API key (or other compatible LLM provider)
+-   An OpenAI API key (or other LLM provider)
 
 ### Installation
 
@@ -43,6 +43,11 @@ Our architecture is designed around a "strategically lean" philosophy, ensuring 
 
 3.  **Configure Environment Variables:**
     Create a `.env` file in the root directory and add your configuration, including your MongoDB connection string and LLM API keys.
+
+    Logging format toggle:
+    - Set `LOGS_AS_JSON=true` to write structured JSON lines to the `.log` files (content changes, filenames stay `.log`)
+    - Leave it unset or `false` for human-readable pretty text in the `.log` files
+    - Console output is always pretty and colorized in development
 
 4.  **Run the ChatUI:**
     ```bash
@@ -70,6 +75,62 @@ Notes:
 - Dockerfile is at `infra/docker/Dockerfile`.
 - Collector config is at `infra/otel/otel-collector-config.yaml` and exports to console logs by default.
 - Set `OPENLIT_ENABLED=true` to emit OTEL telemetry; otherwise the app runs without telemetry.
+- File logs map to `logs/logs` on the host by default. You can override the directory with `LOGS_BASE_DIR`. Combine with `LOGS_AS_JSON` to switch file format inside containers.
+
+### Viewing Logs
+
+- Files: `logs/logs/*.log` (filenames are constant)
+- Content format:
+    - Pretty text (default)
+    - JSON Lines (when `LOGS_AS_JSON=true`)
+- Console: pretty, emoji-enhanced output with file and line context
+
+Example (Windows PowerShell):
+
+```powershell
+$env:LOGS_AS_JSON = "1"; python run_server.py
+# or
+Remove-Item Env:LOGS_AS_JSON; python run_server.py
+```
+
+### Logging quickstart
+
+- Two file sinks only:
+    - `workflows.log` — operational workflow/runtime logs (no chat transcripts)
+    - `agent_chat.log` — chat transcripts and agent/user messages
+- Filenames are fixed; content switches between pretty text and JSON via `LOGS_AS_JSON`.
+- Override the logs folder with `LOGS_BASE_DIR` (default is `logs/logs` relative to this repo).
+
+Windows PowerShell examples:
+
+```powershell
+# Write JSONL to the default location
+$env:LOGS_AS_JSON = "true"; python run_server.py
+
+# Write pretty text logs to a custom folder
+$env:LOGS_AS_JSON = "false"; $env:LOGS_BASE_DIR = "C:\MozaiksLogs"; python run_server.py
+```
+
+Docker Compose volume mapping tips:
+
+- If you do not set `LOGS_BASE_DIR`, map the container folder `/app/logs/logs` to a host folder.
+- If you set `LOGS_BASE_DIR` (for example `/data/logs` inside the container), map that path instead.
+
+Examples (compose snippet):
+
+```yaml
+services:
+    app:
+        environment:
+            - LOGS_AS_JSON=true
+            # Optional: redirect logs inside the container
+            # - LOGS_BASE_DIR=/data/logs
+        volumes:
+            # Default location (no LOGS_BASE_DIR):
+            - ./logs/logs:/app/logs/logs
+            # Or, when using LOGS_BASE_DIR=/data/logs
+            # - ./logs/logs:/data/logs
+```
 
 ## Documentation
 
@@ -176,7 +237,7 @@ MozaiksAI/
 ### Architecture Principles
 - **Modularity:** Each component is self-contained and replaceable
 - **Protocol-Agnostic:** Transport layer abstracts away communication details  
-- **AG2 Compatibility:** Full support for AutoGen groupchat and IOStream patterns
+- **AG2 Integration:** Full support for AutoGen groupchat and IOStream patterns
 - **Manifest-Driven:** Tools and components registered via configuration files
 - **Event-Filtered:** Only user-appropriate messages reach the frontend
 

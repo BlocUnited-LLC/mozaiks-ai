@@ -13,8 +13,7 @@ This package provides a centralized event dispatcher for all event types:
 
 Usage Examples:
 
-    # Business events (replaces log_business_event)
-    from core.events import emit_business_event
+    # Business events from core.events import emit_business_event
     await emit_business_event("WORKFLOW_STARTED", "Workflow initialized")
     
     # UI tool events

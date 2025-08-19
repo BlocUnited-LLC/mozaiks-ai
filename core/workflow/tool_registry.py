@@ -19,6 +19,8 @@ except ImportError:
     # Fallback for older AG2 versions
     Tool = None
 
+from logs.logging_config import get_workflow_logger
+
 logger = logging.getLogger(__name__)
 
 class ToolTrigger(str, Enum):
@@ -79,6 +81,11 @@ class WorkflowToolRegistry:
         # Use modular YAML configuration instead of workflow.json
         from .file_manager import workflow_file_manager
         self.file_manager = workflow_file_manager
+        # Contextual workflow logger for tool registry operations
+        self.wf_logger = get_workflow_logger(
+            workflow_name=self.workflow_name,
+            component="tool_registry",
+        )
         
     def load_configuration(self):
         """Load tool configuration from modular YAML files"""
@@ -87,7 +94,7 @@ class WorkflowToolRegistry:
             workflow_config = self.file_manager.load_workflow(self.workflow_name)
             
             if not workflow_config:
-                logger.warning(f"No modular YAML configuration found for workflow: {self.workflow_name}")
+                self.wf_logger.warning(f"No modular YAML configuration found for workflow: {self.workflow_name}")
                 return
             
             # Load agent tools from multiple possible schemas
@@ -102,7 +109,7 @@ class WorkflowToolRegistry:
                     try:
                         trigger_enum = ToolTrigger(trigger_value)
                     except ValueError:
-                        logger.error(f"❌ Invalid lifecycle_event '{trigger_value}' for tool '{tool_name}'. Valid values: {[t.value for t in ToolTrigger]}")
+                        self.wf_logger.error(f"❌ Invalid lifecycle_event '{trigger_value}' for tool '{tool_name}'. Valid values: {[t.value for t in ToolTrigger]}")
                         continue
                         
                     if trigger_enum not in self.lifecycle_tools:
@@ -114,12 +121,12 @@ class WorkflowToolRegistry:
                         description=tool_config.get("description", "")
                     )
                     self.lifecycle_tools[trigger_enum].append(tool)
-                    logger.info(f"📌 Registered lifecycle tool '{tool_name}' for trigger '{trigger_value}'")
+                    self.wf_logger.info(f"📌 Registered lifecycle tool '{tool_name}' for trigger '{trigger_value}'")
                     
-            logger.info(f"📋 Loaded configuration for workflow '{self.workflow_name}': {len(self.agent_tools)} agent mappings, {len(self.lifecycle_tools)} lifecycle triggers")
+            self.wf_logger.info(f"📋 Loaded configuration for workflow '{self.workflow_name}': {len(self.agent_tools)} agent mappings, {len(self.lifecycle_tools)} lifecycle triggers")
             
         except Exception as e:
-            logger.error(f"❌ Failed to load workflow configuration: {e}")
+            self.wf_logger.error(f"❌ Failed to load workflow configuration: {e}")
 
     def _load_agent_tools_from_config(self, config):
         """Load agent tools from various configuration schemas"""
@@ -150,8 +157,11 @@ class WorkflowToolRegistry:
                 else:
                     tool = ToolConfig(**tool_config)
                 self.agent_tools[agent_name].append(tool)
-                
-        logger.info(f"🔧 Processed tools for {len(all_tools)} agent types: {list(all_tools.keys())}")
+
+        # Summary log for processed tools
+        self.wf_logger.info(
+            f"🔧 Processed tools for {len(all_tools)} agent types: {list(all_tools.keys())}"
+        )
             
     def register_agent_tools(self, agents: List[Any]):
         """Register tools for specific agents"""
@@ -166,7 +176,7 @@ class WorkflowToolRegistry:
                 agent = agent_dict[agent_name]
                 self._register_tools_for_agent(agent, tools)
             else:
-                logger.warning(f"Agent '{agent_name}' not found in agent list")
+                self.wf_logger.warning(f"Agent '{agent_name}' not found in agent list")
                 
     def _register_tools_for_agent(self, agent: Any, tools: List[ToolConfig]):
         """Register a list of tools for a specific agent using AG2's modern Tool system
@@ -177,18 +187,81 @@ class WorkflowToolRegistry:
         - Essential for diagnosing AG2 tool system issues
         """
         ENABLE_TOOL_DEBUG = True  # Set to True for detailed tool registration debugging
-        
+        # Collect UI-aware tools to surface to runtime/LLM (via set_ui_tools when available)
+        ui_tool_entries: List[Dict[str, Any]] = []
+
         for tool_config in tools:
             try:
                 function = tool_config.load_function()
-                
+
+                # If this is a UI tool, provide a conservative auto-emit wrapper that
+                # only triggers when the tool returns a component descriptor. Tools that
+                # already emit UI events won't be affected because they typically return
+                # user-submitted data, not a component description.
+                def _wrap_for_ui_if_needed(fn, cfg: ToolConfig):
+                    has_ui_meta = getattr(cfg, 'ui_tool_id', None) or getattr(cfg, 'display', None)
+                    if not has_ui_meta:
+                        return fn
+
+                    async def _auto_emit_async(*args, **kwargs):
+                        result = await fn(*args, **kwargs)
+                        try:
+                            if isinstance(result, dict) and any(k in result for k in ("component", "ui_component", "ui_tool_id")):
+                                component = result.get("component") or result.get("ui_component") or getattr(cfg, 'ui_tool_id', None) or fn.__name__
+                                display = result.get("display") or getattr(cfg, 'display', None) or 'inline'
+                                payload = result.get("payload") or {k: v for k, v in result.items() if k not in ("component", "ui_component", "display")}
+                                chat_id = kwargs.get("chat_id")
+                                workflow_name = kwargs.get("workflow_name", getattr(self, 'workflow_name', 'unknown'))
+                                # Emit exactly once per call
+                                try:
+                                    from .ui_tools import emit_ui_tool_event as _emit
+                                    event_id = await _emit(component, payload, display=display, chat_id=chat_id, workflow_name=workflow_name)
+                                    result = {"status": "emitted", "event_id": event_id, **result}
+                                except Exception as _e:
+                                    logger.warning(f"UI auto-emit failed for tool '{fn.__name__}': {_e}")
+                        except Exception:
+                            # Best-effort; never break the tool flow
+                            pass
+                        return result
+
+                    def _auto_emit_sync(*args, **kwargs):
+                        result = fn(*args, **kwargs)
+                        try:
+                            if isinstance(result, dict) and any(k in result for k in ("component", "ui_component", "ui_tool_id")):
+                                # Run the async emitter in current loop if available
+                                async def _emit_once():
+                                    component = result.get("component") or result.get("ui_component") or getattr(cfg, 'ui_tool_id', None) or fn.__name__
+                                    display = result.get("display") or getattr(cfg, 'display', None) or 'inline'
+                                    payload = result.get("payload") or {k: v for k, v in result.items() if k not in ("component", "ui_component", "display")}
+                                    chat_id = kwargs.get("chat_id")
+                                    workflow_name = kwargs.get("workflow_name", getattr(self, 'workflow_name', 'unknown'))
+                                    try:
+                                        from .ui_tools import emit_ui_tool_event as _emit
+                                        event_id = await _emit(component, payload, display=display, chat_id=chat_id, workflow_name=workflow_name)
+                                        result.update({"status": "emitted", "event_id": event_id})
+                                    except Exception as _e:
+                                        logger.warning(f"UI auto-emit failed for tool '{fn.__name__}': {_e}")
+                                try:
+                                    loop = asyncio.get_running_loop()
+                                    loop.create_task(_emit_once())
+                                except RuntimeError:
+                                    # If no running loop, run synchronously
+                                    asyncio.run(_emit_once())
+                        except Exception:
+                            pass
+                        return result
+
+                    return _auto_emit_async if asyncio.iscoroutinefunction(fn) else _auto_emit_sync
+
+                function = _wrap_for_ui_if_needed(function, tool_config)
+
                 if ENABLE_TOOL_DEBUG:
-                    logger.info(f"🔍 [TOOL-DEBUG] Registering '{function.__name__}' for agent '{agent.name}'")
-                    logger.info(f"🔍 [TOOL-DEBUG] Tool description: {tool_config.description}")
-                    logger.info(f"🔍 [TOOL-DEBUG] Agent type: {type(agent).__name__}")
-                    logger.info(f"🔍 [TOOL-DEBUG] Function type: {type(function)}")
-                    logger.info(f"🔍 [TOOL-DEBUG] Is async? {asyncio.iscoroutinefunction(function)}")
-                
+                    self.wf_logger.info(f"🔍 [TOOL-DEBUG] Registering '{function.__name__}' for agent '{agent.name}'")
+                    self.wf_logger.info(f"🔍 [TOOL-DEBUG] Tool description: {tool_config.description}")
+                    self.wf_logger.info(f"🔍 [TOOL-DEBUG] Agent type: {type(agent).__name__}")
+                    self.wf_logger.info(f"🔍 [TOOL-DEBUG] Function type: {type(function)}")
+                    self.wf_logger.info(f"🔍 [TOOL-DEBUG] Is async? {asyncio.iscoroutinefunction(function)}")
+
                 # Use AG2's modern Tool class if available
                 if Tool is not None:
                     # Create a Tool instance from the function
@@ -197,32 +270,68 @@ class WorkflowToolRegistry:
                         description=tool_config.description or function.__doc__ or f"Tool: {function.__name__}",
                         func_or_tool=function
                     )
-                    
+
                     # Register for both LLM and execution (full tool registration)
                     tool.register_tool(agent)
-                    
+
                     if ENABLE_TOOL_DEBUG:
-                        logger.info(f"🔧 [TOOL-DEBUG] Successfully registered modern Tool '{function.__name__}'")
+                        self.wf_logger.info(f"🔧 [TOOL-DEBUG] Successfully registered modern Tool '{function.__name__}'")
                     else:
-                        logger.info(f"🔧 [MODERN] Registered Tool '{function.__name__}' for agent '{agent.name}' (LLM + execution)")
-                    
+                        self.wf_logger.info(f"🔧 [MODERN] Registered Tool '{function.__name__}' for agent '{agent.name}' (LLM + execution)")
+
                 else:
                     # Fallback to old registration method
                     function_map = {function.__name__: function}
                     agent.register_function(function_map)
-                    
+
                     if ENABLE_TOOL_DEBUG:
-                        logger.info(f"🔧 [TOOL-DEBUG] Successfully registered function '{function.__name__}'")
+                        self.wf_logger.info(f"🔧 [TOOL-DEBUG] Successfully registered function '{function.__name__}'")
                     else:
-                        logger.info(f"🔧 Registered function '{function.__name__}' for agent '{agent.name}'")
-                    
+                        self.wf_logger.info(f"🔧 Registered function '{function.__name__}' for agent '{agent.name}'")
+
+                # Detect and collect UI tools declared via YAML (ui_tool_id/display)
+                if getattr(tool_config, 'ui_tool_id', None) or getattr(tool_config, 'display', None):
+                    entry = {
+                        'name': function.__name__,
+                        'ui_tool_id': getattr(tool_config, 'ui_tool_id', None) or function.__name__,
+                        'display': getattr(tool_config, 'display', None) or 'inline',
+                    }
+                    ui_tool_entries.append(entry)
+
             except Exception as e:
-                logger.error(f"❌ Failed to register tool for agent '{agent.name}': {e}")
-                logger.error(f"   Tool path: {tool_config.path}")
-                logger.error(f"   Tool description: {tool_config.description}")
+                self.wf_logger.error(f"❌ Failed to register tool for agent '{agent.name}': {e}")
+                self.wf_logger.error(f"   Tool path: {tool_config.path}")
+                self.wf_logger.error(f"   Tool description: {tool_config.description}")
                 if ENABLE_TOOL_DEBUG:
                     import traceback
-                    logger.error(f"   Full traceback: {traceback.format_exc()}")
+                    self.wf_logger.error(f"   Full traceback: {traceback.format_exc()}")
+
+        # Surface UI tools to the agent/runtime via set_ui_tools when available
+        try:
+            if ui_tool_entries:
+                if hasattr(agent, 'set_ui_tools') and callable(getattr(agent, 'set_ui_tools')):
+                    # Try the richest form first (list of dicts)
+                    try:
+                        agent.set_ui_tools(ui_tool_entries)  # type: ignore[attr-defined]
+                        self.wf_logger.info(
+                            f"🛩 Marked {len(ui_tool_entries)} UI tool(s) on agent '{agent.name}' via set_ui_tools (entries)"
+                        )
+                    except TypeError:
+                        # Fallback to just names if signature differs
+                        agent.set_ui_tools([e['name'] for e in ui_tool_entries])  # type: ignore[attr-defined]
+                        self.wf_logger.info(
+                            f"🛩 Marked {len(ui_tool_entries)} UI tool(s) on agent '{agent.name}' via set_ui_tools (names)"
+                        )
+                else:
+                    # Store on agent for downstream consumers (e.g., orchestrator/UI)
+                    setattr(agent, '_ui_tools', ui_tool_entries)
+                    self.wf_logger.info(
+                        f"🛩 Stored {len(ui_tool_entries)} UI tool(s) on agent '{agent.name}' (_ui_tools)"
+                    )
+        except Exception as mark_err:
+            self.wf_logger.warning(
+                f"⚠️ Unable to surface UI tools on agent '{agent.name}': {mark_err}"
+            )
                 
     def get_lifecycle_tools(self, trigger: ToolTrigger) -> List[ToolConfig]:
         """Get tools for specific lifecycle trigger"""
@@ -234,7 +343,7 @@ class WorkflowToolRegistry:
         if not tools:
             return
             
-        logger.info(f"🎯 Executing {len(tools)} lifecycle tools for trigger '{trigger}'")
+        self.wf_logger.info(f"🎯 Executing {len(tools)} lifecycle tools for trigger '{trigger}'")
         for tool in tools:
             try:
                 function = tool.load_function()
@@ -250,11 +359,11 @@ class WorkflowToolRegistry:
                 
                 # Log the result if available
                 if result is not None:
-                    logger.info(f"✅ Executed lifecycle tool '{function.__name__}' for trigger '{trigger}': {result}")
+                    self.wf_logger.info(f"✅ Executed lifecycle tool '{function.__name__}' for trigger '{trigger}': {result}")
                 else:
-                    logger.info(f"✅ Executed lifecycle tool '{function.__name__}' for trigger '{trigger}'")
+                    self.wf_logger.info(f"✅ Executed lifecycle tool '{function.__name__}' for trigger '{trigger}'")
             except Exception as e:
-                logger.error(f"❌ Failed to execute lifecycle tool '{tool.path}': {e}")
+                self.wf_logger.error(f"❌ Failed to execute lifecycle tool '{tool.path}': {e}")
 
     def get_agent_tool_info(self, agent) -> Dict:
         """Get detailed tool information for debugging"""
@@ -264,6 +373,7 @@ class WorkflowToolRegistry:
             'function_map': {},
             'llm_config_tools': [],
             'modern_tools': [],
+            'ui_tools': [],
             'has_registered_tools': False,
             'total_tools': 0
         }
@@ -286,5 +396,16 @@ class WorkflowToolRegistry:
             info['llm_config_tools'] = [t.get('function', {}).get('name', 'Unknown') for t in tools]
             info['has_registered_tools'] = info['has_registered_tools'] or len(info['llm_config_tools']) > 0
             info['total_tools'] += len(info['llm_config_tools'])
+
+        # Include UI tools surfaced via set_ui_tools or stored on agent
+        try:
+            if hasattr(agent, 'get_ui_tools') and callable(getattr(agent, 'get_ui_tools')):
+                ui_tools_val = agent.get_ui_tools()  # type: ignore[attr-defined]
+                info['ui_tools'] = ui_tools_val if isinstance(ui_tools_val, list) else []
+            elif hasattr(agent, '_ui_tools'):
+                info['ui_tools'] = list(getattr(agent, '_ui_tools') or [])
+        except Exception:
+            # Best-effort only
+            pass
         
         return info

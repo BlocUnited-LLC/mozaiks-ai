@@ -92,7 +92,7 @@ class WorkflowConfig {
     // Direct hit (exact case or lowercase alias already inserted)
     const direct = this.configs.get(workflowname);
     if (direct) return direct;
-    // Fallback: case-insensitive scan (handles legacy entries if any)
+    // Fallback: case-insensitive scan
     const target = workflowname.toLowerCase();
     for (const [k, v] of this.configs.entries()) {
       if (k.toLowerCase() === target) return v;

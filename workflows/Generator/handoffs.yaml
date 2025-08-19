@@ -1,6 +1,18 @@
 handoffs:
   handoff_rules:
     - source_agent: ContextAgent
+      target_agent: ToolsAgent
+      handoff_type: after_work
+      condition: null
+      transition_target: AgentTarget
+
+    - source_agent: ToolsAgent
+      target_agent: ToolsManagerAgent
+      handoff_type: after_work
+      condition: null
+      transition_target: AgentTarget
+
+    - source_agent: ToolsManagerAgent
       target_agent: AgentsAgent
       handoff_type: after_work
       condition: null
@@ -25,10 +37,18 @@ handoffs:
       transition_target: AgentTarget
 
     - source_agent: OrchestratorAgent
+      target_agent: StructuredOutputsAgent
+      handoff_type: after_work
+      condition: null
+      transition_target: AgentTarget
+
+    - source_agent: StructuredOutputsAgent
       target_agent: APIKeyAgent
       handoff_type: after_work
       condition: null
       transition_target: AgentTarget
+
+    
 
     - source_agent: APIKeyAgent
       target_agent: user

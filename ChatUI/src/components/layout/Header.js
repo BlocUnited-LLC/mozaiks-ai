@@ -211,11 +211,24 @@ const Header = ({
             </svg>
             <span className="font-semibold">Discover</span>
           </button>
-          <button onClick={handleDiscoverClick} className="md:hidden p-2 rounded-lg bg-white/5 border border-cyan-400/30 text-cyan-100 hover:bg-white/10 transition-colors" title="Discover">
-            <svg className="w-5 h-5 text-cyan-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.343 17.657l-1.414 1.414m12.728 0l-1.414-1.414M6.343 6.343L4.929 4.929" />
-              <circle cx="12" cy="12" r="5" stroke="currentColor" strokeWidth="2" />
-            </svg>
+          <button
+            onClick={toggleMobileMenu}
+            className="md:hidden p-2 rounded-lg bg-white/5 border border-cyan-400/30 text-cyan-100 hover:bg-white/10 transition-colors"
+            aria-expanded={mobileMenuOpen}
+            aria-controls="mobile-command-menu"
+            title={mobileMenuOpen ? "Close menu" : "Open menu"}
+          >
+            {mobileMenuOpen ? (
+              // Close (X) icon when open
+              <svg className="w-5 h-5 text-cyan-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            ) : (
+              // Hamburger icon when closed
+              <svg className="w-5 h-5 text-cyan-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            )}
           </button>
         </div>
       </div>
@@ -246,7 +259,7 @@ const Header = ({
           </div>
         </div>
         {mobileMenuOpen && (
-          <div className="mt-2 rounded-2xl border border-cyan-400/30 bg-white/5 backdrop-blur-md p-2 space-y-2">
+          <div id="mobile-command-menu" className="mt-2 rounded-2xl border border-cyan-400/30 bg-white/5 backdrop-blur-md p-2 space-y-2">
             <button
               onClick={() => { handleDiscoverClick(); setMobileMenuOpen(false); }}
               className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-gradient-to-r from-slate-900/80 via-cyan-900/60 to-slate-900/80 border border-cyan-400/40 text-cyan-100 font-semibold oxanium hover:bg-cyan-400/10 hover:border-cyan-300/80 transition-all duration-200 text-sm"

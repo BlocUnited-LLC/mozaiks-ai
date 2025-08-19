@@ -27,12 +27,12 @@ async def track_message_sending(
     Returns:
         The message (potentially modified)
     """
-    from logs.logging_config import get_business_logger, log_business_event
+    from logs.logging_config import get_workflow_logger
     
     sender_name = getattr(sender, 'name', 'Unknown') if sender else 'Unknown'
     recipient_name = getattr(recipient, 'name', 'Unknown') if recipient else 'Unknown'
     
-    business_logger = get_business_logger("message_tracker")
+    wf_logger = get_workflow_logger(workflow_name="Generator", agent_sender=sender_name, agent_recipient=recipient_name)
     
     # Check if this looks like a handoff (different agent types, not just chat manager)
     is_potential_handoff = (
@@ -44,7 +44,7 @@ async def track_message_sending(
     
     if is_potential_handoff:
         # This looks like a handoff between agents
-        business_logger.info(f"� HANDOFF DETECTED: {sender_name} → {recipient_name}")
+        wf_logger.info(f"🤝 HANDOFF DETECTED: {sender_name} → {recipient_name}")
         
         # Extract handoff reason from message if possible
         handoff_reason = "direct_message"
@@ -56,21 +56,18 @@ async def track_message_sending(
             if any(keyword in message.lower() for keyword in ['transfer', 'handoff', 'pass to', 'delegate']):
                 handoff_reason = "explicit_transfer"
         
-        # Log as business event for analytics
-        log_business_event(
-            log_event_type="AGENT_HANDOFF_DETECTED",
-            description=f"Agent handoff detected from {sender_name} to {recipient_name}",
-            context={
-                "sender_agent": sender_name,
-                "target_agent": recipient_name,
-                "handoff_reason": handoff_reason,
-                "handoff_type": "message_based",
-                "silent": silent
-            }
+        # Log context-rich workflow event
+        wf_logger.info(
+            "AGENT_HANDOFF_DETECTED",
+            sender_agent=sender_name,
+            target_agent=recipient_name,
+            handoff_reason=handoff_reason,
+            handoff_type="message_based",
+            silent=silent,
         )
     else:
         # Regular message tracking
-        business_logger.debug(f"📤 MESSAGE: {sender_name} → {recipient_name} (silent: {silent})")
+        wf_logger.debug(f"📤 MESSAGE: {sender_name} → {recipient_name} (silent: {silent})")
     
     # Return message unchanged
     return message

@@ -45,36 +45,15 @@ async def define_agents(workflow_name: str):
     
     logger.debug(f"🔧 [AGENTS] Loading {len(agent_configs)} agent definitions")
     
-    # Get all unique LLM config types needed
-    llm_configs = {}
-    
-    # Collect unique LLM config types
-    unique_llm_types = set()
-    for agent_name, agent_config in agent_configs.items():
-        llm_type = agent_config.get('llm_config_type', 'base')
-        unique_llm_types.add(llm_type)
-    
-    # Load all required LLM configs
-    logger.debug("🔧 [AGENTS] Loading LLM configs...")
-    
-    # Import structured outputs dynamically based on workflow
+    # Load a single base LLM config; per-agent structured configs will be resolved by registry
+    logger.debug("🔧 [AGENTS] Loading base LLM config...")
     try:
-        from .structured_outputs import get_llm_for_workflow
-        
-        for llm_type in unique_llm_types:
-            _, llm_config = await get_llm_for_workflow(workflow_name, llm_type)
-            llm_configs[llm_type] = llm_config
-            
-    except ImportError:
-        # Fallback to core config if structured outputs not available
-        logger.warning("📝 [AGENTS] Structured outputs not available, using core config")
-        from core.core_config import make_llm_config
-        
-        for llm_type in unique_llm_types:
-            _, llm_config = await make_llm_config()
-            llm_configs[llm_type] = llm_config
-    
-    logger.debug("✅ [AGENTS] LLM configs loaded")
+        from core.core_config import make_llm_config as _make_base_llm_config
+        _, base_llm_config = await _make_base_llm_config(stream=True)
+    except Exception as e:
+        logger.error(f"❌ [AGENTS] Failed to load base LLM config: {e}")
+        return {}
+    logger.debug("✅ [AGENTS] Base LLM config loaded")
     
     agents = {}
 
@@ -85,8 +64,13 @@ async def define_agents(workflow_name: str):
     for agent_name, agent_config in agent_configs.items():
         logger.debug(f"🔧 [AGENTS] Creating agent '{agent_name}' dynamically from YAML config...")
 
-        llm_type = agent_config.get('llm_config_type', 'base')
-        llm_config = llm_configs.get(llm_type, llm_configs.get('base'))
+        # Try to get structured model for this specific agent via registry
+        try:
+            from .structured_outputs import get_llm_for_workflow as _get_structured_llm
+            _, llm_config = await _get_structured_llm(workflow_name, 'base', agent_name=agent_name)
+        except Exception:
+            # Fallback to base llm_config
+            llm_config = base_llm_config
 
         # Create the agent with configuration from YAML
         agent = ConversableAgent(
@@ -102,7 +86,7 @@ async def define_agents(workflow_name: str):
         # Generic debugging for any agent created
         logger.debug(
             f"✅ [AGENTS] Created '{agent_name}' with human_input_mode='{agent.human_input_mode}', "
-            f"max_consecutive_auto_reply={agent.max_consecutive_auto_reply}, llm_type='{llm_type}'"
+            f"max_consecutive_auto_reply={agent.max_consecutive_auto_reply}, structured_model_bound={'response_format' in (llm_config or {})}"
         )
 
     # Completion log remains generic

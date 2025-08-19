@@ -124,24 +124,240 @@ def get_structured_outputs_for_workflow(workflow_name: str) -> Dict[str, type]:
     _, registry = _load_structured_outputs_config(workflow_name)
     return registry
 
-async def get_llm_for_workflow(workflow_name: str, flow: str = "base", enable_token_tracking: bool = False):
-    """Load LLM config with optional structured response model for a specific workflow.
-    Streaming is automatically enabled for agents with llm_config_type: 'base'"""
-    
-    # Check if this flow/agent should have streaming enabled (only for llm_config_type: 'base')
+def _parse_list_type(type_str: str) -> Optional[str]:
+    """Parse list type strings like 'list[ModelName]' and return the inner type name."""
+    type_str = type_str.strip()
+    if type_str.startswith('list[') and type_str.endswith(']'):
+        return type_str[len('list['):-1].strip()
+    return None
+
+def _build_dynamic_models_from_spec(
+    spec_models: List[Dict[str, Any]],
+    existing_models: Dict[str, type]
+) -> Dict[str, type]:
+    """Build Pydantic models dynamically from a StructuredAgentOutputs.models list.
+
+    The expected shape of each entry in spec_models:
+      { model_name: str, fields: [ { name, type, description?, items? } ] }
+
+    Supported field types:
+      - 'str', 'int', 'bool', 'optional_str'
+      - references to existing/dynamic models by name
+      - lists: either {'type': 'list', 'items': 'ModelName'} or 'list[ModelName]'
+    """
+    dynamic_models: Dict[str, type] = {}
+
+    def resolve_field(field: Dict[str, Any]) -> tuple:
+        f_type_str = field.get('type', '').strip()
+        f_desc = field.get('description')
+        field_kwargs = {}
+        if f_desc:
+            field_kwargs['description'] = f_desc
+
+        # Primitives
+        if f_type_str in ('str', 'string'):
+            return (str, Field(**field_kwargs))
+        if f_type_str == 'int':
+            return (int, Field(**field_kwargs))
+        if f_type_str == 'bool':
+            return (bool, Field(**field_kwargs))
+        if f_type_str in ('optional_str', 'Optional[str]'):
+            return (Optional[str], Field(**field_kwargs))
+
+        # list[...] shorthand
+        inner = _parse_list_type(f_type_str)
+        if inner:
+            # inner can be an existing model name or will be resolved in second pass
+            inner_model = existing_models.get(inner) or dynamic_models.get(inner)
+            if inner_model is not None:
+                return (List[inner_model], Field(**field_kwargs))
+            # unresolved for now; caller will re-run after more models are created
+            raise LookupError(inner)
+
+        # explicit {'type': 'list', 'items': 'ModelName'} form
+        if f_type_str == 'list':
+            items = field.get('items')
+            if not items:
+                raise ValueError("List field requires 'items' to specify element type")
+            inner_model = existing_models.get(items) or dynamic_models.get(items)
+            if inner_model is not None:
+                return (List[inner_model], Field(**field_kwargs))
+            raise LookupError(items)
+
+        # Model reference by name
+        ref = existing_models.get(f_type_str) or dynamic_models.get(f_type_str)
+        if ref is not None:
+            return (ref, Field(**field_kwargs))
+
+        # Unknown at this point; mark unresolved by raising LookupError with the ref name
+        raise LookupError(f_type_str)
+
+    # First pass: create models with resolvable fields, skip unresolved
+    pending: List[Dict[str, Any]] = []
+    for m in spec_models:
+        if not isinstance(m, dict):
+            continue
+        name_raw = m.get('model_name')
+        if not isinstance(name_raw, str) or not name_raw:
+            # Skip invalid entries
+            continue
+        name: str = name_raw
+        fields_spec_raw = m.get('fields', [])
+        fields_spec: List[Dict[str, Any]] = fields_spec_raw if isinstance(fields_spec_raw, list) else []
+        fields: Dict[str, Any] = {}
+        unresolved = False
+        for f in fields_spec:
+            if not isinstance(f, dict):
+                continue
+            fname_raw = f.get('name')
+            if not isinstance(fname_raw, str) or not fname_raw:
+                raise ValueError("Dynamic model field is missing a valid 'name'")
+            fname: str = fname_raw
+            try:
+                ftype = resolve_field(f)
+                fields[fname] = ftype
+            except LookupError:
+                unresolved = True
+                break
+        if unresolved:
+            pending.append({"model_name": name, "fields": fields_spec})
+        else:
+            dynamic_models[name] = create_model(name, **fields)
+
+    # Second pass: attempt to resolve remaining models now that some dynamics exist
+    if pending:
+        still_pending: List[Dict[str, Any]] = []
+        for m in pending:
+            name_raw = m.get('model_name')
+            if not isinstance(name_raw, str) or not name_raw:
+                continue
+            name: str = name_raw
+            fields_spec_raw = m.get('fields', [])
+            fields_spec: List[Dict[str, Any]] = fields_spec_raw if isinstance(fields_spec_raw, list) else []
+            fields: Dict[str, Any] = {}
+            unresolved = False
+            for f in fields_spec:
+                if not isinstance(f, dict):
+                    continue
+                fname_raw = f.get('name')
+                if not isinstance(fname_raw, str) or not fname_raw:
+                    raise ValueError("Dynamic model field is missing a valid 'name'")
+                fname: str = fname_raw
+                try:
+                    ftype = resolve_field(f)
+                    fields[fname] = ftype
+                except LookupError as le:
+                    unresolved = True
+                    break
+            if unresolved:
+                still_pending.append(m)
+            else:
+                dynamic_models[name] = create_model(name, **fields)
+
+        if still_pending:
+            unresolved_names = [m.get('model_name') for m in still_pending if isinstance(m.get('model_name'), str)]
+            raise ValueError(f"Unresolved model references in dynamic models: {unresolved_names}")
+
+    return dynamic_models
+
+def apply_dynamic_structured_outputs(
+    workflow_name: str,
+    structured_agent_outputs: Union[Dict[str, Any], BaseModel]
+) -> Dict[str, type]:
+    """Merge dynamically proposed models and registry entries for a workflow.
+
+    This enables the StructuredOutputsAgent to define new Pydantic models and
+    agent→model mappings at runtime (e.g., when AgentsAgent proposes new agents).
+
+    The expected payload shape matches the StructuredAgentOutputs model:
+      {
+        "models": [ {"model_name": str, "fields": [ {"name", "type", "description?", "items?"} ]} ],
+        "registry": [ {"agent": str, "agent_defnition"|"agent_definition": str } ]
+      }
+    Returns the updated registry mapping after merge.
+    """
+    # Ensure the workflow cache is initialized
+    models_cache, registry_cache = _load_structured_outputs_config(workflow_name)
+
+    # Normalize payload to dict
+    if isinstance(structured_agent_outputs, BaseModel):
+        payload = structured_agent_outputs.model_dump()
+    else:
+        payload = dict(structured_agent_outputs or {})
+
+    spec_models = payload.get('models', []) or []
+    spec_registry = payload.get('registry', []) or []
+
+    if not spec_models and not spec_registry:
+        return registry_cache
+
+    # Build dynamic models referencing existing + newly created ones
+    dynamic_models = _build_dynamic_models_from_spec(spec_models, existing_models=models_cache)
+
+    # Merge models into cache (override on conflict)
+    for name, model_cls in dynamic_models.items():
+        models_cache[name] = model_cls
+
+    # Merge registry entries
+    for entry in spec_registry:
+        if not isinstance(entry, dict):
+            continue
+        agent = entry.get('agent')
+        def_name = entry.get('agent_definition') or entry.get('agent_defnition')
+        if not agent or not def_name:
+            continue
+        model_cls = models_cache.get(def_name)
+        if not model_cls:
+            raise ValueError(f"Dynamic registry references unknown model '{def_name}' for agent '{agent}'")
+        registry_cache[agent] = model_cls
+
+    # Update cache
+    _workflow_caches[workflow_name] = {
+        'models': models_cache,
+        'registry': registry_cache,
+    }
+
+    return registry_cache
+
+async def get_llm_for_workflow(
+    workflow_name: str,
+    flow: str = "base",
+    enable_token_tracking: bool = False,
+    agent_name: Optional[str] = None,
+) -> tuple:
+    """Create an LLM config for an agent with optional structured response model.
+
+    Parameters:
+    - workflow_name: The workflow to look up YAML configuration for.
+    - flow: The llm_config_type for the agent (e.g. 'base'). Used only for streaming toggle logic.
+    - enable_token_tracking: Whether to enable token tracking (forwarded to core config).
+    - agent_name: The concrete agent name to look up in the structured outputs registry.
+
+    Behavior:
+    - Streaming toggle is based on llm_config_type (flow == 'base').
+    - Structured output model selection is based on agent_name if provided; otherwise falls back to `flow`.
+    """
+
+    # Toggle streaming for default/base llm config type
     should_stream = (flow == "base")
-    
+
+    # Try to load a structured response model for this specific agent
     try:
-        structured_outputs = get_structured_outputs_for_workflow(workflow_name)
-        
-        if flow in structured_outputs:
-            # For structured outputs: add stream=True only for base config type
+        structured_registry = get_structured_outputs_for_workflow(workflow_name)
+
+    # Prefer explicit agent_name; otherwise use `flow`
+        lookup_key = agent_name or flow
+        if lookup_key in structured_registry:
             extra_config = {"stream": True} if should_stream else None
-            return await make_structured_config(structured_outputs[flow], extra_config=extra_config, enable_token_tracking=enable_token_tracking)
-        
+            return await make_structured_config(
+                structured_registry[lookup_key],
+                extra_config=extra_config,
+                enable_token_tracking=enable_token_tracking,
+            )
+
     except (ValueError, FileNotFoundError):
-        # If workflow doesn't have structured outputs, fall back to base config
+        # No structured outputs configured for this workflow; continue to plain LLM config
         pass
-    
-    # For base configurations: enable streaming only for base config type
+
+    # Fallback to plain LLM config
     return await make_llm_config(stream=should_stream, enable_token_tracking=enable_token_tracking)

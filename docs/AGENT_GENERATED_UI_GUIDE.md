@@ -273,12 +273,13 @@ def sanitize_input(self, raw_input):
 
 ### Enable Debug Logging
 
-```python
-import logging
-from logs.logging_config import get_business_logger
+Use a context-aware logger for your component or tool:
 
-logger = get_business_logger("my_ui_tool")
-logger.setLevel(logging.DEBUG)
+```python
+from logs.logging_config import get_workflow_logger
+
+logger = get_workflow_logger("my_ui_tool")
+logger.info("Debug logging enabled for my_ui_tool")
 ```
 
 ### Common Issues

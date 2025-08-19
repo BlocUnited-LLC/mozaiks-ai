@@ -1,14 +1,3 @@
-backend_tools:
-  APIKeyAgent:
-    - path: workflows.Generator.tools.store_api_key.store_api_key
-      description: "Store API key received from UI response - backend handler"
-
-  UserFeedbackAgent:
-    - path: workflows.Generator.tools.workflow_converter.create_workflow_files
-      description: "Create modular YAML workflow files from agent outputs - backend logic"
-    - path: workflows.Generator.tools.handle_file_download.handle_file_download
-      description: "Handle file download response from UI - backend handler"
-
 ui_tools:
   APIKeyAgent:
     - path: workflows.Generator.tools.request_api_key.request_api_key
@@ -17,10 +6,10 @@ ui_tools:
       description: "Request API key from user - renders UI component"
 
   UserFeedbackAgent:
-    - path: workflows.Generator.tools.request_file_download.request_file_download
-      ui_tool_id: request_file_download
+    - path: workflows.Generator.tools.generate_and_download.generate_and_download
+      ui_tool_id: generate_and_download
       display: artifact
-      description: "Request file download - renders FileDownloadCenter.js component"
+      description: "Gather outputs, create YAML files, and open download UI - single tool"
 
 lifecycle_tools:
   agent_state_logger:

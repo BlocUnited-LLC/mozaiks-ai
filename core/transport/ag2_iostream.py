@@ -25,10 +25,10 @@ from autogen.io.base import InputStream, OutputStream
 from autogen.io import IOStream
 from autogen.io.websockets import IOWebsockets
 
-from logs.logging_config import get_chat_logger
+from logs.logging_config import get_chat_logger, get_workflow_logger
 
 # Get loggers (logging setup happens in main app)
-logger = get_chat_logger("ag2_iostream")
+# - chat_logger: for conversation transcripts only (no workflow ops)
 chat_logger = get_chat_logger("agent_output")
 
 
@@ -48,6 +48,13 @@ class AG2StreamingIOStream(InputStream, OutputStream):
         self.enterprise_id = enterprise_id
         self.user_id = user_id
         self.workflow_name = workflow_name
+        # Per-instance workflow logger with context
+        self.wf_logger = get_workflow_logger(
+            workflow_name=self.workflow_name,
+            chat_id=self.chat_id,
+            enterprise_id=self.enterprise_id,
+            component="ag2_iostream",
+        )
         
         # Minimal streaming state
         self.current_agent_name: Optional[str] = None
@@ -65,8 +72,12 @@ class AG2StreamingIOStream(InputStream, OutputStream):
         string_objects = []
         for obj in objects:
             if asyncio.iscoroutine(obj):
-                logger.error(f"❌ Received coroutine object in print(): {obj}. Converting to safe string.")
-                string_objects.append(f"<coroutine {obj.__name__ if hasattr(obj, '__name__') else 'unknown'}>")
+                self.wf_logger.error(
+                    f"❌ Received coroutine object in print(): {obj}. Converting to safe string."
+                )
+                string_objects.append(
+                    f"<coroutine {obj.__name__ if hasattr(obj, '__name__') else 'unknown'}>"
+                )
             else:
                 string_objects.append(str(obj))
         
@@ -85,14 +96,8 @@ class AG2StreamingIOStream(InputStream, OutputStream):
             preview = f"{clean_content[:250]}...{clean_content[-100:]}"
         else:
             preview = clean_content
-        
-        # Enhanced logging for agent conversations
+        # Enhanced logging for agent conversations (single sink)
         chat_logger.info(f"🤖 [{agent_name}] {preview}")
-        
-        # ALSO log to the main agent chat log for debugging
-        import logging
-        agent_logger = logging.getLogger('chat.agent_messages')
-        agent_logger.info(f"AGENT_OUTPUT | Chat: {self.chat_id} | Agent: {agent_name} | Content: {clean_content}")
         
         # CRITICAL: Persistence is now handled by UIEventProcessor.
         # This class is only for forwarding print() calls to the UI.
@@ -105,12 +110,20 @@ class AG2StreamingIOStream(InputStream, OutputStream):
                 # Create the task and don't await it to avoid blocking AG2
                 task = asyncio.create_task(self._send_to_websocket(content))
                 # Add error handling callback to the task
-                task.add_done_callback(lambda t: logger.error(f"WebSocket send failed: {t.exception()}") if t.exception() else None)
+                task.add_done_callback(
+                    lambda t: self.wf_logger.error(
+                        f"WebSocket send failed: {t.exception()}"
+                    )
+                    if t.exception()
+                    else None
+                )
             except RuntimeError:
                 # No event loop running, skip WebSocket to avoid blocking AG2 flow
-                logger.debug(f"⚠️ No event loop available for WebSocket, skipping message")
+                self.wf_logger.debug(
+                    "⚠️ No event loop available for WebSocket, skipping message"
+                )
         except Exception as e:
-            logger.error(f"Failed to send content to WebSocket: {e}")
+            self.wf_logger.error(f"Failed to send content to WebSocket: {e}")
         
         # IMPORTANT: Explicitly return None to ensure AG2 compliance
         return None
@@ -129,9 +142,11 @@ class AG2StreamingIOStream(InputStream, OutputStream):
                     chat_id=self.chat_id
                 )
             else:
-                logger.warning("SimpleTransport not available for WebSocket communication")
+                self.wf_logger.warning(
+                    "SimpleTransport not available for WebSocket communication"
+                )
         except Exception as e:
-            logger.error(f"Error sending to WebSocket: {e}")
+            self.wf_logger.error(f"Error sending to WebSocket: {e}")
 
     def send(self, message: BaseEvent) -> None:
         """
@@ -139,15 +154,25 @@ class AG2StreamingIOStream(InputStream, OutputStream):
         This is less commonly used than print() for streaming, but is required by the protocol.
         We can forward this data as a generic event to the UI.
         """
-        logger.debug(f"AG2StreamingIOStream.send() called with event: {type(message).__name__}")
+        self.wf_logger.debug(
+            f"AG2StreamingIOStream.send() called with event: {type(message).__name__}"
+        )
         try:
             loop = asyncio.get_running_loop()
             task = asyncio.create_task(self._send_generic_event_to_websocket(message))
-            task.add_done_callback(lambda t: logger.error(f"WebSocket send (generic) failed: {t.exception()}") if t.exception() else None)
+            task.add_done_callback(
+                lambda t: self.wf_logger.error(
+                    f"WebSocket send (generic) failed: {t.exception()}"
+                )
+                if t.exception()
+                else None
+            )
         except RuntimeError:
-            logger.debug("⚠️ No event loop available for WebSocket, skipping generic send")
+            self.wf_logger.debug(
+                "⚠️ No event loop available for WebSocket, skipping generic send"
+            )
         except Exception as e:
-            logger.error(f"Failed to send generic data to WebSocket: {e}")
+            self.wf_logger.error(f"Failed to send generic data to WebSocket: {e}")
 
     async def _send_generic_event_to_websocket(self, event: BaseEvent):
         """Asynchronously sends generic data to the WebSocket."""
@@ -161,7 +186,7 @@ class AG2StreamingIOStream(InputStream, OutputStream):
                     chat_id=self.chat_id
                 )
         except Exception as e:
-            logger.error(f"Error sending generic event to WebSocket: {e}")
+            self.wf_logger.error(f"Error sending generic event to WebSocket: {e}")
 
     def input(self, prompt: str = "", *, password: bool = False) -> str:
         """
@@ -172,7 +197,9 @@ class AG2StreamingIOStream(InputStream, OutputStream):
         This method is synchronous and bridges to the async transport layer.
         """
         if password:
-            logger.warning("Password-protected input was requested, but this feature is not implemented in the current transport. The input will be treated as regular text.")
+            self.wf_logger.warning(
+                "Password-protected input was requested, but this feature is not implemented in the current transport. The input will be treated as regular text."
+            )
 
         input_request_id = str(uuid.uuid4())
         
@@ -180,16 +207,18 @@ class AG2StreamingIOStream(InputStream, OutputStream):
             loop = asyncio.get_running_loop()
             future = asyncio.run_coroutine_threadsafe(self._get_user_input(input_request_id, prompt), loop)
         except RuntimeError:
-            logger.error("❌ No running event loop to handle user input. This is a critical error in the application's threading model.")
+            self.wf_logger.error(
+                "❌ No running event loop to handle user input. This is a critical error in the application's threading model."
+            )
             return "Error: Backend misconfiguration - cannot process user input."
 
         try:
             # Block and wait for the user's input from the event loop thread.
             user_input = future.result()
-            logger.info(f"✅ Received user input for request {input_request_id}")
+            self.wf_logger.info(f"✅ Received user input for request {input_request_id}")
             return user_input
         except Exception as e:
-            logger.error(f"❌ Failed to get user input for {input_request_id}: {e}")
+            self.wf_logger.error(f"❌ Failed to get user input for {input_request_id}: {e}")
             return "Error: Could not get user input."
 
     async def _get_user_input(self, input_request_id: str, prompt: str) -> str:
@@ -199,7 +228,9 @@ class AG2StreamingIOStream(InputStream, OutputStream):
             transport = await SimpleTransport.get_instance()
 
             if not transport:
-                logger.warning("SimpleTransport not available for user input request")
+                self.wf_logger.warning(
+                    "SimpleTransport not available for user input request"
+                )
                 return "Error: Transport not available."
 
             # Send the request to the UI
@@ -213,13 +244,15 @@ class AG2StreamingIOStream(InputStream, OutputStream):
             user_input = await transport.wait_for_user_input(input_request_id)
             return user_input
         except Exception as e:
-            logger.error(f"Error during user input flow: {e}")
+            self.wf_logger.error(f"Error during user input flow: {e}")
             return "Error: Failed to receive user input."
 
     def set_agent_context(self, agent_name: str):
         """Set the current agent for better streaming metadata."""
         self.current_agent_name = agent_name
-        chat_logger.debug(f"AGENT_CONTEXT | Chat: {self.chat_id} | Agent: {agent_name}")
+        self.wf_logger.debug(
+            f"AGENT_CONTEXT | Chat: {self.chat_id} | Agent: {agent_name}"
+        )
 
 
 class AG2StreamingManager:
@@ -239,6 +272,13 @@ class AG2StreamingManager:
         self.enterprise_id = enterprise_id.strip()
         self.user_id = user_id
         self.workflow_name = workflow_name
+        # Per-manager workflow logger with context
+        self.wf_logger = get_workflow_logger(
+            workflow_name=self.workflow_name,
+            chat_id=self.chat_id,
+            enterprise_id=self.enterprise_id,
+            component="ag2_streaming_manager",
+        )
         self.streaming_iostream: Optional[AG2StreamingIOStream] = None
         self._original_iostream = None
         self._is_setup = False
@@ -266,34 +306,42 @@ class AG2StreamingManager:
             IOStream.set_global_default(self.streaming_iostream)
             self._is_setup = True
             
-            logger.info(f"✅ [AG2StreamingManager] IOStream setup complete for chat {self.chat_id}")
+            self.wf_logger.info(
+                f"✅ [AG2StreamingManager] IOStream setup complete for chat {self.chat_id}"
+            )
             return self.streaming_iostream
             
         except Exception as e:
-            logger.error(f"❌ [AG2StreamingManager] Failed to setup streaming: {e}")
+            self.wf_logger.error(
+                f"❌ [AG2StreamingManager] Failed to setup streaming: {e}"
+            )
             raise RuntimeError(f"Failed to setup AG2 streaming: {e}")
     
     def set_agent_context(self, agent_name: str):
         """Set the current agent for better streaming context."""
         if not isinstance(agent_name, str) or not agent_name.strip():
-            logger.warning("Invalid agent name provided to set_agent_context")
+            self.wf_logger.warning("Invalid agent name provided to set_agent_context")
             return
             
         if self.streaming_iostream:
             self.streaming_iostream.set_agent_context(agent_name.strip())
         else:
-            logger.warning("Streaming IOStream not available for agent context setting")
+            self.wf_logger.warning(
+                "Streaming IOStream not available for agent context setting"
+            )
     
     def restore_original_iostream(self):
         """Restore the original IOStream when streaming is complete."""
         try:
             if self._original_iostream:
                 IOStream.set_global_default(self._original_iostream)
-                logger.info("✅ [AG2StreamingManager] Original IOStream restored")
+                self.wf_logger.info("✅ [AG2StreamingManager] Original IOStream restored")
             else:
-                logger.debug("No original IOStream to restore")
+                self.wf_logger.debug("No original IOStream to restore")
         except Exception as e:
-            logger.error(f"❌ [AG2StreamingManager] Error restoring IOStream: {e}")
+            self.wf_logger.error(
+                f"❌ [AG2StreamingManager] Error restoring IOStream: {e}"
+            )
     
     def cleanup(self):
         """Cleanup streaming resources."""
@@ -301,9 +349,13 @@ class AG2StreamingManager:
             self.restore_original_iostream()
             self.streaming_iostream = None
             self._is_setup = False
-            logger.info(f"✅ [AG2StreamingManager] Cleanup complete for chat {self.chat_id}")
+            self.wf_logger.info(
+                f"✅ [AG2StreamingManager] Cleanup complete for chat {self.chat_id}"
+            )
         except Exception as e:
-            logger.error(f"❌ [AG2StreamingManager] Error during cleanup: {e}")
+            self.wf_logger.error(
+                f"❌ [AG2StreamingManager] Error during cleanup: {e}"
+            )
     
     def is_streaming_active(self) -> bool:
         """Check if streaming is currently active."""
@@ -329,6 +381,13 @@ class AG2AlignedWebSocketManager:
         self.chat_id = chat_id.strip()
         self.enterprise_id = enterprise_id.strip()
         self.port = port
+        # Per-manager workflow logger with context
+        self.wf_logger = get_workflow_logger(
+            workflow_name="transport.websocket",
+            chat_id=self.chat_id,
+            enterprise_id=self.enterprise_id,
+            component="ag2_websocket_manager",
+        )
         self._server_uri: Optional[str] = None
         self._is_running = False
     
@@ -349,25 +408,29 @@ class AG2AlignedWebSocketManager:
             if server_context is not None:
                 self._server_uri = f"ws://localhost:{self.port}"
                 self._is_running = True
-                logger.info(f"🌐 [AG2] WebSocket server started at {self._server_uri} for chat {self.chat_id}")
+                self.wf_logger.info(
+                    f"🌐 [AG2] WebSocket server started at {self._server_uri} for chat {self.chat_id}"
+                )
                 return self._server_uri
             else:
-                logger.error("[AG2] Server context is None")
+                self.wf_logger.error("[AG2] Server context is None")
                 return None
                 
         except Exception as e:
-            logger.error(f"❌ [AG2] Failed to start WebSocket server: {e}")
+            self.wf_logger.error(f"❌ [AG2] Failed to start WebSocket server: {e}")
             return None
     
     def stop_server(self):
         """Stop the AG2 WebSocket server."""
         try:
             if self._is_running:
-                logger.info(f"🛑 [AG2] WebSocket server stopped for chat {self.chat_id}")
+                self.wf_logger.info(
+                    f"🛑 [AG2] WebSocket server stopped for chat {self.chat_id}"
+                )
                 self._is_running = False
                 self._server_uri = None
         except Exception as e:
-            logger.error(f"❌ [AG2] Error stopping WebSocket server: {e}")
+            self.wf_logger.error(f"❌ [AG2] Error stopping WebSocket server: {e}")
     
     def get_server_uri(self) -> Optional[str]:
         """Get the current WebSocket server URI."""

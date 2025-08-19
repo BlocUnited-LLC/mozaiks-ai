@@ -10,6 +10,7 @@ import yaml
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from .file_manager import workflow_file_manager
+from logs.logging_config import get_workflow_logger
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +38,23 @@ class CleanWorkflowConfig:
         
         if _configs_loaded:
             self._configs = _global_configs
-            logger.debug("🔄 Using cached workflow configurations")
+            # Contextual workflow logger for config engine
+            self.wf_logger = get_workflow_logger(
+                workflow_name="workflow.config",
+                component="workflow_config",
+            )
+            self.wf_logger.debug("🔄 Using cached workflow configurations")
         else:
             self._configs = {}
             self._load_all_workflows()
             _global_configs = self._configs.copy()
             _configs_loaded = True
-            logger.debug(f"Loaded {len(self._configs)} workflow configurations")
+            # Initialize after load to ensure logger is available regardless
+            self.wf_logger = get_workflow_logger(
+                workflow_name="workflow.config",
+                component="workflow_config",
+            )
+            self.wf_logger.debug(f"Loaded {len(self._configs)} workflow configurations")
     
     def _load_all_workflows(self) -> None:
         """Load all workflow configs using the file manager"""
@@ -51,7 +62,7 @@ class CleanWorkflowConfig:
             workflow_names = workflow_file_manager.list_workflows()
             
             if not workflow_names:
-                logger.warning("⚠️ No workflows found in the workflows directory")
+                self.wf_logger.warning("⚠️ No workflows found in the workflows directory")
                 return
             
             for workflow_name in workflow_names:
@@ -62,13 +73,13 @@ class CleanWorkflowConfig:
                         normalized_name = workflow_name.lower()
                         self._configs[normalized_name] = config
                     else:
-                        logger.warning(f"⚠️ Empty config for workflow: {workflow_name}")
+                        self.wf_logger.warning(f"⚠️ Empty config for workflow: {workflow_name}")
                     
                 except Exception as e:
-                    logger.error(f"❌ Failed to load workflow {workflow_name}: {e}")
+                    self.wf_logger.error(f"❌ Failed to load workflow {workflow_name}: {e}")
                     
         except Exception as e:
-            logger.error(f"❌ Critical error loading workflows: {e}")
+            self.wf_logger.error(f"❌ Critical error loading workflows: {e}")
     
     # ========================================================================
     # CLEAN CONFIGURATION API - NO HANDLERS, NO FACTORIES
@@ -121,13 +132,13 @@ class CleanWorkflowConfig:
                 normalized_name = workflow_name.lower()
                 self._configs[normalized_name] = config
                 _global_configs[normalized_name] = config
-                logger.debug(f"Reloaded config: {workflow_name}")
+                self.wf_logger.debug(f"Reloaded config: {workflow_name}")
                 return config
             else:
-                logger.warning(f"⚠️ Failed to reload config: {workflow_name}")
+                self.wf_logger.warning(f"⚠️ Failed to reload config: {workflow_name}")
                 return {}
         except Exception as e:
-            logger.error(f"❌ Error reloading {workflow_name}: {e}")
+            self.wf_logger.error(f"❌ Error reloading {workflow_name}: {e}")
             return {}
 
 # ========================================================================

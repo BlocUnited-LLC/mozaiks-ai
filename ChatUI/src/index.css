@@ -52,7 +52,7 @@
 }
 
 .oxanium {
-  /* Map legacy class to new heading font */
+  /* Map class to heading font */
   font-family: "Orbitron", "Rajdhani", sans-serif;
 }
 
@@ -142,7 +142,7 @@
   max-width: 62%;
   white-space: pre-wrap;           /* preserve newlines, allow wrapping */
   overflow-wrap: anywhere;         /* break long words anywhere if needed */
-  word-break: break-word;          /* legacy-friendly fallback */
+  word-break: break-word;          /* fallback */
   hyphens: auto;                   /* optional hyphenation */
 }
 
@@ -282,7 +282,7 @@
   color: #e6f6ff; 
 }
 
-/* Remove legacy standalone name alignment (replaced by in-bubble header) */
+/* Remove standalone name alignment (replaced by in-bubble header) */
 .user-name, .agent-name { display: none !important; }
 
 /* Subtle entry animation for latest message */

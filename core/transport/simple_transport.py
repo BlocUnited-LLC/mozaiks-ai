@@ -108,10 +108,6 @@ class SimpleTransport:
         
         logger.info("🚀 SimpleTransport singleton initialized")
         
-    def format_agent_name_for_ui(self, agent_name: str) -> str:
-        """DEPRECATED: Use get_formatted_agent_name from helpers instead."""
-        return get_formatted_agent_name(agent_name)
-        
     # ==================================================================================
     # USER INPUT COLLECTION (Production-Ready)
     # ==================================================================================

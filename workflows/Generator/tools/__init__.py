@@ -8,7 +8,7 @@
 # 3. Inspects the module for async functions that:
 #    - Do not start with an underscore.
 #    - Are defined within the module itself (not imported).
-# 4. Adds these functions to the global namespace and builds a dynamic __all__ list for linter compatibility.
+# 4. Adds these functions to the global namespace and builds a dynamic __all__ list.
 # ==============================================================================
 
 import importlib
@@ -61,8 +61,7 @@ _tools = _discover_and_import_tools()
 for name, func in _tools.items():
     globals()[name] = func
 
-# Define __all__ - linters prefer this to be static, but it's built dynamically
-# This is a common pattern in Python packages with dynamic imports
+# Define __all__ dynamically (common for plugin-style imports)
 try:
     __all__ = sorted(_tools.keys())  # type: ignore[misc]
 except Exception:

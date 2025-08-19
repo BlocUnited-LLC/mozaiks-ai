@@ -4,7 +4,7 @@ This document describes MozaiksAI's unified event system for routing and handlin
 
 ## Overview
 
-MozaiksAI uses a single **Unified Event Dispatcher** to process three categories of events:
+MozaiksAI uses a single **Unified Event Dispatcher** and an AG2 event processor to handle runtime. Three categories of events:
 
 - **Business Events**: Application lifecycle and monitoring (e.g., session start, billing events)
 - **Runtime Events**: AG2 agent workflow execution logs and metrics
@@ -59,9 +59,15 @@ class EventHandler(ABC):
 
 Default handlers:
 
-- `BusinessLogHandler` logs business events via `log_business_event()`
-- `RuntimeEventHandler` persists AG2 runtime events via `AG2PersistenceExtensions`
+- `BusinessLogHandler` logs business events via the workflow logger (through `BusinessLogHandler`)
+- `RuntimeEventHandler` persists AG2 runtime events via `AG2PersistenceManager`
 - `UIToolHandler` forwards UI tool events to the transport layer via `SimpleTransport`
+
+AG2 runtime events (from `a_run_group_chat`) are processed by `core/transport/ui_event_processor.py:UIEventProcessor`, which:
+- Tracks agent turns from `TextEvent` and records latency in `PerformanceManager.record_agent_turn`.
+- Parses `UsageSummaryEvent`, computes deltas, and calls `PerformanceManager.record_token_usage` (wallet debit + DB updates).
+- Persists final totals on `mode=total` with `PerformanceManager.record_final_token_usage` and `AG2PersistenceManager.save_usage_summary`.
+- Does not use any fallback token gather; missing UsageSummaryEvent is treated as an error.
 
 ## Dispatcher Flow
 
@@ -103,4 +109,6 @@ await emit_runtime_event(
     agent_name="gpt-4o",
     content="Hello",
 )
+
+For AG2 execution, the orchestrator uses `a_run_group_chat` and forwards the resulting `response.events` to `UIEventProcessor` for real-time persistence and accounting.
 ```

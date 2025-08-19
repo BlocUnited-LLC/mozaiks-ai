@@ -1,7 +1,7 @@
 """
-AG2 Termination Handler with VE-Style Status Management
+AG2 Termination Handler with Status Management
 Automatically updates workflow status from 0 → 1 when AG2 conversations terminate
-Based on TerminateTarget patterns from AD_DevDeploy.py VE-style logic (0 = resumable, 1 = completed)
+Based on TerminateTarget patterns logic (0 = resumable, 1 = completed)
 """
 import logging
 import time
@@ -9,13 +9,14 @@ from datetime import datetime
 from typing import Optional, Dict, Any, Callable, Union, TYPE_CHECKING
 from dataclasses import dataclass
 
-from logs.logging_config import get_business_logger, log_business_event
+from logs.logging_config import get_workflow_logger
 from core.data.persistence_manager import AG2PersistenceManager
+from core.events import get_event_dispatcher
 # Avoid circular import: only import for typing
 if TYPE_CHECKING:
     from core.transport.simple_transport import SimpleTransport
 
-logger = get_business_logger("termination_handler")
+wf_logger = get_workflow_logger("termination_handler")
 
 @dataclass
 class TerminationResult:
@@ -28,7 +29,7 @@ class TerminationResult:
 
 class AG2TerminationHandler:
     """
-    Handles AG2 conversation termination and integrates with VE-style workflow status management.
+    Handles AG2 conversation termination and integrates with workflow status management.
     
     When AG2 conversations end (via TerminateTarget or max_turns), this handler:
     1. Detects the termination event
@@ -48,9 +49,9 @@ class AG2TerminationHandler:
     - Workflow completion notifications
     """
     
-    def __init__(self, 
-                 chat_id: str, 
-                 enterprise_id: str, 
+    def __init__(self,
+                 chat_id: str,
+                 enterprise_id: str,
                  workflow_name: str = "default",
                  persistence_manager: Optional[AG2PersistenceManager] = None,
                  transport: Optional['SimpleTransport'] = None):
@@ -59,18 +60,18 @@ class AG2TerminationHandler:
         self.workflow_name = workflow_name
         self.persistence_manager = persistence_manager or AG2PersistenceManager()
         self.transport = transport
-        
+
         # Termination detection state
         self.conversation_active = False
-        self.termination_callbacks = []
+        self.termination_callbacks = []  # type: ignore[list-annotated]
         self.start_time = None
-        
-        logger.info(f"🔄 Termination handler initialized for {workflow_name} workflow")
+
+        wf_logger.info(f"🔄 Termination handler initialized for {self.workflow_name} workflow")
     
     def add_termination_callback(self, callback: Callable[[TerminationResult], None]):
         """Add callback to be triggered when conversation terminates"""
         self.termination_callbacks.append(callback)
-        logger.debug(f"📋 Added termination callback: {callback.__name__}")
+        wf_logger.debug(f"📋 Added termination callback: {callback.__name__}")
     
     async def on_conversation_start(self, user_id: str):
         """Called when AG2 conversation begins"""
@@ -85,17 +86,22 @@ class AG2TerminationHandler:
             user_id=user_id
         )
         
-        log_business_event(
-            log_event_type="CONVERSATION_STARTED",
-            description=f"AG2 conversation started for {self.workflow_name}",
-            context={
-                "chat_id": self.chat_id,
-                "enterprise_id": self.enterprise_id,
-                "workflow_name": self.workflow_name
-            }
-        )
-        
-        logger.info(f"🚀 AG2 conversation started for {self.workflow_name}")
+        # Emit business event via unified dispatcher
+        try:
+            dispatcher = get_event_dispatcher()
+            await dispatcher.emit_business_event(
+                log_event_type="CONVERSATION_STARTED",
+                description=f"AG2 conversation started for {self.workflow_name}",
+                context={
+                    "chat_id": self.chat_id,
+                    "enterprise_id": self.enterprise_id,
+                    "workflow_name": self.workflow_name,
+                },
+            )
+        except Exception:
+            pass
+
+        wf_logger.info(f"🚀 AG2 conversation started for {self.workflow_name}")
     
     async def on_conversation_end(self, 
                                 termination_reason: str = "completed",
@@ -111,7 +117,7 @@ class AG2TerminationHandler:
             TerminationResult with completion details
         """
         if not self.conversation_active:
-            logger.warning(f"⚠️ Termination handler called but conversation not active")
+            wf_logger.warning(f"⚠️ Termination handler called but conversation not active")
             return TerminationResult(
                 terminated=False,
                 termination_reason="not_active",
@@ -133,7 +139,7 @@ class AG2TerminationHandler:
             )
             
             if not status_updated:
-                logger.error(f"❌ Failed to update workflow status to completed")
+                wf_logger.error(f"❌ Failed to update workflow status to completed")
 
             # Emit a dedicated event to the UI to signal completion
             if self.transport:
@@ -142,7 +148,7 @@ class AG2TerminationHandler:
                     message_type="workflow_completed",
                     chat_id=self.chat_id
                 )
-                logger.info(f"✅ Sent 'workflow_completed' event to UI for chat {self.chat_id}")
+                wf_logger.info(f"✅ Sent 'workflow_completed' event to UI for chat {self.chat_id}")
 
             # Create termination result
             result = TerminationResult(
@@ -153,34 +159,38 @@ class AG2TerminationHandler:
                 session_summary=None # Summary can be calculated from DB if needed
             )
             
-            # Log business event
-            log_business_event(
-                log_event_type="CONVERSATION_TERMINATED",
-                description=f"AG2 conversation terminated: {termination_reason}",
-                context={
-                    "chat_id": self.chat_id,
-                    "enterprise_id": self.enterprise_id,
-                    "workflow_name": self.workflow_name,
-                    "status": result.status,
-                    "duration_ms": conversation_duration * 1000,
-                    "termination_reason": termination_reason,
-                    "max_turns_reached": max_turns_reached,
-                    "workflow_complete": result.workflow_complete
-                }
-            )
+            # Emit business event via unified dispatcher
+            try:
+                dispatcher = get_event_dispatcher()
+                await dispatcher.emit_business_event(
+                    log_event_type="CONVERSATION_TERMINATED",
+                    description=f"AG2 conversation terminated: {termination_reason}",
+                    context={
+                        "chat_id": self.chat_id,
+                        "enterprise_id": self.enterprise_id,
+                        "workflow_name": self.workflow_name,
+                        "status": result.status,
+                        "duration_ms": conversation_duration * 1000,
+                        "termination_reason": termination_reason,
+                        "max_turns_reached": max_turns_reached,
+                        "workflow_complete": result.workflow_complete,
+                    },
+                )
+            except Exception:
+                pass
             
             # Trigger termination callbacks
             for callback in self.termination_callbacks:
                 try:
                     callback(result)
                 except Exception as e:
-                    logger.error(f"❌ Termination callback failed: {e}")
+                    wf_logger.error(f"❌ Termination callback failed: {e}")
             
-            logger.info(f"✅ AG2 conversation terminated successfully: {termination_reason} (status: {result.status})")
+            wf_logger.info(f"✅ AG2 conversation terminated successfully: {termination_reason} (status: {result.status})")
             return result
             
         except Exception as e:
-            logger.error(f"❌ Failed to handle conversation termination: {e}")
+            wf_logger.error(f"❌ Failed to handle conversation termination: {e}")
             
             # Return failure result
             return TerminationResult(
@@ -213,7 +223,7 @@ class AG2TerminationHandler:
             content = message.get("content", "").lower()
             for indicator in termination_indicators:
                 if indicator in content:
-                    logger.info(f"🎯 TerminateTarget pattern detected: '{indicator}' in message")
+                    wf_logger.info(f"🎯 TerminateTarget pattern detected: '{indicator}' in message")
                     return True
         
         return False
@@ -241,7 +251,7 @@ class AG2TerminationHandler:
             }
             
         except Exception as e:
-            logger.error(f"❌ Failed to check completion status: {e}")
+            wf_logger.error(f"❌ Failed to check completion status: {e}")
             return {
                 "current_status": "error",
                 "can_resume": False,

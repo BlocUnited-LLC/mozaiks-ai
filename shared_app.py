@@ -36,50 +36,44 @@ class StartChatRequest(BaseModel):
 from logs.logging_config import (
     setup_development_logging, 
     setup_production_logging, 
-    get_business_logger, 
+    get_workflow_logger, 
     get_chat_logger,
-    get_performance_logger,
-    log_business_event,
-    log_performance_metric
 )
 
 # Setup logging based on environment
 env = os.getenv("ENVIRONMENT", "development").lower()
 if env == "production":
     setup_production_logging()
-    log_business_event(
-        log_event_type="LOGGING_CONFIGURED",
-        description="Production logging configuration applied"
+    get_workflow_logger("shared_app_setup").info(
+        "LOGGING_CONFIGURED: Production logging configuration applied"
     )
 else:
     setup_development_logging()
-    log_business_event(
-        log_event_type="LOGGING_CONFIGURED", 
-        description="Development logging configuration applied"
+    get_workflow_logger("shared_app_setup").info(
+        "LOGGING_CONFIGURED: Development logging configuration applied"
     )
 
 # (Startup log moved below after business_logger is defined)
 
 # Set autogen library logging to DEBUG for detailed output
-import autogen
 logging.getLogger('autogen').setLevel(logging.DEBUG)
 
 # Get specialized loggers
-business_logger = get_business_logger("shared_app")
+wf_logger = get_workflow_logger("shared_app")
 chat_logger = get_chat_logger("shared_app")
-performance_logger = get_performance_logger("shared_app")
+performance_logger = get_workflow_logger("performance.shared_app")
 logger = logging.getLogger(__name__)
 
 # Log AG2 version for debugging
-business_logger.info(f"🔍 autogen version: {getattr(autogen, '__version__', 'unknown')}")
+wf_logger.info(f"🔍 autogen version: {getattr(autogen, '__version__', 'unknown')}")
 
 # Emit an explicit startup log line so file logging can be verified quickly
-business_logger.info("SERVER_STARTUP_INIT: Starting MozaiksAI in %s mode", env)
+wf_logger.info(f"SERVER_STARTUP_INIT: Starting MozaiksAI in {env} mode")
 
 # Initialize unified event dispatcher
 from core.events import get_event_dispatcher
 event_dispatcher = get_event_dispatcher()
-business_logger.info("🎯 Unified Event Dispatcher initialized")
+wf_logger.info("🎯 Unified Event Dispatcher initialized")
 
 # Initialize OpenLit Observability
 from core.observability.performance_manager import get_performance_manager
@@ -138,13 +132,12 @@ async def startup():
         simple_transport = await SimpleTransport.get_instance()
         
         streaming_time = (datetime.utcnow() - streaming_start).total_seconds() * 1000
-        log_performance_metric(
+        performance_logger.info(
+            "streaming_config_init_duration",
             metric_name="streaming_config_init_duration",
-            value=streaming_time,
-            context={
-                "config_keys": [],
-                "streaming_enabled": True
-            }
+            value=float(streaming_time),
+            config_keys=[],
+            streaming_enabled=True,
         )
 
         # Test MongoDB connection
@@ -153,18 +146,17 @@ async def startup():
             await mongo_client.admin.command("ping")
             mongo_time = (datetime.utcnow() - mongo_start).total_seconds() * 1000
             
-            log_performance_metric(
+            performance_logger.info(
+                "mongodb_ping_duration",
                 metric_name="mongodb_ping_duration",
-                value=mongo_time,
-                unit="ms"
+                value=float(mongo_time),
+                unit="ms",
             )
             
         except Exception as e:
-            log_business_event(
-                log_event_type="MONGODB_CONNECTION_FAILED",
-                description="Failed to connect to MongoDB",
-                context={"error": str(e)},
-                level="ERROR"
+            get_workflow_logger("shared_app").error(
+                "MONGODB_CONNECTION_FAILED: Failed to connect to MongoDB",
+                error=str(e)
             )
             raise
 
@@ -173,20 +165,22 @@ async def startup():
         await _import_workflow_modules()
         import_time = (datetime.utcnow() - import_start).total_seconds() * 1000
         
-        log_performance_metric(
+        performance_logger.info(
+            "workflow_import_duration",
             metric_name="workflow_import_duration",
-            value=import_time,
-            unit="ms"
+            value=float(import_time),
+            unit="ms",
         )
 
         # Component system is event-driven, no upfront initialization needed.
         registry_start = datetime.utcnow()
         
         registry_time = (datetime.utcnow() - registry_start).total_seconds() * 1000
-        log_performance_metric(
+        performance_logger.info(
+            "unified_registry_init_duration",
             metric_name="unified_registry_init_duration",
-            value=registry_time,
-            unit="ms"
+            value=float(registry_time),
+            unit="ms",
         )
         
         # Log workflow and tool summary
@@ -194,16 +188,15 @@ async def startup():
         
         # Calculate total startup time
         total_startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
-        log_performance_metric(
+        performance_logger.info(
+            "total_startup_duration",
             metric_name="total_startup_duration",
-            value=total_startup_time,
+            value=float(total_startup_time),
             unit="ms",
-            context={
-                "workflows_count": status.get("total_workflows", 0),
-                "tools_count": status.get("total_tools", 0)
-            }
+            workflows_count=status.get("total_workflows", 0),
+            tools_count=status.get("total_tools", 0),
         )
-        
+
         # Use unified event dispatcher for this important startup event
         await event_dispatcher.emit_business_event(
             log_event_type="SERVER_STARTUP_COMPLETED",
@@ -216,20 +209,16 @@ async def startup():
                 "summary": status.get("summary", "Unknown")
             }
         )
-        
-        business_logger.info(f"? Server ready - {status['summary']} (Startup: {total_startup_time:.1f}ms)")
+
+        wf_logger.info(f"✅ Server ready - {status['summary']} (Startup: {total_startup_time:.1f}ms)")
 
     except Exception as e:
         startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
-        log_business_event(
-            log_event_type="SERVER_STARTUP_FAILED",
-            description="Server startup failed",
-            context={
-                "environment": env,
-                "error": str(e),
-                "startup_time_ms": startup_time
-            },
-            level="ERROR"
+        get_workflow_logger("shared_app").error(
+            "SERVER_STARTUP_FAILED: Server startup failed",
+            environment=env,
+            error=str(e),
+            startup_time_ms=startup_time
         )
         raise
 
@@ -239,7 +228,7 @@ async def shutdown():
     global simple_transport
     shutdown_start = datetime.utcnow()
     
-    business_logger.info("?? Shutting down server...")
+    wf_logger.info("🛑 Shutting down server...")
     
     try:
         if simple_transport:
@@ -252,32 +241,28 @@ async def shutdown():
         # Calculate shutdown time and log metrics
         shutdown_time = (datetime.utcnow() - shutdown_start).total_seconds() * 1000
         
-        log_performance_metric(
-            metric_name="shutdown_duration",
-            value=shutdown_time,
-            unit="ms"
+        performance_logger.info(
+            "shutdown_duration",
+            extra={
+                "metric_name": "shutdown_duration",
+                "value": float(shutdown_time),
+                "unit": "ms",
+            },
         )
         
-        log_business_event(
-            log_event_type="SERVER_SHUTDOWN_COMPLETED",
-            description="Server shutdown completed successfully",
-            context={
-                "shutdown_time_ms": shutdown_time,
-            }
+        get_workflow_logger("shared_app").info(
+            "SERVER_SHUTDOWN_COMPLETED: Server shutdown completed successfully",
+            shutdown_time_ms=shutdown_time,
         )
         
-        business_logger.info(f"? Shutdown complete ({shutdown_time:.1f}ms)")
+        wf_logger.info(f"✅ Shutdown complete ({shutdown_time:.1f}ms)")
         
     except Exception as e:
         shutdown_time = (datetime.utcnow() - shutdown_start).total_seconds() * 1000
-        log_business_event(
-            log_event_type="SERVER_SHUTDOWN_FAILED",
-            description="Error during server shutdown",
-            context={
-                "error": str(e),
-                "shutdown_time_ms": shutdown_time
-            },
-            level="ERROR"
+        get_workflow_logger("shared_app").error(
+            "SERVER_SHUTDOWN_FAILED: Error during server shutdown",
+            error=str(e),
+            shutdown_time_ms=shutdown_time
         )
 
 async def _import_workflow_modules():
@@ -292,23 +277,21 @@ async def _import_workflow_modules():
     
     scan_time = (datetime.utcnow() - scan_start).total_seconds() * 1000
     
-    log_performance_metric(
-        metric_name="workflow_discovery_duration",
-        value=scan_time,
-        unit="ms",
-        context={
+    performance_logger.info(
+        "workflow_discovery_duration",
+        extra={
+            "metric_name": "workflow_discovery_duration",
+            "value": float(scan_time),
+            "unit": "ms",
             "discovery_mode": "runtime_auto_discovery",
-            "upfront_imports": 0
-        }
+            "upfront_imports": 0,
+        },
     )
 
-    log_business_event(
-        log_event_type="WORKFLOW_SYSTEM_READY",
-        description="Workflow system initialized with runtime auto-discovery",
-        context={
-            "scan_duration_ms": scan_time,
-            "discovery_mode": "runtime_on_demand"
-        }
+    get_workflow_logger("shared_app").info(
+        "WORKFLOW_SYSTEM_READY: Workflow system initialized with runtime auto-discovery",
+        scan_duration_ms=scan_time,
+        discovery_mode="runtime_on_demand"
     )
 
 # ============================================================================
@@ -411,15 +394,16 @@ async def health_check():
         # Calculate health check time
         health_time = (datetime.utcnow() - health_start).total_seconds() * 1000
         
-        log_performance_metric(
-            metric_name="health_check_duration",
-            value=health_time,
-            unit="ms",
-            context={
-                "mongodb_ping_ms": mongo_ping_time,
+        performance_logger.info(
+            "health_check_duration",
+            extra={
+                "metric_name": "health_check_duration",
+                "value": float(health_time),
+                "unit": "ms",
+                "mongodb_ping_ms": float(mongo_ping_time),
                 "active_connections": connection_info["total_connections"],
-                "workflows_count": len(status["registered_workflows"])
-            }
+                "workflows_count": len(status["registered_workflows"]),
+            },
         )
         
         health_data = {
@@ -434,11 +418,11 @@ async def health_check():
             "total_tools": status["total_tools"],
             "health_check_time_ms": round(health_time, 2)
         }
-        
-        business_logger.debug(f"?? Health check passed - Response time: {health_time:.1f}ms")
-        
+
+        wf_logger.debug(f"✅ Health check passed - Response time: {health_time:.1f}ms")
+
         return health_data
-        
+
     except Exception as e:
         logger.error(f"? Health check failed: {e}")
         raise HTTPException(status_code=500, detail=f"Health check failed: {e}")
@@ -476,16 +460,13 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
         except Exception as perf_e:
             logger.debug(f"perf_start skipped {chat_id}: {perf_e}")
 
-        log_business_event(
-            log_event_type="CHAT_SESSION_STARTED",
-            description=f"New chat session initiated for workflow {workflow_name}",
-            context={
-                "enterprise_id": enterprise_id,
-                "workflow_name": workflow_name,
-                "user_id": user_id,
-                "chat_id": chat_id,
-                "starting_balance": balance,
-            }
+        get_workflow_logger("shared_app").info(
+            "CHAT_SESSION_STARTED: New chat session initiated",
+            enterprise_id=enterprise_id,
+            workflow_name=workflow_name,
+            user_id=user_id,
+            chat_id=chat_id,
+            starting_balance=balance,
         )
 
         return {
@@ -541,7 +522,7 @@ async def websocket_endpoint(
         await websocket.close(code=1000, reason="Transport service not available")
         return
 
-    business_logger.info(f"?? New WebSocket connection for workflow '{workflow_name}'")
+    wf_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_name}'")
 
     # Auto-start AgentDriven workflows once the socket is accepted and registered
     async def _auto_start_if_needed():
@@ -596,16 +577,13 @@ async def handle_user_input(
         message = data.get("message")
         workflow_name = data.get("workflow_name")  # No default, must be provided
         
-        log_business_event(
-            log_event_type="USER_INPUT_ENDPOINT_CALLED",
-            description=f"User input endpoint called for chat {chat_id}",
-            context={
-                "enterprise_id": enterprise_id,
-                "chat_id": chat_id,
-                "user_id": user_id,
-                "workflow_name": workflow_name,
-                "message_length": len(message) if message else 0
-            }
+        get_workflow_logger("shared_app").info(
+            "USER_INPUT_ENDPOINT_CALLED: User input endpoint called",
+            enterprise_id=enterprise_id,
+            chat_id=chat_id,
+            user_id=user_id,
+            workflow_name=workflow_name,
+            message_length=(len(message) if message else 0)
         )
         
         if not message:
@@ -637,10 +615,10 @@ async def handle_user_input(
         except Exception as perf_turn_e:
             logger.debug(f"perf_turn skipped {chat_id}: {perf_turn_e}")
         
-        log_business_event(
-            log_event_type="USER_INPUT_PROCESSED",
-            description=f"User input processed successfully for chat {chat_id}",
-            context={"transport": result.get("transport")}
+        get_workflow_logger("shared_app").info(
+            "USER_INPUT_PROCESSED: User input processed successfully",
+            chat_id=chat_id,
+            transport=result.get("transport")
         )
         
         return {"status": "Message received and is being processed.", "transport": result.get("transport")}
@@ -676,13 +654,10 @@ async def submit_user_input_response(request: Request):
         success = await simple_transport.submit_user_input(input_request_id, user_input)
         
         if success:
-            log_business_event(
-                log_event_type="USER_INPUT_RESPONSE_SUBMITTED",
-                description=f"User input response submitted for request {input_request_id}",
-                context={
-                    "input_request_id": input_request_id,
-                    "input_length": len(user_input)
-                }
+            get_workflow_logger("shared_app").info(
+                "USER_INPUT_RESPONSE_SUBMITTED: User input response submitted",
+                input_request_id=input_request_id,
+                input_length=len(user_input)
             )
             return {"status": "success", "message": "User input submitted successfully"}
         else:
@@ -778,7 +753,7 @@ async def get_user_token_balance(user_id: str, appid: str = "default", enterpris
         if not enterprise_id:
             raise HTTPException(status_code=400, detail="enterprise_id is required")
         balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
-        business_logger.info(f"Token balance retrieved for user {user_id}: {balance} tokens")
+        wf_logger.info(f"Token balance retrieved for user {user_id}: {balance} tokens")
         return {"balance": balance, "remaining": balance, "user_id": user_id, "enterprise_id": enterprise_id}
     except HTTPException:
         raise
@@ -797,7 +772,7 @@ async def consume_user_tokens(user_id: str, request: Request):
         if not enterprise_id:
             raise HTTPException(status_code=400, detail="enterprise_id is required")
         new_bal = await persistence_manager.debit_tokens(user_id, enterprise_id, amount, reason=reason, strict=True)
-        business_logger.info(f"Consumed {amount} tokens for user {user_id}. Remaining: {new_bal}")
+        wf_logger.info(f"Consumed {amount} tokens for user {user_id}. Remaining: {new_bal}")
         return {"success": True, "remaining": new_bal}
     except ValueError as ve:
         if str(ve) == "INSUFFICIENT_TOKENS":
@@ -819,10 +794,9 @@ async def get_workflows():
         for workflow_name in workflow_config.get_all_workflow_names():
             configs[workflow_name] = workflow_config.get_config(workflow_name)
         
-        log_business_event(
-            log_event_type="WORKFLOWS_REQUESTED",
-            description="Workflows requested by frontend",
-            context={"workflow_count": len(configs)}
+        get_workflow_logger("shared_app").info(
+            "WORKFLOWS_REQUESTED: Workflows requested by frontend",
+            workflow_count=len(configs)
         )
         
         return configs
@@ -841,10 +815,9 @@ async def get_workflow_configs():
         for workflow_name in workflow_config.get_all_workflow_names():
             configs[workflow_name] = workflow_config.get_config(workflow_name)
         
-        log_business_event(
-            log_event_type="WORKFLOW_CONFIGS_REQUESTED",
-            description="Workflow configurations requested by frontend",
-            context={"workflow_count": len(configs)}
+        get_workflow_logger("shared_app").info(
+            "WORKFLOW_CONFIGS_REQUESTED: Workflow configurations requested by frontend",
+            workflow_count=len(configs)
         )
         
         return configs
@@ -869,15 +842,12 @@ async def handle_component_action(
         action_type = data.get("action_type")
         action_data = data.get("action_data", {})
         
-        log_business_event(
-            log_event_type="COMPONENT_ACTION_ENDPOINT_CALLED",
-            description=f"Component action endpoint called for chat {chat_id}",
-            context={
-                "enterprise_id": enterprise_id,
-                "chat_id": chat_id,
-                "component_id": component_id,
-                "action_type": action_type
-            }
+        get_workflow_logger("shared_app").info(
+            "COMPONENT_ACTION_ENDPOINT_CALLED: Component action endpoint called",
+            enterprise_id=enterprise_id,
+            chat_id=chat_id,
+            component_id=component_id,
+            action_type=action_type
         )
         
         if not component_id or not action_type:
@@ -912,10 +882,11 @@ async def handle_component_action(
             
             logger.info(f"? Component action for event '{event_id}' submitted successfully.")
             
-            log_business_event(
-                log_event_type="COMPONENT_ACTION_PROCESSED",
-                description=f"Component action processed successfully for chat {chat_id}",
-                context={"event_id": event_id, "submitted_to_workflow": True}
+            get_workflow_logger("shared_app").info(
+                "COMPONENT_ACTION_PROCESSED: Component action processed successfully",
+                chat_id=chat_id,
+                event_id=event_id,
+                submitted_to_workflow=True
             )
             
             return {
@@ -959,14 +930,11 @@ async def submit_ui_tool_response(request: Request):
         success = await simple_transport.submit_ui_tool_response(event_id, response_data)
         
         if success:
-            log_business_event(
-                log_event_type="UI_TOOL_RESPONSE_SUBMITTED",
-                description=f"UI tool response submitted for event {event_id}",
-                context={
-                    "event_id": event_id,
-                    "response_status": response_data.get("status", "unknown"),
-                    "ui_tool_id": response_data.get("data", {}).get("ui_tool_id", "unknown")
-                }
+            get_workflow_logger("shared_app").info(
+                "UI_TOOL_RESPONSE_SUBMITTED: UI tool response submitted",
+                event_id=event_id,
+                response_status=response_data.get("status", "unknown"),
+                ui_tool_id=response_data.get("data", {}).get("ui_tool_id", "unknown")
             )
             return {"status": "success", "message": "UI tool response submitted successfully"}
         else:

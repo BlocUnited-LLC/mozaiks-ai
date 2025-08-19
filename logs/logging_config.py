@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging, logging.handlers, os, json, traceback, sys, time
 from pathlib import Path
+import os
 from typing import Sequence, Optional, Dict, Any, Iterable
 from datetime import datetime, timezone
 from contextlib import contextmanager
@@ -14,15 +15,19 @@ from contextlib import contextmanager
 # ----------------------------------------------------------------------
 # Directory & file paths
 # ----------------------------------------------------------------------
-LOGS_DIR = Path(__file__).parent / "logs"
+# Allow an explicit base directory via env var so Docker and local runs can point
+# logs to an absolute path (for example Windows host path or container mount).
+_env_logs_base = os.getenv("LOGS_BASE_DIR")
+if _env_logs_base:
+    LOGS_DIR = Path(_env_logs_base)
+else:
+    LOGS_DIR = Path(__file__).parent / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Toggle file format via env: when true, file contents are JSON lines; otherwise, human-readable text.
+LOGS_AS_JSON = os.getenv("LOGS_AS_JSON", "").lower() in ("1", "true", "yes", "on")
+
 CHAT_LOG_FILE        = LOGS_DIR / "agent_chat.log"
-BUSINESS_LOG_FILE    = LOGS_DIR / "business_logic.log"
-ERROR_LOG_FILE       = LOGS_DIR / "errors.log"
-PERFORMANCE_LOG_FILE = LOGS_DIR / "performance.log"
-WEBSOCKET_LOG_FILE   = LOGS_DIR / "websocket.log"
-TOKEN_LOG_FILE       = LOGS_DIR / "token_tracking.log"
 WORKFLOW_LOG_FILE    = LOGS_DIR / "workflows.log"
 
 # Sensitive key substrings for redaction
@@ -57,6 +62,8 @@ class ProductionJSONFormatter(logging.Formatter):
     """Structured JSON logging for production systems"""
     
     def format(self, record: logging.LogRecord) -> str:
+        # Choose an emoji based on logger/level/content for quick visual scan (also useful to surface in readers)
+        emoji = _pick_emoji(record)
         base = {
             "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
@@ -65,6 +72,10 @@ class ProductionJSONFormatter(logging.Formatter):
             "mod": record.module,
             "fn": record.funcName,
             "line": record.lineno,
+            "file": getattr(record, "filename", None),
+            "path": getattr(record, "pathname", None),
+            "source": f"{getattr(record,'filename', '')}:{record.lineno} {record.funcName}",
+            "emoji": emoji,
         }
         if record.exc_info:
             base["exception"] = {
@@ -80,6 +91,72 @@ class ProductionJSONFormatter(logging.Formatter):
         if extras:
             base["extra"] = _maybe_redact_mapping(extras)
         return json.dumps(base, ensure_ascii=False)
+
+# ----------------------------------------------------------------------
+# Pretty, emoji-enhanced console formatter for developers
+# ----------------------------------------------------------------------
+_LEVEL_COLORS = {
+    "DEBUG": "\x1b[38;5;244m",   # gray
+    "INFO": "\x1b[38;5;39m",    # blue
+    "WARNING": "\x1b[38;5;214m", # orange
+    "ERROR": "\x1b[38;5;196m",   # red
+    "CRITICAL": "\x1b[48;5;196m\x1b[97m", # white on red
+}
+_RESET = "\x1b[0m"
+
+def _pick_emoji(record: logging.LogRecord) -> str:
+    name = (record.name or "").lower()
+    msg = (record.getMessage() or "").lower()
+    level = record.levelname.upper()
+    # Category-based
+    if name.startswith("chat.") or "conversation" in msg:
+        return "💬"
+    if name.startswith("performance.") or "performance" in msg or "duration" in msg:
+        return "⏱️"
+    if name.startswith("token.") or "token" in msg:
+        return "🪙"
+    if "websocket" in name or "transport" in name or "ws" in msg:
+        return "🔌"
+    if "workflow" in name:
+        return "🧩"
+    if "event_dispatcher" in name or "business_event" in msg:
+        return "🎯"
+    # Level-based fallback
+    return {"DEBUG": "🐛", "INFO": "ℹ️", "WARNING": "⚠️", "ERROR": "❌", "CRITICAL": "🚨"}.get(level, "•")
+
+class PrettyConsoleFormatter(logging.Formatter):
+    """Human-friendly console formatter with emojis, colors, and file context.
+
+    Format:  HH:MM:SS.mmm [LEVEL] EMOJI logger  msg  (file.py:123 func)
+    Includes select extras (chat_id, workflow_name, enterprise_id) inline.
+    """
+    def __init__(self, no_color: Optional[bool] = None):
+        super().__init__(datefmt="%H:%M:%S")
+        env_no_color = os.getenv("NO_COLOR", "0").lower() in ("1", "true", "yes")
+        self.no_color = env_no_color if no_color is None else bool(no_color)
+
+    def format(self, record: logging.LogRecord) -> str:
+        ts = datetime.fromtimestamp(record.created).strftime("%H:%M:%S.%f")[:-3]
+        level = record.levelname
+        emoji = _pick_emoji(record)
+        color = _LEVEL_COLORS.get(level, "") if not self.no_color else ""
+        reset = _RESET if color else ""
+        logger_name = record.name
+        msg = record.getMessage()
+        file = getattr(record, "filename", "")
+        line = record.lineno
+        func = record.funcName
+        # Pull a few common context keys into the line if present
+        extras = []
+        for k in ("workflow_name", "chat_id", "enterprise_id", "agent_name", "transport_type"):
+            v = getattr(record, k, None)
+            if v is not None:
+                extras.append(f"{k}={v}")
+        extra_str = f" | {' '.join(extras)}" if extras else ""
+        base = f"{ts} [{color}{level:>5}{reset}] {emoji} {logger_name} - {msg}{extra_str}  ({file}:{line} {func})"
+        if record.exc_info:
+            base += "\n" + "".join(traceback.format_exception(*record.exc_info)).rstrip()
+        return base
 
 # ----------------------------------------------------------------------
 # Generic keyword / level filter
@@ -107,20 +184,14 @@ class KeywordFilter(logging.Filter):
         return any(k in msg or k in name for k in self.kw)
 
 # Domain-specific filters (lambdas keep the file short & declarative)
-_chat_kw        = ['agent_chat','conversation','reply','message_from','message_to','user_input','autogen.agentchat','handoff_executed','agent_response','group_chat','ag2','initiate_chat']
-_business_kw    = ['business.','database','mongodb','workflow','generator','config','startup','registry','tools','file_manager','observability']
-_perf_kw        = ['duration','performance','tokens','cost','usage','metrics']
-_websocket_kw   = ['websocket','ws','transport','connection']
-_token_kw       = ['token_tracking','total_tokens','prompt_tokens','completion_tokens']
-_workflow_kw    = ['workflow','orchestration','handoff','workflow_execution']
+_chat_kw        = ['agent_chat','conversation','reply','message_from','message_to','user_input','autogen.agentchat','handoff_executed','agent_response','group_chat','ag2','initiate_chat','chat.']
+# Keep workflow logs clean by excluding chat-related noise. All operational logs should use the workflow logger name.
+_workflow_kw    = ['workflow','orchestration','handoff','workflow_execution','transport','performance','token','observability','tools','file_manager']
 
-ChatLogFilter       = lambda: KeywordFilter(_chat_kw, exclude_keywords=_business_kw)
-BusinessLogicFilter = lambda: KeywordFilter(_business_kw)
-PerformanceFilter   = lambda: KeywordFilter(_perf_kw)
-ErrorFilter         = lambda: KeywordFilter([], min_level=logging.WARNING)
-WebSocketFilter     = lambda: KeywordFilter(_websocket_kw)
-TokenFilter         = lambda: KeywordFilter(_token_kw)
-WorkflowFilter      = lambda: KeywordFilter(_workflow_kw)
+ChatLogFilter   = lambda: KeywordFilter(_chat_kw)
+# Exclude chat keywords from workflows log
+_exclude_chat_kw    = _chat_kw + ['chat.', 'groupchat']
+WorkflowFilter  = lambda: KeywordFilter(_workflow_kw, exclude_keywords=_exclude_chat_kw)
 
 # ----------------------------------------------------------------------
 # Handler factory
@@ -155,35 +226,39 @@ _logging_initialized = False
 def setup_logging(
     *,
     chat_level: str = "INFO",
-    business_level: str = "INFO",
     console_level: str = "INFO",
     max_file_size: int = 10*1024*1024,      # 10 MB
     backup_count: int  = 5,
 ) -> None:
     """
-    Configure root logger with five rotating file handlers + console,
-    using DRY factories and generic filters.
+    Configure root logger with two rotating file handlers (chat + workflows) + console.
     Prevents duplicate initialization with global flag.
     """
     global _logging_initialized
     if _logging_initialized: return
     _logging_initialized = True
     root = logging.getLogger(); root.handlers.clear(); root.setLevel(logging.DEBUG)
-    detailed = ProductionJSONFormatter(); console_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+    # Choose file formatter based on env; console remains pretty
+    file_fmt = ProductionJSONFormatter() if LOGS_AS_JSON else PrettyConsoleFormatter(no_color=True)
+    console_fmt = PrettyConsoleFormatter()
     spec = [
         (CHAT_LOG_FILE,        getattr(logging, chat_level.upper()), ChatLogFilter()),
-        (BUSINESS_LOG_FILE,    getattr(logging, business_level.upper()), BusinessLogicFilter()),
-        (ERROR_LOG_FILE,       logging.WARNING,                      ErrorFilter()),
-        (PERFORMANCE_LOG_FILE, logging.INFO,                         PerformanceFilter()),
-        (WEBSOCKET_LOG_FILE,   logging.INFO,                         WebSocketFilter()),
-        (TOKEN_LOG_FILE,       logging.INFO,                         TokenFilter()),
         (WORKFLOW_LOG_FILE,    logging.DEBUG,                        WorkflowFilter()),
     ]
-    for path, lvl, flt in spec: root.addHandler(_make_handler(path, lvl, detailed, log_filter=flt, max_bytes=max_file_size, backup_count=backup_count))
+    for path, lvl, flt in spec:
+        root.addHandler(_make_handler(path, lvl, file_fmt, log_filter=flt, max_bytes=max_file_size, backup_count=backup_count))
     ch = logging.StreamHandler(); ch.setLevel(getattr(logging, console_level.upper())); ch.setFormatter(console_fmt); root.addHandler(ch)
     for noisy in ("openai","httpx","urllib3","azure","motor","pymongo","uvicorn.access","openlit"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    logging.getLogger(__name__).info("Logging initialized")
+    logging.getLogger(__name__).info(
+        "Logging initialized",
+        extra={
+            "logs_dir": str(LOGS_DIR),
+            "files_as_json": LOGS_AS_JSON,
+            "file_extension": ".log",
+            "file_format": "jsonl" if LOGS_AS_JSON else "pretty",
+        },
+    )
 
 def reset_logging_state():
     """Reset logging initialization state for testing purposes"""
@@ -191,39 +266,6 @@ def reset_logging_state():
 
 # Public getters -----------------------------------------------------
 get_chat_logger = lambda name: logging.getLogger(f"chat.{name}")
-get_business_logger = lambda name: logging.getLogger(f"business.{name}")
-get_performance_logger = lambda name: logging.getLogger(f"performance.{name}")
-get_token_manager_logger = lambda name: logging.getLogger(f"token.{name}")
-
-# High-level event helpers (retain API) ------------------------------
-def log_chat_interaction(
-    *,
-    chat_id: str,
-    agent_name: str,
-    message: str,
-    workflow_name: str,
-    level: str = "INFO",
-) -> None:
-    logger = get_chat_logger("interaction"); log_fn = getattr(logger, level.lower()); snippet = message[:200] + ("…" if len(message) > 200 else ""); log_fn("[%s] %s | %s: %s", workflow_name, chat_id, agent_name, snippet)
-
-def log_business_event(
-    *,
-    log_event_type: str,
-    description: str,
-    context: dict | None = None,
-    level: str = "INFO",
-    use_dispatcher: bool = False,
-) -> None:
-    logger = get_business_logger("event"); log_fn = getattr(logger, level.lower()); ctx = f" | Context: {_maybe_redact_mapping(context)}" if context else ""; log_fn("%s: %s%s", log_event_type, description, ctx)
-
-def log_performance_metric(
-    *,
-    metric_name: str,
-    value: float,
-    unit: str = "",
-    context: dict | None = None,
-) -> None:
-    logger = get_performance_logger("metrics"); ctx = f" | {_maybe_redact_mapping(context)}" if context else ""; logger.info("%s: %s%s%s", metric_name, value, unit, ctx)
 
 # Context logger -----------------------------------------------------
 class ContextLogger:
@@ -236,22 +278,10 @@ class ContextLogger:
         (self._base.exception(msg, extra=_maybe_redact_mapping({**self._ctx, **extra})) if exc_info else None)
     def with_context(self, **more): return ContextLogger(self._base, {**self._ctx, **more})
 
-def get_context_logger(component: str, **context): return ContextLogger(logging.getLogger(f"mozaiks.{component}"), context)
-
-def get_transport_logger(transport_type: str | None = None, chat_id: str | None = None, **context):
-    ctx = {}; ctx.update({k:v for k,v in {"transport_type":transport_type, "chat_id":chat_id}.items() if v}); ctx.update(context); return get_context_logger('transport', **ctx)
-
 def get_workflow_logger(workflow_name: str | None = None, chat_id: str | None = None, enterprise_id: str | None = None, **context):
-    ctx = {k:v for k,v in {"workflow_name":workflow_name, "chat_id":chat_id, "enterprise_id":enterprise_id}.items() if v}; ctx.update(context); return get_context_logger('workflow', **ctx)
-
-def get_agent_logger(agent_name: str | None = None, workflow_name: str | None = None, **context):
-    ctx = {k:v for k,v in {"agent_name":agent_name, "workflow_name":workflow_name}.items() if v}; ctx.update(context); return get_context_logger('agent', **ctx)
-
-def get_component_logger(component_name: str | None = None, workflow_name: str | None = None, **context):
-    ctx = {k:v for k,v in {"component_name":component_name, "workflow_name":workflow_name}.items() if v}; ctx.update(context); return get_context_logger('component', **ctx)
-
-def get_event_logger(event_type: str | None = None, chat_id: str | None = None, **context):
-    ctx = {k:v for k,v in {"event_type":event_type, "chat_id":chat_id}.items() if v}; ctx.update(context); return get_context_logger('event', **ctx)
+    ctx = {k:v for k,v in {"workflow_name":workflow_name, "chat_id":chat_id, "enterprise_id":enterprise_id}.items() if v}
+    ctx.update(context)
+    return ContextLogger(logging.getLogger("mozaiks.workflow"), ctx)
 
 # Operation timing ---------------------------------------------------
 @contextmanager
@@ -280,6 +310,6 @@ def log_operation(logger: ContextLogger | logging.Logger, operation_name: str, *
         raise
 
 # Environment presets ------------------------------------------------
-def setup_production_logging(): setup_logging(chat_level="INFO", business_level="INFO", console_level="WARNING", max_file_size=50*1024*1024, backup_count=10)
+def setup_production_logging(): setup_logging(chat_level="INFO", console_level="WARNING", max_file_size=50*1024*1024, backup_count=10)
 
-def setup_development_logging(): setup_logging(chat_level="DEBUG", business_level="DEBUG", console_level="INFO")
+def setup_development_logging(): setup_logging(chat_level="DEBUG", console_level="INFO")

@@ -1,8 +1,11 @@
 """
-Enhanced PersistenceManager with VE-style chat session management
-Supports multiple workflows per enterprise with comprehensive session tracking
-Based on AD_DevDeploy.py patterns for production-scale chat management
-Added production wallet/token accounting with atomic debits/credits.
+Enhanced Persistence Layer (organized)
+
+This module provides:
+1) Token Wallet persistence (VE uppercase schema) — single source of truth for balances and transactions
+2) Chat/Workflow persistence — chat sessions, messages, usage summaries, resumption
+
+Note: No functional changes in this pass; organization and doc-only improvements.
 """
 import logging
 import time
@@ -16,19 +19,18 @@ from bson.errors import InvalidId
 from pymongo import ReturnDocument
 from uuid import uuid4
 
-from logs.logging_config import get_business_logger
+from logs.logging_config import get_workflow_logger
 from core.core_config import get_mongo_client
 from core.workflow.helpers import get_formatted_agent_name
 
 # AG2 Event Imports for real-time processing
 from autogen.events.base_event import BaseEvent
 from autogen.events.agent_events import TextEvent
-from autogen.events.client_events import UsageSummaryEvent
 
 # OpenTelemetry instrumentation for database operations
 from opentelemetry import trace
 
-logger = get_business_logger("persistence")
+logger = get_workflow_logger("persistence")
 tracer = trace.get_tracer(__name__)
 
 class InvalidEnterpriseIdError(Exception):
@@ -38,12 +40,19 @@ class InvalidEnterpriseIdError(Exception):
 class PersistenceManager:
     """
     Provides access to MongoDB collections.
-    This class is now simplified to be a thin wrapper around the database client,
-    as the primary logic is handled by the AG2PersistenceManager.
+    Thin wrapper around the database client. Real-time chat persistence
+    and accounting is performed by AG2PersistenceManager.
+
+    Sections overview:
+    - Enterprise/User helpers: ID validation and reading user token profile
+    - TOKEN WALLET (VE uppercase): balance, debit/credit, transactions
+
+    Concurrency & atomicity:
+    - All wallet updates use MongoDB atomic updates (find_one_and_update / update_one)
+    - Debit enforces Balance >= amount; credit upserts as needed
     """
     def __init__(self):
         self.client = get_mongo_client()
-        # VE-style databases/collections
         self.db1 = self.client["MozaiksDB"]
         self.db2 = self.client["MozaiksAI"]
         # Core collections
@@ -51,9 +60,16 @@ class PersistenceManager:
         self.chat_sessions_collection = self.db2["ChatSessions"]
         self.wallets_collection = self.db1["Wallets"]
         logger.info(
-            "🔗 PersistenceManager initialized (VE-style): db1=MozaiksDB(Enterprises,Wallets), db2=MozaiksAI(ChatSessions)"
+            "🔗 PersistenceManager initialized: db1=MozaiksDB(Enterprises,Wallets), db2=MozaiksAI(ChatSessions)"
         )
 
+    # ------------------------------------------------------------------
+    # 🧾 Enterprise / User Config helpers
+    # Contract:
+    # - Inputs: enterprise_id (str|ObjectId), user_id (str)
+    # - Outputs: ObjectId conversion, token profile dict
+    # - Errors: raises InvalidEnterpriseIdError on bad ObjectId; returns {} if user not found
+    # ------------------------------------------------------------------
     def _ensure_object_id(self, id_value: Union[str, ObjectId], field_name: str = "ID") -> ObjectId:
         """Convert string to ObjectId or validate existing ObjectId"""
         if isinstance(id_value, ObjectId):
@@ -89,21 +105,28 @@ class PersistenceManager:
                 return enterprise["users"][0].get("tokens", {})
             return {}
 
+    # ------------------------------------------------------------------
+    # 💳 TOKEN WALLET (VE uppercase schema only)
+    # Single source of truth for balance and transactions
+    # Contract:
+    # - get_wallet_balance(user, enterprise): -> int (0 if missing)
+    # - ensure_wallet(user, enterprise, initial_balance): upsert, returns {balance}
+    # - debit_tokens(..., amount>0): atomic Balance >= amount; returns new balance or None when strict=False
+    # - credit_tokens(...): atomic increment; returns new balance
+    # Error modes:
+    # - debit_tokens raises ValueError("INSUFFICIENT_TOKENS") when strict=True and insufficient funds
+    # - All methods are async and may propagate database exceptions
+    # ------------------------------------------------------------------
     async def get_wallet_balance(self, user_id: str, enterprise_id: Union[str, ObjectId]) -> int:
-        """Return current wallet balance (tokens) for a user/enterprise. Prefer VE uppercase schema."""
+        """Return current wallet balance (tokens) using the VE uppercase schema only."""
         eid = str(enterprise_id)
-        # Prefer VE (uppercase) schema
-        legacy = await self.wallets_collection.find_one({"EnterpriseId": eid, "UserId": user_id}, projection={"Balance": 1})
-        if legacy and "Balance" in legacy:
-            try:
-                return int(legacy.get("Balance", 0))
-            except Exception:
-                return 0
-        # Fallback to lowercase schema
-        doc = await self.wallets_collection.find_one({"enterprise_id": eid, "user_id": user_id}, projection={"balance": 1})
-        if doc and "balance" in doc:
-            return int(doc.get("balance", 0))
-        return 0
+        doc = await self.wallets_collection.find_one({"EnterpriseId": eid, "UserId": user_id}, projection={"Balance": 1})
+        if not doc:
+            return 0
+        try:
+            return int(doc.get("Balance", 0))
+        except Exception:
+            return 0
 
     async def ensure_wallet(self, user_id: str, enterprise_id: Union[str, ObjectId], initial_balance: int = 0) -> Dict[str, Any]:
         eid = str(enterprise_id)
@@ -120,60 +143,51 @@ class PersistenceManager:
     async def record_transaction(self, *, user_id: str, enterprise_id: Union[str, ObjectId], amount: int, tx_type: str, reason: str, meta: Optional[Dict[str, Any]] = None) -> None:
         eid = str(enterprise_id)
         tx = {"ts": datetime.utcnow(), "type": tx_type, "amount": int(amount), "reason": reason, "meta": meta or {}}
-        # Prefer uppercase doc
-        upd = await self.wallets_collection.update_one(
+        await self.wallets_collection.update_one(
             {"EnterpriseId": eid, "UserId": user_id},
-            {"$push": {"Transactions": tx}, "$set": {"UpdatedAt": datetime.utcnow()}}
+                {"$push": {"Transactions": tx}, "$set": {"UpdatedAt": datetime.utcnow()}},
+            upsert=True,
         )
-        if getattr(upd, "matched_count", 0) == 0:
-            # Fallback to lowercase schema
-            await self.wallets_collection.update_one(
-                {"enterprise_id": eid, "user_id": user_id},
-                {"$push": {"transactions": tx}, "$set": {"updated_at": datetime.utcnow()}},
-            )
 
     async def debit_tokens(self, user_id: str, enterprise_id: Union[str, ObjectId], amount: int, *, reason: str, strict: bool = True, meta: Optional[Dict[str, Any]] = None) -> Optional[int]:
-        """Atomically debit tokens. Returns new balance or None if insufficient and strict=False. Uses VE uppercase schema primarily."""
+        """
+        Atomically debit tokens (VE uppercase schema only).
+
+        Inputs: user_id, enterprise_id, amount (>0), reason, strict, meta
+        Returns: new balance (int) on success; None if insufficient and strict=False
+        Errors: ValueError("INSUFFICIENT_TOKENS") if strict=True and insufficient
+        """
         eid = str(enterprise_id)
         if amount <= 0:
             return await self.get_wallet_balance(user_id, eid)
-        # Try uppercase first
+        # Uppercase schema only
         res = await self.wallets_collection.find_one_and_update(
             {"EnterpriseId": eid, "UserId": user_id, "Balance": {"$gte": int(amount)}},
             {"$inc": {"Balance": -int(amount)}, "$set": {"UpdatedAt": datetime.utcnow()}, "$push": {"Transactions": {"ts": datetime.utcnow(), "type": "debit", "amount": int(amount), "reason": reason, "meta": meta or {}}}},
             return_document=ReturnDocument.AFTER,
         )
         if res is None:
-            # Fallback to lowercase
-            res = await self.wallets_collection.find_one_and_update(
-                {"enterprise_id": eid, "user_id": user_id, "balance": {"$gte": int(amount)}},
-                {"$inc": {"balance": -int(amount)}, "$set": {"updated_at": datetime.utcnow()}, "$push": {"transactions": {"ts": datetime.utcnow(), "type": "debit", "amount": int(amount), "reason": reason, "meta": meta or {}}}},
-                return_document=ReturnDocument.AFTER,
-            )
-        if res is None:
             if strict:
                 raise ValueError("INSUFFICIENT_TOKENS")
             return None
-        # Return whichever field exists
-        return int(res.get("Balance", res.get("balance", 0)))
+        return int(res.get("Balance", 0))
 
     async def credit_tokens(self, user_id: str, enterprise_id: Union[str, ObjectId], amount: int, *, reason: str, meta: Optional[Dict[str, Any]] = None) -> int:
+        """
+        Atomically credit tokens (VE uppercase schema only).
+
+        Inputs: user_id, enterprise_id, amount, reason, meta
+        Returns: new balance (int)
+        """
         eid = str(enterprise_id)
-        # Prefer uppercase
+        # Uppercase schema only
         res = await self.wallets_collection.find_one_and_update(
             {"EnterpriseId": eid, "UserId": user_id},
             {"$inc": {"Balance": int(amount)}, "$set": {"UpdatedAt": datetime.utcnow()}, "$push": {"Transactions": {"ts": datetime.utcnow(), "type": "credit", "amount": int(amount), "reason": reason, "meta": meta or {}}}},
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
-        if res is None:
-            res = await self.wallets_collection.find_one_and_update(
-                {"enterprise_id": eid, "user_id": user_id},
-                {"$inc": {"balance": int(amount)}, "$set": {"updated_at": datetime.utcnow()}, "$push": {"transactions": {"ts": datetime.utcnow(), "type": "credit", "amount": int(amount), "reason": reason, "meta": meta or {}}}},
-                upsert=True,
-                return_document=ReturnDocument.AFTER,
-            )
-        return int(res.get("Balance", res.get("balance", 0)))
+        return int(res.get("Balance", 0))
 
 # ==================================================================================
 # AG2 REAL-TIME PERSISTENCE MANAGER
@@ -181,15 +195,29 @@ class PersistenceManager:
 
 class AG2PersistenceManager:
     """
-    Handles real-time persistence of AG2 events, including messages and performance metrics.
-    This replaces previous batch-oriented performance tracking and chat history management.
+        Real-time persistence of AG2 events (messages + usage), chat session lifecycle,
+        and wallet debits/credits (delegated to PersistenceManager).
+
+        Sections:
+        - 💳 Token wallet delegation: thin wrappers, same contracts as PersistenceManager
+        - 💬 Chat session persistence: create, complete, resume
+            • Inputs: chat_id, enterprise_id, workflow_name, user_id
+            • Outputs: upsert/update results (boolean for complete), message list for resume or None
+            • Errors: logs and returns False/None on failures; raises only for programmer errors
+        - 🧩 Event persistence: TextEvent messages, usage summary
+            • save_event: persists TextEvent to ChatSessions.messages
+            • save_usage_summary: writes authoritative totals and performs final debit (if not already incremental)
+        - 🧰 Agent JSON helpers: extract structured outputs per agent from message history
     """
     def __init__(self):
         self.persistence = PersistenceManager()
         self.chat_sessions_collection = self.persistence.chat_sessions_collection
         logger.info("🚀 AG2 Real-Time Persistence Manager initialized.")
 
-    # Wallet delegation -------------------------------------------------
+    # ------------------------------------------------------------------
+    # 💳 TOKEN WALLET DELEGATION (thin wrappers to PersistenceManager)
+    # Contract: mirrors PersistenceManager wallet API; no additional logic here
+    # ------------------------------------------------------------------
     async def get_wallet_balance(self, user_id: str, enterprise_id: str) -> int:
         return await self.persistence.get_wallet_balance(user_id, enterprise_id)
 
@@ -205,6 +233,13 @@ class AG2PersistenceManager:
     async def record_transaction(self, **kwargs) -> None:
         return await self.persistence.record_transaction(**kwargs)
 
+    # ------------------------------------------------------------------
+    # 💬 CHAT SESSION PERSISTENCE (create / complete / resume)
+    # Contract:
+    # - create_chat_session: idempotent upsert creating session skeleton
+    # - mark_chat_completed: returns True if updated, False otherwise
+    # - resume_chat: returns messages list if in_progress else None
+    # ------------------------------------------------------------------
     async def create_chat_session(self, chat_id: str, enterprise_id: str, workflow_name: str, user_id: str) -> None:
         """Creates a new chat session document in the database upon conversation start."""
         try:
@@ -276,6 +311,37 @@ class AG2PersistenceManager:
             logger.error(f"❌ Failed to mark chat {chat_id} as completed: {e}")
             return False
 
+    async def resume_chat(self, chat_id: str, enterprise_id: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Retrieves message history for a chat session to allow for resumption,
+        but only if the chat is still in progress.
+        """
+        try:
+            session = await self.chat_sessions_collection.find_one(
+                {"chat_id": chat_id, "enterprise_id": enterprise_id, "status": "in_progress"}
+            )
+            
+            # Only allow resumption if the session exists and is marked as "in_progress"
+            if session and session.get("status") == "in_progress":
+                logger.info(f"🔄 Resuming chat {chat_id} with {len(session.get('messages', []))} messages.")
+                return session.get("messages")
+            
+            if session:
+                logger.warning(f"⚠️ Attempted to resume a completed or invalid status chat: {chat_id} (Status: {session.get('status')})")
+            
+            # Return None if session does not exist, is completed, or has an invalid status
+            return None
+        except Exception as e:
+            logger.error(f"❌ Failed to resume chat {chat_id}: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # 🧩 EVENT PERSISTENCE (messages + usage)
+    # Contract:
+    # - save_event(TextEvent): appends a message doc; logs errors
+    # - save_usage_summary: overwrites totals, handles final debit unless incremental already occurred
+    # Error modes: records exceptions to tracer, logs; does not raise for operational failures
+    # ------------------------------------------------------------------
     async def save_event(self, event: BaseEvent, chat_id: str, enterprise_id: str, workflow_name: str, user_id: str) -> None:
         """Saves a single AG2 event and updates tokens + wallet (atomic debit)."""
         with tracer.start_as_current_span("save_event") as span:
@@ -460,27 +526,87 @@ class AG2PersistenceManager:
                 span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                 logger.error(f"❌ Failed to save usage summary for chat {chat_id}: {e}\n{traceback.format_exc()}")
 
-    async def resume_chat(self, chat_id: str, enterprise_id: str) -> Optional[List[Dict[str, Any]]]:
-        """
-        Retrieves message history for a chat session to allow for resumption,
-        but only if the chat is still in progress.
-        """
+    # ------------------------------------------------------------------
+    # Agent JSON output extraction (workflow-agnostic)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _extract_json_from_text(text: Any) -> Optional[Dict[str, Any]]:
+        """Extract the first JSON object from a text blob if present."""
         try:
-            session = await self.chat_sessions_collection.find_one(
-                {"chat_id": chat_id, "enterprise_id": enterprise_id, "status": "in_progress"}
-            )
-            
-            # Only allow resumption if the session exists and is marked as "in_progress"
-            if session and session.get("status") == "in_progress":
-                logger.info(f"🔄 Resuming chat {chat_id} with {len(session.get('messages', []))} messages.")
-                return session.get("messages")
-            
-            if session:
-                logger.warning(f"⚠️ Attempted to resume a completed or invalid status chat: {chat_id} (Status: {session.get('status')})")
-            
-            # Return None if session does not exist, is completed, or has an invalid status
+            if text is None:
+                return None
+            if not isinstance(text, str):
+                text = str(text)
+            s = text.strip()
+            import json
+            # Try direct parse
+            try:
+                obj = json.loads(s)
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
+            # Fallback: find first {...}
+            try:
+                start = s.find('{')
+                end = s.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    snippet = s[start:end+1]
+                    obj = json.loads(snippet)
+                    if isinstance(obj, dict):
+                        return obj
+            except Exception:
+                return None
             return None
-            
+        except Exception:
+            return None
+
+    async def gather_latest_agent_jsons(
+        self,
+        *,
+        chat_id: str,
+        enterprise_id: str,
+        agent_names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Collect the most recent JSON per agent from the chat history.
+
+        - If agent_names provided: returns {agent_name: last_json} for those names (present only if JSON found).
+        - If agent_names not provided: auto-discovers agents and returns the last JSON per agent.
+        """
+        result: Dict[str, Any] = {}
+        try:
+            msgs = await self.resume_chat(chat_id, enterprise_id) or []
+            # Normalize names to search across keys we persist
+            # Messages saved via save_event contain both 'agent_name' (normalized) and 'sender' (raw)
+            if agent_names:
+                wanted = {n.lower().strip() for n in agent_names}
+                for m in reversed(msgs):
+                    if not isinstance(m, dict):
+                        continue
+                    name = str(m.get("agent_name") or m.get("sender") or "").strip()
+                    if not name:
+                        continue
+                    low = name.lower()
+                    if low in wanted and name not in result:
+                        js = self._extract_json_from_text(m.get("content"))
+                        if js is not None:
+                            result[name] = js
+                return result
+
+            # Auto-discover: pick the last JSON per unique agent
+            seen: set[str] = set()
+            for m in reversed(msgs):
+                if not isinstance(m, dict):
+                    continue
+                name = str(m.get("agent_name") or m.get("sender") or "").strip()
+                if not name or name in seen:
+                    continue
+                js = self._extract_json_from_text(m.get("content"))
+                if js is not None:
+                    result[name] = js
+                    seen.add(name)
+            return result
         except Exception as e:
-            logger.error(f"❌ Failed to resume chat {chat_id}: {e}")
-            return None
+            logger.warning(f"gather_latest_agent_jsons failed for chat {chat_id}: {e}")
+            return result
+

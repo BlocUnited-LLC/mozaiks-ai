@@ -1,7 +1,7 @@
 services:
   app:
     build:
-      context: ../.. # repo root
+      context: ../..    # repo root
       dockerfile: infra/docker/Dockerfile
     image: mozaiksai-app:latest
     container_name: mozaiksai-app
@@ -10,19 +10,17 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Override to true to enable OpenLIT/OTEL
       OPENLIT_ENABLED: "true"
-      # Points to collector service name on docker network
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      # Mongo connection for local dev (override via .env if needed)
-      MONGO_URI: mongodb://mongo:27017
-      # Hint logging to write to /app/logs (mounted)
+      # Default for local dev; override in .env or use Key Vault in app
+      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
       DOCKERIZED: "true"
     depends_on:
       - otel-collector
-      - mongo
+      # NOTE: do NOT depend on 'mongo' here, so Atlas mode works without the local-db profile
     volumes:
       - ../../logs/logs:/app/logs/logs
+    restart: unless-stopped
 
   otel-collector:
     image: otel/opentelemetry-collector:0.98.0
@@ -33,14 +31,23 @@ services:
     ports:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
+    restart: unless-stopped
 
   mongo:
     image: mongo:6
     container_name: mongo
+    profiles: ["local-db"]   # only starts when profile is enabled
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
 
 volumes:
   mongo_data:

@@ -20,21 +20,14 @@ module.exports = {
         lg: "976px",
         xl: "1440px",
       },
-      colors: {
-        // Legacy palette (kept for compatibility)
+  colors: {
         purple: "#7e5bef",
         pink: "#ff49db",
         orange: "#ff7849",
         green: "#13ce66",
         yellow: "#ffc82c",
         white: "#ffffff",
-        "gray-dark": "#273444",
-        "gray-light": "#d3dce6",
-        gradient1: "#060B26",
-        gradient2: "#1A1F37",
-        gradient3: "#0F123B",
-        navyblue: "#1A1F37",
-        transpar: "rgba(255, 255, 255, 0.08)",
+  // Streamlined palette (unused legacy keys removed)
 
         // Mozaiks Website theme palette
         primary: "#6d28d9",

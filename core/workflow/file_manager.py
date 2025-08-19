@@ -9,6 +9,8 @@ from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
 from dataclasses import dataclass, field
 
+from logs.logging_config import get_workflow_logger
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -66,21 +68,26 @@ class WorkflowFileManager:
         if workflows_base_dir is None:
             workflows_base_dir = Path(__file__).parent.parent.parent / "workflows"
         self.workflows_base_dir = Path(workflows_base_dir)
+        # Contextual workflow logger for file manager operations
+        self.wf_logger = get_workflow_logger(
+            workflow_name="workflow.files",
+            component="file_manager",
+        )
         
     def load_workflow(self, workflow_name: str) -> Dict[str, Any]:
         """Load a complete workflow configuration from modular YAML files"""
         workflow_dir = self.workflows_base_dir / workflow_name
         
         if not workflow_dir.exists():
-            logger.warning(f"Workflow directory not found: {workflow_dir}")
+            self.wf_logger.warning(f"Workflow directory not found: {workflow_dir}")
             return {}
             
         # Load from modular YAML files
         if self._has_modular_files(workflow_dir):
-            logger.info(f"Loading modular workflow config for: {workflow_name}")
+            self.wf_logger.info(f"Loading modular workflow config for: {workflow_name}")
             return self._load_modular_workflow(workflow_dir)
             
-        logger.warning(f"No modular workflow config found for: {workflow_name}")
+        self.wf_logger.warning(f"No modular workflow config found for: {workflow_name}")
         return {}
     
     def _has_modular_files(self, workflow_dir: Path) -> bool:
@@ -99,9 +106,9 @@ class WorkflowFileManager:
                 try:
                     data = self._load_yaml_file(file_path)
                     setattr(workflow_files, section, data)
-                    logger.debug(f"Loaded {section} from {filename}")
+                    self.wf_logger.debug(f"Loaded {section} from {filename}")
                 except Exception as e:
-                    logger.error(f"Failed to load {filename}: {e}")
+                    self.wf_logger.error(f"Failed to load {filename}: {e}")
                     
         return workflow_files.merge_to_dict()
     
@@ -111,7 +118,7 @@ class WorkflowFileManager:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return yaml.safe_load(f) or {}
         except Exception as e:
-            logger.error(f"Failed to load YAML file {file_path}: {e}")
+            self.wf_logger.error(f"Failed to load YAML file {file_path}: {e}")
             return {}
     
     def save_modular_workflow(self, workflow_name: str, config: Dict[str, Any]) -> bool:
@@ -130,13 +137,13 @@ class WorkflowFileManager:
                     if filename:
                         file_path = workflow_dir / filename
                         self._save_yaml_file(file_path, section_data)
-                        logger.info(f"Saved {section_name} to {filename}")
+                        self.wf_logger.info(f"Saved {section_name} to {filename}")
             
-            logger.info(f"Successfully saved modular workflow: {workflow_name}")
+            self.wf_logger.info(f"Successfully saved modular workflow: {workflow_name}")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to save modular workflow {workflow_name}: {e}")
+            self.wf_logger.error(f"Failed to save modular workflow {workflow_name}: {e}")
             return False
     
     def _split_config(self, config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:

@@ -4,14 +4,14 @@
 #              NO dependencies on workflow_config for handlers
 # ==============================================================================
 from typing import Dict, Callable, Awaitable, Any, List, Optional
-import logging
+import logging, asyncio
 from pathlib import Path
 
 # Import enhanced logging for workflows
 from logs.logging_config import (
     get_workflow_logger,
-    log_business_event
 )
+from core.events import get_event_dispatcher
 
 # Use workflow logger for registry operations
 logger = get_workflow_logger(workflow_name="registry")
@@ -54,15 +54,30 @@ def initialize_workflow_components(workflow_name: str, base_dir: Path) -> List[s
                     components_found.append(f"{component_name} ({component_type})")
         
         if component_count > 0:
-            log_business_event(
-                log_event_type="WORKFLOW_COMPONENTS_DISCOVERED",
-                description=f"Discovered {component_count} UI components for {workflow_name}",
-                context={
-                    "workflow_name": workflow_name,
-                    "component_count": component_count,
-                    "components": components_found
-                }
-            )
+            try:
+                dispatcher = get_event_dispatcher()
+                coro = dispatcher.emit_business_event(
+                    "WORKFLOW_COMPONENTS_DISCOVERED",
+                    f"Discovered {component_count} UI components for {workflow_name}",
+                    context={
+                        "workflow_name": workflow_name,
+                        "component_count": component_count,
+                        "components": components_found,
+                    },
+                )
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(coro)
+                except RuntimeError:
+                    asyncio.run(coro)
+            except Exception:
+                # Fallback workflow log if dispatcher unavailable
+                logger.info(
+                    "components_discovered",
+                    workflow_name=workflow_name,
+                    component_count=component_count,
+                    components=components_found,
+                )
         else:
             logger.debug(f"No components defined in ui_capable_agents for {workflow_name}")
         
@@ -213,13 +228,6 @@ def get_workflow_transport(workflow_name: str) -> str:
 def get_workflow_tools(workflow_name: str) -> List[Callable]:
     """Get tools registered for a workflow"""
     return _WORKFLOW_TOOLS.get(workflow_name, [])
-
-def get_or_discover_workflow_handler(workflow_name: str) -> Callable[..., Awaitable[Any]] | None:
-    """
-    Get workflow handler with discovery fallback.
-    This is an alias for get_workflow_handler for backward compatibility.
-    """
-    return get_workflow_handler(workflow_name)
 
 # ==============================================================================
 # CLEAN REGISTRY - SELF-CONTAINED, NO CIRCULAR DEPENDENCIES

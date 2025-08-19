@@ -4,6 +4,7 @@
 # ==============================================================================
 
 from typing import Dict, Any
+from logs.logging_config import get_workflow_logger
 
 async def log_agent_state_update(
     agent,
@@ -20,7 +21,9 @@ async def log_agent_state_update(
     """
     agent_name = getattr(agent, 'name', 'Unknown') if agent else 'Unknown'
     message_count = len(messages) if messages else 0
-    
+    wf_logger = get_workflow_logger(workflow_name="Generator", agent_name=agent_name)
+    wf_logger.debug("AGENT_STATE_UPDATE", agent_name=agent_name, message_count=message_count)
+    # Keep minimal console trace for developers
     print(f"🔄 STATE LOGGER: {agent_name} updating state before reply (messages: {message_count})")
     
     # Return messages unchanged (or None for state updates)

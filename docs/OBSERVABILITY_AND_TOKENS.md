@@ -1,11 +1,13 @@
 # Observability and Token Tracking
 
+Note: Token accounting is strictly event-driven. See `PERSISTENCE.md` and `docs/EVENT_ARCHITECTURE.md` for the authoritative schema and event flows. We do not use periodic backfills; missing `UsageSummaryEvent` is treated as an error to surface pipeline issues early.
+
 This repo is set up to run “production-like” locally: Azure Key Vault for secrets, AG2 for token accounting, and optional OpenTelemetry (OTEL) via OpenLIT for telemetry.
 
 ## What does what
 
-- AG2 gather_usage_summary (source of truth)
-  - Computes cumulative per-agent token usage and cost.
+- AG2 UsageSummaryEvent (source of truth)
+  - Providers emit `actual` and/or `total` summaries. We compute deltas from these events and persist them.
 ### Recommended local setup (with collector)
 
 ```powershell
@@ -39,7 +41,7 @@ Verification cues:
 - During runs, AG2 emits events; we iterate `response.events` (see `UIEventProcessor`).
 - On each `UsageSummaryEvent`, we parse model and token counts, compute deltas, and call `PerformanceManager.record_token_usage()`.
 - `PerformanceManager` persists cumulative totals and last deltas to Mongo and emits `token_update` over WebSocket.
-- Separately, we may also capture cumulative totals using `gather_usage_summary(agents)` for reconciliation at turn boundaries.
+  - When the provider emits a `mode=total` summary, we persist authoritative totals.
 
 ## Key Vault (production-like local)
 
@@ -97,8 +99,8 @@ service:
 
 ## How token tracking works here
 
-- Per-turn: after each agent message, we call `capture_cumulative_usage()`, compute deltas, persist to `ChatSessions.real_time_tracking.*`, emit `token_update` over WebSocket, and debit wallet by delta.
-- Finalization: we persist authoritative totals and skip final wallet debit when incremental debits already happened.
+- Per-turn: deltas come only from `UsageSummaryEvent`. We persist to `ChatSessions.real_time_tracking.*`, emit `token_update` over WebSocket, and debit wallet by delta.
+- Finalization: on `mode=total`, we persist authoritative totals and skip final wallet debit when incremental debits already happened.
 
 Where to look:
 

@@ -12,10 +12,10 @@ from autogen.agentchat.group import ContextVariables
 
 # Import existing infrastructure
 from .file_manager import workflow_file_manager
-from logs.logging_config import get_business_logger
+from logs.logging_config import get_workflow_logger
 
 # Get logger
-business_logger = get_business_logger("context_variables")
+business_logger = get_workflow_logger("context_variables")
 
 def get_context(workflow_name: str, enterprise_id: Optional[str] = None) -> ContextVariables:
     """
