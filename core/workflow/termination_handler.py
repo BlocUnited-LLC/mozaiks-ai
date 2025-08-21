@@ -231,7 +231,8 @@ class AG2TerminationHandler:
     async def check_completion_status(self) -> Dict[str, Any]:
         """Check current completion status of workflow"""
         try:
-            session = await self.persistence_manager.chat_sessions_collection.find_one(
+            coll = await self.persistence_manager._repo._coll()
+            session = await coll.find_one(
                 {"chat_id": self.chat_id, "enterprise_id": self.enterprise_id}
             )
             

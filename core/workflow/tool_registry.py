@@ -194,67 +194,6 @@ class WorkflowToolRegistry:
             try:
                 function = tool_config.load_function()
 
-                # If this is a UI tool, provide a conservative auto-emit wrapper that
-                # only triggers when the tool returns a component descriptor. Tools that
-                # already emit UI events won't be affected because they typically return
-                # user-submitted data, not a component description.
-                def _wrap_for_ui_if_needed(fn, cfg: ToolConfig):
-                    has_ui_meta = getattr(cfg, 'ui_tool_id', None) or getattr(cfg, 'display', None)
-                    if not has_ui_meta:
-                        return fn
-
-                    async def _auto_emit_async(*args, **kwargs):
-                        result = await fn(*args, **kwargs)
-                        try:
-                            if isinstance(result, dict) and any(k in result for k in ("component", "ui_component", "ui_tool_id")):
-                                component = result.get("component") or result.get("ui_component") or getattr(cfg, 'ui_tool_id', None) or fn.__name__
-                                display = result.get("display") or getattr(cfg, 'display', None) or 'inline'
-                                payload = result.get("payload") or {k: v for k, v in result.items() if k not in ("component", "ui_component", "display")}
-                                chat_id = kwargs.get("chat_id")
-                                workflow_name = kwargs.get("workflow_name", getattr(self, 'workflow_name', 'unknown'))
-                                # Emit exactly once per call
-                                try:
-                                    from .ui_tools import emit_ui_tool_event as _emit
-                                    event_id = await _emit(component, payload, display=display, chat_id=chat_id, workflow_name=workflow_name)
-                                    result = {"status": "emitted", "event_id": event_id, **result}
-                                except Exception as _e:
-                                    logger.warning(f"UI auto-emit failed for tool '{fn.__name__}': {_e}")
-                        except Exception:
-                            # Best-effort; never break the tool flow
-                            pass
-                        return result
-
-                    def _auto_emit_sync(*args, **kwargs):
-                        result = fn(*args, **kwargs)
-                        try:
-                            if isinstance(result, dict) and any(k in result for k in ("component", "ui_component", "ui_tool_id")):
-                                # Run the async emitter in current loop if available
-                                async def _emit_once():
-                                    component = result.get("component") or result.get("ui_component") or getattr(cfg, 'ui_tool_id', None) or fn.__name__
-                                    display = result.get("display") or getattr(cfg, 'display', None) or 'inline'
-                                    payload = result.get("payload") or {k: v for k, v in result.items() if k not in ("component", "ui_component", "display")}
-                                    chat_id = kwargs.get("chat_id")
-                                    workflow_name = kwargs.get("workflow_name", getattr(self, 'workflow_name', 'unknown'))
-                                    try:
-                                        from .ui_tools import emit_ui_tool_event as _emit
-                                        event_id = await _emit(component, payload, display=display, chat_id=chat_id, workflow_name=workflow_name)
-                                        result.update({"status": "emitted", "event_id": event_id})
-                                    except Exception as _e:
-                                        logger.warning(f"UI auto-emit failed for tool '{fn.__name__}': {_e}")
-                                try:
-                                    loop = asyncio.get_running_loop()
-                                    loop.create_task(_emit_once())
-                                except RuntimeError:
-                                    # If no running loop, run synchronously
-                                    asyncio.run(_emit_once())
-                        except Exception:
-                            pass
-                        return result
-
-                    return _auto_emit_async if asyncio.iscoroutinefunction(fn) else _auto_emit_sync
-
-                function = _wrap_for_ui_if_needed(function, tool_config)
-
                 if ENABLE_TOOL_DEBUG:
                     self.wf_logger.info(f"🔍 [TOOL-DEBUG] Registering '{function.__name__}' for agent '{agent.name}'")
                     self.wf_logger.info(f"🔍 [TOOL-DEBUG] Tool description: {tool_config.description}")
@@ -264,26 +203,21 @@ class WorkflowToolRegistry:
 
                 # Use AG2's modern Tool class if available
                 if Tool is not None:
-                    # Create a Tool instance from the function
+                    # Create a Tool instance from the function using keyword args for compatibility
                     tool = Tool(
+                        func_or_tool=function,
                         name=function.__name__,
-                        description=tool_config.description or function.__doc__ or f"Tool: {function.__name__}",
-                        func_or_tool=function
+                        description=tool_config.description or function.__doc__ or f"Tool: {function.__name__}"
                     )
-
-                    # Register for both LLM and execution (full tool registration)
                     tool.register_tool(agent)
-
                     if ENABLE_TOOL_DEBUG:
                         self.wf_logger.info(f"🔧 [TOOL-DEBUG] Successfully registered modern Tool '{function.__name__}'")
                     else:
                         self.wf_logger.info(f"🔧 [MODERN] Registered Tool '{function.__name__}' for agent '{agent.name}' (LLM + execution)")
-
                 else:
                     # Fallback to old registration method
                     function_map = {function.__name__: function}
                     agent.register_function(function_map)
-
                     if ENABLE_TOOL_DEBUG:
                         self.wf_logger.info(f"🔧 [TOOL-DEBUG] Successfully registered function '{function.__name__}'")
                     else:

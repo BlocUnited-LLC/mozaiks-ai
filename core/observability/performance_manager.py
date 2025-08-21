@@ -14,7 +14,9 @@ from opentelemetry.trace import Status, StatusCode
 from logs.logging_config import (
     get_workflow_logger,
 )
+from core.core_config import get_free_trial_config
 from core.data.persistence_manager import AG2PersistenceManager
+from core.data.chat_sessions_data import ChatSessionsRepository
 
 logger = get_workflow_logger("performance_manager")
 perf_logger = get_workflow_logger("performance")
@@ -98,8 +100,8 @@ class PerformanceManager:
         self._lock = asyncio.Lock()
         self._flush_task: Optional[asyncio.Task] = None
         self._persistence = AG2PersistenceManager()
-        self._last_debited: Dict[str, int] = {}
-        self._incremental_flag: Dict[str, bool] = {}
+        self._repo = ChatSessionsRepository(self._persistence.persistence)
+        self._last_debited = {}
         self._token_counter = None
         self._agent_turn_duration = None
         self._workflow_duration = None
@@ -139,6 +141,12 @@ class PerformanceManager:
                     return
 
             os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = self.config.endpoint
+            # If endpoint is HTTP (4318) ensure signals default to http/protobuf to avoid gRPC mismatch
+            if ":4318" in self.config.endpoint or self.config.endpoint.startswith("http://") or self.config.endpoint.startswith("https://"):
+                os.environ.setdefault("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+                os.environ.setdefault("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf")
+                os.environ.setdefault("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf")
+                os.environ.setdefault("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", "http/protobuf")
             os.environ["OTEL_SERVICE_NAME"] = self.config.service_name
             os.environ["OTEL_RESOURCE_ATTRIBUTES"] = f"deployment.environment={self.config.environment},service.version={self.config.service_version}"
             openlit.init()
@@ -181,10 +189,10 @@ class PerformanceManager:
             st = self._states.get(chat_id)
             if st:
                 st.trace_id = trace_id
-        await self._persistence.chat_sessions_collection.update_one(
-            {"chat_id": chat_id},
-            {"$set": {"trace_id": trace_id, "real_time_tracking.trace_id": trace_id}}
-        )
+        try:
+            await self._repo.update_fields(chat_id=chat_id, fields={"trace_id": trace_id, "real_time_tracking.trace_id": trace_id})
+        except Exception:
+            pass
 
     async def record_agent_turn(self, chat_id: str, agent_name: str, duration_sec: float, model: Optional[str], prompt_tokens: int = 0, completion_tokens: int = 0, cost: float = 0.0):
         with tracer.start_as_current_span("agent_turn") as span:
@@ -235,7 +243,7 @@ class PerformanceManager:
             agent=agent_name,
         )
         try:
-            await self._persistence.chat_sessions_collection.update_one({"chat_id": chat_id}, {"$set": {"real_time_tracking.latency": latency_doc, "real_time_tracking.tokens.last_model": model}})
+            await self._repo.update_fields(chat_id=chat_id, fields={"real_time_tracking.latency": latency_doc, "real_time_tracking.tokens.last_model": model})
         except Exception:
             pass
 
@@ -260,166 +268,25 @@ class PerformanceManager:
                         st.completion_tokens = completion_tokens
                         st.total_cost = total_cost
                         last_model = st.last_model
+                        has_incremental = (st.total_tokens > 0)
                     else:
                         last_model = None
-                await self._persistence.chat_sessions_collection.update_one(
-                    {"chat_id": chat_id},
-                    {"$set": {
-                        "real_time_tracking.tokens.total_tokens": total_tokens,
-                        "real_time_tracking.tokens.prompt_tokens": prompt_tokens,
-                        "real_time_tracking.tokens.completion_tokens": completion_tokens,
-                        "real_time_tracking.tokens.total_cost": total_cost,
-                        "real_time_tracking.tokens.last_model": last_model,
-                        "real_time_tracking.tokens.incremental_debits": self._incremental_flag.get(chat_id, False),
-                        "real_time_tracking.last_usage_recorded_at": datetime.utcnow(),
-                    }}
-                )
+                        has_incremental = False
+                await self._repo.update_fields(chat_id=chat_id, fields={
+                    "real_time_tracking.tokens.total_tokens": total_tokens,
+                    "real_time_tracking.tokens.prompt_tokens": prompt_tokens,
+                    "real_time_tracking.tokens.completion_tokens": completion_tokens,
+                    "real_time_tracking.tokens.total_cost": total_cost,
+                    "real_time_tracking.tokens.last_model": last_model,
+                    # Mark incremental_debits true if any tokens recorded during the run
+                    "real_time_tracking.tokens.incremental_debits": bool(has_incremental),
+                    "real_time_tracking.last_usage_recorded_at": datetime.utcnow(),
+                })
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 logger.error(f"final token usage failed: {e}", exc_info=True)
-
-    async def capture_cumulative_usage(self, chat_id: str, agents: List[Any], workflow_name: str, enterprise_id: str, user_id: str) -> None:
-        from autogen.agentchat.utils import gather_usage_summary
-        try:
-            usage_summary = gather_usage_summary(agents or [])
-        except Exception as e:
-            logger.debug(f"capture_cumulative_usage gather failed: {e}")
-            return
-        agent_count = len(agents or [])
-        total_tokens = prompt_tokens = completion_tokens = 0
-        total_cost = usage_summary.get("total_cost", 0.0)
-        usage_details = usage_summary.get("usage", []) if isinstance(usage_summary, dict) else []
-        model_name = None
-        if isinstance(usage_details, list):
-            for ud in usage_details:
-                if isinstance(ud, dict):
-                    pt = ud.get("prompt_tokens", 0)
-                    ct = ud.get("completion_tokens", 0)
-                    tt = ud.get("total_tokens", 0)
-                    total_tokens += tt
-                    prompt_tokens += pt
-                    completion_tokens += ct
-                    if not model_name:
-                        model_name = ud.get("model") or ud.get("model_name")
-        async with self._lock:
-            st = self._states.get(chat_id)
-            if not st:
-                return
-            prev_prompt, prev_completion, prev_total, prev_cost = st.prompt_tokens, st.completion_tokens, st.total_tokens, st.total_cost
-        delta_prompt = prompt_tokens - prev_prompt
-        delta_completion = completion_tokens - prev_completion
-        delta_total = total_tokens - prev_total
-        # Coerce total_cost to float; some summaries may return nested dict instead of numeric
-        if isinstance(total_cost, (int, float)):
-            numeric_total_cost = float(total_cost)
-        else:
-            # Fallback: keep previous to avoid negative / type errors
-            numeric_total_cost = float(prev_cost)
-        delta_cost = numeric_total_cost - float(prev_cost)
-        if delta_total <= 0 and delta_cost <= 0:
-            logger.debug(
-                f"capture_cumulative_usage no delta | chat={chat_id} agents={agent_count} cum_total={total_tokens} prev_total={prev_total}"
-            )
-            # Token tracking log for heartbeat without delta
-            try:
-                token_logger.info(
-                    "token_tracking: no_delta",
-                    chat_id=chat_id,
-                    workflow_name=workflow_name,
-                    enterprise_id=enterprise_id,
-                    agent_count=agent_count,
-                    cum_total_tokens=int(total_tokens),
-                    cum_prompt_tokens=int(prompt_tokens),
-                    cum_completion_tokens=int(completion_tokens),
-                    cum_total_cost=float(numeric_total_cost),
-                    delta_total_tokens=0,
-                    delta_prompt_tokens=0,
-                    delta_completion_tokens=0,
-                    delta_cost=0.0,
-                )
-            except Exception:
-                pass
-            try:
-                await self._persistence.chat_sessions_collection.update_one({"chat_id": chat_id}, {"$set": {"real_time_tracking.last_usage_recorded_at": datetime.utcnow()}})
-            except Exception:
-                pass
-            return
-        await self.record_token_usage(chat_id, max(0, delta_prompt), max(0, delta_completion), model=model_name, cost=max(0.0, delta_cost))
-        if delta_total > 0:
-            self._incremental_flag[chat_id] = True
-        try:
-            await self._persistence.chat_sessions_collection.update_one(
-                {"chat_id": chat_id},
-                {"$set": {
-                    "real_time_tracking.tokens.total_tokens": total_tokens,
-                    "real_time_tracking.tokens.prompt_tokens": prompt_tokens,
-                    "real_time_tracking.tokens.completion_tokens": completion_tokens,
-                    "real_time_tracking.tokens.total_cost": total_cost,
-                    "real_time_tracking.tokens.last_model": model_name,
-                    "real_time_tracking.tokens.last_delta.total_tokens": max(0, delta_total),
-                    "real_time_tracking.tokens.last_delta.prompt_tokens": max(0, delta_prompt),
-                    "real_time_tracking.tokens.last_delta.completion_tokens": max(0, delta_completion),
-                    "real_time_tracking.tokens.last_delta.total_cost": max(0.0, delta_cost),
-                    "real_time_tracking.tokens.incremental_debits": True,
-                    "real_time_tracking.last_usage_recorded_at": datetime.utcnow(),
-                }}
-            )
-        except Exception as e:
-            logger.debug(f"capture_cumulative_usage persist fail: {e}")
-        # Emit detailed token tracking log for cumulative and delta
-        try:
-            token_logger.info(
-                "token_tracking: cumulative_update",
-                chat_id=chat_id,
-                workflow_name=workflow_name,
-                enterprise_id=enterprise_id,
-                agent_count=agent_count,
-                cum_total_tokens=int(total_tokens),
-                cum_prompt_tokens=int(prompt_tokens),
-                cum_completion_tokens=int(completion_tokens),
-                cum_total_cost=float(numeric_total_cost),
-                delta_total_tokens=max(0, delta_total),
-                delta_prompt_tokens=max(0, delta_prompt),
-                delta_completion_tokens=max(0, delta_completion),
-                delta_cost=max(0.0, delta_cost),
-                model=model_name,
-            )
-        except Exception:
-            pass
-        try:
-            from core.transport.simple_transport import SimpleTransport
-            transport = SimpleTransport._get_instance()
-            event_payload = {
-                "type": "token_update",
-                "data": {
-                    "chat_id": chat_id,
-                    "workflow_name": workflow_name,
-                    "cumulative": {
-                        "total_tokens": total_tokens,
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_cost": total_cost,
-                        "last_model": model_name,
-                    },
-                    "delta": {
-                        "total_tokens": max(0, delta_total),
-                        "prompt_tokens": max(0, delta_prompt),
-                        "completion_tokens": max(0, delta_completion),
-                        "total_cost": max(0.0, delta_cost),
-                    },
-                },
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-            await transport._broadcast_to_websockets(event_payload, chat_id)
-        except Exception:
-            pass
-        logger.info(f"token_update {chat_id} +{delta_total} (cum={total_tokens})")
-        logger.debug(
-            f"capture_cumulative_usage delta | chat={chat_id} agents={agent_count} prev_total={prev_total} new_total={total_tokens} "
-            f"delta_total={delta_total} prev_cost={prev_cost} new_cost={total_cost}"
-        )
 
     async def record_tool_call(self, chat_id: str, tool_name: str, duration_sec: float, success: bool, error_type: Optional[str] = None):
         with tracer.start_as_current_span("tool_call") as span:
@@ -476,13 +343,19 @@ class PerformanceManager:
                     st2 = self._states.get(chat_id)
                     enterprise_id = st2.enterprise_id if st2 else None
                     user_id = st2.user_id if st2 else None
-                if enterprise_id and user_id:
-                    new_bal = await self._persistence.debit_tokens(user_id, enterprise_id, to_debit, reason="perf_token_update", strict=False, meta={"chat_id": chat_id})
+                # Simple trial gating: if FREE_TRIAL_ENABLED, skip debiting wallet
+                cfg = get_free_trial_config()
+                trial_enabled = bool(cfg.get("enabled", False))
+                if enterprise_id and user_id and not trial_enabled:
+                    new_bal = await self._persistence.debit_tokens(
+                        user_id, enterprise_id, to_debit, reason="perf_token_update", strict=False, meta={"chat_id": chat_id}
+                    )
                     if new_bal is not None:
                         async with self._lock:
                             self._last_debited[chat_id] = self._states[chat_id].total_tokens
-                        await self._persistence.chat_sessions_collection.update_one({"chat_id": chat_id}, {"$set": {"real_time_tracking.tokens.remaining_balance": new_bal}})
-                        # Token tracking: post-debit balance
+                        coll2 = await self._repo._coll()
+                        await coll2.update_one({"chat_id": chat_id}, {"$set": {"real_time_tracking.tokens.remaining_balance": new_bal}})
+                        # Token tracking: post-debit balance log only
                         try:
                             token_logger.info(
                                 "token_tracking: post_debit",
@@ -511,7 +384,8 @@ class PerformanceManager:
                 cum_completion = int(st_snap.completion_tokens)
                 cum_cost = float(st_snap.total_cost)
                 last_model = st_snap.last_model
-            await self._persistence.chat_sessions_collection.update_one(
+            coll3 = await self._repo._coll()
+            await coll3.update_one(
                 {"chat_id": chat_id},
                 {"$set": {
                     "real_time_tracking.tokens.total_tokens": cum_total,
@@ -607,17 +481,21 @@ class PerformanceManager:
                 return
             snapshot = st.to_dict()
         perf_logger.info("perf_flush", chat_id=chat_id, **snapshot["tokens"], **snapshot["counts"])
-        await self._persistence.chat_sessions_collection.update_one(
-            {"chat_id": chat_id},
-            {"$set": {
-                "real_time_tracking.tokens": snapshot["tokens"],
-                "real_time_tracking.counts": snapshot["counts"],
-                "real_time_tracking.latency": snapshot.get("latency"),
-                "real_time_tracking.overall": {"runtime_sec": snapshot.get("runtime_sec")},
-                "real_time_tracking.last_flush_at": datetime.utcnow(),
-                "real_time_tracking.trace_id": snapshot.get("trace_id"),
-            }}
-        )
+        try:
+            coll = await self._repo._coll()
+            await coll.update_one(
+                {"chat_id": chat_id},
+                {"$set": {
+                    "real_time_tracking.tokens": snapshot["tokens"],
+                    "real_time_tracking.counts": snapshot["counts"],
+                    "real_time_tracking.latency": snapshot.get("latency"),
+                    "real_time_tracking.overall": {"runtime_sec": snapshot.get("runtime_sec")},
+                    "real_time_tracking.last_flush_at": datetime.utcnow(),
+                    "real_time_tracking.trace_id": snapshot.get("trace_id"),
+                }}
+            )
+        except Exception:
+            pass
 
 _perf_instance: Optional[PerformanceManager] = None
 

@@ -29,6 +29,7 @@ LOGS_AS_JSON = os.getenv("LOGS_AS_JSON", "").lower() in ("1", "true", "yes", "on
 
 CHAT_LOG_FILE        = LOGS_DIR / "agent_chat.log"
 WORKFLOW_LOG_FILE    = LOGS_DIR / "workflows.log"
+ERRORS_LOG_FILE      = LOGS_DIR / "errors.log"
 
 # Sensitive key substrings for redaction
 _SENSITIVE_KEYS = {"api_key", "apikey", "authorization", "auth", "secret", "password", "token"}
@@ -247,6 +248,9 @@ def setup_logging(
     ]
     for path, lvl, flt in spec:
         root.addHandler(_make_handler(path, lvl, file_fmt, log_filter=flt, max_bytes=max_file_size, backup_count=backup_count))
+    # Dedicated errors log capturing all ERROR+ across all categories
+    err_handler = _make_handler(ERRORS_LOG_FILE, logging.ERROR, file_fmt, log_filter=None, max_bytes=max_file_size, backup_count=backup_count)
+    root.addHandler(err_handler)
     ch = logging.StreamHandler(); ch.setLevel(getattr(logging, console_level.upper())); ch.setFormatter(console_fmt); root.addHandler(ch)
     for noisy in ("openai","httpx","urllib3","azure","motor","pymongo","uvicorn.access","openlit"):
         logging.getLogger(noisy).setLevel(logging.WARNING)

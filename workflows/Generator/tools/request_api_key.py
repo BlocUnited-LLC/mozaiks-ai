@@ -14,8 +14,7 @@ import hashlib
 from core.workflow.ui_tools import emit_ui_tool_event, wait_for_ui_tool_response, UIToolError
 
 # Secure storage and DB client
-from core.core_config import get_mongo_client, secret_client
-from azure.core.exceptions import AzureError
+from core.core_config import get_mongo_client
 
 # Import enhanced logging
 from logs.logging_config import get_workflow_logger
@@ -137,7 +136,7 @@ async def _store_api_key_internal(
     user_id: Optional[str],
     scope: str
 ) -> Dict[str, Any]:
-    """Internal function to store API key in Azure Key Vault and MongoDB reference."""
+    """Internal function to store API key by recording reference in MongoDB."""
     
     if not api_key or not service or service == 'unknown':
         return {"status": "error", "message": "API key and service are required"}
@@ -186,23 +185,8 @@ async def _store_api_key_internal(
     except Exception as e:
         get_workflow_logger(workflow_name="generator").warning(f"⚠️ [STORE_API_KEY] Failed idempotency check, proceeding to store: {e}")
 
-    # 2) Store secret in Azure Key Vault
-    try:
-        set_result = secret_client.set_secret(secret_name, api_key)
-        version = None
-        try:
-            if hasattr(set_result, 'properties') and getattr(set_result, 'properties') is not None:
-                version = getattr(set_result.properties, 'version', None)
-            if version is None:
-                version = getattr(set_result, 'version', None)
-        except Exception:
-            version = None
-    except AzureError as ae:
-        get_workflow_logger(workflow_name="generator").error(f"❌ [STORE_API_KEY] Failed to store secret in Key Vault: {ae}")
-        return {"status": "error", "message": "Failed to store API key securely"}
-    except Exception as e:
-        get_workflow_logger(workflow_name="generator").error(f"❌ [STORE_API_KEY] Unexpected KV error: {e}")
-        return {"status": "error", "message": "Unexpected error storing API key"}
+    # 2) Skip Key Vault storage (non-production). Keep a placeholder version for compatibility.
+    version = None
 
     # 3) Upsert reference in MongoDB (no plaintext key)
     try:
@@ -224,7 +208,7 @@ async def _store_api_key_internal(
         # We already stored in KV; continue but warn the caller
         return {
             "status": "partial",
-            "message": "Stored in Key Vault, but failed to record reference in DB",
+            "message": "Stored locally, but failed to record reference in DB",
             "service": service,
             "scope": scope,
             "secret_name": secret_name,

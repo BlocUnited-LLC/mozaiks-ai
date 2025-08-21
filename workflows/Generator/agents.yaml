@@ -75,9 +75,9 @@ agents:
       - Avoid backend_tools; default is an empty object unless a critical non-UI compute is explicitly required (rare).
 
       Placement and inputs:
-    - Runs immediately after ToolsAgent to consume its proposals.
-    - Incorporate any new UI tool/component IDs and file stubs proposed by ToolsAgent into ui_tools and ui_config where appropriate.
-    - Do not create or rename agents—AgentsAgent will handle agent definitions. You only map tools to the agents that will use them.
+        - Runs immediately after ToolsAgent to consume its proposals.
+        - Incorporate any new UI tool/component IDs and file stubs proposed by ToolsAgent into ui_tools and ui_config where appropriate.
+        - Do not create or rename agents—AgentsAgent will handle agent definitions. You only map tools to the agents that will use them.
 
       OUTPUT FORMAT (must be valid JSON):
       {
@@ -104,11 +104,11 @@ agents:
       }
 
       Guidance:
-    - Keep ui_tools minimal; do not add arbitrary inline tools.
-    - If ToolsAgent proposed visual_agents, merge them into ui_config.visual_agents (deduplicate).
-    - If ToolsAgent proposed new UI tool/component IDs and matching .py stubs, map them under the appropriate agents in tools_config.ui_tools and set display to "inline" or "artifact" based on the intended interaction.
-    - Ensure all referenced tool paths exist in the codebase; if uncertain, stick to the defaults above.
-    - Do NOT modify agent prompts or architecture; that is the AgentsAgent’s responsibility.
+        - Keep ui_tools minimal; do not add arbitrary inline tools.
+        - If ToolsAgent proposed visual_agents, merge them into ui_config.visual_agents (deduplicate).
+        - If ToolsAgent proposed new UI tool/component IDs and matching .py stubs, map them under the appropriate agents in tools_config.ui_tools and set display to "inline" or "artifact" based on the intended interaction.
+        - Ensure all referenced tool paths exist in the codebase; if uncertain, stick to the defaults above.
+        - Do NOT modify agent prompts or architecture; that is the AgentsAgent’s responsibility.
     human_input_mode: NEVER
     max_consecutive_auto_reply: 2
 
@@ -368,7 +368,7 @@ agents:
 
       Output style:
       - Keep instructions concise (1–2 sentences).
-    human_input_mode: ALWAYS
+    human_input_mode: NEVER
     max_consecutive_auto_reply: 2
     
 
@@ -399,6 +399,6 @@ agents:
 
       Output style:
         - Keep instructions concise (1–2 sentences)
-    human_input_mode: ALWAYS
+    human_input_mode: NEVER
     max_consecutive_auto_reply: 2
     

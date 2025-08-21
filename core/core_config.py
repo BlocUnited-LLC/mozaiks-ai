@@ -1,50 +1,100 @@
 ﻿# ==============================================================================
 # FILE: config.py
 # DESCRIPTION: Configuration for Azure Key Vault, MongoDB, LLMs, and Tokens API
+# NOTES: Avoid module-level cloud calls; build credentials lazily and prefer
+#        environment variables to keep local/dev robust.
 # ==============================================================================
 import os
 from dotenv import load_dotenv
-from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
-from motor.motor_asyncio import AsyncIOMotorClient
-from autogen import OpenAIWrapper
 from typing import Optional, Type, Tuple, Dict, Any, List
 from pydantic import BaseModel
 import logging
 import json
 
+# Azure SDK imports are kept, but we won't construct credentials at import time
+from azure.identity import DefaultAzureCredential
+from motor.motor_asyncio import AsyncIOMotorClient
+from autogen import OpenAIWrapper
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Azure Key Vault Setup
-KEY_VAULT_NAME = os.getenv("AZURE_KEY_VAULT_NAME")
-if not KEY_VAULT_NAME:
-    raise ValueError("AZURE_KEY_VAULT_NAME is required")
+# -----------------------------
+# Azure Key Vault utilities (lazy, optional)
+# -----------------------------
+def _get_kv_uri() -> Optional[str]:
+    name = os.getenv("AZURE_KEY_VAULT_NAME")
+    if name:
+        return f"https://{name.strip()}.vault.azure.net/"
+    return None
 
-KEY_VAULT_URI = f"https://{KEY_VAULT_NAME.strip()}.vault.azure.net/"
-credential = DefaultAzureCredential()
-secret_client = SecretClient(vault_url=KEY_VAULT_URI, credential=credential)
+def _build_secret_client() -> Optional[Any]:
+    """Create a SecretClient lazily if Key Vault is configured; otherwise return None.
+
+    Note: We import SecretClient inside the function to avoid module import failures
+    when azure-keyvault-secrets isn't installed in non-KV environments.
+    """
+    kv_uri = _get_kv_uri()
+    if not kv_uri:
+        return None
+    try:
+        from azure.keyvault.secrets import SecretClient  # type: ignore
+    except Exception:
+        return None
+    try:
+        cred = DefaultAzureCredential()
+        return SecretClient(vault_url=kv_uri, credential=cred)
+    except Exception:
+        return None
+
 
 def get_secret(name: str) -> str:
-    """Get secret from Azure Key Vault with environment fallback"""
-    try:
-        value = secret_client.get_secret(name).value
-        if value is None:
-            raise ValueError(f"Secret '{name}' not found or has no value")
-        return value
-    except Exception:
-        env = os.getenv(name.upper())
-        if env:
-            return env
-        raise ValueError(f"Secret '{name}' not found in Azure Key Vault or environment")
+    """Get a secret value from environment or Key Vault.
 
+    Order:
+    1) Environment variable by exact uppercased name (e.g., OpenAIApiKey -> OPENAIAPIKEY)
+    2) Common env aliases for well-known secrets (e.g., MongoURI -> MONGO_URI | MONGODB_URI | MONGO_URL)
+    3) Azure Key Vault secret by the provided name, if KV is configured
+    """
+    # 1) Direct env by uppercased name
+    env_key = name.upper()
+    env_val = os.getenv(env_key)
+    if env_val:
+        return env_val
+
+    # 2) Common aliases for Mongo
+    if name in ("MongoURI", "MONGO_URI", "MONGODB_URI", "MONGO_URL"):
+        for alias in ("MONGO_URI", "MONGODB_URI", "MONGO_URL"):
+            val = os.getenv(alias)
+            if val:
+                return val
+
+    # 3) Azure Key Vault fallback
+    client = _build_secret_client()
+    if client is not None:
+        try:
+            secret = client.get_secret(name)
+            if secret and getattr(secret, "value", None):
+                return secret.value  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    raise ValueError(f"Secret '{name}' not found in environment or Key Vault")
+
+# -----------------------------
 # MongoDB Connection
+# -----------------------------
 def get_mongo_client() -> AsyncIOMotorClient:
-    """Get MongoDB client with connection string from secrets"""
-    try:
+    """Get MongoDB client using MONGO_URI env or Key Vault secret 'MongoURI'.
+
+    Avoids defaulting to localhost, to prevent accidental local fallbacks.
+    """
+    conn_str = os.getenv("MONGO_URI")
+    if not conn_str:
+        # Fall back to KV only if env is missing
         conn_str = get_secret("MongoURI")
-    except:
-        conn_str = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+    if not conn_str:
+        raise ValueError("MONGO_URI is not configured")
     return AsyncIOMotorClient(conn_str)
 
 # Tokens API Base URL
@@ -78,7 +128,6 @@ async def make_llm_config(
     response_format: Optional[Type[BaseModel]] = None,
     stream: bool = False,
     extra_config: Optional[Dict[str, Any]] = None,
-    enable_token_tracking: bool = False
 ) -> Tuple[OpenAIWrapper, Dict[str, Any]]:
     """Create LLM configuration with optional structured output and streaming"""
     config_list = await _load_raw_config_list()
@@ -90,9 +139,7 @@ async def make_llm_config(
         if extra_config:
             cfg.update(extra_config)
         
-        # Enable token tracking for individual agents (AG2 requirement)
-        # Note: AG2 handles token tracking automatically when OpenAI clients are properly configured
-        # We just need to ensure the basic config is clean and valid
+    # Token tracking is always on via UsageSummaryEvent processing; no per-agent toggle needed
     
     for i, cfg in enumerate(config_list, start=1):
         redacted = {**cfg}
@@ -116,24 +163,15 @@ async def make_llm_config(
     else:
         logger.info("🎯 AG2 streaming disabled")
     
-    # Add token tracking configuration if enabled
-    if enable_token_tracking:
-        # Note: AG2 handles individual agent token tracking automatically
-        # when agents are created with proper OpenAI clients
-        logger.debug("🔧 Token tracking enabled - AG2 will handle individual agent tracking automatically")
-    
     logger.info("LLM runtime config initialized successfully.")
     
     return client, llm_config
 
-async def make_structured_config(response_format: Type[BaseModel], extra_config: Optional[Dict[str, Any]] = None, enable_token_tracking: bool = False):
+async def make_structured_config(response_format: Type[BaseModel], extra_config: Optional[Dict[str, Any]] = None):
     """Create structured output LLM configuration"""
-    return await make_llm_config(response_format=response_format, extra_config=extra_config, enable_token_tracking=enable_token_tracking)
+    return await make_llm_config(response_format=response_format, extra_config=extra_config)
 
-# MongoDB Collections
-mongo_client = get_mongo_client()
-db1 = mongo_client['MozaiksDB']
-enterprises_collection = db1['Enterprises']
+# MongoDB Collections are obtained via PersistenceManager to avoid early initialization
 
 # ==============================================================================
 # FREE TRIAL CONFIGURATION

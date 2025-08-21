@@ -322,7 +322,6 @@ def apply_dynamic_structured_outputs(
 async def get_llm_for_workflow(
     workflow_name: str,
     flow: str = "base",
-    enable_token_tracking: bool = False,
     agent_name: Optional[str] = None,
 ) -> tuple:
     """Create an LLM config for an agent with optional structured response model.
@@ -330,7 +329,6 @@ async def get_llm_for_workflow(
     Parameters:
     - workflow_name: The workflow to look up YAML configuration for.
     - flow: The llm_config_type for the agent (e.g. 'base'). Used only for streaming toggle logic.
-    - enable_token_tracking: Whether to enable token tracking (forwarded to core config).
     - agent_name: The concrete agent name to look up in the structured outputs registry.
 
     Behavior:
@@ -352,7 +350,6 @@ async def get_llm_for_workflow(
             return await make_structured_config(
                 structured_registry[lookup_key],
                 extra_config=extra_config,
-                enable_token_tracking=enable_token_tracking,
             )
 
     except (ValueError, FileNotFoundError):
@@ -360,4 +357,4 @@ async def get_llm_for_workflow(
         pass
 
     # Fallback to plain LLM config
-    return await make_llm_config(stream=should_stream, enable_token_tracking=enable_token_tracking)
+    return await make_llm_config(stream=should_stream)

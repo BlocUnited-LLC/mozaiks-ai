@@ -11,16 +11,22 @@ services:
       - "8000:8000"
     environment:
       OPENLIT_ENABLED: "true"
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      # Default for local dev; override in .env or use Key Vault in app
-      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # Route logs into mounted folder inside container
+      LOGS_BASE_DIR: /app/logs/logs
       DOCKERIZED: "true"
+      # Note: AZURE_* and MONGO_URI come from env_file: ../../.env above
     depends_on:
       - otel-collector
       # NOTE: do NOT depend on 'mongo' here, so Atlas mode works without the local-db profile
     volumes:
       - ../../logs/logs:/app/logs/logs
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); print('ok')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   otel-collector:
     image: otel/opentelemetry-collector:0.98.0
@@ -33,21 +39,4 @@ services:
       - "4318:4318"   # OTLP HTTP
     restart: unless-stopped
 
-  mongo:
-    image: mongo:6
-    container_name: mongo
-    profiles: ["local-db"]   # only starts when profile is enabled
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    restart: unless-stopped
-
-volumes:
-  mongo_data:
+# Local mongo removed: this deployment relies on MONGO_URI being provided via Key Vault or .env

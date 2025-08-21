@@ -312,28 +312,7 @@ class SimpleTransport:
         
         logger.info(f"📤 {formatted_agent}: {str(clean_message)[:100]}...")
 
-        # After sending an agent (or system) message, attempt real-time token usage capture
-        if chat_id and formatted_agent not in (None, "", "SYSTEM"):
-            try:
-                from core.observability.performance_manager import get_performance_manager
-                perf_mgr = await get_performance_manager()
-                # Retrieve agents mapping stored on connection (if any)
-                agents_map = None
-                if chat_id in self.connections:
-                    agents_map = self.connections[chat_id].get('agents')
-                if agents_map:
-                    enterprise_id = self.connections[chat_id].get('enterprise_id') or "unknown_enterprise"
-                    workflow_name = self.connections[chat_id].get('workflow_name') or "unknown_workflow"
-                    user_id = self.connections[chat_id].get('user_id')
-                    await perf_mgr.capture_cumulative_usage(
-                        chat_id=chat_id,
-                        agents=list(agents_map.values()),
-                        workflow_name=workflow_name,
-                        enterprise_id=enterprise_id,
-                        user_id=user_id or "unknown"
-                    )
-            except Exception as _cap_err:
-                logger.debug(f"token capture skip: {_cap_err}")
+    # Token usage is tracked from UsageSummaryEvent, not by ad-hoc captures here
         
     # ==================================================================================
     # AG2 EVENT SENDING

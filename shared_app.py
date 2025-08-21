@@ -20,13 +20,15 @@ import autogen
 from pydantic import BaseModel
 
 
-from core.core_config import make_llm_config, get_mongo_client
+from core.core_config import get_mongo_client
 from core.transport.simple_transport import SimpleTransport
 from core.workflow.init_registry import  workflow_status_summary, get_workflow_transport, get_workflow_tools
 from core.data.persistence_manager import AG2PersistenceManager
+from core.data.chat_sessions_data import ChatSessionsRepository
 
 # Initialize persistence manager
 persistence_manager = AG2PersistenceManager()
+chat_sessions_repo = ChatSessionsRepository()
 
 # Request model for starting a chat session
 class StartChatRequest(BaseModel):
@@ -40,7 +42,7 @@ from logs.logging_config import (
     get_chat_logger,
 )
 
-# Setup logging based on environment
+# Setup logging based on environment ASAP (before any KV/DB work)
 env = os.getenv("ENVIRONMENT", "development").lower()
 if env == "production":
     setup_production_logging()
@@ -95,7 +97,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-mongo_client = get_mongo_client()
+mongo_client = None  # delay until startup so logging is definitely initialized
 simple_transport: Optional[SimpleTransport] = None
 
 
@@ -139,6 +141,11 @@ async def startup():
             config_keys=[],
             streaming_enabled=True,
         )
+
+        # Build Mongo client now (after logging configured)
+        global mongo_client
+        if mongo_client is None:
+            mongo_client = get_mongo_client()
 
         # Test MongoDB connection
         mongo_start = datetime.utcnow()
@@ -379,6 +386,8 @@ async def health_check():
     try:
         # Test MongoDB
         mongo_ping_start = datetime.utcnow()
+        if mongo_client is None:
+            raise HTTPException(status_code=503, detail="MongoDB client not initialized")
         await mongo_client.admin.command("ping")
         mongo_ping_time = (datetime.utcnow() - mongo_ping_start).total_seconds() * 1000
         
@@ -493,19 +502,16 @@ async def list_chats(enterprise_id: str, workflow_name: str):
         # Convert to ObjectId if possible
         try:
             eid = ObjectId(enterprise_id)
-        except:
+        except Exception:
             eid = enterprise_id
-            
         # Query chat sessions collection with the refactored schema
-        cursor = persistence_manager.chat_sessions_collection.find(
-            {"enterprise_id": eid, "workflow_name": workflow_name}
-        ).sort("created_at", -1)
+        coll = await chat_sessions_repo._coll()
+        cursor = coll.find({"enterprise_id": eid, "workflow_name": workflow_name}).sort("created_at", -1)
         docs = await cursor.to_list(length=20)
         chat_ids = [doc.get("chat_id") for doc in docs]
         return {"chat_ids": chat_ids}
-        
     except Exception as e:
-        logger.error(f"? Failed to list chats for enterprise {enterprise_id}, workflow {workflow_name}: {e}")
+        logger.error(f"❌ Failed to list chats for enterprise {enterprise_id}, workflow {workflow_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list chats")
     
 
@@ -597,23 +603,7 @@ async def handle_user_input(
             enterprise_id=enterprise_id
         )
 
-        # After processing user input, attempt a cumulative usage capture (agents list resolved via transport cache if available)
-        try:
-            perf_mgr = await get_performance_manager()
-            # Try to access agents collection from transport (implementation-specific; uses protected attr fallback)
-            agents = []
-            try:
-                if hasattr(simple_transport, "_agent_cache"):
-                    cache = getattr(simple_transport, "_agent_cache")
-                    wf_agents = cache.get(chat_id) if isinstance(cache, dict) else None
-                    if wf_agents:
-                        # wf_agents might be dict name->agent
-                        agents = list(wf_agents.values()) if isinstance(wf_agents, dict) else wf_agents
-            except Exception:
-                pass
-            await perf_mgr.capture_cumulative_usage(chat_id, agents, workflow_name, enterprise_id, user_id)
-        except Exception as perf_turn_e:
-            logger.debug(f"perf_turn skipped {chat_id}: {perf_turn_e}")
+    # Token usage is tracked via UsageSummaryEvent; no manual cumulative capture here
         
         get_workflow_logger("shared_app").info(
             "USER_INPUT_PROCESSED: User input processed successfully",
