@@ -35,18 +35,17 @@ Message
 real_time_tracking
 - trace_id: string (hex, optional)
 - tokens
-  - total_tokens: int
+  - total_tokens: int (provisional cumulative)
   - prompt_tokens: int
   - completion_tokens: int
-  - total_cost: float
+  - total_cost: float (provisional cumulative)
   - last_model: string|null
-  - last_delta
-    - total_tokens: int
-    - prompt_tokens: int
-    - completion_tokens: int
-    - total_cost: float
-  - remaining_balance: int (optional)
   - incremental_debits: bool
+  - last_billed_total_tokens: int
+  - final_total_tokens: int (authoritative post-run)
+  - final_prompt_tokens: int
+  - final_completion_tokens: int
+  - final_cost: float
 - counts
   - agent_turns: int
   - tool_calls: int
@@ -64,7 +63,7 @@ real_time_tracking
 
 Ownership
 - AG2PersistenceManager: create, messages, usage_summary, completion status
-- PerformanceManager: trace_id, real_time_tracking.* (latency, tokens, counts, runtime, remaining_balance), flush timestamps
+- PerformanceManager: trace_id, real_time_tracking.* (latency, tokens, counts, runtime, lifecycle billing markers), flush timestamps
 
 Structured outputs
 - We store both normalized fields and a parts array when available.

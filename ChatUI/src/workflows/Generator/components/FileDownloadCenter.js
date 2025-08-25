@@ -13,10 +13,12 @@ import React, { useState } from 'react';
  */
 const FileDownloadCenter = ({ 
   payload = {},
+  onResponse,
+  onCancel,
+  // Legacy props for backward compatibility
   ui_tool_id,
   eventId,
   workflowName,
-  onResponse,
   componentId = "FileDownloadCenter"
 }) => {
   // DEV NOTE: This component receives the agent's contextual message via the
@@ -250,5 +252,15 @@ const FileDownloadCenter = ({
 
 // Add display name for better debugging
 FileDownloadCenter.displayName = 'FileDownloadCenter';
+
+// Component metadata for the dynamic UI system (MASTER_UI_TOOL_AGENT_PROMPT requirement)
+export const componentMetadata = {
+  name: 'generate_and_download',
+  type: 'artifact',
+  pythonTool: 'workflows.Generator.tools.generate_and_download.generate_and_download',
+  category: 'viewer',
+  description: 'File download center component',
+  version: '1.0.0'
+};
 
 export default FileDownloadCenter;

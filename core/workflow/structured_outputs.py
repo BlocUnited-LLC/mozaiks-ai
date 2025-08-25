@@ -51,18 +51,32 @@ def _build_pydantic_models(models_config: Dict[str, Any]) -> Dict[str, type]:
     """Build Pydantic models dynamically from YAML configuration"""
     models = {}
     
-    # First pass: create all models without dependencies
+    # Single pass: create all models with forward references
     for model_name, model_def in models_config.items():
         if model_def.get('type') == 'model':
             fields = {}
             for field_name, field_def in model_def.get('fields', {}).items():
-                field_type, field_kwargs = _convert_field_definition(field_def)
-                fields[field_name] = (field_type, field_kwargs)
+                try:
+                    field_type, field_kwargs = _convert_field_definition(field_def, models)
+                    fields[field_name] = (field_type, field_kwargs)
+                except ValueError as e:
+                    # Handle forward references by using string type hints
+                    if "Unknown model reference" in str(e):
+                        # For now, treat as Any - will be resolved in second pass
+                        from typing import Any
+                        field_kwargs = {}
+                        if 'description' in field_def:
+                            field_kwargs['description'] = field_def['description']
+                        if 'default' in field_def:
+                            field_kwargs['default'] = field_def['default']
+                        fields[field_name] = (Any, Field(**field_kwargs))
+                    else:
+                        raise
             
             # Create the model
             models[model_name] = create_model(model_name, **fields)
     
-    # Second pass: resolve references to other models
+    # Second pass: recreate models with proper type resolution
     for model_name, model_def in models_config.items():
         if model_def.get('type') == 'model':
             fields = {}
@@ -108,7 +122,24 @@ def _convert_field_definition(field_def: Dict[str, Any], models: Optional[Dict[s
         return (Literal[tuple(values)], Field(**field_kwargs))
     elif field_type == 'list':
         items_type = field_def.get('items')
-        if items_type in models:
+        if items_type == 'str':
+            return (List[str], Field(**field_kwargs))
+        elif items_type == 'int':
+            return (List[int], Field(**field_kwargs))
+        elif items_type == 'bool':
+            return (List[bool], Field(**field_kwargs))
+        elif isinstance(items_type, dict) and items_type.get('type') == 'model':
+            # Inline model definition - create an anonymous model
+            inline_fields = {}
+            for inline_field_name, inline_field_def in items_type.get('fields', {}).items():
+                inline_field_type, inline_field_kwargs = _convert_field_definition(inline_field_def, models)
+                inline_fields[inline_field_name] = (inline_field_type, inline_field_kwargs)
+            
+            # Create anonymous model with a unique name
+            model_name = f"AnonymousModel_{hash(str(items_type)) % 10000}"
+            inline_model = create_model(model_name, **inline_fields)
+            return (List[inline_model], Field(**field_kwargs))
+        elif isinstance(items_type, str) and items_type in models:
             return (List[models[items_type]], Field(**field_kwargs))
         else:
             raise ValueError(f"Unknown model reference in list field: {items_type}")

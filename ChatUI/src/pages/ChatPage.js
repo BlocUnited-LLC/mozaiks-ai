@@ -49,6 +49,8 @@ const ChatPage = () => {
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [transportType, setTransportType] = useState(null);
   const [currentChatId, setCurrentChatId] = useState(null); // Store the current chat ID
+  const LOCAL_STORAGE_KEY = 'mozaiks.current_chat_id';
+  const LOCAL_STORAGE_WORKFLOW_KEY = 'mozaiks.current_workflow_name';
   const [connectionInitialized, setConnectionInitialized] = useState(false); // Prevent duplicate connections
   const [workflowConfigLoaded, setWorkflowConfigLoaded] = useState(false); // Track workflow config loading
   const connectionInProgressRef = useRef(false); // Additional guard against React double-execution
@@ -200,6 +202,19 @@ const ChatPage = () => {
       }
     }
   }, [workflowConfigLoaded, currentWorkflowName]);
+
+  // Fallback: if workflow configs never load (backend down), proceed after timeout
+  useEffect(() => {
+    if (workflowConfigLoaded) return; // already loaded
+    const timeout = setTimeout(() => {
+      if (!workflowConfigLoaded) {
+        console.warn('⏱️ Workflow config fetch fallback timeout reached – proceeding with stored or default workflow.');
+        // Mark as loaded so resume/start logic can continue
+        setWorkflowConfigLoaded(true);
+      }
+    }, 4000);
+    return () => clearTimeout(timeout);
+  }, [workflowConfigLoaded]);
 
   // Helper: extract clean text from AG2 stringified payloads or objects
   const extractCleanContent = (raw) => {
@@ -364,48 +379,98 @@ const ChatPage = () => {
     initializeWorkflowConfig();
   }, []);
 
-  // Auto-start workflow based on startup_mode
+  // Resume or auto-start workflow based on startup_mode
   useEffect(() => {
-    const handleAutoStart = async () => {
-      if (!workflowConfigLoaded || currentChatId) {
-        return; // Wait for config to load or skip if chat already exists
-      }
-
-      const workflowName = urlWorkflowName || workflowConfig.getDefaultWorkflow();
-      if (!workflowName) {
-        console.log('⏳ Unknown startup_mode or waiting for workflow configuration...');
+    const attemptResumeOrStart = async () => {
+      if (currentChatId) return; // already have a chat
+      if (attemptResumeOrStart.inFlight) {
+        console.log('🛑 attemptResumeOrStart skipped (in-flight)');
         return;
       }
-      const config = workflowConfig.getWorkflowConfig(workflowName);
-      
-      // Check startup_mode to determine if WebSocket chat should start
-      const startupMode = config?.startup_mode;
-      const shouldStartWebSocket = startupMode === 'UserDriven' || startupMode === 'AgentDriven';
-      
-      if (shouldStartWebSocket) {
-        console.log(`🚀 Starting WebSocket chat for ${startupMode} workflow:`, workflowName);
-        
+      attemptResumeOrStart.inFlight = true;
+
+      let workflowName = urlWorkflowName || null;
+      if (!workflowName) {
+        try { workflowName = localStorage.getItem(LOCAL_STORAGE_WORKFLOW_KEY) || null; } catch {}
+      }
+      if (!workflowName) workflowName = workflowConfig.getDefaultWorkflow();
+      if (!workflowName) workflowName = 'Generator';
+      console.log('🧪 attemptResumeOrStart: resolved workflowName =', workflowName, 'workflowConfigLoaded=', workflowConfigLoaded);
+      const cfg = workflowConfig.getWorkflowConfig(workflowName) || {};
+      const startupMode = cfg?.startup_mode;
+
+      // 1. Try localStorage resume
+      let storedId = null;
+      try { storedId = localStorage.getItem(LOCAL_STORAGE_KEY); } catch {}
+      if (storedId) {
         try {
-          const result = await api.startChat(currentEnterpriseId, workflowName, currentUserId);
-          
+          console.log('🔄 Attempting resume for stored chat_id:', storedId);
+          const resumeController = new AbortController();
+          const resumeTimeout = setTimeout(()=> resumeController.abort(), 5000);
+          const resp = await fetch(`http://localhost:8000/api/chats/${currentEnterpriseId}/${workflowName}/${storedId}/resume`, { signal: resumeController.signal });
+          clearTimeout(resumeTimeout);
+          if (resp.ok) {
+            const data = await resp.json();
+            console.log('🧪 Resume endpoint response:', data);
+            if (data.success && data.can_resume) {
+              console.log('✅ Resumed existing chat:', storedId);
+              setCurrentChatId(storedId);
+              try { localStorage.setItem(LOCAL_STORAGE_WORKFLOW_KEY, workflowName); } catch {}
+              // Hydrate prior messages (convert to internal shape)
+              const hydrated = (data.messages || []).map(m => ({
+                id: m.event_id || Date.now().toString(),
+                sender: m.role === 'user' ? 'user' : 'agent',
+                agentName: m.name || 'Agent',
+                content: m.content,
+                timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
+                isStreaming: false
+              }));
+              console.log('🧪 Hydrated messages count:', hydrated.length);
+              if (hydrated.length) setMessagesWithLogging(prev => [...prev, ...hydrated]);
+              return; // done, websocket effect will connect later
+            } else {
+              console.log('ℹ️ Stored chat not resumable:', data.status, 'starting new.');
+            }
+          }
+        } catch (e) {
+          console.warn('Resume attempt failed, starting new chat:', e.message);
+        }
+      }
+
+      // 2. Start new chat if startup mode requires WebSocket
+  const shouldStart = startupMode === 'UserDriven' || startupMode === 'AgentDriven' || !startupMode; // force if unknown
+      if (shouldStart) {
+        console.log('🚀 Starting new chat for workflow:', workflowName, 'mode:', startupMode);
+        try {
+          const startController = new AbortController();
+          const startTimeout = setTimeout(()=> startController.abort(), 5000);
+          const result = await api.startChat(currentEnterpriseId, workflowName, currentUserId, { signal: startController.signal });
+          clearTimeout(startTimeout);
           if (result && result.chat_id) {
-            console.log('✅ WebSocket chat created:', result.chat_id);
+            console.log('✅ New chat created:', result.chat_id);
             setCurrentChatId(result.chat_id);
+            try { localStorage.setItem(LOCAL_STORAGE_KEY, result.chat_id); } catch {}
+            try { localStorage.setItem(LOCAL_STORAGE_WORKFLOW_KEY, workflowName); } catch {}
           } else {
-            console.error('❌ Failed to start WebSocket chat:', result);
+            console.error('❌ Failed to start chat:', result);
           }
         } catch (error) {
-          console.error('❌ WebSocket chat start failed:', error);
+          console.error('❌ Chat start failed:', error);
         }
       } else if (startupMode === 'BackendOnly') {
-        console.log('⚙️ Backend-only workflow - no WebSocket connection needed:', workflowName);
-        // For backend-only workflows, we don't need WebSocket but could still initialize other components
-      } else {
-        console.log('⏳ Unknown startup_mode or waiting for workflow configuration...', startupMode);
+        console.log('⚙️ Backend-only workflow - no chat start needed');
       }
+      attemptResumeOrStart.inFlight = false;
     };
-
-    handleAutoStart();
+    attemptResumeOrStart();
+    const retryTimer = setTimeout(() => {
+      if (!currentChatId) {
+        console.log('⛑️ Fallback retry: forcing chat start/resume attempt');
+        attemptResumeOrStart.inFlight = false; // allow retry
+        attemptResumeOrStart();
+      }
+    }, 2000);
+    return () => clearTimeout(retryTimer);
   }, [workflowConfigLoaded, currentChatId, urlWorkflowName, currentEnterpriseId, currentUserId, api]);
 
   // Unified incoming message handler for WebSocket only
@@ -672,7 +737,7 @@ const ChatPage = () => {
         return () => {};
       }
       
-      const connection = api.createWebSocketConnection(
+  const connection = api.createWebSocketConnection(
         currentEnterpriseId,
         currentUserId,
         {
@@ -680,6 +745,7 @@ const ChatPage = () => {
             // console.debug('WebSocket connection established');
             setConnectionStatus('connected');
             setLoading(false);
+    try { localStorage.setItem(LOCAL_STORAGE_KEY, currentChatId); } catch {}
           },
           onMessage: handleIncoming,
           onError: (error) => {
@@ -832,7 +898,7 @@ const ChatPage = () => {
         };
         
         // Send the UI tool response to the backend
-        const response = await fetch('/api/ui-tool/submit', {
+        const response = await fetch('http://localhost:8000/api/ui-tool/submit', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

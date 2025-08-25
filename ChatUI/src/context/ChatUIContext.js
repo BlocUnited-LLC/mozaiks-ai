@@ -28,15 +28,27 @@ export const ChatUIProvider = ({
   const [apiAdapterInstance, setApiAdapterInstance] = useState(null);
   const [agentSystemInitialized, setAgentSystemInitialized] = useState(false);
   const [workflowsInitialized, setWorkflowsInitialized] = useState(false);
+  const WORKFLOW_INIT_TIMEOUT_MS = 8000; // guard against endless spinner
 
   useEffect(() => {
     const initializeServices = async () => {
       try {
         // Initialize workflow registry first (UI tools need to be registered)
         console.log('🔧 Initializing workflow registry...');
-        await initializeWorkflows();
-        setWorkflowsInitialized(true);
-        console.log('✅ Workflow registry initialized');
+        try {
+          await Promise.race([
+            initializeWorkflows(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('workflow_init_timeout')), WORKFLOW_INIT_TIMEOUT_MS))
+          ]);
+          setWorkflowsInitialized(true);
+          console.log('✅ Workflow registry initialized');
+        } catch (wfErr) {
+          if (wfErr.message === 'workflow_init_timeout') {
+            console.warn('⚠️ Workflow initialization timed out – continuing with partial UI.');
+          } else {
+            console.warn('⚠️ Workflow registry init failed:', wfErr);
+          }
+        }
 
         // Initialize services with custom adapters
         services.initialize({ authAdapter, apiAdapter });
@@ -59,33 +71,17 @@ export const ChatUIProvider = ({
           });
         }
 
-        // Initialize the workflow registry (includes agent system functionality)
-        try {
-          console.log('🚀 Agent system replaced by workflow registry...');
-          
-          // Wait for workflows to be properly initialized
-          try {
-            await initializeWorkflows();
-            console.log('✅ Workflows are initialized and ready');
-          } catch (workflowError) {
-            console.warn('⚠️ Workflows not yet initialized, proceeding with caution:', workflowError);
-          }
-          
-          // Agent system functionality is now handled by workflow registration
-          setAgentSystemInitialized(true);
-          console.log('✅ Workflow-based agent system ready');
-        } catch (error) {
-          console.error('❌ Failed to initialize agent system:', error);
-          // Continue loading even if agent system fails
-        }
+  // Agent system functionality now piggybacks on workflow registry status
+  setAgentSystemInitialized(true);
+  console.log('✅ Workflow-based agent system ready');
 
         setInitialized(true);
-        setLoading(false);
+  setLoading(false);
         onReady();
 
       } catch (error) {
-        console.error('Failed to initialize ChatUI:', error);
-        setLoading(false);
+  console.error('Failed to initialize ChatUI:', error);
+  setLoading(false);
       }
     };
 

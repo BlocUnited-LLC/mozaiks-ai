@@ -1,6 +1,6 @@
 ## ChatSessions persistence schema (canonical) ✅
 
-This document defines the authoritative schema and write paths in `MozaiksAI.ChatSessions` for live performance and token accounting. The system is strictly event-driven: AG2 UsageSummaryEvent is the only source of truth for tokens/costs. No fallbacks are used.
+This document defines the authoritative schema and write paths in `MozaiksAI.ChatSessions` for live performance and token accounting. The system now uses the AG2 lifecycle (`print_usage_summary` for incremental visibility + `gather_usage_summary` for final reconciliation) instead of per-`UsageSummaryEvent` delta billing.
 
 ### Document shape
 
@@ -33,18 +33,14 @@ Runtime metrics live under `real_time_tracking`:
     - turn_count: number
     - latency_by_agent: { [agent_key: string]: { count: number, avg_sec: number } }
   - tokens:
-    - total_tokens: number
+    - total_tokens: number (cumulative – updated opportunistically; final_* fields authoritative post-run)
     - prompt_tokens: number
     - completion_tokens: number
-    - total_cost: number
+    - total_cost: number (may be provisional until final reconciliation)
     - last_model: string | null
-    - remaining_balance: number | null
-    - incremental_debits: boolean
-    - last_delta:
-      - total_tokens: number
-      - prompt_tokens: number
-      - completion_tokens: number
-      - total_cost: number
+    - incremental_debits: boolean (true if any incremental billing occurred via print summaries)
+    - last_billed_total_tokens: number (cumulative tokens billed so far)
+    - final_total_tokens / final_prompt_tokens / final_completion_tokens / final_cost: numbers (authoritative after final gather)
 
 ### Writers and responsibilities
 
@@ -55,24 +51,15 @@ Runtime metrics live under `real_time_tracking`:
 - PerformanceManager.record_workflow_start
   - Initializes in-memory perf state; logs workflow start
 
-- UIEventProcessor.process_event on UsageSummaryEvent
-  - Parses event (actual/total → usages), aggregates per provider semantics
-  - Computes deltas vs. cumulatives and calls PerformanceManager.record_token_usage
-  - When mode=total is seen, calls PerformanceManager.record_final_token_usage and persists final snapshot
+– AG2 lifecycle incremental billing (after each agent turn boundary):
+  - Orchestrator calls `print_usage_summary()` then `PerformanceManager.bill_usage_from_print_summary()`
+  - Wallet debits delta (unless FREE_TRIAL_ENABLED) and updates `last_billed_total_tokens` + marks `incremental_debits=true`
 
-- PerformanceManager.record_token_usage
-  - Increments in-memory totals
-  - Debits wallet by token delta via `AG2PersistenceManager.debit_tokens` (prompt+completion)
-  - Updates DB under `real_time_tracking.tokens`:
-    - total_tokens, prompt_tokens, completion_tokens, total_cost, last_model
-    - last_delta.total_tokens/prompt_tokens/completion_tokens/total_cost
-    - incremental_debits = true
-    - remaining_balance (from wallet)
-    - last_usage_recorded_at
-  - Broadcasts `token_update` over WebSocket
+– Final reconciliation:
+  - At workflow end orchestrator invokes `gather_usage_summary()` and `PerformanceManager.record_final_usage_from_agents()`
+  - Any residual (final_total - last_billed_total_tokens) is debited (unless FREE_TRIAL_ENABLED) then final_* fields persisted
 
-- PerformanceManager.record_final_token_usage
-  - Persists authoritative totals/cost when mode=total is emitted
+– PerformanceManager.record_final_token_usage (legacy helper) remains for compatibility but final authoritative write is via `record_final_usage_from_agents` now.
 
 - PerformanceManager.record_agent_turn
   - Updates `real_time_tracking.latency` and `counts.agent_turns`
@@ -85,10 +72,10 @@ Runtime metrics live under `real_time_tracking`:
 
 ### Invariants and rules
 
-- Token totals are cumulative; `last_delta` reflects the most recent increment.
-- `total_cost` is authoritative only after a mode=total summary; during streaming, `last_delta.total_cost` may be 0 while tokens advance.
-- Wallet debits are based on token deltas (prompt+completion) to avoid double-charging; `incremental_debits=true` marks this behavior.
-- `remaining_balance` reflects the post-debit balance returned by the wallet (when available).
+– Token billing is lifecycle-based: deltas = (current cumulative from `print_usage_summary` - `last_billed_total_tokens`).
+– `final_*` fields override provisional cumulative fields post-run.
+– Wallet balance is stored only in the Wallets collection (no `remaining_balance` field in ChatSessions).
+– FREE_TRIAL_ENABLED skips all debits but still records usage analytics.
 
 ### Example (trimmed)
 
@@ -113,9 +100,12 @@ Runtime metrics live under `real_time_tracking`:
       "completion_tokens": 211,
       "total_cost": 0.0021,
       "last_model": "gpt-4o-mini",
-      "remaining_balance": 9477,
       "incremental_debits": true,
-      "last_delta": {"total_tokens": 120, "prompt_tokens": 80, "completion_tokens": 40, "total_cost": 0}
+      "last_billed_total_tokens": 523,
+      "final_total_tokens": 523,
+      "final_prompt_tokens": 312,
+      "final_completion_tokens": 211,
+      "final_cost": 0.0021
     },
     "last_usage_recorded_at": "2025-08-16T06:12:33.000Z",
     "last_flush_at": "2025-08-16T06:12:34.000Z",
@@ -126,9 +116,9 @@ Runtime metrics live under `real_time_tracking`:
 
 ### Operational notes
 
-- Event-driven only: If a provider does not emit `UsageSummaryEvent`, the system logs an error and does not backfill. Fix the event pipeline rather than masking it.
-- `record_token_usage` assumes `AG2PersistenceManager.debit_tokens` returns the new balance or None (soft-failure). Remaining balance is set only when available.
-- Costs may be provider-specific and batched; final `total_cost` is persisted on `record_final_token_usage` when a mode=total summary is received.
+– Incremental visibility relies on `print_usage_summary`; if an agent/provider omits it, only final reconciliation occurs.
+– Costs may be provisional; authoritative values written with final_* fields.
+– No per-event token deltas are broadcast currently; could be reintroduced by sampling from in-memory state post-billing if needed.
 
 # MozaiksAI Persistence Layer
 
@@ -209,6 +199,7 @@ Here is a sample structure of a session document:
 ## How real-time persistence works
 
 1) TextEvent: `AG2PersistenceManager.save_event` appends a message to `messages`.
-2) UsageSummaryEvent: `UIEventProcessor` computes deltas; `PerformanceManager.record_token_usage` updates `real_time_tracking.tokens` and debits wallet. When mode=total, `PerformanceManager.record_final_token_usage` persists authoritative totals.
+2) After each agent turn boundary: orchestrator calls `print_usage_summary` then `PerformanceManager.bill_usage_from_print_summary` (delta debit + update markers).
+3) Workflow end: orchestrator calls `gather_usage_summary` then `PerformanceManager.record_final_usage_from_agents` (residual debit + final_* fields).
 
 This event-driven approach keeps the session document accurate in near real time with minimal write contention.

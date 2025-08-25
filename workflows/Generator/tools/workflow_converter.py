@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 import sys
 import yaml
+import json
 
 # Add the project root to the path for logging only
 project_root = Path(__file__).parent.parent.parent.parent
@@ -234,7 +235,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         wf_logger = get_workflow_logger(workflow_name=workflow_name)
         wf_logger.info(f"📁 [CREATE_WORKFLOW_FILES] Creating modular YAML files for: {workflow_name}")
         
-        # Build the complete config from agent outputs
+    # Build the complete config from agent outputs
         config = {}
         
         # Extract orchestrator settings from OrchestratorAgent output
@@ -262,21 +263,44 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         context_vars_output = data.get('context_variables_output', {})
         if context_vars_output and 'context_variables' in context_vars_output:
             # ContextVariablesAgent outputs JSON like: {"context_variables": [...]}
-            config['context_variables'] = {'variables': context_vars_output['context_variables']}
+            config['context_variables'] = context_vars_output
             wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(context_vars_output['context_variables'])} context variables")
         
-        # Add structured outputs (usually pre-defined)
+        # Add structured outputs (pre-defined or from StructuredOutputsAgent)
         structured_outputs = data.get('structured_outputs', {})
-        if structured_outputs:
-            config['structured_outputs'] = structured_outputs
-            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added structured outputs")
+        structured_outputs_agent_output = data.get('structured_outputs_agent_output', {})
         
-        # Add tools configuration
+        if structured_outputs_agent_output and ('models' in structured_outputs_agent_output or 'registry' in structured_outputs_agent_output):
+            # StructuredOutputsAgent outputs JSON like: {"models": [...], "registry": [...]}
+            config['structured_outputs'] = structured_outputs_agent_output
+            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added dynamic structured outputs")
+        elif structured_outputs:
+            config['structured_outputs'] = structured_outputs
+            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added pre-defined structured outputs")
+        
+        # Add tools configuration from ToolsManagerAgent
+        tools_manager_output = data.get('tools_manager_output', {})
+        if tools_manager_output and 'tools_config' in tools_manager_output:
+            # ToolsManagerAgent outputs JSON string in tools_config field
+            tools_config_str = tools_manager_output['tools_config']
+            if isinstance(tools_config_str, str):
+                try:
+                    tools_config = json.loads(tools_config_str)
+                    config.update(tools_config)
+                    wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration")
+                except json.JSONDecodeError as e:
+                    wf_logger.warning(f"⚠️ [CREATE_WORKFLOW_FILES] Failed to parse tools_config JSON: {e}")
+            elif isinstance(tools_config_str, dict):
+                # Handle case where it's already parsed as dict
+                config.update(tools_config_str)
+                wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration")
+        
+        # Legacy: Add tools configuration (fallback)
         tools_config = data.get('tools_config', {})
-        if tools_config:
+        if tools_config and not tools_manager_output:
             # Tools sections go at top level
             config.update(tools_config)
-            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration")
+            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added legacy tools configuration")
         
         # Add UI configuration
         ui_config = data.get('ui_config', {})
@@ -287,10 +311,49 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
 
         # Add extra files to config so they can be saved
         extra_files = data.get('extra_files')
+        
+        # Extract files from ToolsAgent output
+        tools_agent_output = data.get('tools_agent_output', {})
+        if tools_agent_output and 'files' in tools_agent_output:
+            # ToolsAgent outputs JSON like: {"files": [...]}
+            tools_files = tools_agent_output['files']
+            if isinstance(tools_files, list):
+                if extra_files:
+                    extra_files.extend(tools_files)
+                else:
+                    extra_files = tools_files
+                wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(tools_files)} files from ToolsAgent")
+        
         if isinstance(extra_files, list) and extra_files:
             config['extra_files'] = extra_files
             wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(extra_files)} extra files")
         
+        # Apply backend defaults for orchestrator fields if missing
+        def _apply_orchestrator_defaults(cfg: Dict[str, Any]):
+            # Core defaults
+            cfg.setdefault('max_turns', 25)
+            cfg.setdefault('human_in_the_loop', False)
+            cfg.setdefault('orchestration_pattern', 'DefaultPattern')
+            cfg.setdefault('startup_mode', 'BackendOnly')
+            # Message logic
+            mode = cfg.get('startup_mode')
+            if mode == 'UserDriven':
+                # user provides initial input
+                if 'initial_message_to_user' not in cfg or cfg.get('initial_message_to_user') is None:
+                    cfg['initial_message_to_user'] = 'Please provide the required input to begin.'
+                cfg['initial_message'] = None
+            else:
+                # AgentDriven / BackendOnly
+                if 'initial_message' not in cfg or cfg.get('initial_message') is None:
+                    cfg['initial_message'] = 'Initialize workflow sequence.'
+                cfg['initial_message_to_user'] = None
+            # Ensure arrays
+            cfg.setdefault('visual_agents', [])
+            cfg.setdefault('ui_capable_agents', [])
+            return cfg
+
+        _apply_orchestrator_defaults(config)
+
         # Save as modular YAML files using self-contained function
         success = _save_modular_workflow(workflow_name, config)
         

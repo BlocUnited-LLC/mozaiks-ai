@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 # Ensure project root is on Python path for workflow imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -24,11 +24,14 @@ from core.core_config import get_mongo_client
 from core.transport.simple_transport import SimpleTransport
 from core.workflow.init_registry import  workflow_status_summary, get_workflow_transport, get_workflow_tools
 from core.data.persistence_manager import AG2PersistenceManager
-from core.data.chat_sessions_data import ChatSessionsRepository
 
-# Initialize persistence manager
+# Initialize persistence manager (handles lean chat session storage internally)
 persistence_manager = AG2PersistenceManager()
-chat_sessions_repo = ChatSessionsRepository()
+
+async def _chat_coll():
+    """Return the new lean chat_sessions collection (lowercase)."""
+    # Delegate to the persistence manager's internal helper (ensures client)
+    return await persistence_manager._coll()
 
 # Request model for starting a chat session
 class StartChatRequest(BaseModel):
@@ -77,8 +80,11 @@ from core.events import get_event_dispatcher
 event_dispatcher = get_event_dispatcher()
 wf_logger.info("🎯 Unified Event Dispatcher initialized")
 
-# Initialize OpenLit Observability
 from core.observability.performance_manager import get_performance_manager
+from opentelemetry import trace
+tracer = trace.get_tracer("mozaiks.app")
+from core.observability.otel_helpers import timed_span
+from core.workflow.orchestration_patterns import get_run_registry_summary
 
 # FastAPI app
 app = FastAPI(
@@ -100,6 +106,14 @@ app.add_middleware(
 mongo_client = None  # delay until startup so logging is definitely initialized
 simple_transport: Optional[SimpleTransport] = None
 
+@app.get("/health/active-runs")
+async def health_active_runs():
+    """Return summary of active runs (in-memory registry)."""
+    try:
+        return get_run_registry_summary()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # # ------------------------------------------------------------------------------
 # # SERVICE REGISTRY (backend-agnostic routing for artifact modules)
@@ -120,114 +134,118 @@ simple_transport: Optional[SimpleTransport] = None
 
 @app.on_event("startup")
 async def startup():
-    """Initialize application on startup"""
+    """Initialize application on startup (with lean OTel span)."""
     global simple_transport
     startup_start = datetime.utcnow()
-
-    try:
-        # Initialize performance / observability
-        perf_mgr = await get_performance_manager()
-        await perf_mgr.initialize()
-
-        # Initialize simple transport
-        streaming_start = datetime.utcnow()
-        simple_transport = await SimpleTransport.get_instance()
-        
-        streaming_time = (datetime.utcnow() - streaming_start).total_seconds() * 1000
-        performance_logger.info(
-            "streaming_config_init_duration",
-            metric_name="streaming_config_init_duration",
-            value=float(streaming_time),
-            config_keys=[],
-            streaming_enabled=True,
-        )
-
-        # Build Mongo client now (after logging configured)
-        global mongo_client
-        if mongo_client is None:
-            mongo_client = get_mongo_client()
-
-        # Test MongoDB connection
-        mongo_start = datetime.utcnow()
+    # Use helper (mozaiks.app.startup span name becomes mozaiks.app.startup via prefix logic? timed_span adds mozaiks.<key>)
+    # We'll pass key 'app.startup' so final span is mozaiks.app.startup for consistency.
+    with timed_span("app.startup", attributes={"environment": env}) as span:
         try:
-            await mongo_client.admin.command("ping")
-            mongo_time = (datetime.utcnow() - mongo_start).total_seconds() * 1000
-            
+            # Initialize performance / observability
+            perf_mgr = await get_performance_manager()
+            await perf_mgr.initialize()
+
+            # Initialize simple transport
+            streaming_start = datetime.utcnow()
+            simple_transport = await SimpleTransport.get_instance()
+            streaming_time = (datetime.utcnow() - streaming_start).total_seconds() * 1000
             performance_logger.info(
-                "mongodb_ping_duration",
-                metric_name="mongodb_ping_duration",
-                value=float(mongo_time),
+                "streaming_config_init_duration",
+                metric_name="streaming_config_init_duration",
+                value=float(streaming_time),
+                config_keys=[],
+                streaming_enabled=True,
+            )
+
+            # Build Mongo client now (after logging configured)
+            global mongo_client
+            if mongo_client is None:
+                mongo_client = get_mongo_client()
+
+            # Test MongoDB connection
+            mongo_start = datetime.utcnow()
+            try:
+                await mongo_client.admin.command("ping")
+                mongo_time = (datetime.utcnow() - mongo_start).total_seconds() * 1000
+                performance_logger.info(
+                    "mongodb_ping_duration",
+                    metric_name="mongodb_ping_duration",
+                    value=float(mongo_time),
+                    unit="ms",
+                )
+                span.set_attribute("mongodb.ping_ms", float(mongo_time))
+            except Exception as e:
+                get_workflow_logger("shared_app").error(
+                    "MONGODB_CONNECTION_FAILED: Failed to connect to MongoDB",
+                    error=str(e)
+                )
+                span.record_exception(e)
+                span.set_attribute("startup.error", True)
+                raise
+
+            # Import workflow modules
+            import_start = datetime.utcnow()
+            await _import_workflow_modules()
+            import_time = (datetime.utcnow() - import_start).total_seconds() * 1000
+            performance_logger.info(
+                "workflow_import_duration",
+                metric_name="workflow_import_duration",
+                value=float(import_time),
                 unit="ms",
             )
-            
-        except Exception as e:
-            get_workflow_logger("shared_app").error(
-                "MONGODB_CONNECTION_FAILED: Failed to connect to MongoDB",
-                error=str(e)
+            span.set_attribute("workflows.import_ms", float(import_time))
+
+            # Component system is event-driven, no upfront initialization needed.
+            registry_start = datetime.utcnow()
+            registry_time = (datetime.utcnow() - registry_start).total_seconds() * 1000
+            performance_logger.info(
+                "unified_registry_init_duration",
+                metric_name="unified_registry_init_duration",
+                value=float(registry_time),
+                unit="ms",
             )
+
+            # Log workflow and tool summary
+            status = workflow_status_summary()
+            span.set_attribute("workflows.count", status.get("total_workflows", 0))
+            span.set_attribute("tools.count", status.get("total_tools", 0))
+
+            # Total startup time
+            total_startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
+            performance_logger.info(
+                "total_startup_duration",
+                metric_name="total_startup_duration",
+                value=float(total_startup_time),
+                unit="ms",
+                workflows_count=status.get("total_workflows", 0),
+                tools_count=status.get("total_tools", 0),
+            )
+            span.set_attribute("startup.total_ms", float(total_startup_time))
+
+            # Business event
+            await event_dispatcher.emit_business_event(
+                log_event_type="SERVER_STARTUP_COMPLETED",
+                description="Server startup completed successfully with unified event dispatcher",
+                context={
+                    "environment": env,
+                    "startup_time_ms": total_startup_time,
+                    "workflows_registered": status.get("total_workflows", 0),
+                    "tools_available": status.get("total_tools", 0),
+                    "summary": status.get("summary", "Unknown")
+                }
+            )
+            wf_logger.info(f"✅ Server ready - {status['summary']} (Startup: {total_startup_time:.1f}ms)")
+        except Exception as e:
+            startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
+            get_workflow_logger("shared_app").error(
+                "SERVER_STARTUP_FAILED: Server startup failed",
+                environment=env,
+                error=str(e),
+                startup_time_ms=startup_time
+            )
+            span.record_exception(e)
+            span.set_attribute("startup.failed", True)
             raise
-
-        # Import workflow modules
-        import_start = datetime.utcnow()
-        await _import_workflow_modules()
-        import_time = (datetime.utcnow() - import_start).total_seconds() * 1000
-        
-        performance_logger.info(
-            "workflow_import_duration",
-            metric_name="workflow_import_duration",
-            value=float(import_time),
-            unit="ms",
-        )
-
-        # Component system is event-driven, no upfront initialization needed.
-        registry_start = datetime.utcnow()
-        
-        registry_time = (datetime.utcnow() - registry_start).total_seconds() * 1000
-        performance_logger.info(
-            "unified_registry_init_duration",
-            metric_name="unified_registry_init_duration",
-            value=float(registry_time),
-            unit="ms",
-        )
-        
-        # Log workflow and tool summary
-        status = workflow_status_summary()
-        
-        # Calculate total startup time
-        total_startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
-        performance_logger.info(
-            "total_startup_duration",
-            metric_name="total_startup_duration",
-            value=float(total_startup_time),
-            unit="ms",
-            workflows_count=status.get("total_workflows", 0),
-            tools_count=status.get("total_tools", 0),
-        )
-
-        # Use unified event dispatcher for this important startup event
-        await event_dispatcher.emit_business_event(
-            log_event_type="SERVER_STARTUP_COMPLETED",
-            description="Server startup completed successfully with unified event dispatcher",
-            context={
-                "environment": env,
-                "startup_time_ms": total_startup_time,
-                "workflows_registered": status.get("total_workflows", 0),
-                "tools_available": status.get("total_tools", 0),
-                "summary": status.get("summary", "Unknown")
-            }
-        )
-
-        wf_logger.info(f"✅ Server ready - {status['summary']} (Startup: {total_startup_time:.1f}ms)")
-
-    except Exception as e:
-        startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
-        get_workflow_logger("shared_app").error(
-            "SERVER_STARTUP_FAILED: Server startup failed",
-            environment=env,
-            error=str(e),
-            startup_time_ms=startup_time
-        )
-        raise
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -380,61 +398,54 @@ async def get_event_metrics():
 
 @app.get("/api/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint (adds OTel span)."""
     health_start = datetime.utcnow()
-    
-    try:
-        # Test MongoDB
-        mongo_ping_start = datetime.utcnow()
-        if mongo_client is None:
-            raise HTTPException(status_code=503, detail="MongoDB client not initialized")
-        await mongo_client.admin.command("ping")
-        mongo_ping_time = (datetime.utcnow() - mongo_ping_start).total_seconds() * 1000
-        
-        # Get workflow status
-        status = workflow_status_summary()
-        
-        # Get active connections from simple transport
-        connection_info = {
-            "websocket_connections": len(simple_transport.connections) if simple_transport else 0,
-            "total_connections": len(simple_transport.connections) if simple_transport else 0
-        }
-
-        # Calculate health check time
-        health_time = (datetime.utcnow() - health_start).total_seconds() * 1000
-        
-        performance_logger.info(
-            "health_check_duration",
-            extra={
-                "metric_name": "health_check_duration",
-                "value": float(health_time),
-                "unit": "ms",
-                "mongodb_ping_ms": float(mongo_ping_time),
-                "active_connections": connection_info["total_connections"],
-                "workflows_count": len(status["registered_workflows"]),
-            },
-        )
-        
-        health_data = {
-            "status": "healthy",
-            "mongodb": "connected",
-            "mongodb_ping_ms": round(mongo_ping_time, 2),
-            "simple_transport": "initialized" if simple_transport else "not_initialized",
-            "active_connections": connection_info,
-            "workflows": status["registered_workflows"],
-            "transport_groups": status.get("transport_groups", {}),
-            "tools_available": status["total_tools"] > 0,
-            "total_tools": status["total_tools"],
-            "health_check_time_ms": round(health_time, 2)
-        }
-
-        wf_logger.debug(f"✅ Health check passed - Response time: {health_time:.1f}ms")
-
-        return health_data
-
-    except Exception as e:
-        logger.error(f"? Health check failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Health check failed: {e}")
+    with timed_span("app.health_check") as span:
+        try:
+            mongo_ping_start = datetime.utcnow()
+            if mongo_client is None:
+                raise HTTPException(status_code=503, detail="MongoDB client not initialized")
+            await mongo_client.admin.command("ping")
+            mongo_ping_time = (datetime.utcnow() - mongo_ping_start).total_seconds() * 1000
+            span.set_attribute("mongodb.ping_ms", float(mongo_ping_time))
+            status = workflow_status_summary()
+            connection_info = {
+                "websocket_connections": len(simple_transport.connections) if simple_transport else 0,
+                "total_connections": len(simple_transport.connections) if simple_transport else 0
+            }
+            health_time = (datetime.utcnow() - health_start).total_seconds() * 1000
+            performance_logger.info(
+                "health_check_duration",
+                extra={
+                    "metric_name": "health_check_duration",
+                    "value": float(health_time),
+                    "unit": "ms",
+                    "mongodb_ping_ms": float(mongo_ping_time),
+                    "active_connections": connection_info["total_connections"],
+                    "workflows_count": len(status["registered_workflows"]),
+                },
+            )
+            span.set_attribute("health.duration_ms", float(health_time))
+            span.set_attribute("health.workflows_count", len(status["registered_workflows"]))
+            health_data = {
+                "status": "healthy",
+                "mongodb": "connected",
+                "mongodb_ping_ms": round(mongo_ping_time, 2),
+                "simple_transport": "initialized" if simple_transport else "not_initialized",
+                "active_connections": connection_info,
+                "workflows": status["registered_workflows"],
+                "transport_groups": status.get("transport_groups", {}),
+                "tools_available": status["total_tools"] > 0,
+                "total_tools": status["total_tools"],
+                "health_check_time_ms": round(health_time, 2)
+            }
+            wf_logger.debug(f"✅ Health check passed - Response time: {health_time:.1f}ms")
+            return health_data
+        except Exception as e:
+            span.record_exception(e)
+            span.set_attribute("health.failed", True)
+            logger.error(f"? Health check failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Health check failed: {e}")
 
 # ============================================================================
 # Chat Management Endpoints
@@ -442,58 +453,120 @@ async def health_check():
 
 @app.post("/api/chats/{enterprise_id}/{workflow_name}/start")
 async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
-    """Start a new chat session for a workflow"""
-    try:
-        data = await request.json()
-        user_id = data.get("user_id")
-        required_min_tokens = int(data.get("required_min_tokens", 0))
-        if not user_id:
-            raise HTTPException(status_code=400, detail="user_id is required")
+    """Start a new chat session for a workflow.
 
-        # Ensure wallet exists and get balance
-        await persistence_manager.ensure_wallet(user_id, enterprise_id, initial_balance=0)
-        balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
-        if required_min_tokens and balance < required_min_tokens:
-            raise HTTPException(status_code=402, detail="Insufficient tokens to start workflow")
-
-        # Generate a new chat ID (session will be created on conversation start)
-        chat_id = str(uuid4())
-        # NOTE: Do not create the session here to avoid duplicates with termination_handler.on_conversation_start
-        # await persistence_manager.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
-
-        # Initialize performance tracking early (in-memory state) so first turn deltas are clean
+    Idempotency / duplicate suppression strategy:
+      - If an in-progress chat for (enterprise_id, user_id, workflow_name) was created within the last N seconds
+        (default 15) AND client did not set force_new=true, we *reuse* that chat_id instead of creating a new one.
+      - Optional client-supplied "client_request_id" can further collapse rapid replays (e.g. browser double-submit).
+    This prevents multiple empty ChatSessions docs when the frontend issues parallel start attempts during
+    React StrictMode double-mount or network retries.
+    """
+    IDEMPOTENCY_WINDOW_SEC = int(os.getenv("CHAT_START_IDEMPOTENCY_SEC", "15"))
+    now = datetime.utcnow()
+    reuse_cutoff = now - timedelta(seconds=IDEMPOTENCY_WINDOW_SEC)
+    with timed_span("chat.start_session", attributes={"workflow_name": workflow_name, "enterprise_id": enterprise_id}):
         try:
-            perf_mgr = await get_performance_manager()
-            # We only create in-memory state here; session DB row still created by termination handler later
-            await perf_mgr.record_workflow_start(chat_id, enterprise_id, workflow_name, user_id)
-        except Exception as perf_e:
-            logger.debug(f"perf_start skipped {chat_id}: {perf_e}")
+            data = await request.json()
+            user_id = data.get("user_id")
+            required_min_tokens = int(data.get("required_min_tokens", 0))
+            client_request_id = data.get("client_request_id")
+            force_new = str(data.get("force_new", "false")).lower() in ("1", "true", "yes")
+            if not user_id:
+                raise HTTPException(status_code=400, detail="user_id is required")
 
-        get_workflow_logger("shared_app").info(
-            "CHAT_SESSION_STARTED: New chat session initiated",
-            enterprise_id=enterprise_id,
-            workflow_name=workflow_name,
-            user_id=user_id,
-            chat_id=chat_id,
-            starting_balance=balance,
-        )
+            # Ensure wallet exists and get balance
+            await persistence_manager.ensure_wallet(user_id, enterprise_id, initial_balance=0)
+            balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
+            if required_min_tokens and balance < required_min_tokens:
+                raise HTTPException(status_code=402, detail="Insufficient tokens to start workflow")
 
-        return {
-            "success": True,
-            "chat_id": chat_id,
-            "workflow_name": workflow_name,
-            "enterprise_id": enterprise_id,
-            "user_id": user_id,
-            "remaining_balance": balance,
-            "websocket_url": f"/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}",
-            "message": "Chat session initialized; connect to websocket to start."
-        }
+            # Obtain underlying lean chat sessions collection
+            coll = await _chat_coll()
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Failed to start chat session: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start chat: {e}")
+            # Reuse recent in-progress session if present (idempotent start)
+            reused_doc = None
+            if not force_new:
+                query = {
+                    "enterprise_id": enterprise_id,
+                    "user_id": user_id,
+                    "workflow_name": workflow_name,
+                    "status": "in_progress",
+                    "created_at": {"$gte": reuse_cutoff},
+                }
+                if client_request_id:
+                    # If client_request_id stored, include it
+                    query["client_request_id"] = client_request_id
+                reused_doc = await coll.find_one(query, projection={"chat_id": 1, "created_at": 1})
+
+            if reused_doc:
+                chat_id = reused_doc["chat_id"]
+                get_workflow_logger("shared_app").info(
+                    "CHAT_SESSION_REUSED: Existing recent chat reused",
+                    enterprise_id=enterprise_id,
+                    workflow_name=workflow_name,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    reuse_window_sec=IDEMPOTENCY_WINDOW_SEC,
+                )
+                # Return existing without touching performance manager again
+                return {
+                    "success": True,
+                    "chat_id": chat_id,
+                    "workflow_name": workflow_name,
+                    "enterprise_id": enterprise_id,
+                    "user_id": user_id,
+                    "remaining_balance": balance,
+                    "websocket_url": f"/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}",
+                    "message": "Existing recent chat reused.",
+                    "reused": True,
+                }
+
+            # Generate a new chat ID
+            chat_id = str(uuid4())
+
+            # Create session doc immediately (idempotent); attach client_request_id for future reuse
+            try:
+                base_fields = {"client_request_id": client_request_id} if client_request_id else {}
+                await persistence_manager.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
+                if base_fields:
+                    await coll.update_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"$set": base_fields})
+            except Exception as ce:
+                logger.debug(f"chat_session pre-create skipped {chat_id}: {ce}")
+
+            # Initialize performance tracking early
+            try:
+                perf_mgr = await get_performance_manager()
+                await perf_mgr.record_workflow_start(chat_id, enterprise_id, workflow_name, user_id)
+            except Exception as perf_e:
+                logger.debug(f"perf_start skipped {chat_id}: {perf_e}")
+
+            get_workflow_logger("shared_app").info(
+                "CHAT_SESSION_STARTED: New chat session initiated",
+                enterprise_id=enterprise_id,
+                workflow_name=workflow_name,
+                user_id=user_id,
+                chat_id=chat_id,
+                starting_balance=balance,
+                idempotency_window_sec=IDEMPOTENCY_WINDOW_SEC,
+            )
+
+            return {
+                "success": True,
+                "chat_id": chat_id,
+                "workflow_name": workflow_name,
+                "enterprise_id": enterprise_id,
+                "user_id": user_id,
+                "remaining_balance": balance,
+                "websocket_url": f"/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}",
+                "message": "Chat session initialized; connect to websocket to start.",
+                "reused": False,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Failed to start chat session: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to start chat: {e}")
 
 @app.get("/api/chats/{enterprise_id}/{workflow_name}")
 async def list_chats(enterprise_id: str, workflow_name: str):
@@ -504,15 +577,74 @@ async def list_chats(enterprise_id: str, workflow_name: str):
             eid = ObjectId(enterprise_id)
         except Exception:
             eid = enterprise_id
-        # Query chat sessions collection with the refactored schema
-        coll = await chat_sessions_repo._coll()
+        # Query chat sessions collection with the refactored schema (lowercase)
+        coll = await _chat_coll()
         cursor = coll.find({"enterprise_id": eid, "workflow_name": workflow_name}).sort("created_at", -1)
         docs = await cursor.to_list(length=20)
-        chat_ids = [doc.get("chat_id") for doc in docs]
+        chat_ids = [doc.get("_id") for doc in docs]
         return {"chat_ids": chat_ids}
     except Exception as e:
         logger.error(f"❌ Failed to list chats for enterprise {enterprise_id}, workflow {workflow_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list chats")
+    
+@app.get("/api/chats/{enterprise_id}/{workflow_name}/{chat_id}/resume")
+async def resume_chat(enterprise_id: str, workflow_name: str, chat_id: str):
+    """Attempt to resume a chat session: return status & existing strict messages.
+
+    A session is resumable if it exists and status == 'in_progress'.
+    Returns a lightweight payload (no billing structs) to prime the UI.
+    """
+    try:
+        coll = await _chat_coll()
+        # enterprise_id may be stored as ObjectId or string – search both forms
+        try:
+            eid_obj = ObjectId(enterprise_id)
+            doc = await coll.find_one({"_id": chat_id, "workflow_name": workflow_name, "enterprise_id": {"$in": [enterprise_id, eid_obj]}})
+        except Exception:
+            doc = await coll.find_one({"_id": chat_id, "workflow_name": workflow_name, "enterprise_id": enterprise_id})
+        if not doc:
+            return {"success": False, "reason": "not_found"}
+        status = doc.get("status", "unknown")
+        messages = doc.get("messages", []) or []
+        resumable = status == "in_progress"
+        # Normalize messages for frontend (strip only needed fields)
+        normalized = []
+        for m in messages:
+            try:
+                role = m.get("role") or "assistant"
+                # New lean schema uses agent_name for assistants and no name for user
+                name = m.get("agent_name") if role == "assistant" else "user"
+                normalized.append({
+                    "role": role,
+                    "name": name,
+                    "content": m.get("content") or "",
+                    "timestamp": m.get("timestamp"),
+                    "event_id": m.get("event_id"),
+                    "event_type": m.get("event_type")
+                })
+            except Exception:
+                continue
+        get_workflow_logger("shared_app").info(
+            "CHAT_SESSION_RESUME: Resume attempt",
+            chat_id=chat_id,
+            workflow_name=workflow_name,
+            enterprise_id=enterprise_id,
+            status=status,
+            message_count=len(normalized),
+            can_resume=resumable,
+        )
+        return {
+            "success": True,
+            "chat_id": chat_id,
+            "workflow_name": workflow_name,
+            "enterprise_id": enterprise_id,
+            "status": status,
+            "can_resume": resumable,
+            "messages": normalized
+        }
+    except Exception as e:
+        logger.error(f"❌ Failed to resume chat {chat_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to resume chat")
     
 
 @app.websocket("/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}")
@@ -536,17 +668,20 @@ async def websocket_endpoint(
             from core.workflow.workflow_config import workflow_config
             cfg = workflow_config.get_config(workflow_name)
             if cfg.get("startup_mode", "AgentDriven") == "AgentDriven":
-                # Wait briefly until SimpleTransport registers the websocket
                 local_transport = simple_transport
                 if not local_transport:
                     return
-                for _ in range(20):  # up to ~2s
-                    if (
-                        chat_id in local_transport.connections
-                        and local_transport.connections[chat_id].get("websocket") is not None
-                    ):
+                # wait until the connection is registered
+                for _ in range(20):
+                    conn = local_transport.connections.get(chat_id)
+                    if conn and conn.get("websocket") is not None:
+                        # idempotency guard so auto-start runs at most once per socket
+                        if conn.get("autostarted"):
+                            return
+                        conn["autostarted"] = True
                         break
                     await asyncio.sleep(0.1)
+
                 await local_transport.handle_user_input_from_api(
                     chat_id=chat_id,
                     user_id=user_id,
@@ -603,7 +738,6 @@ async def handle_user_input(
             enterprise_id=enterprise_id
         )
 
-    # Token usage is tracked via UsageSummaryEvent; no manual cumulative capture here
         
         get_workflow_logger("shared_app").info(
             "USER_INPUT_PROCESSED: User input processed successfully",

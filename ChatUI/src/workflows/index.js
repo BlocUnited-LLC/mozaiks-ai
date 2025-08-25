@@ -22,7 +22,7 @@ class WorkflowRegistry {
   constructor() {
     this.loadedWorkflows = new Map();
     this.initialized = false;
-    this.apiBaseUrl = '/api'; // Backend API base URL
+    this.apiBaseUrl = 'http://localhost:8000/api'; // Direct backend API base URL (bypass proxy)
   }
 
   /**

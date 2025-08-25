@@ -1,5 +1,4 @@
 """
-OpenLit Observability Module
 Proper separation of observability from business persistence
 """
 

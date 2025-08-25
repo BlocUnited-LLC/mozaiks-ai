@@ -137,10 +137,10 @@ class UnifiedEventDispatcher:
     - Business Logic Events (logging/monitoring)
     - UI Tool Events (user interactions)
 
-    Not in scope:
-    - AG2 runtime (agent) events. Those are processed directly by
-      core/transport/ui_event_processor.UIEventProcessor to avoid latency
-      and circular dependencies with the transport layer.
+        Not in scope:
+        - AG2 runtime (agent) events fanout. Those are forwarded to the UI
+            directly by the orchestrator via SimpleTransport to avoid latency and
+            circular dependencies.
     """
 
     def __init__(self):

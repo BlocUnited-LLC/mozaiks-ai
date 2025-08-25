@@ -13,13 +13,13 @@ import React, { useState } from 'react';
  * dynamically determined by the AG2 agent's request.
  */
 const AgentAPIKeyInput = ({ 
+  payload = {},
+  onResponse,
+  onCancel,
+  // Legacy props for backward compatibility
   ui_tool_id,
   eventId,
   workflowName,
-  onResponse,
-  // Dynamic props from agent event payload
-  payload = {},
-  // Fallback defaults
   placeholder,
   label,
   description,
@@ -229,5 +229,15 @@ const AgentAPIKeyInput = ({
 
 // Add display name for better debugging
 AgentAPIKeyInput.displayName = 'AgentAPIKeyInput';
+
+// Component metadata for the dynamic UI system (MASTER_UI_TOOL_AGENT_PROMPT requirement)
+export const componentMetadata = {
+  name: 'request_api_key',
+  type: 'inline',
+  pythonTool: 'workflows.Generator.tools.request_api_key.request_api_key',
+  category: 'input',
+  description: 'Secure API key input component',
+  version: '1.0.0'
+};
 
 export default AgentAPIKeyInput;

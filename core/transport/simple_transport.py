@@ -9,7 +9,6 @@ import json
 import traceback
 from typing import Dict, Any, Optional, Union, Tuple, List
 from fastapi import WebSocket
-from fastapi.responses import StreamingResponse
 from datetime import datetime
 
 # AG2 imports for event type checking
@@ -311,8 +310,6 @@ class SimpleTransport:
         await self._broadcast_to_websockets(event_data, chat_id)
         
         logger.info(f"📤 {formatted_agent}: {str(clean_message)[:100]}...")
-
-    # Token usage is tracked from UsageSummaryEvent, not by ad-hoc captures here
         
     # ==================================================================================
     # AG2 EVENT SENDING
@@ -324,6 +321,27 @@ class SimpleTransport:
         This is the primary method for forwarding AG2 native events.
         """
         try:
+            # Best-effort telemetry for tool/function calls
+            try:
+                et_name = type(event).__name__
+                looks_like_tool = ("Tool" in et_name) or ("Function" in et_name) or ("Call" in et_name)
+                if looks_like_tool:
+                    tool_name = None
+                    for attr in ("tool_name", "function_name", "name"):
+                        val = getattr(event, attr, None)
+                        if isinstance(val, str) and val.strip():
+                            tool_name = val.strip()
+                            break
+                    if tool_name:
+                        try:
+                            from core.observability.performance_manager import get_performance_manager
+                            perf = await get_performance_manager()
+                            await perf.record_tool_call(chat_id or "unknown", tool_name, 0.0, True)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
             # Filter events based on agent visibility before sending
             agent_name = None
             if hasattr(event, 'sender') and hasattr(event.sender, 'name'): # type: ignore

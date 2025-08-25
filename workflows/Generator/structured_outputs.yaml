@@ -32,9 +32,9 @@ structured_outputs:
         name:
           type: str
           description: "Variable name"
-        extraction_code:
+        source:
           type: str
-          description: "Python code to extract value (e.g., \"concept_data.get('ProjectTitle', '')\")"
+          description: "Data source key for extraction"
         description:
           type: str
           description: "Description of what this variable represents"
@@ -61,15 +61,15 @@ structured_outputs:
           description: "Target agent name or 'user' for user handoff"
         handoff_type:
           type: literal
-          values: ["llm_condition", "after_work"]
+          values: ["condition", "after_work"]
           description: "Type of handoff condition"
         condition:
           type: optional_str
           default: null
-          description: "LLM condition prompt if handoff_type is llm_condition"
-        description:
+          description: "Condition prompt if handoff_type is condition"
+        transition_target:
           type: str
-          description: "Human-readable description of the handoff rule"
+          description: "AgentTarget, RevertToUserTarget, or TerminateTarget"
 
     HandoffsOutput:
       type: model
@@ -83,29 +83,27 @@ structured_outputs:
       fields:
         workflow_name:
           type: str
-          description: "Name of the workflow"
         max_turns:
           type: int
-          default: 25
-          description: "Maximum workflow turns"
         human_in_the_loop:
           type: bool
-          description: "Whether human interaction is required in the workflow"
         startup_mode:
           type: literal
           values: ["AgentDriven", "UserDriven", "BackendOnly"]
-          description: "How the workflow interface behaves"
         orchestration_pattern:
           type: str
-          description: "Orchestration pattern (DefaultPattern, AutoPattern, etc.)"
         initial_message_to_user:
           type: optional_str
-          default: null
-          description: "Message shown to user (null for AgentDriven/BackendOnly)"
         initial_message:
           type: optional_str
-          default: null
-          description: "Initial workflow message (null for UserDriven)"
+        recipient:
+          type: str
+        visual_agents:
+          type: list
+          items: str
+        ui_capable_agents:
+          type: list
+          items: str
 
     StructuredModelField:
       # Hints for authors (not enforced by schema):
@@ -175,9 +173,6 @@ structured_outputs:
         files:
           type: list
           items: FileSpec
-        visual_agents:
-          type: list
-          items: str
 
     ToolsManagerAgentOutput:
       type: model
@@ -185,9 +180,7 @@ structured_outputs:
         tools_config:
           type: str
           description: "JSON string containing tools configuration (ui_tools, lifecycle_tools, backend_tools)"
-        ui_config:
-          type: str
-          description: "JSON string containing UI config (visual_agents, ui_capable_agents)"
+  # ui_config removed: OrchestratorAgent now emits visual_agents & ui_capable_agents at top-level
 
 # Registry for structured outputs
 

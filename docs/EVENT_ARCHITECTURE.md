@@ -4,13 +4,13 @@ This document describes MozaiksAI's unified event system for routing and handlin
 
 ## Overview
 
-MozaiksAI uses a single **Unified Event Dispatcher** and an AG2 event processor to handle runtime. Three categories of events:
+MozaiksAI uses a single **Unified Event Dispatcher** for business and UI tool events, and handles AG2 runtime events directly in the orchestrator. Three categories of events:
 
 - **Business Events**: Application lifecycle and monitoring (e.g., session start, billing events)
 - **Runtime Events**: AG2 agent workflow execution logs and metrics
 - **UI Tool Events**: Dynamic UI interactions and tool component actions
 
-All events are routed through a central dispatcher which invokes a matching handler implementation based on the event category.
+Business and UI tool events are routed through the central dispatcher which invokes a matching handler implementation based on the event category. AG2 runtime events are iterated in the orchestrator and forwarded to the transport; token accounting and metrics are handled by PerformanceManager.
 
 ## Event Definitions
 
@@ -63,11 +63,12 @@ Default handlers:
 - `RuntimeEventHandler` persists AG2 runtime events via `AG2PersistenceManager`
 - `UIToolHandler` forwards UI tool events to the transport layer via `SimpleTransport`
 
-AG2 runtime events (from `a_run_group_chat`) are processed by `core/transport/ui_event_processor.py:UIEventProcessor`, which:
-- Tracks agent turns from `TextEvent` and records latency in `PerformanceManager.record_agent_turn`.
-- Parses `UsageSummaryEvent`, computes deltas, and calls `PerformanceManager.record_token_usage` (wallet debit + DB updates).
-- Persists final totals on `mode=total` with `PerformanceManager.record_final_token_usage` and `AG2PersistenceManager.save_usage_summary`.
-- Does not use any fallback token gather; missing UsageSummaryEvent is treated as an error.
+AG2 runtime events (from `a_run_group_chat`) are processed in the orchestrator (see `core/workflow/orchestration_patterns.py`), which now:
+– Tracks agent turns from `TextEvent` and records latency via `PerformanceManager.record_agent_turn`.
+– On turn boundary, calls `print_usage_summary()` then `PerformanceManager.bill_usage_from_print_summary()` for incremental delta billing.
+– At workflow end, calls `gather_usage_summary()` then `PerformanceManager.record_final_usage_from_agents()` to reconcile any residual and persist final_* fields.
+– Sends UI-visible events through `core/transport/simple_transport.py:SimpleTransport`.
+Legacy per-`UsageSummaryEvent` delta processing has been removed along with websocket token_update emissions.
 
 ## Dispatcher Flow
 
@@ -110,5 +111,5 @@ await emit_runtime_event(
     content="Hello",
 )
 
-For AG2 execution, the orchestrator uses `a_run_group_chat` and forwards the resulting `response.events` to `UIEventProcessor` for real-time persistence and accounting.
+For AG2 execution, the orchestrator uses `a_run_group_chat`, iterates `response.events`, persists with `AG2PersistenceManager`, forwards UI-visible events via `SimpleTransport`, and handles usage accounting with `PerformanceManager`.
 ```

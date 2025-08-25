@@ -18,7 +18,6 @@ services:
       # Note: AZURE_* and MONGO_URI come from env_file: ../../.env above
     depends_on:
       - otel-collector
-      # NOTE: do NOT depend on 'mongo' here, so Atlas mode works without the local-db profile
     volumes:
       - ../../logs/logs:/app/logs/logs
     restart: unless-stopped

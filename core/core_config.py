@@ -97,28 +97,25 @@ def get_mongo_client() -> AsyncIOMotorClient:
         raise ValueError("MONGO_URI is not configured")
     return AsyncIOMotorClient(conn_str)
 
-# Tokens API Base URL
-TOKENS_API_URL = os.getenv("TOKENS_API_URL", "http://localhost:5000")
-
 async def _load_raw_config_list() -> list[dict]:
     """Load LLM configuration from database with fallback"""
     db = get_mongo_client().autogen_ai_agents
     try:
         doc = await db.LLMConfig.find_one()
         if doc:
-            model = doc.get("Model", "gpt-4o-mini")
+            model = doc.get("Model", "gpt-4.1-nano")
             price_map = {
                 "o3-mini": [0.0011, 0.0044],
                 "gpt-4.1-nano": [0.0001, 0.0004],
                 "gpt-4o-mini": [0.00015, 0.0006],
             }
-            price = price_map.get(model, [0.00015, 0.0006])
+            price = price_map.get(model, [0.0001, 0.0004])
         else:
-            model = "gpt-4o-mini"
+            model = "gpt-4.1-nano"
             price = [0.00015, 0.0006]
     except Exception as e:
         logger.warning(f"Failed to load LLM config from DB: {e}")
-        model = "gpt-4o-mini"
+        model = "gpt-4.1-nano"
         price = [0.00015, 0.0006]
     
     api_key = get_secret("OpenAIApiKey")
@@ -138,9 +135,7 @@ async def make_llm_config(
         # Note: AG2 streaming is handled by IOStream, not by config_list stream parameter
         if extra_config:
             cfg.update(extra_config)
-        
-    # Token tracking is always on via UsageSummaryEvent processing; no per-agent toggle needed
-    
+           
     for i, cfg in enumerate(config_list, start=1):
         redacted = {**cfg}
         redacted["api_key"] = "***REDACTED***"
@@ -202,14 +197,13 @@ async def make_structured_config(response_format: Type[BaseModel], extra_config:
 #     { EnterpriseId, UserId, Balance, Transactions, CreatedAt, UpdatedAt }
 #   ChatSessions should not mirror balances; only track usage aggregates.
 # ------------------------------------------------------------------------------
+# Tokens API Base URL
+TOKENS_API_URL = os.getenv("TOKENS_API_URL", "http://localhost:5000")
 
 def get_free_trial_config() -> Dict[str, Any]:
     """Get free trial configuration from environment variables"""
     return {
-        "enabled": os.getenv("FREE_TRIAL_ENABLED", "true").lower() == "true",
-        "default_tokens": int(os.getenv("FREE_TRIAL_DEFAULT_TOKENS", "1000")),
-        "auto_upgrade_prompt": os.getenv("AUTO_UPGRADE_PROMPT_ENABLED", "true").lower() == "true",
-        "warning_threshold": int(os.getenv("TRIAL_WARNING_THRESHOLD", "100"))
+        "enabled": os.getenv("FREE_TRIAL_ENABLED", "true").lower() == "true"
     }
 
 def get_rate_limits() -> Dict[str, str]:

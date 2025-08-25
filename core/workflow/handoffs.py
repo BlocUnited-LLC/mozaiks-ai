@@ -2,7 +2,8 @@
 # FILE: core/workflow/handoffs.py
 # DESCRIPTION: Workflow-agnostic handoff manager - converts YAML configs to AG2 handoffs
 # ==============================================================================
-import time
+from time import perf_counter
+from opentelemetry import trace
 import logging
 from typing import Dict, Any, List, Optional
 from autogen.agentchat.group import (
@@ -17,6 +18,7 @@ from autogen.agentchat.group import (
 )
 
 from .file_manager import workflow_file_manager
+from core.observability.otel_helpers import timed_span
 
 # Import enhanced logging
 from logs.logging_config import (
@@ -27,6 +29,8 @@ from logs.logging_config import (
 business_logger = get_workflow_logger("workflow_handoffs")
 performance_logger = get_workflow_logger("performance.workflow_handoffs")
 logger = logging.getLogger(__name__)
+
+tracer = trace.get_tracer("mozaiks.workflow")
 
 class HandoffManager:
     """
@@ -41,113 +45,119 @@ class HandoffManager:
         }
     
     def apply_handoffs_from_yaml(self, workflow_name: str, agents: Dict[str, Any]) -> None:
+        """Load handoffs.yaml and apply the rules to AG2 agents.
+
+        Uses timed_span helper for consistent telemetry & perf_counter timing.
         """
-        Load handoffs.yaml and apply the rules to AG2 agents.
-        
-        Args:
-            workflow_name: Name of the workflow (determines which handoffs.yaml to load)
-            agents: Dictionary of agent instances to apply handoffs to
-        """
-        handoff_start = time.time()
-        
-        try:
-            business_logger.info(f"🔗 [HANDOFFS] Loading handoffs configuration for workflow: {workflow_name}")
-            
-            # Load workflow configuration from YAML files
-            workflow_config = workflow_file_manager.load_workflow(workflow_name)
-            
-            if not workflow_config:
-                business_logger.error(f"❌ [HANDOFFS] No configuration found for workflow: {workflow_name}")
-                return
-            
-            handoffs_config = workflow_config.get('handoffs', {})
-            
-            # Handle nested structure: handoffs -> handoffs -> handoff_rules
-            if 'handoffs' in handoffs_config:
-                handoffs_config = handoffs_config['handoffs']
-            
-            handoff_rules = handoffs_config.get('handoff_rules', [])
-            
-            if not handoff_rules:
-                business_logger.warning(f"⚠️ [HANDOFFS] No handoff rules found in {workflow_name}/handoffs.yaml")
-                business_logger.debug(f"🔍 [HANDOFFS] Available keys in handoffs_config: {list(handoffs_config.keys())}")
-                return
-            
-            business_logger.info(f"🔗 [HANDOFFS] Found {len(handoff_rules)} handoff rules for {workflow_name}")
-            
-            business_logger.info(
-                "HANDOFFS_YAML_LOADING_STARTED: Starting handoff application from YAML configuration",
-                workflow_name=workflow_name,
-                rules_count=len(handoff_rules),
-                agent_count=len(agents),
-            )
-            
-            # Group rules by source agent for efficient processing
-            agent_rules = {}
-            for rule in handoff_rules:
-                source_agent = rule.get('source_agent')
-                if not source_agent:
-                    business_logger.warning(f"⚠️ [HANDOFFS] Skipping rule with missing source_agent: {rule}")
-                    continue
-                    
-                if source_agent not in agent_rules:
-                    agent_rules[source_agent] = {
-                        "after_work": None,
-                        "llm_conditions": [],
-                        "context_conditions": []
-                    }
-                
-                handoff_type = rule.get('handoff_type', 'after_work')
-                if handoff_type == "after_work":
-                    agent_rules[source_agent]["after_work"] = rule
-                elif handoff_type == "condition":
-                    agent_rules[source_agent]["llm_conditions"].append(rule)
-                elif handoff_type == "context_condition":
-                    agent_rules[source_agent]["context_conditions"].append(rule)
-                else:
-                    business_logger.warning(f"⚠️ [HANDOFFS] Unknown handoff_type '{handoff_type}' in rule: {rule}")
-            
-            # Apply handoffs to each agent
-            applied_count = 0
-            for agent_name, rules in agent_rules.items():
-                if agent_name not in agents:
-                    business_logger.warning(f"⚠️ [HANDOFFS] Agent '{agent_name}' not found in workflow agents")
-                    continue
-                
-                agent = agents[agent_name]
-                self._configure_agent_handoffs(agent, agent_name, rules, agents)
-                applied_count += 1
-            
-            total_time = (time.time() - handoff_start) * 1000
-            
-            performance_logger.info(
-                "handoffs_yaml_application_duration",
-                metric_name="handoffs_yaml_application_duration",
-                value=float(total_time),
-                unit="ms",
-                workflow_name=workflow_name,
-                rules_count=len(handoff_rules),
-                agents_configured=applied_count,
-            )
-            
-            business_logger.info(f"✅ [HANDOFFS] Successfully applied handoffs to {applied_count} agents in {total_time:.1f}ms")
-            
-            business_logger.info(
-                "HANDOFFS_YAML_LOADING_COMPLETED: Handoff application from YAML completed successfully",
-                workflow_name=workflow_name,
-                rules_applied=len(handoff_rules),
-                agents_configured=applied_count,
-                duration_ms=total_time,
-            )
-            
-        except Exception as e:
-            business_logger.error(f"❌ [HANDOFFS] Failed to apply handoffs for {workflow_name}: {e}", exc_info=True)
-            business_logger.error(
-                "HANDOFFS_YAML_LOADING_FAILED: Handoff application from YAML failed",
-                workflow_name=workflow_name,
-                error=str(e),
-            )
-            # Don't raise - handoffs are optional and shouldn't break the workflow
+        # Span (no histogram) wraps whole operation
+        with timed_span("handoffs.apply", attributes={
+            "workflow_name": workflow_name,
+            "agent_count": len(agents) if agents else 0,
+        }, record_metric=False) as span:
+            handoff_start = perf_counter()
+            try:
+                business_logger.info(f"🔗 [HANDOFFS] Loading handoffs configuration for workflow: {workflow_name}")
+
+                # Load workflow configuration from YAML files
+                workflow_config = workflow_file_manager.load_workflow(workflow_name)
+
+                if not workflow_config:
+                    business_logger.error(f"❌ [HANDOFFS] No configuration found for workflow: {workflow_name}")
+                    return
+
+                handoffs_config = workflow_config.get('handoffs', {})
+
+                # Handle nested structure: handoffs -> handoffs -> handoff_rules
+                if 'handoffs' in handoffs_config:
+                    handoffs_config = handoffs_config['handoffs']
+
+                handoff_rules = handoffs_config.get('handoff_rules', [])
+
+                if not handoff_rules:
+                    business_logger.warning(f"⚠️ [HANDOFFS] No handoff rules found in {workflow_name}/handoffs.yaml")
+                    business_logger.debug(f"🔍 [HANDOFFS] Available keys in handoffs_config: {list(handoffs_config.keys())}")
+                    return
+
+                business_logger.info(f"🔗 [HANDOFFS] Found {len(handoff_rules)} handoff rules for {workflow_name}")
+
+                business_logger.info(
+                    "HANDOFFS_YAML_LOADING_STARTED: Starting handoff application from YAML configuration",
+                    workflow_name=workflow_name,
+                    rules_count=len(handoff_rules),
+                    agent_count=len(agents),
+                )
+
+                # Group rules by source agent for efficient processing
+                agent_rules = {}
+                for rule in handoff_rules:
+                    source_agent = rule.get('source_agent')
+                    if not source_agent:
+                        business_logger.warning(f"⚠️ [HANDOFFS] Skipping rule with missing source_agent: {rule}")
+                        continue
+
+                    if source_agent not in agent_rules:
+                        agent_rules[source_agent] = {
+                            "after_work": None,
+                            "llm_conditions": [],
+                            "context_conditions": []
+                        }
+
+                    handoff_type = rule.get('handoff_type', 'after_work')
+                    if handoff_type == "after_work":
+                        agent_rules[source_agent]["after_work"] = rule
+                    elif handoff_type == "condition":
+                        agent_rules[source_agent]["llm_conditions"].append(rule)
+                    elif handoff_type == "context_condition":
+                        agent_rules[source_agent]["context_conditions"].append(rule)
+                    else:
+                        business_logger.warning(f"⚠️ [HANDOFFS] Unknown handoff_type '{handoff_type}' in rule: {rule}")
+
+                # Apply handoffs to each agent
+                applied_count = 0
+                for agent_name, rules in agent_rules.items():
+                    if agent_name not in agents:
+                        business_logger.warning(f"⚠️ [HANDOFFS] Agent '{agent_name}' not found in workflow agents")
+                        continue
+
+                    agent = agents[agent_name]
+                    self._configure_agent_handoffs(agent, agent_name, rules, agents)
+                    applied_count += 1
+
+                total_time = (perf_counter() - handoff_start) * 1000
+                try:
+                    span.set_attribute("handoffs.duration_ms", float(total_time))
+                    span.set_attribute("handoffs.rules_count", len(handoff_rules))
+                except Exception:
+                    pass
+
+                performance_logger.info(
+                    "handoffs_yaml_application_duration",
+                    metric_name="handoffs_yaml_application_duration",
+                    value=float(total_time),
+                    unit="ms",
+                    workflow_name=workflow_name,
+                    rules_count=len(handoff_rules),
+                    agents_configured=applied_count,
+                )
+
+                business_logger.info(f"✅ [HANDOFFS] Successfully applied handoffs to {applied_count} agents in {total_time:.1f}ms")
+
+                business_logger.info(
+                    "HANDOFFS_YAML_LOADING_COMPLETED: Handoff application from YAML completed successfully",
+                    workflow_name=workflow_name,
+                    rules_applied=len(handoff_rules),
+                    agents_configured=applied_count,
+                    duration_ms=total_time,
+                )
+
+            except Exception as e:
+                business_logger.error(f"❌ [HANDOFFS] Failed to apply handoffs for {workflow_name}: {e}", exc_info=True)
+                business_logger.error(
+                    "HANDOFFS_YAML_LOADING_FAILED: Handoff application from YAML failed",
+                    workflow_name=workflow_name,
+                    error=str(e),
+                )
+                # Don't raise - handoffs are optional and shouldn't break the workflow
     
     def _configure_agent_handoffs(self, agent: Any, agent_name: str, rules: Dict[str, Any], agents: Dict[str, Any]) -> None:
         """Configure handoffs for a single agent from rules"""
@@ -320,117 +330,122 @@ class HandoffManager:
                 "issues": List[str]
             }
         """
-        verification_start = time.time()
-        result = {
-            "total_agents": len(agents),
-            "agents_with_handoffs": 0,
-            "handoff_details": {},
-            "issues": []
-        }
-        
-        business_logger.info(f"🔍 [HANDOFFS] Starting AG2-level handoff verification for {len(agents)} agents")
-        
-        for agent_name, agent in agents.items():
-            agent_details = {
-                "has_handoffs_attr": False,
-                "after_work_target": None,
-                "llm_conditions_count": 0,
-                "context_conditions_count": 0,
-                "agent_type": str(type(agent)),
-                "handoff_methods": []
+        with timed_span("handoffs.verify", attributes={"agent_count": len(agents)}, record_metric=False) as span:
+            verification_start = perf_counter()
+            result = {
+                "total_agents": len(agents),
+                "agents_with_handoffs": 0,
+                "handoff_details": {},
+                "issues": []
             }
-            
-            try:
-                # Check if agent has handoffs attribute
-                if hasattr(agent, 'handoffs'):
-                    agent_details["has_handoffs_attr"] = True
-                    result["agents_with_handoffs"] += 1
-                    
-                    handoffs_obj = agent.handoffs
-                    
-                    # Inspect handoffs object methods and attributes
-                    handoff_attrs = [attr for attr in dir(handoffs_obj) if not attr.startswith('_')]
-                    agent_details["handoff_methods"] = handoff_attrs
-                    
-                    # AG2 0.9.7+ - Check after_works list for OnContextCondition objects
-                    after_work_count = 0
-                    try:
-                        after_work_found = False
-                        
-                        if hasattr(handoffs_obj, 'after_works'):
-                            after_works_list = handoffs_obj.after_works
-                            if after_works_list and len(after_works_list) > 0:
-                                after_work_count = len(after_works_list)
-                                agent_details["after_work_target"] = f"after_works: {after_work_count} conditions"
-                                after_work_found = True
-                                business_logger.debug(f"🔍 [HANDOFFS] {agent_name} after_works: {after_works_list}")
-                        
-                        if not after_work_found:
-                            business_logger.debug(f"🔍 [HANDOFFS] {agent_name} no after_works found")
-                            # Try to inspect internal structure
-                            handoffs_dict = vars(handoffs_obj) if hasattr(handoffs_obj, '__dict__') else {}
-                            business_logger.debug(f"🔍 [HANDOFFS] {agent_name} handoffs internal vars: {list(handoffs_dict.keys())}")
-                            
-                    except Exception as e:
-                        business_logger.debug(f"🔍 [HANDOFFS] Could not inspect after_works for {agent_name}: {e}")
-                    
-                    # Get LLM conditions count
-                    try:
-                        if hasattr(handoffs_obj, 'llm_conditions'):
-                            llm_conditions = handoffs_obj.llm_conditions
-                            if llm_conditions and hasattr(llm_conditions, '__len__'):
-                                agent_details["llm_conditions_count"] = len(llm_conditions)
-                            business_logger.debug(f"🔍 [HANDOFFS] {agent_name} LLM conditions: {agent_details['llm_conditions_count']}")
-                    except Exception as e:
-                        business_logger.debug(f"🔍 [HANDOFFS] Could not inspect LLM conditions for {agent_name}: {e}")
-                    
-                    # Get context conditions count
-                    try:
-                        if hasattr(handoffs_obj, 'context_conditions'):
-                            context_conditions = handoffs_obj.context_conditions
-                            if context_conditions and hasattr(context_conditions, '__len__'):
-                                agent_details["context_conditions_count"] = len(context_conditions)
-                            business_logger.debug(f"🔍 [HANDOFFS] {agent_name} context conditions: {agent_details['context_conditions_count']}")
-                    except Exception as e:
-                        business_logger.debug(f"🔍 [HANDOFFS] Could not inspect context conditions for {agent_name}: {e}")
-                    
-                    # Log detailed handoffs info
-                    total_handoffs = (
-                        after_work_count +
-                        agent_details["llm_conditions_count"] +
-                        agent_details["context_conditions_count"]
-                    )
-                    
-                    if total_handoffs > 0:
-                        business_logger.info(f"✅ [HANDOFFS] {agent_name} has {total_handoffs} handoff(s) at AG2 level")
+
+            business_logger.info(f"🔍 [HANDOFFS] Starting AG2-level handoff verification for {len(agents)} agents")
+
+            for agent_name, agent in agents.items():
+                agent_details = {
+                    "has_handoffs_attr": False,
+                    "after_work_target": None,
+                    "llm_conditions_count": 0,
+                    "context_conditions_count": 0,
+                    "agent_type": str(type(agent)),
+                    "handoff_methods": []
+                }
+
+                try:
+                    # Check if agent has handoffs attribute
+                    if hasattr(agent, 'handoffs'):
+                        agent_details["has_handoffs_attr"] = True
+                        result["agents_with_handoffs"] += 1
+
+                        handoffs_obj = agent.handoffs
+
+                        # Inspect handoffs object methods and attributes
+                        handoff_attrs = [attr for attr in dir(handoffs_obj) if not attr.startswith('_')]
+                        agent_details["handoff_methods"] = handoff_attrs
+
+                        # AG2 0.9.7+ - Check after_works list for OnContextCondition objects
+                        after_work_count = 0
+                        try:
+                            after_work_found = False
+
+                            if hasattr(handoffs_obj, 'after_works'):
+                                after_works_list = handoffs_obj.after_works
+                                if after_works_list and len(after_works_list) > 0:
+                                    after_work_count = len(after_works_list)
+                                    agent_details["after_work_target"] = f"after_works: {after_work_count} conditions"
+                                    after_work_found = True
+                                    business_logger.debug(f"🔍 [HANDOFFS] {agent_name} after_works: {after_works_list}")
+
+                            if not after_work_found:
+                                business_logger.debug(f"🔍 [HANDOFFS] {agent_name} no after_works found")
+                                # Try to inspect internal structure
+                                handoffs_dict = vars(handoffs_obj) if hasattr(handoffs_obj, '__dict__') else {}
+                                business_logger.debug(f"🔍 [HANDOFFS] {agent_name} handoffs internal vars: {list(handoffs_dict.keys())}")
+
+                        except Exception as e:
+                            business_logger.debug(f"🔍 [HANDOFFS] Could not inspect after_works for {agent_name}: {e}")
+
+                        # Get LLM conditions count
+                        try:
+                            if hasattr(handoffs_obj, 'llm_conditions'):
+                                llm_conditions = handoffs_obj.llm_conditions
+                                if llm_conditions and hasattr(llm_conditions, '__len__'):
+                                    agent_details["llm_conditions_count"] = len(llm_conditions)
+                                business_logger.debug(f"🔍 [HANDOFFS] {agent_name} LLM conditions: {agent_details['llm_conditions_count']}")
+                        except Exception as e:
+                            business_logger.debug(f"🔍 [HANDOFFS] Could not inspect LLM conditions for {agent_name}: {e}")
+
+                        # Get context conditions count
+                        try:
+                            if hasattr(handoffs_obj, 'context_conditions'):
+                                context_conditions = handoffs_obj.context_conditions
+                                if context_conditions and hasattr(context_conditions, '__len__'):
+                                    agent_details["context_conditions_count"] = len(context_conditions)
+                                business_logger.debug(f"🔍 [HANDOFFS] {agent_name} context conditions: {agent_details['context_conditions_count']}")
+                        except Exception as e:
+                            business_logger.debug(f"🔍 [HANDOFFS] Could not inspect context conditions for {agent_name}: {e}")
+
+                        # Log detailed handoffs info
+                        total_handoffs = (
+                            after_work_count +
+                            agent_details["llm_conditions_count"] +
+                            agent_details["context_conditions_count"]
+                        )
+
+                        if total_handoffs > 0:
+                            business_logger.info(f"✅ [HANDOFFS] {agent_name} has {total_handoffs} handoff(s) at AG2 level")
+                        else:
+                            business_logger.warning(f"⚠️ [HANDOFFS] {agent_name} has handoffs attribute but no configured handoffs")
+                            result["issues"].append(f"{agent_name}: has handoffs attribute but no configured handoffs")
+
                     else:
-                        business_logger.warning(f"⚠️ [HANDOFFS] {agent_name} has handoffs attribute but no configured handoffs")
-                        result["issues"].append(f"{agent_name}: has handoffs attribute but no configured handoffs")
-                
-                else:
-                    business_logger.warning(f"❌ [HANDOFFS] {agent_name} does not have handoffs attribute - not an AG2 agent!")
-                    result["issues"].append(f"{agent_name}: missing handoffs attribute - not an AG2 agent")
-                
-            except Exception as e:
-                business_logger.error(f"❌ [HANDOFFS] Failed to verify handoffs for {agent_name}: {e}")
-                result["issues"].append(f"{agent_name}: verification failed - {str(e)}")
-            
-            result["handoff_details"][agent_name] = agent_details
-        
-        verification_time = (time.time() - verification_start) * 1000
-        
-        # Summary logging
-        business_logger.info(f"📊 [HANDOFFS] Verification completed in {verification_time:.1f}ms")
-        business_logger.info(f"📊 [HANDOFFS] {result['agents_with_handoffs']}/{result['total_agents']} agents have handoffs capability")
-        
-        if result["issues"]:
-            business_logger.warning(f"⚠️ [HANDOFFS] Found {len(result['issues'])} handoff issues:")
-            for issue in result["issues"]:
-                business_logger.warning(f"   • {issue}")
-        else:
-            business_logger.info(f"✅ [HANDOFFS] All agents passed handoff verification")
-        
-        return result
+                        business_logger.warning(f"❌ [HANDOFFS] {agent_name} does not have handoffs attribute - not an AG2 agent!")
+                        result["issues"].append(f"{agent_name}: missing handoffs attribute - not an AG2 agent")
+
+                except Exception as e:
+                    business_logger.error(f"❌ [HANDOFFS] Failed to verify handoffs for {agent_name}: {e}")
+                    result["issues"].append(f"{agent_name}: verification failed - {str(e)}")
+
+                result["handoff_details"][agent_name] = agent_details
+
+            verification_time = (perf_counter() - verification_start) * 1000
+            try:
+                span.set_attribute("handoffs.verification_duration_ms", verification_time)
+            except Exception:
+                pass
+
+            # Summary logging
+            business_logger.info(f"📊 [HANDOFFS] Verification completed in {verification_time:.1f}ms")
+            business_logger.info(f"📊 [HANDOFFS] {result['agents_with_handoffs']}/{result['total_agents']} agents have handoffs capability")
+
+            if result["issues"]:
+                business_logger.warning(f"⚠️ [HANDOFFS] Found {len(result['issues'])} handoff issues:")
+                for issue in result["issues"]:
+                    business_logger.warning(f"   • {issue}")
+            else:
+                business_logger.info(f"✅ [HANDOFFS] All agents passed handoff verification")
+
+            return result
     
     def _create_target(self, rule: Dict[str, Any], agents: Dict[str, Any]):
         """Create appropriate target from handoff rule dictionary"""

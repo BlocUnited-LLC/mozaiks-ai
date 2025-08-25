@@ -11,56 +11,71 @@ class WorkflowConfig {
   constructor() {
     this.configs = new Map();
     this.defaultWorkflow = null; // Dynamic discovery from backend
+  this.fetchInProgress = false;
   }
 
   /**
    * Fetch workflow configurations from backend
    */
   async fetchWorkflowConfigs() {
-    try {
-      // Try the main workflows endpoint first
-      const response = await fetch('/api/workflows');
-      if (response.ok) {
-        const data = await response.json();
-        
-        console.log('🔍 Raw workflow data from backend:', data);
-        
-        // Backend returns workflows as object with workflow names as keys
-        // Convert to array format for processing
-        const workflows = [];
-        for (const [workflowName, workflowConfig] of Object.entries(data)) {
-          workflows.push({
-            workflow_name: workflowName,
-            ...workflowConfig
-          });
+    if (this.fetchInProgress) {
+      return; // prevent concurrent duplicate fetches (StrictMode double invoke)
+    }
+    this.fetchInProgress = true;
+    const hosts = [
+      'http://localhost:8000',
+      'http://127.0.0.1:8000'
+    ];
+    const path = '/api/workflows';
+    let lastError = null;
+    for (const host of hosts) {
+      const url = host + path;
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        console.log('� WorkflowRegistry: Fetching workflows from', url);
+        const response = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (!response.ok) {
+          const txt = await response.text().catch(()=> '');
+          console.warn('⚠️ Workflow fetch non-OK', response.status, txt.slice(0,200));
+          lastError = new Error('status_'+response.status);
+          continue;
         }
-        
-        // Store each workflow configuration directly
+        const data = await response.json();
+        console.log('🔍 Raw workflow data from backend:', data);
+        const workflows = [];
+        for (const [workflowName, wfCfg] of Object.entries(data)) {
+          workflows.push({ workflow_name: workflowName, ...wfCfg });
+        }
         for (const workflow of workflows) {
-          // Store under original key
           this.configs.set(workflow.workflow_name, workflow);
-          // Also store a lowercase alias to allow case-insensitive lookups
           const lowerKey = workflow.workflow_name.toLowerCase();
-          if (!this.configs.has(lowerKey)) {
-            this.configs.set(lowerKey, workflow);
+          if (!this.configs.has(lowerKey)) this.configs.set(lowerKey, workflow);
+        }
+        console.log('✅ Loaded workflow configs:', workflows.map(w => w.workflow_name));
+        if (workflows.length > 0) {
+          if (!this.defaultWorkflow) {
+            this.defaultWorkflow = workflows[0].workflow_name;
+            console.log('🎯 Default workflow set to:', this.defaultWorkflow);
           }
         }
-        
-        console.log('✅ Loaded workflow configs:', workflows.map(w => w.workflow_name));
-        
-        // Set default workflow if we have any
-        if (workflows.length > 0) {
-          this.defaultWorkflow = workflows[0].workflow_name;
-          console.log('🎯 Default workflow set to:', this.defaultWorkflow);
+        this.fetchInProgress = false;
+        return; // success
+      } catch (error) {
+        lastError = error;
+        if (error.name === 'AbortError') {
+          console.warn('⚠️ Workflow fetch timeout for', url);
+        } else {
+          console.warn('⚠️ Workflow fetch failed for', url, error.message);
         }
-      } else {
-        console.warn('⚠️ Failed to fetch workflows, status:', response.status);
-        const errorText = await response.text();
-        console.warn('⚠️ Response text:', errorText.substring(0, 200));
+        // try next host
       }
-    } catch (error) {
-      console.warn('⚠️ Failed to fetch workflow configs, using defaults:', error);
     }
+    if (lastError) {
+      console.warn('⚠️ All workflow fetch attempts failed. Operating with no configs. Last error:', lastError.message);
+    }
+    this.fetchInProgress = false;
   }
 
   /**

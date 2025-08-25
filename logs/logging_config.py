@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging, logging.handlers, os, json, traceback, sys, time
+from time import perf_counter
 from pathlib import Path
 import os
 from typing import Sequence, Optional, Dict, Any, Iterable
@@ -290,7 +291,7 @@ def get_workflow_logger(workflow_name: str | None = None, chat_id: str | None = 
 # Operation timing ---------------------------------------------------
 @contextmanager
 def log_operation(logger: ContextLogger | logging.Logger, operation_name: str, **context):
-    start = time.time()
+    start = perf_counter()
     op_ctx = {"operation": operation_name, **context}
     if isinstance(logger, ContextLogger):
         logger.info(f"Starting {operation_name}", **op_ctx)
@@ -298,14 +299,14 @@ def log_operation(logger: ContextLogger | logging.Logger, operation_name: str, *
         logging.getLogger(__name__).info(f"Starting {operation_name}", extra=op_ctx)
     try:
         yield logger
-        dur = time.time() - start
+        dur = perf_counter() - start
         op_ctx_done = {**op_ctx, "duration_seconds": dur, "status": "success"}
         if isinstance(logger, ContextLogger):
             logger.info(f"Completed {operation_name}", **op_ctx_done)
         else:
             logging.getLogger(__name__).info(f"Completed {operation_name}", extra=op_ctx_done)
     except Exception as e:
-        dur = time.time() - start
+        dur = perf_counter() - start
         op_ctx_err = {**op_ctx, "duration_seconds": dur, "status": "error", "error_type": type(e).__name__}
         if isinstance(logger, ContextLogger):
             logger.error(f"Failed {operation_name}: {e}", **op_ctx_err)

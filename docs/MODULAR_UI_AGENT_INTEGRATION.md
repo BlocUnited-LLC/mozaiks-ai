@@ -2,7 +2,7 @@
 
 ## Overview
 
-The modular UI event processor (`core/transport/ui_event_processor.py`) provides rich payload information back to AG2 agents, enabling intelligent decision making for workflow control, handoffs, and termination.
+Runtime AG2 events are now handled directly in the orchestrator and forwarded to the UI via `core/transport/simple_transport.py:SimpleTransport`. Component-specific UI interactions (like confirmations, selections, file uploads) should be implemented as explicit UI tool events emitted through the unified dispatcher or as dedicated user_input_request flows through `SimpleTransport`.
 
 ## Supported UI Component Types
 
@@ -130,7 +130,7 @@ if "DOWNLOAD_ERROR" in response and "RECOVERY: offer_individual_downloads" in re
 ## Adding New UI Component Types
 
 ### 1. Add Component Type Detection
-In `ui_event_processor.py`, update `_detect_ui_component_type()`:
+In your agent/tool logic, standardize the prompt markers you emit so the frontend can select the right component. Avoid parsing in a backend processor.
 
 ```python
 # New component detection
@@ -139,14 +139,10 @@ if any(keyword in prompt_lower for keyword in ['your_keywords']):
 ```
 
 ### 2. Add Component Handler
-```python
-async def _handle_your_component_request(self, event, prompt, is_password):
-    # Your component logic here
-    pass
-```
+On the backend, if you need a round-trip input from the user, use `SimpleTransport.send_user_input_request()` and await `SimpleTransport.wait_for_user_input()`.
 
 ### 3. Register Frontend Component
-In `ChatUI/src/workflows/Generator/index.js`:
+In `ChatUI/src/workflows/Generator/index.js` (or your workflow entry):
 
 ```javascript
 registerUiTool(
@@ -157,7 +153,7 @@ registerUiTool(
 ```
 
 ### 4. Add Response Processing
-Update the handler to process rich responses and provide structured agent feedback.
+Parse the structured response from the UI tool and map it back to the agent's next action in your agent logic.
 
 ## Best Practices
 

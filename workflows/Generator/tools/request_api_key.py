@@ -19,6 +19,9 @@ from core.core_config import get_mongo_client
 # Import enhanced logging
 from logs.logging_config import get_workflow_logger
 
+# Tool name constant
+TOOL_NAME = "request_api_key"
+
 async def request_api_key(
     service: str,
     description: Optional[str] = None,
@@ -227,4 +230,18 @@ async def _store_api_key_internal(
         "kv_version": version,
         "masked_key": (api_key[:8] + "..." + api_key[-4:]) if len(api_key) > 12 else "***",
         "api_key": api_key,
+    }
+
+
+def get_tool_config() -> Dict[str, Any]:
+    """Return tool configuration for AG2 registration"""
+    return {
+        "name": TOOL_NAME,
+        "description": "Request API key from user with inline UI component",
+        "version": "1.0.0",
+        "type": "ui_tool",
+        "python_callable": "workflows.Generator.tools.request_api_key.request_api_key",
+        "tags": ["ui", "interactive", "input", "inline", "api", "security"],
+        "expects_ui": True,
+        "component_type": "inline"
     }

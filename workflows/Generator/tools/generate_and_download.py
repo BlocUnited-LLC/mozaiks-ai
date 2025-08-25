@@ -16,6 +16,9 @@ from .workflow_converter import create_workflow_files
 
 _DEFAULT_WORKFLOW_NAME = "Generator"
 
+# Tool name constant
+TOOL_NAME = "generate_and_download"
+
 
 async def generate_and_download(
     *,
@@ -106,7 +109,6 @@ async def generate_and_download(
         if isinstance(uc, dict):
             payload["ui_config"] = uc
 
-    # Integrate ToolsAgent outputs if present (extra files + optional visual_agents merge)
     tools_agent = None
     try:
         tools_agent = collected.get("ToolsAgent") or collected.get("tools_agent")
@@ -116,13 +118,6 @@ async def generate_and_download(
         extra_files = tools_agent.get("files")
         if isinstance(extra_files, list) and extra_files:
             payload["extra_files"] = extra_files
-        visuals = tools_agent.get("visual_agents")
-        if isinstance(visuals, list) and visuals:
-            ui_cfg = payload.get("ui_config", {}) or {}
-            existing = set(ui_cfg.get("visual_agents", []) or [])
-            merged = list(existing.union({str(v) for v in visuals}))
-            ui_cfg["visual_agents"] = merged
-            payload["ui_config"] = ui_cfg
 
     # Scan collected agent outputs for generic code_files patterns and merge into extra_files
     def _collect_code_files_from_outputs(col: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -348,6 +343,20 @@ async def _store_files_local(
         wf_logger = get_workflow_logger(workflow_name=_DEFAULT_WORKFLOW_NAME)
         wf_logger.error(f"❌ Local storage failed: {e}")
         return {"status": "error", "message": f"Failed to copy files: {e}"}
+
+
+def get_tool_config() -> Dict[str, Any]:
+    """Return tool configuration for AG2 registration"""
+    return {
+        "name": TOOL_NAME,
+        "description": "Generate workflow files and open download UI",
+        "version": "1.0.0",
+        "type": "ui_tool",
+        "python_callable": "workflows.Generator.tools.generate_and_download.generate_and_download",
+        "tags": ["ui", "interactive", "download", "artifact", "workflow", "generation"],
+        "expects_ui": True,
+        "component_type": "artifact"
+    }
 
 
 __all__ = ["generate_and_download"]

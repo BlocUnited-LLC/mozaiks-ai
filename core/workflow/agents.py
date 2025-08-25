@@ -6,6 +6,7 @@ import asyncio
 import sys
 import os
 import logging
+from core.observability.otel_helpers import timed_span
 from pathlib import Path
 from typing import Dict, Any
 
@@ -28,7 +29,8 @@ async def define_agents(workflow_name: str):
     
     logger.info(f"🏗️ [AGENTS] Creating agents for workflow: {workflow_name}")
     import time
-    start_time = time.time()
+    from time import perf_counter
+    start_time = perf_counter()
 
     # Load workflow configuration using file manager
     workflow_config = workflow_file_manager.load_workflow(workflow_name)
@@ -62,36 +64,41 @@ async def define_agents(workflow_name: str):
     
     # Create agents dynamically from YAML configuration
     for agent_name, agent_config in agent_configs.items():
-        logger.debug(f"🔧 [AGENTS] Creating agent '{agent_name}' dynamically from YAML config...")
+        # Use centralized timed_span helper (adds mozaiks.* prefix and duration attr)
+        with timed_span("agents.create", attributes={
+            "workflow_name": workflow_name,
+            "agent_name": agent_name,
+        }):
+            logger.debug(f"🔧 [AGENTS] Creating agent '{agent_name}' dynamically from YAML config...")
 
-        # Try to get structured model for this specific agent via registry
-        try:
-            from .structured_outputs import get_llm_for_workflow as _get_structured_llm
-            _, llm_config = await _get_structured_llm(workflow_name, 'base', agent_name=agent_name)
-        except Exception:
-            # Fallback to base llm_config
-            llm_config = base_llm_config
+            # Try to get structured model for this specific agent via registry
+            try:
+                from .structured_outputs import get_llm_for_workflow as _get_structured_llm
+                _, llm_config = await _get_structured_llm(workflow_name, 'base', agent_name=agent_name)
+            except Exception:
+                # Fallback to base llm_config
+                llm_config = base_llm_config
 
-        # Create the agent with configuration from YAML
-        agent = ConversableAgent(
-            name=agent_name,
-            system_message=agent_config.get('system_message', ''),
-            llm_config=llm_config,
-            human_input_mode=agent_config.get('human_input_mode', 'NEVER'),
-            max_consecutive_auto_reply=agent_config.get('max_consecutive_auto_reply', 2)
-        )
+            # Create the agent with configuration from YAML
+            agent = ConversableAgent(
+                name=agent_name,
+                system_message=agent_config.get('system_message', ''),
+                llm_config=llm_config,
+                human_input_mode=agent_config.get('human_input_mode', 'NEVER'),
+                max_consecutive_auto_reply=agent_config.get('max_consecutive_auto_reply', 2)
+            )
 
-        agents[agent_name] = agent
+            agents[agent_name] = agent
 
-        # Generic debugging for any agent created
-        logger.debug(
-            f"✅ [AGENTS] Created '{agent_name}' with human_input_mode='{agent.human_input_mode}', "
-            f"max_consecutive_auto_reply={agent.max_consecutive_auto_reply}, structured_model_bound={'response_format' in (llm_config or {})}"
-        )
+            # Generic debugging for any agent created
+            logger.debug(
+                f"✅ [AGENTS] Created '{agent_name}' with human_input_mode='{agent.human_input_mode}', "
+                f"max_consecutive_auto_reply={agent.max_consecutive_auto_reply}, structured_model_bound={'response_format' in (llm_config or {})}"
+            )
 
     # Completion log remains generic
     agent_count = len(agents)
-    duration = time.time() - start_time
+    duration = perf_counter() - start_time
     logger.info(f"✅ [AGENTS] Created {agent_count} agents for '{workflow_name}' in {duration:.2f}s")
     logger.debug(f"🔍 [AGENTS] Agent names: {list(agents.keys())}")
 

@@ -40,7 +40,7 @@ const UserInputRequest = ({ payload, onResponse, onCancel }) => {
     
     try {
       // Send response to backend via API endpoint
-      const response = await fetch('/api/user-input/submit', {
+      const response = await fetch('http://localhost:8000/api/user-input/submit', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

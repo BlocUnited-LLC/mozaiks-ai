@@ -58,7 +58,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
     }
     
     try {
-      const response = await fetch(`${this.config.baseUrl}/chat/${enterpriseId}/${chatId}/${userId}/input`, {
+      const response = await fetch(`http://localhost:8000/chat/${enterpriseId}/${chatId}/${userId}/input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -159,7 +159,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
   async getMessageHistory(enterpriseId, userId) {
     try {
       const response = await fetch(
-        `${this.config.baseUrl}/api/chat/history/${enterpriseId}/${userId}`
+        `http://localhost:8000/api/chat/history/${enterpriseId}/${userId}`
       );
       if (response.ok) {
         return await response.json();
@@ -177,7 +177,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
     formData.append('userId', userId);
 
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/chat/upload`, {
+      const response = await fetch(`http://localhost:8000/api/chat/upload`, {
         method: 'POST',
         body: formData
       });
@@ -194,7 +194,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
 
   async getWorkflowTransport(workflowname) {
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/workflows/${workflowname}/transport`);
+      const response = await fetch(`http://localhost:8000/api/workflows/${workflowname}/transport`);
       if (response.ok) {
         return await response.json();
       }
@@ -204,26 +204,36 @@ export class WebSocketApiAdapter extends ApiAdapter {
     return null;
   }
 
-  async startChat(enterpriseId, workflowname, userId) {
+  async startChat(enterpriseId, workflowname, userId, fetchOpts = {}) {
     const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
+    const clientRequestId = crypto?.randomUUID ? crypto.randomUUID() : (Date.now()+"-"+Math.random().toString(36).slice(2));
     
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/chats/${enterpriseId}/${actualworkflowname}/start`, {
+      if (this._startingChat) {
+        console.log('🛑 startChat skipped (already in progress)');
+        return { success: false, error: 'in_progress' };
+      }
+      this._startingChat = true;
+      const response = await fetch(`http://localhost:8000/api/chats/${enterpriseId}/${actualworkflowname}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId })
+        body: JSON.stringify({ user_id: userId, client_request_id: clientRequestId })
+        , ...fetchOpts
       });
 
       if (response.ok) {
         const result = await response.json();
         console.log('✅ Chat started:', result);
+        this._startingChat = false;
         return result;
       } else {
         console.error('Failed to start chat:', response.status, response.statusText);
+        this._startingChat = false;
         return { success: false, error: `HTTP ${response.status}` };
       }
     } catch (error) {
       console.error('Failed to start chat:', error);
+      this._startingChat = false;
       return { success: false, error: error.message };
     }
   }
@@ -239,7 +249,7 @@ export class RestApiAdapter extends ApiAdapter {
 
   async sendMessage(message, enterpriseId, userId) {
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/chat/send`, {
+      const response = await fetch(`http://localhost:8000/api/chat/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message, enterpriseId, userId })
@@ -265,7 +275,7 @@ export class RestApiAdapter extends ApiAdapter {
     }
     
     try {
-      const response = await fetch(`${this.config.baseUrl}/chat/${enterpriseId}/${chatId}/${userId}/input`, {
+      const response = await fetch(`http://localhost:8000/chat/${enterpriseId}/${chatId}/${userId}/input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -299,7 +309,7 @@ export class RestApiAdapter extends ApiAdapter {
   async getMessageHistory(enterpriseId, userId) {
     try {
       const response = await fetch(
-        `${this.config.baseUrl}/api/chat/messages/${enterpriseId}/${userId}`
+        `http://localhost:8000/api/chat/messages/${enterpriseId}/${userId}`
       );
       if (response.ok) {
         return await response.json();
@@ -316,7 +326,7 @@ export class RestApiAdapter extends ApiAdapter {
 
     try {
       const response = await fetch(
-        `${this.config.baseUrl}/api/chat/upload/${enterpriseId}/${userId}`,
+        `http://localhost:8000/api/chat/upload/${enterpriseId}/${userId}`,
         {
           method: 'POST',
           body: formData
@@ -335,7 +345,7 @@ export class RestApiAdapter extends ApiAdapter {
 
   async getWorkflowTransport(workflowname) {
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/workflows/${workflowname}/transport`);
+      const response = await fetch(`http://localhost:8000/api/workflows/${workflowname}/transport`);
       if (response.ok) {
         return await response.json();
       }
@@ -345,26 +355,36 @@ export class RestApiAdapter extends ApiAdapter {
     return null;
   }
 
-  async startChat(enterpriseId, workflowname, userId) {
+  async startChat(enterpriseId, workflowname, userId, fetchOpts = {}) {
     const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
+    const clientRequestId = crypto?.randomUUID ? crypto.randomUUID() : (Date.now()+"-"+Math.random().toString(36).slice(2));
     
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/chats/${enterpriseId}/${actualworkflowname}/start`, {
+      if (this._startingChat) {
+        console.log('🛑 startChat skipped (already in progress)');
+        return { success: false, error: 'in_progress' };
+      }
+      this._startingChat = true;
+      const response = await fetch(`http://localhost:8000/api/chats/${enterpriseId}/${actualworkflowname}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId })
+        body: JSON.stringify({ user_id: userId, client_request_id: clientRequestId })
+        , ...fetchOpts
       });
 
       if (response.ok) {
         const result = await response.json();
         console.log('✅ Chat started:', result);
+        this._startingChat = false;
         return result;
       } else {
         console.error('Failed to start chat:', response.status, response.statusText);
+        this._startingChat = false;
         return { success: false, error: `HTTP ${response.status}` };
       }
     } catch (error) {
       console.error('Failed to start chat:', error);
+      this._startingChat = false;
       return { success: false, error: error.message };
     }
   }
