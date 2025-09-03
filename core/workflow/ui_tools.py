@@ -2,8 +2,8 @@
 # FILE: core/workflow/ui_tools.py
 # DESCRIPTION: Centralized helper utilities for agent-driven UI interactions.
 #   - UI tool emission + response handling
-#   - Unified event -> UI payload translation (single source of truth)
-#   - InputTimeoutEvent (moved here to eliminate custom_events.py)
+#   - InputTimeoutEvent (kept lightweight)
+#   - (Normalization & event translation removed; orchestration handles streaming payloads)
 # ==============================================================================
 
 from __future__ import annotations
@@ -11,45 +11,29 @@ import asyncio
 import uuid
 import logging
 from typing import Dict, Any, Optional
-from typing import Any
 import datetime as _dt
 
 logger = logging.getLogger(__name__)
 
-# Import SimpleTransport for direct communication and UnifiedEventDispatcher for logging
-from core.transport.simple_transport import SimpleTransport
-from core.events.unified_event_dispatcher import emit_ui_tool_event as dispatch_ui_tool_event
 from logs.logging_config import get_workflow_logger, get_chat_logger
+from core.workflow.workflow_manager import workflow_manager
 
-# -----------------------------------------------------------------------------
-# InputTimeoutEvent (moved from core.events.custom_events for consolidation)
-# -----------------------------------------------------------------------------
-try:  # Prefer pydantic BaseModel if available
-    from pydantic import BaseModel as _PydanticBaseModel
-    BaseModel = _PydanticBaseModel  # type: ignore
+try:  # Prefer pydantic if available
+    from pydantic import BaseModel as _PydanticBase
+    BaseModel = _PydanticBase  # type: ignore
 except Exception:  # pragma: no cover
     class BaseModel:  # minimal fallback
-        def model_dump(self, *a, **k):  # mimic pydantic v2 API
+        def model_dump(self, *a, **k):
             return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
 
 class InputTimeoutEvent(BaseModel):
-    """Synthetic event emitted when a human InputRequestEvent times out.
-
-    Fields:
-      input_request_id: correlates to original InputRequestEvent id
-      timeout_seconds: configured timeout interval
-      chat_id: conversation id for routing
-      occurred_at: UTC ISO timestamp
-      reason: textual reason (default 'input_timeout')
-    """
     input_request_id: str
     timeout_seconds: float
     chat_id: str
-    occurred_at: str = _dt.datetime.utcnow().isoformat()
+    occurred_at: str = _dt.datetime.now(_dt.timezone.utc).isoformat()
     reason: str = "input_timeout"
 
-    # Compatibility for both pydantic v1 & v2 style .dict()
-    def dict(self, *a, **kw):  # pragma: no cover - convenience
+    def dict(self, *a, **kw):  # pragma: no cover
         if hasattr(super(), "model_dump"):
             try:
                 return super().model_dump(*a, **kw)  # type: ignore
@@ -57,219 +41,26 @@ class InputTimeoutEvent(BaseModel):
                 return self.__dict__
         return self.__dict__
 
-# -----------------------------------------------------------------------------
-# Normalization (moved from event_normalizer.py)
-# -----------------------------------------------------------------------------
-import uuid as _uuid
-try:
-    from autogen.events.agent_events import TextEvent as _N_TextEvent, InputRequestEvent as _N_InputRequestEvent, ErrorEvent as _N_ErrorEvent, RunCompletionEvent as _N_RunCompletionEvent
-    from autogen.events.client_events import UsageSummaryEvent as _N_UsageSummaryEvent
-except Exception:  # pragma: no cover
-    _N_TextEvent = _N_InputRequestEvent = _N_ErrorEvent = _N_RunCompletionEvent = _N_UsageSummaryEvent = object  # type: ignore
-
-def _utc_now_iso() -> str:
-    return _dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc).isoformat().replace("+00:00", "Z")
-
-def normalize_event(ev: Any, *, sequence: int, chat_id: str) -> Dict[str, Any]:
-    """Return a normalized persistence envelope for an AG2 event.
-
-    Fields:
-      id: uuid4 string
-      chat_id
-      sequence: monotonic within run post-resume
-      ts_utc: capture time
-      event_type: class name
-      role: user|assistant|system|null (best-effort mapping)
-      name: sender / agent name if present
-      content: textual content or None
-      meta: dict with supplemental fields
-    """
-    event_type = ev.__class__.__name__
-    sender = getattr(ev, "sender", None) or getattr(ev, "agent_name", None)
-    content = getattr(ev, "content", None)
-    role = None
-
-    if isinstance(ev, _N_TextEvent):
-        if sender and isinstance(sender, str) and sender.lower().startswith("user"):
-            role = "user"
-        else:
-            role = "assistant"
-    elif isinstance(ev, (_N_InputRequestEvent, _N_ErrorEvent, _N_RunCompletionEvent, _N_UsageSummaryEvent, InputTimeoutEvent)):
-        role = "system"
-
-    meta: Dict[str, Any] = {}
-    if isinstance(ev, _N_UsageSummaryEvent):
-        for attr in ("total_tokens", "prompt_tokens", "completion_tokens", "cost", "model"):
-            if hasattr(ev, attr):
-                meta[attr] = getattr(ev, attr)
-    if isinstance(ev, InputTimeoutEvent):
-        meta.update({
-            "input_request_id": getattr(ev, "input_request_id", None),
-            "timeout_seconds": getattr(ev, "timeout_seconds", None),
-            "reason": getattr(ev, "reason", None),
-        })
-
-    return {
-        "id": str(_uuid.uuid4()),
-        "chat_id": chat_id,
-        "sequence": sequence,
-        "ts_utc": _utc_now_iso(),
-        "event_type": event_type,
-        "role": role,
-        "name": sender,
-        "content": content,
-        "meta": meta,
-    }
-
-# -----------------------------------------------------------------------------
-# Unified event -> UI payload translation (single canonical mapping)
-# -----------------------------------------------------------------------------
-try:  # Optional imports (AG2 event types)
-    from autogen.events.agent_events import (
-        TextEvent as _ET_TextEvent,
-        InputRequestEvent as _ET_InputRequestEvent,
-        SelectSpeakerEvent as _ET_SelectSpeakerEvent,
-        RunCompletionEvent as _ET_RunCompletionEvent,
-        ErrorEvent as _ET_ErrorEvent,
-        GroupChatResumeEvent as _ET_GroupChatResumeEvent,
-        FunctionCallEvent as _ET_FunctionCallEvent,
-        ToolCallEvent as _ET_ToolCallEvent,
-        FunctionResponseEvent as _ET_FunctionResponseEvent,
-        ToolResponseEvent as _ET_ToolResponseEvent,
-    )
-    from autogen.events.client_events import UsageSummaryEvent as _ET_UsageSummaryEvent
-except Exception:  # pragma: no cover
-    _ET_TextEvent = _ET_InputRequestEvent = _ET_SelectSpeakerEvent = _ET_RunCompletionEvent = _ET_ErrorEvent = _ET_UsageSummaryEvent = _ET_GroupChatResumeEvent = _ET_FunctionCallEvent = _ET_ToolCallEvent = _ET_FunctionResponseEvent = _ET_ToolResponseEvent = object  # type: ignore
-
-def event_to_ui_payload(ev: Any) -> Dict[str, Any]:
-    """Translate heterogeneous internal event objects into a stable, minimal UI payload.
-
-    Returned dict always contains:
-      kind: simplified categorical label (text, input_request, input_timeout, usage_summary,
-            select_speaker, resume_boundary, error, run_complete, tool_call, tool_response, unknown)
-      event_type: original class name (diagnostic / logging)
-
-    Optional fields include: agent|next, content, prompt, request_id/input_request_id,
-    timeout_seconds, reason, tool_name, component_type, awaiting_response, and token/cost metrics when present.
-
-    Extension points:
-      - Add tool_start/tool_progress/tool_complete kinds when tool events formalized.
-      - Inject latency_ms once performance metrics are attached.
-    """
-    et = ev.__class__.__name__
-    base: Dict[str, Any] = {"event_type": et}
-    if isinstance(ev, _ET_TextEvent):
-        sender = getattr(getattr(ev, "sender", None), "name", None) or getattr(ev, "sender", None) or getattr(ev, "agent_name", None)
-        base.update({
-            "kind": "text",
-            "agent": sender,
-            "content": getattr(ev, "content", None),
-        })
-        return base
-    if isinstance(ev, _ET_InputRequestEvent):
-        base.update({
-            "kind": "input_request",
-            "request_id": getattr(ev, "id", None) or getattr(ev, "input_request_id", None),
-            "prompt": getattr(ev, "content", None) or getattr(ev, "prompt", None),
-        })
-        return base
-    if isinstance(ev, InputTimeoutEvent):
-        base.update({
-            "kind": "input_timeout",
-            "input_request_id": getattr(ev, "input_request_id", None),
-            "timeout_seconds": getattr(ev, "timeout_seconds", None),
-            "reason": getattr(ev, "reason", None),
-        })
-        return base
-    if isinstance(ev, _ET_GroupChatResumeEvent):
-        base.update({"kind": "resume_boundary"})
-        return base
-    if isinstance(ev, _ET_SelectSpeakerEvent):
-        base.update({
-            "kind": "select_speaker",
-            "next": getattr(ev, "sender", None) or getattr(ev, "agent", None),
-        })
-        return base
-    if isinstance(ev, (_ET_FunctionCallEvent, _ET_ToolCallEvent)):
-        # Handle AG2 tool/function call events - convert to interactive UI events
-        tool_name = (getattr(ev, "tool_name", None) or 
-                    getattr(ev, "function_name", None) or 
-                    getattr(getattr(ev, "content", {}), "name", None) if hasattr(getattr(ev, "content", {}), "get") 
-                    else str(getattr(ev, "content", {}).get("name", "unknown_tool")) if isinstance(getattr(ev, "content", {}), dict) 
-                    else "unknown_tool")
-        
-        # Determine if this tool should trigger UI interaction
-        # Look for UI-specific tool names or patterns
-        is_ui_tool = any(pattern in str(tool_name).lower() for pattern in [
-            "input", "confirm", "select", "upload", "download", "edit", "api_key", "form"
-        ])
-        
-        # Extract tool arguments/parameters
-        content = getattr(ev, "content", {})
-        if hasattr(content, "arguments"):
-            tool_args = getattr(content, "arguments", {})
-        elif isinstance(content, dict):
-            tool_args = content.get("arguments", {}) or content
-        else:
-            tool_args = {}
-            
-        # Determine component type - default to inline, upgrade to artifact for large interactions
-        component_type = "inline"
-        if any(pattern in str(tool_name).lower() for pattern in ["editor", "viewer", "document", "artifact"]):
-            component_type = "artifact"
-            
-        base.update({
-            "kind": "tool_call",
-            "tool_name": str(tool_name),
-            "is_ui_tool": is_ui_tool,
-            "component_type": component_type,
-            "awaiting_response": True,
-            "payload": {
-                "tool_args": tool_args,
-                "interaction_type": "input",  # default interaction type
-                "agent_name": getattr(ev, "sender", None) or getattr(ev, "agent_name", None),
-            }
-        })
-        return base
-    if isinstance(ev, (_ET_FunctionResponseEvent, _ET_ToolResponseEvent)):
-        # Handle tool/function response events
-        tool_name = (getattr(ev, "tool_name", None) or 
-                    getattr(ev, "function_name", None) or 
-                    "unknown_tool")
-        
-        base.update({
-            "kind": "tool_response",
-            "tool_name": str(tool_name),
-            "content": getattr(ev, "content", None),
-            "success": not bool(getattr(ev, "error", None)),
-        })
-        return base
-    if isinstance(ev, _ET_UsageSummaryEvent):
-        for f in ("total_tokens", "prompt_tokens", "completion_tokens", "cost", "model"):
-            if hasattr(ev, f):
-                base[f] = getattr(ev, f)
-        base.update({"kind": "usage_summary"})
-        return base
-    if isinstance(ev, _ET_ErrorEvent):
-        base.update({
-            "kind": "error",
-            "message": getattr(ev, "message", None) or getattr(ev, "content", None) or str(ev),
-        })
-        return base
-    if isinstance(ev, _ET_RunCompletionEvent):
-        base.update({
-            "kind": "run_complete",
-            "reason": getattr(ev, "reason", None) or getattr(ev, "termination_reason", None),
-        })
-        return base
-    base.update({"kind": "unknown"})
-    return base
-
 class UIToolError(Exception):
     """Custom exception for UI tool errors."""
     pass
 
-async def emit_ui_tool_event(
+def is_ui_tool(tool_id: str) -> bool:
+    """Return True if tool_id is registered as a UI tool in any workflow.
+
+    Thin wrapper over workflow_manager registry; keeps runtime surface minimal.
+    """
+    try:
+        # Avoid circular import issues at module load
+        recs = workflow_manager.iter_ui_tools()  # list of records
+        for rec in recs:
+            if rec.get('tool_id') == tool_id:
+                return True
+    except Exception:
+        return False
+    return False
+
+async def _emit_ui_tool_event_core(
     tool_id: str,
     payload: Dict[str, Any],
     display: str = "inline",
@@ -297,75 +88,143 @@ async def emit_ui_tool_event(
     chat_logger = get_chat_logger("ui_tools")
     
     try:
+        from core.transport.simple_transport import SimpleTransport
         transport = await SimpleTransport.get_instance()
     except Exception as e:
-        wf_logger.error(f"❌ [UI_TOOLS] Failed to get SimpleTransport instance: {e}")
+        wf_logger.error(f"❌ [UI_TOOLS] Transport unavailable: {e}")
         raise UIToolError(f"SimpleTransport not available: {e}")
 
     chat_logger.info(f"🎯 UI tool event: {tool_id} (event={event_id}, display={display})")
     
     try:
-        # 1. Send the event to the UI for immediate rendering
         await transport.send_ui_tool_event(
             event_id=event_id,
             chat_id=chat_id,
-            tool_name=workflow_name,
+            tool_name=tool_id,  # use actual tool id
             component_name=tool_id,
             display_type=display,
-            payload=payload
+            payload={**payload, "workflow_name": workflow_name},
         )
-        
-        # 2. Dispatch the event for logging and monitoring
-        await dispatch_ui_tool_event(
-            ui_tool_id=tool_id,
-            payload=payload,
-            workflow_name=workflow_name,
-            display=display,
-            chat_id=chat_id
-        )
-        
-        wf_logger.info(f"✅ [UI_TOOLS] Emitted + logged UI tool event: {event_id}")
+        wf_logger.info(f"✅ [UI_TOOLS] Emitted UI tool event: {event_id}")
         return event_id
-        
     except Exception as e:
-        wf_logger.error(f"❌ [UI_TOOLS] Failed to emit UI tool event '{event_id}': {e}", exc_info=True)
+        wf_logger.error(
+            f"❌ [UI_TOOLS] Failed to emit UI tool event '{event_id}': {e}",
+            exc_info=True,
+        )
         raise UIToolError(f"Failed to emit UI tool event: {e}")
 
-async def wait_for_ui_tool_response(event_id: str) -> Dict[str, Any]:
-    """
-    Waits indefinitely for a response from a UI tool interaction.
+async def _wait_for_ui_tool_response_internal(event_id: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+    from core.transport.simple_transport import SimpleTransport  # local import
+    transport = await SimpleTransport.get_instance()
+    try:
+        fut = transport.wait_for_ui_tool_response(event_id)  # type: ignore[attr-defined]
+        if timeout is not None:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        return await fut
+    except asyncio.TimeoutError:
+        raise UIToolError(f"UI tool response timed out for {event_id}")
+    except Exception as e:  # pragma: no cover
+        raise UIToolError(f"UI tool response failure for {event_id}: {e}")
 
+async def use_ui_tool(
+    tool_id: str,
+    payload: Dict[str, Any],
+    *,
+    chat_id: Optional[str],
+    workflow_name: str,
+    display: str = "inline",
+    timeout: float | None = None,
+) -> Dict[str, Any]:
+    """Single-call convenience: emit then wait for a UI tool response.
+
+    Returns the UI response dict augmented with ui_event_id.
+    """
+    wf_logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id)
+    start = _dt.datetime.now(_dt.timezone.utc)
+    event_id = await _emit_ui_tool_event_core(
+        tool_id=tool_id,
+        payload=payload,
+        display=display,
+        chat_id=chat_id,
+        workflow_name=workflow_name,
+    )
+    try:
+        resp = await _wait_for_ui_tool_response_internal(event_id, timeout=timeout)
+        duration_ms = (_dt.datetime.now(_dt.timezone.utc) - start).total_seconds() * 1000.0
+        # Assemble log message to keep line length under linter limits
+        round_trip_msg = (
+            f"⏱️ [UI_TOOLS] Round-trip tool_id={tool_id} "
+            f"event={event_id} duration_ms={duration_ms:.2f}"
+        )
+        wf_logger.info(round_trip_msg)
+        if isinstance(resp, dict) and 'ui_event_id' not in resp:
+            resp['ui_event_id'] = event_id
+        return resp
+    except Exception as e:
+        duration_ms = (_dt.datetime.now(_dt.timezone.utc) - start).total_seconds() * 1000.0
+        fail_msg = (
+            f"❌ [UI_TOOLS] Round-trip failed tool_id={tool_id} "
+            f"event={event_id} duration_ms={duration_ms:.2f} err={e}"
+        )
+        wf_logger.error(fail_msg)
+        raise
+
+async def emit_tool_progress_event(
+    tool_name: str,
+    progress_percent: float,
+    status_message: str,
+    chat_id: Optional[str] = None,
+    correlation_id: Optional[str] = None
+) -> None:
+    """
+    X1: Emit a chat.tool_progress event for long-running tools.
+    
     Args:
-        event_id: The unique event ID that was sent to the UI.
-
-    Returns:
-        The response data submitted by the user from the UI component.
+        tool_name: Name of the tool reporting progress
+        progress_percent: Progress as a percentage (0-100)
+        status_message: Human-readable status description  
+        chat_id: Chat session ID
+        correlation_id: Optional correlation ID linking to original tool call
     """
-    wf_logger = get_workflow_logger(workflow_name="unknown")
-    chat_logger = get_chat_logger("ui_tools")
-    wf_logger.info(f"⏳ [UI_TOOLS] Waiting for UI tool response for event: {event_id}")
+    try:
+        from core.transport.simple_transport import SimpleTransport
+        transport = await SimpleTransport.get_instance()
+        wf_logger = get_workflow_logger("tool_progress", chat_id=chat_id)
+    except Exception as e:
+        logger.error(f"❌ [TOOL_PROGRESS] Transport unavailable: {e}")
+        return
+    
+    # Validate progress percentage
+    progress_percent = max(0.0, min(100.0, float(progress_percent)))
+    
+    event_data = {
+        "type": "chat.tool_progress",
+        "data": {
+            "chat_id": chat_id,
+            "tool_name": tool_name,
+            "progress_percent": progress_percent,
+            "status_message": status_message,
+            "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat()
+        }
+    }
+    
+    # Add correlation ID if provided
+    if correlation_id:
+        event_data["data"]["corr"] = correlation_id
     
     try:
-        transport = await SimpleTransport.get_instance()
-        
-        # The transport layer manages the futures for waiting.
-        response = await transport.wait_for_ui_tool_response(event_id)
-        chat_logger.info(f"📨 UI tool response received (event={event_id})")
-        wf_logger.info(f"✅ [UI_TOOLS] Received UI tool response for event: {event_id}")
-        wf_logger.debug(f"🔍 [UI_TOOLS] Response data: {response}")
-        
-        return response
+        await transport.send_event_to_ui(event_data, chat_id)
+        wf_logger.info(f"📈 Tool progress: {tool_name} at {progress_percent:.1f}% - {status_message}")
     except Exception as e:
-        wf_logger.error(f"❌ [UI_TOOLS] Error waiting for UI tool response for event '{event_id}': {e}", exc_info=True)
-        raise UIToolError(f"Error waiting for UI tool response: {e}")
-
+        wf_logger.error(f"❌ [TOOL_PROGRESS] Failed to emit progress event: {e}")
 
 async def handle_tool_call_for_ui_interaction(tool_call_event: Any, chat_id: str) -> Optional[Dict[str, Any]]:
     """
     Handle AG2 tool call events that require UI interaction.
     
     This function:
-    1. Detects if a tool call should trigger UI interaction
+    1. Uses configuration-driven detection to check if tool requires UI
     2. Emits a UI tool event if needed
     3. Waits for user response
     4. Returns the response for the agent to continue
@@ -379,23 +238,20 @@ async def handle_tool_call_for_ui_interaction(tool_call_event: Any, chat_id: str
     """
     wf_logger = get_workflow_logger(workflow_name="tool_interaction", chat_id=chat_id)
     
-    # Extract tool information
-    tool_name = (getattr(tool_call_event, "tool_name", None) or 
-                getattr(tool_call_event, "function_name", None) or 
-                getattr(getattr(tool_call_event, "content", {}), "name", None) if hasattr(getattr(tool_call_event, "content", {}), "get") 
-                else str(getattr(tool_call_event, "content", {}).get("name", "unknown_tool")) if isinstance(getattr(tool_call_event, "content", {}), dict) 
-                else "unknown_tool")
+    # Use configuration-driven detection
+    requires_ui, tool_config = workflow_manager.detect_ui_tool_event(tool_call_event)
     
-    # Check if this tool requires UI interaction
-    is_ui_tool = any(pattern in str(tool_name).lower() for pattern in [
-        "input", "confirm", "select", "upload", "download", "edit", "api_key", "form", "artifact"
-    ])
-    
-    if not is_ui_tool:
-        wf_logger.debug(f"🔧 Tool '{tool_name}' does not require UI interaction, skipping")
+    if not requires_ui:
+        wf_logger.debug(f"Tool does not require UI interaction")
         return None
     
-    wf_logger.info(f"🎯 Tool '{tool_name}' requires UI interaction, emitting UI event")
+    # Extract tool information
+    tool_name = getattr(tool_call_event, "tool_name", None)
+    if not isinstance(tool_name, str) or not tool_name:
+        tool_name = "unknown_tool"
+    
+    effective_component = tool_config.get('component') or tool_config.get('component_type') or 'inline'
+    wf_logger.info(f"🎯 Processing UI tool '{tool_name}' with component: {effective_component}")
     
     # Extract tool arguments
     content = getattr(tool_call_event, "content", {})
@@ -406,46 +262,47 @@ async def handle_tool_call_for_ui_interaction(tool_call_event: Any, chat_id: str
     else:
         tool_args = {}
     
-    # Determine component type and display mode
-    component_type = "inline"
-    if any(pattern in str(tool_name).lower() for pattern in ["editor", "viewer", "document", "artifact"]):
-        component_type = "artifact"
+    # Use configuration-driven component type and display mode
+    component_type = effective_component
+    display_mode = tool_config.get('mode', 'inline')
+    ui_tool_id = tool_config.get('tool_id', str(tool_name))
     
     # Prepare UI tool payload
     ui_payload = {
-        "tool_name": str(tool_name),
+    "tool_name": tool_name,
         "tool_args": tool_args,
         "component_type": component_type,
         "interaction_type": "input",
         "agent_name": getattr(tool_call_event, "sender", None) or getattr(tool_call_event, "agent_name", None),
+        "workflow_name": tool_config.get('workflow_name', 'unknown'),
     }
     
     try:
-        # Emit UI tool event
-        event_id = await emit_ui_tool_event(
-            tool_id=str(tool_name),
+        event_id = await _emit_ui_tool_event_core(
+            tool_id=ui_tool_id,
             payload=ui_payload,
-            display=component_type,
+            display=display_mode,
             chat_id=chat_id,
-            workflow_name="tool_interaction"
+            workflow_name=tool_config.get('workflow_name', 'tool_interaction')
         )
-        
-        # Wait for user response
-        wf_logger.info(f"⏳ Waiting for user interaction on tool '{tool_name}'")
-        response = await wait_for_ui_tool_response(event_id)
-        
-        wf_logger.info(f"✅ Received user response for tool '{tool_name}'")
-        return response
-        
-    except Exception as e:
-        wf_logger.error(f"❌ Error handling UI interaction for tool '{tool_name}': {e}", exc_info=True)
-        return {"error": f"UI interaction failed: {e}"}
+        wf_logger.info(f"⏳ Waiting for user interaction on UI tool '{ui_tool_id}'")
 
+        # Wait for user response using internal primitive
+        response = await _wait_for_ui_tool_response_internal(event_id)
+        wf_logger.info(f"✅ Received user response for tool '{ui_tool_id}'")
+
+        if isinstance(response, dict) and 'ui_event_id' not in response:
+            response['ui_event_id'] = event_id
+        return response
+
+    except Exception as e:  # pragma: no cover
+        wf_logger.error(f"❌ UI tool interaction failed for '{tool_name}': {str(e)}")
+        raise UIToolError(f"UI interaction failed: {str(e)}")
+    
 __all__ = [
-    "emit_ui_tool_event",
-    "wait_for_ui_tool_response",
+    "use_ui_tool",
     "handle_tool_call_for_ui_interaction",
-    "event_to_ui_payload",
+    "emit_tool_progress_event",
     "InputTimeoutEvent",
     "UIToolError",
 ]

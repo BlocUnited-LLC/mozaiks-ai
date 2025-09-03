@@ -1,0 +1,20 @@
+{
+  "context_variables": {
+    "schema_overview": {
+      "enabled": true,
+      "database_name": "autogen_ai_agents"
+    },
+    "variables": [
+      {
+        "name": "concept_overview",
+        "description": "Main project description and overview from the database",
+        "database": {
+          "collection": "Concepts",
+          "database_name": "autogen_ai_agents",
+          "search_by": "enterprise_id",
+          "field": "ConceptOverview"
+        }
+      }
+    ]
+  }
+}

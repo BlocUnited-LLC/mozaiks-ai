@@ -12,7 +12,7 @@ Agent calls tool → AG2 registers tool → Tool emits UI event → Frontend ren
 
 ### Key Components:
 
-1. **AG2 Tool Registration**: Standard tool registration via `tools.yaml`
+1. **AG2 Tool Registration**: Standard tool registration via `tools.json` (legacy `tools.yaml` supported during migration)
 2. **Sync/Async Bridge**: Clean separation between AG2's sync expectations and async UI
 3. **UI Event System**: Custom events that route to your frontend components
 4. **Workflow Agnostic**: Works across any workflow, not tied to specific implementations
@@ -46,7 +46,7 @@ def my_custom_function(data):
     return my_tool(data)
 ```
 
-### 2. Register in tools.yaml
+### 2. Register in tools.json
 
 ```yaml
 my_custom_function:
@@ -284,7 +284,7 @@ logger.info("Debug logging enabled for my_ui_tool")
 
 ### Common Issues
 
-1. **Tool not appearing**: Check `tools.yaml` registration
+1. **Tool not appearing**: Check `tools.json` (or legacy `tools.yaml`) registration
 2. **UI not rendering**: Verify component name matches frontend
 3. **Async errors**: Ensure proper sync/async bridge usage
 4. **Response timeout**: Increase timeout in `wait_for_ui_tool_response`

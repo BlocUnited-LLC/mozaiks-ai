@@ -13,14 +13,16 @@ This package provides a centralized event dispatcher for all event types:
 
 Usage Examples:
 
-    # Business events from core.events import emit_business_event
+    # Business events
+    from core.events import emit_business_event
     await emit_business_event("WORKFLOW_STARTED", "Workflow initialized")
-    
-    # UI tool events
-    from core.events import emit_ui_tool_event
-    await emit_ui_tool_event("api_key_input", {"service": "openai"}, "generator")
-    
-    # Direct dispatcher access
+
+    # UI tool interactions should use use_ui_tool helper (see core.workflow.ui_tools)
+    from core.workflow.ui_tools import use_ui_tool
+    response = await use_ui_tool("api_key_input", {"service": "openai"}, workflow_name="generator")
+    api_key = response.get("api_key")
+
+    # Direct dispatcher access (advanced / internal)
     from core.events import get_event_dispatcher
     dispatcher = get_event_dispatcher()
     metrics = dispatcher.get_metrics()
@@ -33,6 +35,7 @@ from .unified_event_dispatcher import (
     EventType,
     BusinessLogEvent,
     UIToolEvent,
+    SessionPausedEvent,
     
     # Event handlers
     EventHandler,
@@ -41,8 +44,7 @@ from .unified_event_dispatcher import (
     
     # Main functions
     get_event_dispatcher,
-    emit_business_event,
-    emit_ui_tool_event
+    emit_business_event
 )
 
 __all__ = [
@@ -55,6 +57,7 @@ __all__ = [
     "EventType",
     "BusinessLogEvent",
     "UIToolEvent",
+    "SessionPausedEvent",
     
     # Handlers
     "EventHandler",
@@ -62,6 +65,5 @@ __all__ = [
     "UIToolHandler",
     
     # Convenience functions
-    "emit_business_event",
-    "emit_ui_tool_event"
+    "emit_business_event"
 ]

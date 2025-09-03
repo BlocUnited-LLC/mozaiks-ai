@@ -91,7 +91,7 @@ export const ChatUIProvider = ({
   useEffect(() => {
     // Agents are auto-discovered through the workflow system
     if (agents.length > 0) {
-      console.warn('Custom agent registration via props is not supported. Agents are defined in the agents.yaml file.');
+      console.warn('Custom agent registration via props is not supported. Agents are defined in the agents.json file.');
     }
   }, [agents]);
 

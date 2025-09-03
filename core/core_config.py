@@ -6,15 +6,12 @@
 # ==============================================================================
 import os
 from dotenv import load_dotenv
-from typing import Optional, Type, Tuple, Dict, Any, List
-from pydantic import BaseModel
+from typing import Optional, Dict, Any
 import logging
-import json
 
 # Azure SDK imports are kept, but we won't construct credentials at import time
 from azure.identity import DefaultAzureCredential
 from motor.motor_asyncio import AsyncIOMotorClient
-from autogen import OpenAIWrapper
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -97,74 +94,6 @@ def get_mongo_client() -> AsyncIOMotorClient:
         raise ValueError("MONGO_URI is not configured")
     return AsyncIOMotorClient(conn_str)
 
-async def _load_raw_config_list() -> list[dict]:
-    """Load LLM configuration from database with fallback"""
-    db = get_mongo_client().autogen_ai_agents
-    try:
-        doc = await db.LLMConfig.find_one()
-        if doc:
-            model = doc.get("Model", "gpt-4.1-nano")
-            price_map = {
-                "o3-mini": [0.0011, 0.0044],
-                "gpt-4.1-nano": [0.0001, 0.0004],
-                "gpt-4o-mini": [0.00015, 0.0006],
-            }
-            price = price_map.get(model, [0.0001, 0.0004])
-        else:
-            model = "gpt-4.1-nano"
-            price = [0.00015, 0.0006]
-    except Exception as e:
-        logger.warning(f"Failed to load LLM config from DB: {e}")
-        model = "gpt-4.1-nano"
-        price = [0.00015, 0.0006]
-    
-    api_key = get_secret("OpenAIApiKey")
-    return [{"model": model, "api_key": api_key, "price": price}]
-
-async def make_llm_config(
-    response_format: Optional[Type[BaseModel]] = None,
-    stream: bool = False,
-    extra_config: Optional[Dict[str, Any]] = None,
-) -> Tuple[OpenAIWrapper, Dict[str, Any]]:
-    """Create LLM configuration with optional structured output and streaming"""
-    config_list = await _load_raw_config_list()
-    
-    for cfg in config_list:
-        if response_format:
-            cfg["response_format"] = response_format
-        # Note: AG2 streaming is handled by IOStream, not by config_list stream parameter
-        if extra_config:
-            cfg.update(extra_config)
-           
-    for i, cfg in enumerate(config_list, start=1):
-        redacted = {**cfg}
-        redacted["api_key"] = "***REDACTED***"
-        if "response_format" in redacted:
-            redacted["response_format"] = cfg["response_format"].__name__
-        logger.info(f"[LLM CONFIG #{i}] {redacted}")
-    
-    client = OpenAIWrapper(config_list=config_list)
-
-    # Build LLM runtime configuration
-    llm_config = {
-        "timeout": 600,
-        "cache_seed": 153,
-        "config_list": config_list
-    }
-    
-    # Note: Streaming is handled by AG2's IOStream system, not by llm_config
-    if stream:
-        logger.info("🎯 AG2 streaming enabled - custom IOStream will handle output")
-    else:
-        logger.info("🎯 AG2 streaming disabled")
-    
-    logger.info("LLM runtime config initialized successfully.")
-    
-    return client, llm_config
-
-async def make_structured_config(response_format: Type[BaseModel], extra_config: Optional[Dict[str, Any]] = None):
-    """Create structured output LLM configuration"""
-    return await make_llm_config(response_format=response_format, extra_config=extra_config)
 
 # MongoDB Collections are obtained via PersistenceManager to avoid early initialization
 
@@ -199,6 +128,7 @@ async def make_structured_config(response_format: Type[BaseModel], extra_config:
 # ------------------------------------------------------------------------------
 # Tokens API Base URL
 TOKENS_API_URL = os.getenv("TOKENS_API_URL", "http://localhost:5000")
+from core.workflow.ui_tools import use_ui_tool
 
 def get_free_trial_config() -> Dict[str, Any]:
     """Get free trial configuration from environment variables"""
@@ -211,3 +141,27 @@ def get_rate_limits() -> Dict[str, str]:
     return {
         "note": "Rate limiting not implemented yet"
     }
+
+# -----------------------------------------------------------------------------
+# Low balance (token) prompt helper (emits standardized UI tool event)
+# -----------------------------------------------------------------------------
+async def prompt_low_balance(chat_id: str, workflow_name: str, needed_tokens: int, current_balance: int) -> dict:
+    """Display a low-balance UI prompt and return user response (single-call helper)."""
+    return await use_ui_tool(
+        tool_id="token_top_up_prompt",
+        payload={
+            "needed_tokens": int(needed_tokens),
+            "current_balance": int(current_balance),
+            "message": "Insufficient balance. Please add funds to continue.",
+            "interaction_type": "top_up",
+        },
+        chat_id=chat_id,
+        workflow_name=workflow_name,
+        display="inline",
+    )
+
+__all__ = [
+    "prompt_low_balance",
+    "get_secret",
+    "get_mongo_client",
+]

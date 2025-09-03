@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from autogen.agentchat.group import ContextVariables
 
 # Import existing infrastructure
-from .file_manager import workflow_file_manager
+from .workflow_manager import workflow_manager
 from logs.logging_config import get_workflow_logger
 
 # Get logger
@@ -23,7 +23,7 @@ def get_context(workflow_name: str, enterprise_id: Optional[str] = None) -> Cont
     
     Features:
     1. Database schema information for agents
-    2. Specific data extraction based on YAML configuration
+    2. Specific data extraction based on json configuration
     
     Args:
         workflow_name: Name of the workflow (e.g., 'ChatWorkflow', 'AnalysisWorkflow')
@@ -35,7 +35,8 @@ def get_context(workflow_name: str, enterprise_id: Optional[str] = None) -> Cont
     try:
         # Handle event loop issues
         try:
-            loop = asyncio.get_running_loop()
+            # Running loop detected; call the sync-safe loader which will schedule async work
+            asyncio.get_running_loop()
             return _load_context_sync(workflow_name, enterprise_id)
         except RuntimeError:
             return asyncio.run(_load_context_async(workflow_name, enterprise_id))
@@ -50,44 +51,39 @@ def get_context(workflow_name: str, enterprise_id: Optional[str] = None) -> Cont
 def _load_context_sync(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
     """Synchronous context loading - handles existing event loop properly."""
     business_logger.info(f"🔧 Loading context for {workflow_name} (sync)")
-    
-    # When we're already in an event loop, we need to handle async operations differently
+    # If this function is reached, we're running inside an event loop (get_context checked).
+    # Schedule the async loader in the background so it can populate richer context when ready.
     try:
-        # Try to get the current loop
-        loop = asyncio.get_running_loop()
-        
-        # We're in an event loop, so we need to create a task and wait for it
-        # But we can't await in a sync function, so we'll use a different approach
-        business_logger.warning("⚠️ Already in event loop - using simplified sync loading")
-        
-        # Load basic context without database operations
+        business_logger.debug("Detected running event loop; scheduling async context load in background")
+        # Schedule without awaiting — background population will happen when task completes
+        asyncio.create_task(_load_context_async(workflow_name, enterprise_id))
+    except Exception:
+        # If scheduling failed, fall back to returning minimal context synchronously
+        business_logger.debug("Could not schedule background context loader; returning minimal context")
+
+    # Load basic context synchronously (no DB operations) so callers get immediate context
+    try:
         context = ContextVariables()
         if enterprise_id:
             context.set("enterprise_id", enterprise_id)
-        
-        # Load configuration but skip database operations
+
+        # Load configuration but skip blocking DB operations
         config = _load_workflow_config(workflow_name)
         if config:
             context.set("config_loaded", True)
-            
-            # Handle schema_overview configuration  
+
             schema_config = config.get('schema_overview', {})
             if isinstance(schema_config, dict) and 'database_name' in schema_config:
                 context.set("database_name", schema_config['database_name'])
-            
+
             variables = config.get('variables', [])
             if variables:
                 context.set("configured_variables", [v.get('name') for v in variables])
-        
+
         business_logger.info(f"✅ Sync context loaded (basic): {len(context.data)} variables")
         return context
-        
-    except RuntimeError:
-        # No running event loop, we can use asyncio.run
-        return asyncio.run(_load_context_async(workflow_name, enterprise_id))
     except Exception as e:
         business_logger.error(f"❌ Sync context loading failed: {e}")
-        # Return basic fallback
         context = ContextVariables()
         if enterprise_id:
             context.set("enterprise_id", enterprise_id)
@@ -138,22 +134,17 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
     return context
 
 def _load_workflow_config(workflow_name: str) -> Dict[str, Any]:
-    """Load YAML configuration for workflow."""
+    """Load json configuration for workflow."""
     try:
-        workflow_config = workflow_file_manager.load_workflow(workflow_name)
-        
+        workflow_config = workflow_manager.get_config(workflow_name)
         if workflow_config and 'context_variables' in workflow_config:
             context_section = workflow_config['context_variables']
-            
-            # Handle double nesting if it exists
+            # Handle possible nesting
             if isinstance(context_section, dict) and 'context_variables' in context_section:
-                result = context_section['context_variables']
-            else:
-                result = context_section
-            
-            return result
+                return context_section['context_variables']
+            return context_section
         return {}
-    except Exception as e:
+    except Exception as e:  # pragma: no cover
         business_logger.warning(f"⚠️ Could not load config for {workflow_name}: {e}")
         return {}
 
@@ -247,7 +238,7 @@ async def _get_database_schema_async(database_name: str, enterprise_id: str) -> 
 
 async def _load_specific_data_async(variables: List[Dict[str, Any]], default_database_name: str, enterprise_id: str) -> Dict[str, Any]:
     """
-    FEATURE 2: Load specific data based on YAML configuration
+    FEATURE 2: Load specific data based on json configuration
     Allows users to extract specific endpoints/data without full schema.
     Now supports per-variable database_name for multi-database enterprises.
     """

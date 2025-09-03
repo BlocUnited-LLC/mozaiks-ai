@@ -27,7 +27,7 @@ module.exports = {
         green: "#13ce66",
         yellow: "#ffc82c",
         white: "#ffffff",
-  // Streamlined palette (unused legacy keys removed)
+  // Streamlined palette
 
         // Mozaiks Website theme palette
         primary: "#6d28d9",

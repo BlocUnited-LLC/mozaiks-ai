@@ -17,8 +17,9 @@ import { FiMessageCircle, FiSend, FiX } from 'react-icons/fi';
  * - Any workflow can use this for generic user input
  * - Works with any AG2 agent that sends input requests
  * - Workflow-agnostic and reusable
+ * - Uses WebSocket first, falls back to REST (F5)
  */
-const UserInputRequest = ({ payload, onResponse, onCancel }) => {
+const UserInputRequest = ({ payload, onResponse, onCancel, submitInputRequest }) => {
   const [userInput, setUserInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -26,9 +27,7 @@ const UserInputRequest = ({ payload, onResponse, onCancel }) => {
     input_request_id,
     prompt = "Input required:",
     password = false,
-    chat_id,
-    enterprise_id,
-    timestamp
+    // chat_id, enterprise_id, timestamp - unused for now
   } = payload || {};
 
   const handleSubmit = useCallback(async (e) => {
@@ -39,42 +38,59 @@ const UserInputRequest = ({ payload, onResponse, onCancel }) => {
     setIsSubmitting(true);
     
     try {
-      // Send response to backend via API endpoint
-      const response = await fetch('http://localhost:8000/api/user-input/submit', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          input_request_id,
-          user_input: userInput || "" // Empty string for enter/skip
-        })
-      });
+      let success = false;
       
-      if (response.ok) {
-        const result = await response.json();
-        console.log(`✅ UserInputRequest: Sent response for ${input_request_id}:`, result);
-        
-        // Call onResponse if provided for cleanup/notification
-        if (onResponse) {
-          await onResponse({
-            input_request_id,
-            user_response: userInput || "",
-            status: 'submitted'
-          });
+      // F5: Try WebSocket first if available
+      if (submitInputRequest && typeof submitInputRequest === 'function') {
+        try {
+          success = await submitInputRequest(input_request_id, userInput || "");
+          if (success) {
+            console.log(`✅ UserInputRequest (WebSocket): Sent response for ${input_request_id}`);
+          }
+        } catch (wsError) {
+          console.warn(`⚠️ UserInputRequest: WebSocket failed, falling back to REST:`, wsError);
         }
-      } else {
-        const error = await response.text();
-        console.error(`❌ UserInputRequest: Failed to send response:`, error);
-        throw new Error(`HTTP ${response.status}: ${error}`);
+      }
+      
+      // Fall back to REST if WebSocket failed or unavailable
+      if (!success) {
+        const response = await fetch('http://localhost:8000/api/user-input/submit', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            input_request_id,
+            user_input: userInput || "" // Empty string for enter/skip
+          })
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          console.log(`✅ UserInputRequest (REST): Sent response for ${input_request_id}:`, result);
+          success = true;
+        } else {
+          const error = await response.text();
+          console.error(`❌ UserInputRequest: REST also failed:`, error);
+          throw new Error(`HTTP ${response.status}: ${error}`);
+        }
+      }
+      
+      // Call onResponse if provided for cleanup/notification
+      if (success && onResponse) {
+        await onResponse({
+          input_request_id,
+          user_response: userInput || "",
+          status: 'submitted'
+        });
       }
       
     } catch (error) {
-      console.error(`❌ UserInputRequest: Failed to send response:`, error);
+      console.error(`❌ UserInputRequest: All methods failed:`, error);
     } finally {
       setIsSubmitting(false);
     }
-  }, [userInput, input_request_id, onResponse, isSubmitting]);
+  }, [userInput, input_request_id, onResponse, isSubmitting, submitInputRequest]);
 
   const handleSkip = useCallback(async () => {
     // Send empty response (equivalent to pressing enter)

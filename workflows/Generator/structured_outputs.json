@@ -1,0 +1,295 @@
+{
+  "structured_outputs": {
+    "models": {
+      "UIConfig": {
+        "type": "model",
+        "fields": {
+          "component": {
+            "type": "optional_str",
+            "description": "React component name (UI_Tool only)"
+          },
+          "mode": {
+            "type": "optional_str",
+            "description": "inline or artifact (UI_Tool only)"
+          }
+        }
+      },
+      "ToolSpec": {
+        "type": "model",
+        "fields": {
+          "agent": {
+            "type": "str",
+            "description": "Owning agent (or primary agent)"
+          },
+          "file": {
+            "type": "str",
+            "description": "Python module file name"
+          },
+          "function": {
+            "type": "str",
+            "description": "Async function inside the file"
+          },
+          "description": {
+            "type": "str",
+            "description": "Purpose / usage guidance"
+          },
+          "tool_type": {
+            "type": "literal",
+            "values": ["UI_Tool", "Agent_Tool"],
+            "description": "Tool type"
+          },
+          "ui": {
+            "type": "UIConfig",
+            "description": "UI metadata (nulls for Agent_Tool)"
+          }
+        }
+      },
+      "ToolsManagerAgentOutput": {
+        "type": "model",
+        "fields": {
+          "tools": {
+            "type": "list",
+            "items": "ToolSpec",
+            "description": "List of tool entries (mirrors tools.json format)"
+          }
+        }
+      },
+
+      "UIFile": {
+        "type": "model",
+        "fields": {
+          "tool_name": {
+            "type": "str",
+            "description": "snake_case tool id (must match ToolsAgent manifest)"
+          },
+          "py_content": {
+            "type": "str",
+            "description": "Complete Python async stub source for the UI tool"
+          },
+          "js_content": {
+            "type": "str",
+            "description": "Complete React component stub source for the UI tool"
+          }
+        }
+      },
+      "UIFileGeneratorOutput": {
+        "type": "model",
+        "fields": {
+          "tools": {
+            "type": "list",
+            "items": "UIFile",
+            "description": "List of UI tools, each with Python + JS source (paths inferred downstream)"
+          }
+        }
+      },
+
+      "AgentTool": {
+        "type": "model",
+        "fields": {
+          "tool_name": {
+            "type": "str",
+            "description": "snake_case tool id (maps to a backend/compute tool)"
+          },
+          "py_content": {
+            "type": "str",
+            "description": "Complete Python module source for this tool"
+          }
+        }
+      },
+      "AgentToolsFileGeneratorOutput": {
+        "type": "model",
+        "fields": {
+          "tools": {
+            "type": "list",
+            "items": "AgentTool",
+            "description": "List of backend tools, each with its Python source (path inferred downstream)"
+          }
+        }
+      },
+
+      "HookFile": {
+        "type": "model",
+        "fields": {
+          "filename": {
+            "type": "str",
+            "description": "File path (tools/<hook_type>.py)"
+          },
+          "filecontent": {
+            "type": "str",
+            "description": "Hook implementation"
+          }
+        }
+      },
+      "Hook": {
+        "type": "model",
+        "fields": {
+          "hook_type": {
+            "type": "literal",
+            "values": [
+              "process_message_before_send",
+              "update_agent_state",
+              "process_last_received_message",
+              "process_all_messages_before_reply"
+            ],
+            "description": "Lifecycle hook type"
+          },
+          "hook_agent": {
+            "type": "str",
+            "description": "PascalCase agent name to attach hook to"
+          },
+          "function": {
+            "type": "str",
+            "description": "Import path (module:function)"
+          },
+          "files": {
+            "type": "list",
+            "items": "HookFile",
+            "description": "Python modules defining the hook"
+          }
+        }
+      },
+      "HookAgentOutput": {
+        "type": "model",
+        "fields": {
+          "hooks": {
+            "type": "list",
+            "items": "Hook",
+            "description": "List of lifecycle hooks"
+          }
+        }
+      },
+
+      "AgentDefinition": {
+        "type": "model",
+        "fields": {
+          "name": { "type": "str", "description": "Agent variable name" },
+          "display_name": { "type": "str", "description": "Agent display name" },
+          "system_message": { "type": "str", "description": "Complete system message for the agent" },
+          "human_input_mode": {
+            "type": "literal",
+            "values": ["ALWAYS", "NEVER", "TERMINATE"]
+          },
+          "max_consecutive_auto_reply": { "type": "int", "default": 10 },
+          "structured_outputs": {
+            "type": "bool",
+            "default": false,
+            "description": "Whether this agent produces structured outputs"
+          }
+        }
+      },
+      "AgentsAgentOutput": {
+        "type": "model",
+        "fields": {
+          "agents": { "type": "list", "items": "AgentDefinition" }
+        }
+      },
+      "ContextVariablesAgentOutput": {
+        "type": "model",
+        "fields": {
+          "context_variables": {
+            "type": "dict",
+            "description": "Key-value pairs of context variables"
+          }
+        }
+      },
+      "OrchestratorAgentOutput": {
+        "type": "model",
+        "fields": {
+          "workflow_name": { "type": "str", "description": "Workflow identifier" },
+          "max_turns": { "type": "int", "description": "Maximum conversation turns" },
+          "human_in_the_loop": { "type": "bool", "description": "Whether human interaction is required" },
+          "startup_mode": {
+            "type": "literal",
+            "values": ["AgentDriven", "UserDriven", "BackendOnly"]
+          },
+          "orchestration_pattern": { "type": "str", "default": "DefaultPattern" },
+          "initial_message_to_user": {
+            "type": "optional_str",
+            "description": "Message shown to user (UserDriven only)"
+          },
+          "initial_message": {
+            "type": "optional_str",
+            "description": "Initial workflow message (AgentDriven/BackendOnly)"
+          },
+          "recipient": { "type": "str", "description": "First agent to receive message" },
+          "visual_agents": { "type": "list", "items": "str", "description": "Agents whose messages are visible in UI" },
+          "ui_capable_agents": { "type": "list", "items": "str", "description": "Agents that can emit UI tool events" }
+        }
+      },
+      "HandoffRule": {
+        "type": "model",
+        "fields": {
+          "source_agent": { "type": "str", "description": "Source agent name" },
+          "target_agent": { "type": "str", "description": "Target agent name or 'user' or 'terminate'" },
+          "handoff_type": {
+            "type": "literal",
+            "values": ["condition", "after_work"],
+            "description": "Type of handoff"
+          },
+          "condition": { "type": "optional_str", "description": "Condition for conditional handoffs" },
+          "transition_target": {
+            "type": "literal",
+            "values": ["AgentTarget", "RevertToUserTarget", "TerminateTarget"],
+            "description": "Type of transition"
+          }
+        }
+      },
+      "HandoffsAgentOutput": {
+        "type": "model",
+        "fields": {
+          "handoff_rules": { "type": "list", "items": "HandoffRule" }
+        }
+      },
+      "StructuredModelField": {
+        "type": "model",
+        "fields": {
+          "name": { "type": "str", "description": "Field name" },
+          "type": { "type": "str", "description": "Field type (str|int|bool|list|optional_str)" },
+          "description": { "type": "str", "description": "What this field represents" }
+        }
+      },
+      "StructuredModelDefinition": {
+        "type": "model",
+        "fields": {
+          "model_name": { "type": "str", "description": "Name of the model" },
+          "fields": { "type": "list", "items": "StructuredModelField" }
+        }
+      },
+      "StructuredOutputsAgentOutput": {
+        "type": "model",
+        "fields": {
+          "models": {
+            "type": "list",
+            "items": "StructuredModelDefinition",
+            "description": "Data models to capture"
+          },
+          "registry": {
+            "type": "list",
+            "items": {
+              "type": "model",
+              "fields": {
+                "agent": { "type": "str", "description": "Agent name" },
+                "agent_definition": { "type": "str", "description": "Model name for this agent" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "registry": {
+      "ContextAgent": null,
+      "ToolsManagerAgent": "ToolsManagerAgentOutput",
+      "UIFileGenerator": "UIFileGeneratorOutput",
+      "AgentToolsFileGenerator": "AgentToolsFileGeneratorOutput",
+      "HookAgent": "HookAgentOutput",
+      "AgentsAgent": "AgentsAgentOutput",
+      "ContextVariablesAgent": "ContextVariablesAgentOutput",
+      "OrchestratorAgent": "OrchestratorAgentOutput",
+      "HandoffsAgent": "HandoffsAgentOutput",
+      "StructuredOutputsAgent": "StructuredOutputsAgentOutput",
+      "APIKeyAgent": null,
+      "UserFeedbackAgent": null
+    }
+  }
+}

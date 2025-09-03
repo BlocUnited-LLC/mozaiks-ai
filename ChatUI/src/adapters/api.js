@@ -95,41 +95,63 @@ export class WebSocketApiAdapter extends ApiAdapter {
     const wsUrl = `${wsBase}/ws/${actualworkflowname}/${enterpriseId}/${chatId}/${userId}`;
     console.log(`🔗 Connecting to WebSocket: ${wsUrl}`);
     const socket = new WebSocket(wsUrl);
+    
+    // F7/F8: Sequence tracking and resume capability
+    let lastSequence = parseInt(localStorage.getItem(`ws_seq_${chatId}`) || '0');
+    let resumePending = false;
+    
+    // Helper to send client.resume
+    const sendResume = () => {
+      if (socket.readyState === WebSocket.OPEN && !resumePending) {
+        resumePending = true;
+        console.log(`📡 Sending client.resume with lastClientSeq: ${lastSequence}`);
+        socket.send(JSON.stringify({
+          type: 'client.resume',
+          chat_id: chatId,
+          lastClientSeq: lastSequence
+        }));
+      }
+    };
 
     socket.onopen = () => {
       console.log("WebSocket connection established");
+      
+      // If we have a previous sequence, request resume first
+      if (lastSequence > 0) {
+        sendResume();
+      }
+      
       if (callbacks.onOpen) callbacks.onOpen();
     };
 
     socket.onmessage = (event) => {
       try {
-        // First try to parse as JSON (for complex messages)
-        let data = JSON.parse(event.data);
+        const data = JSON.parse(event.data);
         
-        // Handle structured AG2 simple text messages
-        if (data.type === 'simple_text') {
-          // Pass along with agent context (reduce logging noise)
-          if (callbacks.onMessage) callbacks.onMessage({
-            type: 'simple_text',
-            content: data.content,
-            agent_name: data.agent_name,
-            timestamp: data.timestamp,
-            chat_id: data.chat_id
-          });
-        } else {
-          // Handle other JSON message types
-          if (callbacks.onMessage) callbacks.onMessage(data);
+        // F7/F8: Track sequence numbers for resume capability
+        if (data.seq && typeof data.seq === 'number') {
+          if (data.seq > lastSequence) {
+            lastSequence = data.seq;
+            localStorage.setItem(`ws_seq_${chatId}`, lastSequence.toString());
+          } else if (data.seq < lastSequence - 1 && !resumePending) {
+            // Sequence gap detected - request resume
+            console.warn(`⚠️ Sequence gap detected: received ${data.seq}, expected > ${lastSequence}`);
+            sendResume();
+            return; // Don't process this message until after resume
+          }
         }
+        
+        // Handle resume boundary
+        if (data.type === 'chat.resume_boundary') {
+          console.log(`✅ Resume completed: ${data.data?.replayed_events || 0} events replayed`);
+          resumePending = false;
+        }
+        
+        // Production: Only handle chat.* namespace events
+        if (callbacks.onMessage) callbacks.onMessage(data);
+        
       } catch (error) {
-        // If JSON parsing fails, treat as simple text (AG2 official approach)        
-        // Handle as simple text message following AG2 official pattern
-        if (callbacks.onMessage && typeof event.data === 'string' && event.data.trim()) {
-          callbacks.onMessage({
-            type: 'simple_text',
-            content: event.data,
-            timestamp: Date.now()
-          });
-        }
+        console.error('Failed to parse WebSocket message:', error);
       }
     };
 
@@ -147,7 +169,17 @@ export class WebSocketApiAdapter extends ApiAdapter {
       socket,
       send: (message) => {
         if (socket.readyState === WebSocket.OPEN) {
-          socket.send(message);
+          try {
+            // Allow caller to pass objects; serialize to JSON
+            if (typeof message === 'object') {
+              socket.send(JSON.stringify(message));
+            } else {
+              socket.send(message);
+            }
+          } catch (e) {
+            console.error('Failed to send WS message', e);
+            return false;
+          }
           return true;
         }
         return false;

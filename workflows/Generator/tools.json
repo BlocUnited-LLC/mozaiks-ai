@@ -1,0 +1,37 @@
+{
+  "tools": [
+    {
+      "agent": "UserFeedbackAgent",
+      "file": "generate_and_download.py",
+      "function": "generate_and_download",
+      "description": "Generate the final workflow files and provide download links.",
+      "tool_type": "UI_Tool",
+      "ui": {
+        "component": "FileDownloadCenter",
+        "mode": "artifact"
+      }
+    },
+    {
+      "agent": "APIKeyAgent",
+      "file": "request_api_key.py",
+      "function": "request_api_key",
+      "description": "Request an API key from the user for external services.",
+      "tool_type": "UI_Tool",
+      "ui": {
+        "component": "AgentAPIKeyInput",
+        "mode": "inline"
+      }
+    },
+    {
+      "agent": "ContextAgent",
+      "file": "echo.py",
+      "function": "echo",
+      "description": "Echo back the provided input for verification.",
+      "tool_type": "Agent_Tool",
+      "ui": {
+        "component": null,
+        "mode": null
+      }
+    }
+  ]
+}

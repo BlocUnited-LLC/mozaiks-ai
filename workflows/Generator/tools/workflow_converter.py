@@ -6,7 +6,6 @@
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 import sys
-import yaml
 import json
 
 # Add the project root to the path for logging only
@@ -15,24 +14,24 @@ sys.path.insert(0, str(project_root))
 
 from logs.logging_config import get_workflow_logger
 
-# Standard YAML file mappings for workflows
+# Standard JSON file mappings for workflows
 WORKFLOW_FILE_MAPPINGS = {
-    'orchestrator': 'orchestrator.yaml',
-    'agents': 'agents.yaml', 
-    'handoffs': 'handoffs.yaml',
-    'context_variables': 'context_variables.yaml',
-    'structured_outputs': 'structured_outputs.yaml',
-    'tools': 'tools.yaml',
-    'ui_config': 'ui_config.yaml'
+    'orchestrator': 'orchestrator.json',
+    'agents': 'agents.json', 
+    'handoffs': 'handoffs.json',
+    'context_variables': 'context_variables.json',
+    'structured_outputs': 'structured_outputs.json',
+    'tools': 'tools.json',
+    'ui_config': 'ui_config.json'
 }
 
-def _save_yaml_file(file_path: Path, data: Dict[str, Any]) -> None:
-    """Save data to a YAML file"""
+def _save_json_file(file_path: Path, data: Dict[str, Any]) -> None:
+    """Save data to a JSON file"""
     with open(file_path, 'w', encoding='utf-8') as f:
-        yaml.dump(data, f, default_flow_style=False, indent=2, sort_keys=False)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 def _split_config_into_sections(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """Split a unified config into sections for separate YAML files"""
+    """Split a unified config into sections for separate JSON files"""
     sections = {}
     
     # Orchestrator section (top-level workflow settings)
@@ -48,9 +47,11 @@ def _split_config_into_sections(config: Dict[str, Any]) -> Dict[str, Dict[str, A
     sections['context_variables'] = config.get('context_variables', {})
     sections['structured_outputs'] = config.get('structured_outputs', {})
     
-    # Tools section (includes backend_tools, ui_tools, lifecycle_tools)
-    tools_keys = ['backend_tools', 'ui_tools', 'lifecycle_tools']
-    sections['tools'] = {k: v for k, v in config.items() if k in tools_keys}
+    # Tools section: Only honor canonical flat list form
+    if isinstance(config.get('tools'), list):
+        sections['tools'] = {'tools': config['tools']}
+    else:
+        sections['tools'] = {}
     
     # UI config section (includes visual_agents and other UI settings)
     ui_keys = ['visual_agents', 'ui_capable_agents']
@@ -59,7 +60,7 @@ def _split_config_into_sections(config: Dict[str, Any]) -> Dict[str, Dict[str, A
     return sections
 
 def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
-    """Save a workflow config as modular YAML files"""
+    """Save a workflow config as modular JSON files"""
     try:
         wf_logger = get_workflow_logger(workflow_name=workflow_name)
         # Determine workflows directory (relative to this file)
@@ -70,14 +71,14 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
         # Split config into sections
         sections = _split_config_into_sections(config)
         
-        # Save each section to its YAML file
+        # Save each section to its JSON file
         saved_files = []
         for section_name, section_data in sections.items():
             if section_data:  # Only save non-empty sections
                 filename = WORKFLOW_FILE_MAPPINGS.get(section_name)
                 if filename:
                     file_path = workflow_dir / filename
-                    _save_yaml_file(file_path, section_data)
+                    _save_json_file(file_path, section_data)
                     saved_files.append(filename)
                     wf_logger.info(f"📄 [SAVE_WORKFLOW] Saved {section_name} to {filename}")
 
@@ -154,7 +155,7 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
         except Exception as ef_err:
             wf_logger.warning(f"⚠️ [SAVE_WORKFLOW] Failed to save extra files: {ef_err}")
         
-        wf_logger.info(f"✅ [SAVE_WORKFLOW] Successfully saved {len(saved_files)} YAML files for workflow: {workflow_name}")
+        wf_logger.info(f"✅ [SAVE_WORKFLOW] Successfully saved {len(saved_files)} JSON files for workflow: {workflow_name}")
         return True
         
     except Exception as e:
@@ -164,7 +165,7 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
 
 async def convert_workflow_to_modular(data: Dict[str, Any], context_variables: Optional[Any] = None) -> Dict[str, Any]:
     """
-    Save a workflow configuration as modular YAML files
+    Save a workflow configuration as modular JSON files
     
     Args:
         data: Contains workflow_name and the config to save
@@ -193,7 +194,7 @@ async def convert_workflow_to_modular(data: Dict[str, Any], context_variables: O
             wf_logger.info(f"✅ [SAVE_WORKFLOW] Successfully saved modular config for: {workflow_name}")
             return {
                 "status": "success",
-                "message": f"Successfully saved {workflow_name} as modular YAML files",
+                "message": f"Successfully saved {workflow_name} as modular JSON files",
                 "workflow_name": workflow_name,
                 "action": "saved_modular"
             }
@@ -210,7 +211,7 @@ async def convert_workflow_to_modular(data: Dict[str, Any], context_variables: O
 
 async def create_workflow_files(data: Dict[str, Any], context_variables: Optional[Any] = None) -> Dict[str, Any]:
     """
-    Create individual workflow YAML files from agent outputs
+    Create individual workflow JSON files from agent outputs
     
     Args:
         data: Contains the various workflow sections from agent outputs
@@ -233,7 +234,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
     try:
         workflow_name = data.get('workflow_name', 'Generated_Workflow')
         wf_logger = get_workflow_logger(workflow_name=workflow_name)
-        wf_logger.info(f"📁 [CREATE_WORKFLOW_FILES] Creating modular YAML files for: {workflow_name}")
+        wf_logger.info(f"📁 [CREATE_WORKFLOW_FILES] Creating modular JSON files for: {workflow_name}")
         
     # Build the complete config from agent outputs
         config = {}
@@ -278,29 +279,29 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
             config['structured_outputs'] = structured_outputs
             wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added pre-defined structured outputs")
         
-        # Add tools configuration from ToolsManagerAgent
+        # Add tools configuration from ToolsManagerAgent (authoritative)
         tools_manager_output = data.get('tools_manager_output', {})
         if tools_manager_output and 'tools_config' in tools_manager_output:
-            # ToolsManagerAgent outputs JSON string in tools_config field
             tools_config_str = tools_manager_output['tools_config']
+            parsed = None
             if isinstance(tools_config_str, str):
                 try:
-                    tools_config = json.loads(tools_config_str)
-                    config.update(tools_config)
-                    wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration")
+                    parsed = json.loads(tools_config_str)
                 except json.JSONDecodeError as e:
-                    wf_logger.warning(f"⚠️ [CREATE_WORKFLOW_FILES] Failed to parse tools_config JSON: {e}")
+                    wf_logger.error(f"❌ [CREATE_WORKFLOW_FILES] Invalid tools_config JSON: {e}")
             elif isinstance(tools_config_str, dict):
-                # Handle case where it's already parsed as dict
-                config.update(tools_config_str)
-                wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration")
-        
-        # Legacy: Add tools configuration (fallback)
-        tools_config = data.get('tools_config', {})
-        if tools_config and not tools_manager_output:
-            # Tools sections go at top level
-            config.update(tools_config)
-            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added legacy tools configuration")
+                parsed = tools_config_str
+            if isinstance(parsed, dict) and isinstance(parsed.get('tools'), list):
+                config['tools'] = parsed['tools']
+                wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration (tools_list={len(parsed['tools'])})")
+            else:
+                wf_logger.warning("⚠️ [CREATE_WORKFLOW_FILES] tools_config missing 'tools' list; no tools saved")
+        # Optional direct tools_config (only supports new format)
+        elif 'tools_config' in data:
+            direct_tc = data.get('tools_config')
+            if isinstance(direct_tc, dict) and isinstance(direct_tc.get('tools'), list):
+                config['tools'] = direct_tc['tools']
+                wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added direct tools configuration (tools_list={len(direct_tc['tools'])})")
         
         # Add UI configuration
         ui_config = data.get('ui_config', {})
@@ -354,7 +355,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
 
         _apply_orchestrator_defaults(config)
 
-        # Save as modular YAML files using self-contained function
+        # Save as modular JSON files using self-contained function
         success = _save_modular_workflow(workflow_name, config)
         
         if success:
@@ -379,7 +380,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
             except Exception:
                 pass
             
-            wf_logger.info(f"✅ [CREATE_WORKFLOW_FILES] Created {len(created_files)} modular YAML files for: {workflow_name}")
+            wf_logger.info(f"✅ [CREATE_WORKFLOW_FILES] Created {len(created_files)} modular JSON files for: {workflow_name}")
             
             # Update context variables to track created workflow
             if context_variables:
@@ -403,7 +404,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
             
             return {
                 "status": "success",
-                "message": f"Successfully created {len(created_files)} modular YAML files for workflow '{workflow_name}'",
+                "message": f"Successfully created {len(created_files)} modular JSON files for workflow '{workflow_name}'",
                 "workflow_name": workflow_name,
                 "files": created_files,
                 "file_count": len(created_files),
@@ -413,7 +414,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         else:
             return {
                 "status": "error",
-                "message": f"Failed to create modular YAML files for workflow '{workflow_name}'"
+                "message": f"Failed to create modular JSON files for workflow '{workflow_name}'"
             }
             
     except Exception as e:

@@ -1,247 +1,187 @@
 # ==============================================================================
 # FILE: workflows/Generator/tools/request_api_key.py
-# DESCRIPTION: API key request tool - single async function export
-# NOTE: 'description' in the 'payload' must be a property to use to display the agent's instructions, making the whole system easier to extend.
+# DESCRIPTION: UI tool function to request an external service API key from the user.
+# CONTRACT: Single async function export `request_api_key` used by `APIKeyAgent`.
+# SECURITY: Never logs, returns, or echoes any portion (even masked) of the API key.
+# RUNTIME PARAMS (injected via **runtime): chat_id, enterprise_id, workflow_name, context_variables.
 # ==============================================================================
+import uuid
+from typing import Any, Dict, Optional, Annotated
+from datetime import datetime, timezone
 
-import logging
-from typing import Dict, Any, Optional
-from datetime import datetime
-import re
-import hashlib
-
-# Import the centralized UI tool functions and exceptions
-from core.workflow.ui_tools import emit_ui_tool_event, wait_for_ui_tool_response, UIToolError
-
-# Secure storage and DB client
-from core.core_config import get_mongo_client
-
-# Import enhanced logging
 from logs.logging_config import get_workflow_logger
+from core.workflow.ui_tools import use_ui_tool, UIToolError
 
-# Tool name constant
-TOOL_NAME = "request_api_key"
 
 async def request_api_key(
-    service: str,
+    service: Annotated[str, "Lowercase service identifier (e.g. 'openai', 'anthropic', 'huggingface')"],
     description: Optional[str] = None,
-    label: Optional[str] = None,
-    placeholder: Optional[str] = None,
-    required: bool = True,
-    auto_store: bool = True,
-    workflow_name: str = "generator",
-    chat_id: Optional[str] = None,
-    enterprise_id: Optional[str] = None,
-    user_id: Optional[str] = None,
+    required: Annotated[bool, "Whether key is required to proceed."] = True,
+    mask_input: Annotated[bool, "Whether to mask characters in UI input field."] = True,
+    **runtime: Any,
 ) -> Dict[str, Any]:
-    """
-    AG2 tool function to request an API key from the user via a dynamic UI component.
-    
-    This tool follows the modern, modular pattern:
-    1. It prints a message to the user, which appears in the chat log.
-    2. It emits a UI tool event to render the 'AgentAPIKeyInput' component.
-    3. It waits for the user to submit their key via the component.
-    
-    Args:
-        service: The service name (e.g., "openai", "anthropic").
-        description: A message to display within the UI component.
-        label: The label for the input field in the UI component.
-        placeholder: The placeholder text for the input field.
-        required: Whether the API key is required.
-        workflow_name: The name of the workflow initiating the request.
-        chat_id: The ID of the current chat session.
-        
-    Returns:
-        A dictionary containing the API key response data.
-        
-    Raises:
-        UIToolError: If the UI interaction fails.
-    """
-    wf_logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id, enterprise_id=enterprise_id)
-    wf_logger.info(f"🔑 Requesting API key for service: {service} in chat: {chat_id}")
-    
-    # 1. The agent "speaks" its request to the user via a standard print.
-    # This message appears in the main chat log.
-    agent_message = description or f"I need your {service.replace('_', ' ').title()} API key to proceed. Please enter it in the component below."
-    print(agent_message)
+    """Emit a UI interaction prompting the user to input an API key.
 
-    # 2. Prepare the payload for the 'AgentAPIKeyInput' React component.
-    # The 'description' here is for the component itself, not the chat message.
-    payload = {
-        "service": service,
-        "label": label or f"{service.replace('_', ' ').title()} API Key",
-        "description": f"Please enter the API key for {service}.",
-        "placeholder": placeholder or f"Your {service.upper()} API key",
-        "required": required
+    Behavior:
+      1. Builds a UI payload for the React component `AgentAPIKeyInput`.
+      2. Emits the UI tool event via `emit_ui_tool_event`.
+      3. Waits for the correlated frontend response.
+      4. Optionally saves sanitized metadata to database.
+      5. Returns a sanitized result (never includes the secret itself).
+
+    SECURITY:
+      - Does NOT log the provided key.
+      - Does NOT return raw or masked fragments of the key.
+      - Only metadata (length, status) is returned.
+      - If saved to database, only metadata is stored (never the actual key).
+
+    DATABASE INTEGRATION:
+      - Automatically saves API key metadata to database (hardcoded settings)
+      - Never stores actual API key - only service, length, timestamps, context
+      - Database/collection names are configured in the tool code directly
+      - Automatically adds enterprise_id, timestamps, and chat context
+    """
+    chat_id: Optional[str] = runtime.get("chat_id")
+    workflow_name: Optional[str] = runtime.get("workflow_name") or runtime.get("workflow")
+
+    if not workflow_name:
+        return {"status": "error", "message": "workflow_name is required for request_api_key"}
+
+    wf_logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id)
+
+    if not isinstance(service, str) or not service.strip():
+        return {"status": "error", "message": "service is required"}
+    service_norm = service.strip().lower().replace(" ", "_")
+
+    agent_message_id = f"msg_{uuid.uuid4().hex[:10]}"
+
+    ui_payload: Dict[str, Any] = {
+        "service": service_norm,
+        "label": f"{service_norm.replace('_', ' ').title()} API Key",
+        "description": description or f"Enter your {service_norm} API key to continue",
+        "placeholder": f"Enter your {service_norm.upper()} API key...",
+        "required": required,
+        "maskInput": mask_input,
+        "agent_message_id": agent_message_id,
     }
-    
+
+    # Optimized path: use unified helper to emit + wait
     try:
-        # 3. Emit the UI tool event to render the component and wait for the response.
-        event_id = await emit_ui_tool_event(
-            tool_id="AgentAPIKeyInput",  # This MUST match the React component's name
-            payload=payload,
-            display="inline",
+        response = await use_ui_tool(
+            "AgentAPIKeyInput",
+            ui_payload,
             chat_id=chat_id,
-            workflow_name=workflow_name
+            workflow_name=str(workflow_name),
+            display="inline",
         )
-        
-        response = await wait_for_ui_tool_response(event_id)
-
-        wf_logger.info(f"🔑 API key request for {service} completed with status: {response.get('status', 'unknown')}")
-
-        # Zero-shot storage: store immediately after successful submission
-        if auto_store and isinstance(response, dict) and response.get("status") == "success":
-            try:
-                # Extract API key from UI response
-                data = response.get("data") if isinstance(response, dict) else None
-                api_key = None
-                if isinstance(data, dict):
-                    api_key = data.get("apiKey") or data.get("api_key") or data.get("key")
-                    svc = data.get("service") or service
-                else:
-                    api_key = response.get("apiKey") or response.get("api_key") or response.get("key")
-                    svc = service
-
-                if not api_key:
-                    wf_logger.warning("🔎 UI response missing 'apiKey'; skipping auto-store")
-                else:
-                    storage_result = await _store_api_key_internal(
-                        api_key=api_key.strip(),
-                        service=svc.strip(),
-                        enterprise_id=enterprise_id,
-                        user_id=user_id,
-                        scope="enterprise" if enterprise_id else "user"
-                    )
-                    # Attach storage result to the tool response for the agent
-                    response = {**response, "storage": storage_result, "autoStored": True}
-                    wf_logger.info(
-                        f"✅ Zero-shot stored API key for {svc}: {storage_result.get('status')}"
-                    )
-            except Exception as se:
-                wf_logger.warning(f"⚠️ Auto-store failed for {service}: {se}")
-
-        # Return the data submitted by the user (and optional storage result)
-        return response
     except UIToolError as e:
-        wf_logger.error(f"❌ UI tool interaction failed for service {service}: {e}")
-        # Re-raise the error to be handled by the agent's error handling mechanism
-        raise
-    except Exception as e:
-        wf_logger.error(f"❌ An unexpected error occurred during API key request for {service}: {e}", exc_info=True)
-        # Wrap unexpected errors in UIToolError to standardize error handling
-        raise UIToolError(f"An unexpected error occurred while requesting the API key for {service}.")
+        return {"status": "error", "message": f"UI interaction failed: {e}"}
+    except Exception as e:  # pragma: no cover
+        wf_logger.error(f"❌ API key UI interaction failed: {e}")
+        return {"status": "error", "message": "UI interaction failure"}
 
+    # Normalize response structure
+    status = (response or {}).get("status") or (response or {}).get("data", {}).get("status") or "unknown"
 
-async def _store_api_key_internal(
-    api_key: str,
-    service: str,
-    enterprise_id: Optional[str],
-    user_id: Optional[str],
-    scope: str
-) -> Dict[str, Any]:
-    """Internal function to store API key by recording reference in MongoDB."""
-    
-    if not api_key or not service or service == 'unknown':
-        return {"status": "error", "message": "API key and service are required"}
-
-    # Sanitize for secret name
-    svc = re.sub(r"[^a-zA-Z0-9-]", "-", service.lower())
-    eid = enterprise_id or 'global'
-    uid = user_id or 'anon'
-    prefix = 'ak'
-    name_parts = [prefix, eid, svc]
-    if scope == 'user':
-        name_parts.append(uid)
-    secret_name = "-".join(name_parts)[:127].strip('-')
-
-    get_workflow_logger(workflow_name="generator").info(f"🔐 [STORE_API_KEY] Storing key for service={service} scope={scope} enterprise={enterprise_id} user={user_id} as secret='{secret_name}'")
-
-    # 1) Compute hash and check idempotency from Mongo first
-    hashed = hashlib.sha256(api_key.encode('utf-8')).hexdigest()
-    client = get_mongo_client()
-    db2 = client["MozaiksAI"]
-    api_keys_col = db2["APIKeys"]
-    now = datetime.utcnow()
-
-    filter_doc = {
-        "enterprise_id": enterprise_id,
-        "user_id": user_id if scope == 'user' else None,
-        "service": service,
-        "scope": scope,
-    }
-
-    try:
-        existing = await api_keys_col.find_one(filter_doc, projection={"hashed_key_sha256": 1, "secret_name": 1, "kv_version": 1})
-        if existing and existing.get("hashed_key_sha256") == hashed:
-            # No change; don't create a new KV version
-            get_workflow_logger(workflow_name="generator").info("ℹ️ [STORE_API_KEY] Same key already stored; skipping new Key Vault version")
-            return {
-                "status": "noop",
-                "message": "Key unchanged; no update",
-                "service": service,
-                "scope": scope,
-                "secret_name": existing.get("secret_name"),
-                "kv_version": existing.get("kv_version"),
-                "masked_key": (api_key[:8] + "..." + api_key[-4:]) if len(api_key) > 12 else "***",
-                "api_key": api_key,
-            }
-    except Exception as e:
-        get_workflow_logger(workflow_name="generator").warning(f"⚠️ [STORE_API_KEY] Failed idempotency check, proceeding to store: {e}")
-
-    # 2) Skip Key Vault storage (non-production). Keep a placeholder version for compatibility.
-    version = None
-
-    # 3) Upsert reference in MongoDB (no plaintext key)
-    try:
-        update_doc = {
-            "$set": {
-                "secret_name": secret_name,
-                "kv_version": version,
-                "masked_key": (api_key[:8] + "..." + api_key[-4:]) if len(api_key) > 12 else "***",
-                "hashed_key_sha256": hashed,
-                "updated_at": now,
-            },
-            "$setOnInsert": {
-                "created_at": now,
-            }
-        }
-        await api_keys_col.update_one(filter_doc, update_doc, upsert=True)
-    except Exception as e:
-        get_workflow_logger(workflow_name="generator").error(f"❌ [STORE_API_KEY] Failed to upsert API key reference in Mongo: {e}")
-        # We already stored in KV; continue but warn the caller
+    # Detect cancellation / error early
+    if status in {"cancelled", "canceled"}:
         return {
-            "status": "partial",
-            "message": "Stored locally, but failed to record reference in DB",
-            "service": service,
-            "scope": scope,
-            "secret_name": secret_name,
-            "kv_version": version,
-            "masked_key": (api_key[:8] + "..." + api_key[-4:]) if len(api_key) > 12 else "***",
-            "api_key": api_key,
+            "status": "cancelled",
+            "service": service_norm,
+            "agent_message_id": agent_message_id,
+            "ui_event_id": (response or {}).get("event_id"),
+        }
+    if status == "error":
+        return {
+            "status": "error",
+            "service": service_norm,
+            "message": (response or {}).get("error") or "User submission error",
+            "agent_message_id": agent_message_id,
+            "ui_event_id": (response or {}).get("event_id"),
         }
 
-    get_workflow_logger(workflow_name="generator").info(f"✅ [STORE_API_KEY] Stored and recorded reference for service={service} scope={scope}")
-    return {
+    # Extract (without retaining) the key to compute metadata if present
+    api_key = None
+    try:
+        data_block = response.get("data") if isinstance(response, dict) else None
+        if isinstance(data_block, dict):
+            api_key = data_block.get("apiKey") or data_block.get("api_key")
+    except Exception:
+        api_key = None
+
+    key_length = len(api_key) if isinstance(api_key, str) else None
+    
+    # Prepare return data
+    result = {
         "status": "success",
-        "message": f"API key for {service} stored successfully",
-        "service": service,
-        "scope": scope,
-        "secret_name": secret_name,
-        "kv_version": version,
-        "masked_key": (api_key[:8] + "..." + api_key[-4:]) if len(api_key) > 12 else "***",
-        "api_key": api_key,
+        "service": service_norm,
+        "agent_message_id": agent_message_id,
+        "ui_event_id": (response or {}).get("event_id"),
+        "has_key": bool(api_key),
+        "key_length": key_length,
     }
 
+    # Save metadata to database (NEVER the actual key)
+    if api_key:  # Only save if we got a key
+        try:
+            # Database configuration - hardcoded in tool
+            from core.core_config import get_mongo_client
+            from bson import ObjectId
+            
+            database_enabled = True
+            db_name = "autogen_ai_agents"  # Hardcoded database name
+            coll_name = "APIKeys"          # Hardcoded collection name
+            
+            if database_enabled:
+                # Connect to MongoDB
+                client = get_mongo_client()
+                db = client[db_name]
+                collection = db[coll_name]
+                
+                # Prepare secure metadata document (no sensitive data)
+                metadata = {
+                    "api_key_service": service_norm,
+                    "key_length": key_length,
+                    "is_valid": key_length is not None and key_length > 10,  # Basic validation
+                    "requested_by_user": True,
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                    "validation_method": "length_check",
+                    "source": "ui_interaction",
+                    "agent_message_id": agent_message_id,
+                    "ui_event_id": (response or {}).get("event_id"),
+                    "chat_id": runtime.get("chat_id"),
+                    "workflow_name": workflow_name,
+                    "created_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc)
+                }
+                
+                # Add enterprise_id context
+                enterprise_id = runtime.get("enterprise_id")
+                if enterprise_id:
+                    try:
+                        metadata["enterprise_id"] = ObjectId(enterprise_id)
+                    except:
+                        metadata["enterprise_id"] = enterprise_id
+                
+                # Insert document
+                insert_result = await collection.insert_one(metadata)
+                inserted_id = str(insert_result.inserted_id)
+                
+                wf_logger.info(f"✅ API key metadata saved to {db_name}.{coll_name}: {inserted_id}")
+                result["metadata_saved"] = True
+                result["metadata_id"] = inserted_id
+                result["database_info"] = {
+                    "database": db_name,
+                    "collection": coll_name
+                }
+            else:
+                result["metadata_saved"] = False
+                
+        except Exception as e:
+            wf_logger.warning(f"⚠️ Database save failed (non-critical): {e}")
+            result["metadata_saved"] = False
+            result["metadata_error"] = str(e)
+    else:
+        result["metadata_saved"] = False
 
-def get_tool_config() -> Dict[str, Any]:
-    """Return tool configuration for AG2 registration"""
-    return {
-        "name": TOOL_NAME,
-        "description": "Request API key from user with inline UI component",
-        "version": "1.0.0",
-        "type": "ui_tool",
-        "python_callable": "workflows.Generator.tools.request_api_key.request_api_key",
-        "tags": ["ui", "interactive", "input", "inline", "api", "security"],
-        "expects_ui": True,
-        "component_type": "inline"
-    }
+    return result

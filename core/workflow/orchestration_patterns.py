@@ -16,17 +16,17 @@ Sections (skim map)
 - logging helpers: agent message details and full conversation logging
 """
 
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Tuple
+from datetime import datetime
 import logging
 import time
 from time import perf_counter
 import asyncio
 import os
-from datetime import datetime
 from opentelemetry import trace
 from core.observability.otel_helpers import timed_span
 
-from autogen import ConversableAgent, UserProxyAgent, gather_usage_summary
+from autogen import ConversableAgent, UserProxyAgent, runtime_logging
 from autogen.agentchat.group.patterns import (
     DefaultPattern as AG2DefaultPattern,
     AutoPattern as AG2AutoPattern,
@@ -36,35 +36,33 @@ from autogen.agentchat.group.patterns import (
 from autogen.events.agent_events import (
     FunctionCallEvent, 
     ToolCallEvent,
-    SelectSpeakerEvent, 
-    GroupChatResumeEvent,
-    ErrorEvent,
-    RunCompletionEvent,
 )
-from autogen.events.client_events import UsageSummaryEvent
+from core.workflow.structured_outputs import agent_has_structured_output, get_structured_output_model_fields
+from core.data.persistence_manager import AG2PersistenceManager as _PM
 
 from ..data.persistence_manager import AG2PersistenceManager
-from .tool_registry import WorkflowToolRegistry
 from .termination_handler import create_termination_handler
 from logs.logging_config import (
     get_chat_logger,
     get_workflow_logger,
+    WorkflowLogger,
 )
-from core.observability.performance_manager import get_performance_manager, InsufficientTokensError
+from core.observability.performance_manager import get_performance_manager
+
+# Import consolidated logging system
 
 logger = logging.getLogger(__name__)
 
-# Consolidated logging
+# Consolidated logging with optimized workflow logger
 chat_logger = get_chat_logger("orchestration")
 workflow_logger = get_workflow_logger("orchestration")
 performance_logger = get_workflow_logger("performance.orchestration")
 
-from .ui_tools import event_to_ui_payload, InputTimeoutEvent, normalize_event, handle_tool_call_for_ui_interaction  # consolidated source
+from .ui_tools import InputTimeoutEvent
 
 __all__ = [
     'run_workflow_orchestration',
     'create_orchestration_pattern',
-    'event_to_ui_payload',
     'InputTimeoutEvent'
 ]
 
@@ -133,9 +131,770 @@ def _normalize_to_strict_ag2(
         # else drop silently; strictness prevents bad resume
     return out
 
+# -------------------------------------------------------------------
+# Helper: robust agent name extraction for events/messages
+# -------------------------------------------------------------------
+def _extract_agent_name(obj: Any) -> Optional[str]:
+    """Best-effort extraction of an agent/sender name from AG2 event/message objects.
+
+    Checks direct attributes, nested sender object, content dict, and string patterns.
+    """
+    try:
+        # Direct attributes
+        for k in ("sender", "agent", "agent_name", "name"):
+            v = getattr(obj, k, None)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            # sender may be an object with 'name'
+            if v and hasattr(v, "name"):
+                nv = getattr(v, "name", None)
+                if isinstance(nv, str) and nv.strip():
+                    return nv.strip()
+        content = getattr(obj, "content", None)
+        if isinstance(content, dict):
+            for k in ("sender", "agent", "agent_name", "name"):
+                v = content.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+        # Parse from string representation if available
+        if isinstance(content, str):
+            import re
+            m = re.search(r"sender(?:=|\"\s*:)['\"]([^'\"\\]+)['\"]", content)
+            if m:
+                return m.group(1).strip()
+        return None
+    except Exception:  # pragma: no cover
+        return None
+
 # ===================================================================
 # SINGLE ENTRY POINT
 # ===================================================================
+
+"""Internal helper: load workflow config block."""
+def _load_workflow_config(workflow_name: str):
+    from .workflow_manager import workflow_manager
+    config = workflow_manager.get_config(workflow_name)
+    return {
+        "config": config,
+        "max_turns": config.get("max_turns", 50),
+        "orchestration_pattern": config.get("orchestration_pattern", "AutoPattern"),
+        "startup_mode": config.get("startup_mode", "AgentDriven"),
+        "human_in_loop": config.get("human_in_the_loop", False),
+        "initial_agent_name": config.get("initial_agent", None),
+    }
+
+
+async def _resume_or_initialize_chat(
+    persistence_manager: AG2PersistenceManager,
+    termination_handler,
+    config: Dict[str, Any],
+    chat_id: str,
+    enterprise_id: str,
+    workflow_name: str,
+    user_id: Optional[str],
+    initial_message: Optional[str],
+    wf_logger,
+):
+    resumed_messages = await persistence_manager.resume_chat(chat_id, enterprise_id)
+    if resumed_messages and len(resumed_messages) > 0:
+        logger.info(f"🔄 Resuming chat {chat_id} with {len(resumed_messages)} messages.")
+        initial_messages: List[Dict[str, Any]] = resumed_messages
+        if initial_message:
+            initial_messages.append({"role": "user", "name": "user", "content": initial_message})
+    else:
+        logger.info(f"🚀 Starting new chat session for {chat_id}")
+        initial_messages = []
+        if initial_message:
+            initial_messages.append({"role": "user", "name": "user", "content": initial_message})
+        current_user_id = user_id or "system_user"
+        if not user_id:
+            logger.warning(f"Starting chat {chat_id} without a specific user_id. Defaulting to 'system_user'.")
+        try:
+            await persistence_manager.create_chat_session(
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
+                workflow_name=workflow_name,
+                user_id=current_user_id,
+            )
+        except Exception as cs_err:
+            wf_logger.error(f"❌ Failed to create chat session doc for {chat_id}: {cs_err}")
+        try:
+            await termination_handler.on_conversation_start(user_id=current_user_id)
+            logger.info("✅ Termination handler started for new conversation")
+        except Exception as start_err:
+            logger.error(f"❌ Termination handler start failed: {start_err}")
+    if not initial_messages:
+        seed = config.get("initial_message") or config.get("initial_message_to_user")
+        if seed:
+            initial_messages = [{"role": "user", "name": "user", "content": seed}]
+    return resumed_messages, initial_messages
+
+
+async def _load_llm_config(workflow_name: str, wf_logger, workflow_name_upper: str):
+    from .structured_outputs import get_llm_for_workflow
+    try:
+        _, llm_config = await get_llm_for_workflow(workflow_name, "base")
+        wf_logger.info(f"✅ [{workflow_name_upper}] Using workflow-specific LLM config")
+    except (ValueError, FileNotFoundError):
+        from .llm_config import get_llm_config
+        _, llm_config = await get_llm_config()
+        wf_logger.info(f"✅ [{workflow_name_upper}] Using default LLM config")
+    return llm_config
+
+
+def _build_context(context_factory: Optional[Callable], workflow_name: str, enterprise_id: str, wf_logger, workflow_name_upper: str):
+    context = None
+    if context_factory:
+        return context_factory()
+    try:
+        from .context_variables import get_context
+        context = get_context(workflow_name, enterprise_id)
+    except Exception as e:
+        wf_logger.error(f"❌ [{workflow_name_upper}] Context load failed: {e}")
+    return context
+
+
+async def _define_agents(agents_factory: Optional[Callable], workflow_name: str):
+    if agents_factory:
+        return await agents_factory()
+    from .agents import define_agents
+    return await define_agents(workflow_name)
+
+
+def _ensure_user_proxy(
+    agents: Dict[str, ConversableAgent],
+    config: Dict[str, Any],
+    startup_mode: str,
+    llm_config: Dict[str, Any],
+    human_in_loop: bool,
+) -> Tuple[Dict[str, ConversableAgent], Optional[UserProxyAgent], bool]:
+    user_proxy_agent: Optional[UserProxyAgent] = None
+    user_proxy_exists = any(
+        hasattr(a, "name") and a.name.lower() in ("user", "userproxy", "userproxyagent")
+        for a in agents.values()
+    )
+    if not user_proxy_exists:
+        human_in_loop_flag = config.get("human_in_the_loop", False)
+        if startup_mode == "BackendOnly":
+            human_input_mode = "NEVER"
+        elif startup_mode == "UserDriven":
+            human_input_mode = "ALWAYS"
+        else:
+            human_input_mode = "TERMINATE"
+        user_proxy_agent = UserProxyAgent(
+            name="user",
+            human_input_mode=human_input_mode,
+            max_consecutive_auto_reply=0,
+            code_execution_config={"use_docker": False},
+            system_message="You are a helpful user proxy.",
+            llm_config=llm_config,
+        )
+        agents["user"] = user_proxy_agent
+        human_in_loop = human_in_loop_flag
+    else:
+        for a in agents.values():
+            if hasattr(a, "name") and a.name.lower() in ("user", "userproxy", "userproxyagent"):
+                user_proxy_agent = a  # type: ignore[assignment]
+                break
+    return agents, user_proxy_agent, human_in_loop
+
+
+def _resolve_initiating_agent(agents: Dict[str, ConversableAgent], initial_agent_name: Optional[str], workflow_name: str):
+    initiating_agent = None
+    if initial_agent_name:
+        initiating_agent = agents.get(initial_agent_name)
+        if not initiating_agent:
+            for a in agents.values():
+                if getattr(a, "name", None) == initial_agent_name:
+                    initiating_agent = a
+                    break
+    if not initiating_agent:
+        initiating_agent = next(iter(agents.values())) if agents else None
+        if not initiating_agent:
+            raise ValueError(f"No agents available for workflow {workflow_name}")
+    return initiating_agent
+
+
+async def _create_pattern_and_handoffs(
+    orchestration_pattern: str,
+    workflow_name: str,
+    agents: Dict[str, ConversableAgent],
+    initiating_agent: ConversableAgent,
+    user_proxy_agent: Optional[UserProxyAgent],
+    human_in_loop: bool,
+    context: Any,
+    llm_config: Dict[str, Any],
+    handoffs_factory: Optional[Callable],
+    wf_logger,
+):
+    agents_list = [
+        a for n, a in agents.items() if not (n == "user" and human_in_loop and user_proxy_agent is not None)
+    ]
+    pattern = create_orchestration_pattern(
+        pattern_name=orchestration_pattern,
+        initial_agent=initiating_agent,
+        agents=agents_list,
+        user_agent=user_proxy_agent,
+        context_variables=context,
+        human_in_the_loop=human_in_loop,
+        group_manager_args={"llm_config": llm_config},
+    )
+    if orchestration_pattern == "DefaultPattern":
+        try:
+            if handoffs_factory:
+                await handoffs_factory(agents)
+            else:
+                from .handoffs import wire_handoffs_with_debugging
+                wire_handoffs_with_debugging(workflow_name, agents)
+        except Exception as he:
+            wf_logger.warning(f"Handoffs wiring failed: {he}")
+    return pattern
+
+
+async def _stream_events(
+    pattern,
+    resumed_messages,
+    initial_messages,
+    max_turns: int,
+    agents: Dict[str, ConversableAgent],
+    chat_id: str,
+    enterprise_id: str,
+    workflow_name: str,
+    wf_logger,
+    workflow_name_upper: str,
+    transport,
+    termination_handler,
+    user_id: Optional[str],
+    persistence_manager: AG2PersistenceManager,
+    perf_mgr,
+):
+    from autogen.agentchat import a_run_group_chat
+    from autogen.events.agent_events import (
+        TextEvent,
+        InputRequestEvent,
+        GroupChatResumeEvent,
+        SelectSpeakerEvent,
+        RunCompletionEvent,
+        ErrorEvent,
+    )
+    from autogen.events.client_events import UsageSummaryEvent
+    try:
+        from autogen.events.print_event import PrintEvent
+    except Exception:  # pragma: no cover
+        PrintEvent = object  # type: ignore
+
+    resumed_mode = bool(resumed_messages)
+    if resumed_mode:
+        wf_logger.info(f"🔄 [AG2_RESUME] Using AG2 a_resume path for chat {chat_id} (history={len(initial_messages)} messages)")
+        wf_logger.info(f"🔄 [AG2_RESUME] Pattern type: {type(pattern).__name__} | Messages count: {len(initial_messages)}")
+        
+        # Log initial messages for debugging
+        for i, msg in enumerate(initial_messages):
+            wf_logger.debug(f"🔄 [AG2_RESUME] Message[{i}]: {msg.get('role', 'unknown')} from {msg.get('name', 'unknown')}")
+        
+        prep_res = pattern.prepare_group_chat(messages=initial_messages)  # type: ignore[attr-defined]
+        if asyncio.iscoroutine(prep_res):  # type: ignore
+            prep_res = await prep_res  # type: ignore
+        if isinstance(prep_res, (list, tuple)) and len(prep_res) == 2:
+            group_manager = prep_res[1]
+        else:
+            group_manager = getattr(pattern, "group_manager", None)
+            
+        wf_logger.info(f"🔄 [AG2_RESUME] Group manager resolved: {type(group_manager).__name__ if group_manager else 'None'}")
+        
+        if not group_manager or not hasattr(group_manager, "a_resume"):
+            wf_logger.error(f"❌ [AG2_RESUME] Pattern missing required a_resume capability!")
+            raise RuntimeError("Pattern missing required a_resume capability; backward compatibility removed")
+            
+        wf_logger.info(f"🚀 [AG2_RESUME] Calling group_manager.a_resume() with {len(initial_messages)} messages, max_rounds={max_turns}")
+        
+        try:
+            response = await asyncio.wait_for(
+                group_manager.a_resume(messages=initial_messages, max_rounds=max_turns), timeout=300.0
+            )  # type: ignore[attr-defined]
+            wf_logger.info(f"✅ [AG2_RESUME] a_resume() completed successfully!")
+        except Exception as resume_err:
+            wf_logger.error(f"❌ [AG2_RESUME] a_resume() failed: {resume_err}")
+            raise
+    else:
+        wf_logger.info(f"🚀 [AG2_RUN] Using AG2 a_run_group_chat for NEW chat {chat_id}")
+        wf_logger.info(f"🚀 [AG2_RUN] Pattern type: {type(pattern).__name__} | Messages count: {len(initial_messages)} | Max rounds: {max_turns}")
+        
+        # Log initial messages for debugging
+        for i, msg in enumerate(initial_messages):
+            wf_logger.debug(f"🚀 [AG2_RUN] Message[{i}]: {msg.get('role', 'unknown')} from {msg.get('name', 'unknown')} - {str(msg.get('content', ''))[:100]}")
+            
+        wf_logger.info(f"🔥 [AG2_RUN] Calling a_run_group_chat() NOW...")
+        
+        try:
+            response = await asyncio.wait_for(
+                a_run_group_chat(pattern=pattern, messages=initial_messages, max_rounds=max_turns), timeout=300.0
+            )
+            wf_logger.info(f"✅ [AG2_RUN] a_run_group_chat() completed successfully!")
+        except Exception as run_err:
+            wf_logger.error(f"❌ [AG2_RUN] a_run_group_chat() failed: {run_err}")
+            raise
+
+    turn_agent: Optional[str] = None
+    turn_started: Optional[float] = None
+    sequence_counter = 0
+    first_event_logged = False
+    last_agent_usage: Dict[str, Dict[str, Any]] = {}
+    
+    chat_logger.info(f"📡 [EVENT_STREAM] Starting event processing loop for chat {chat_id}")
+    
+    for agent_name, agent in agents.items():
+        try:
+            if hasattr(agent, "get_actual_usage"):
+                usage = agent.get_actual_usage()
+                if usage:
+                    last_agent_usage[agent_name] = {
+                        "prompt_tokens": usage.get("prompt_tokens", 0),
+                        "completion_tokens": usage.get("completion_tokens", 0),
+                        "total_cost": usage.get("total_cost", 0.0),
+                    }
+                else:
+                    last_agent_usage[agent_name] = {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_cost": 0.0,
+                    }
+        except Exception:
+            last_agent_usage[agent_name] = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_cost": 0.0,
+            }
+
+    pending_input_requests: dict[str, Any] = {}
+    # Track which agent initiated each tool call so we can echo it on the response if missing
+    tool_call_initiators: dict[str, str] = {}
+    try:
+        if transport:
+            transport.register_orchestration_input_registry(chat_id, pending_input_requests)  # type: ignore[attr-defined]
+    except Exception as e:
+        logger.debug(f"Failed to register orchestration input registry for {chat_id}: {e}")
+
+    from .ui_tools import handle_tool_call_for_ui_interaction, InputTimeoutEvent as _ITO
+    from autogen.events.agent_events import FunctionCallEvent as _FC, ToolCallEvent as _TC
+    try:
+        executed_agents: set[str] = set()
+        async for ev in response.events:  # type: ignore[attr-defined]
+            if not first_event_logged:
+                wf_logger.info(
+                    f"🛰️ [{workflow_name_upper}] First event received: {ev.__class__.__name__} chat_id={chat_id}"
+                )
+                first_event_logged = True
+            sequence_counter += 1
+            try:
+                if isinstance(ev, TextEvent):
+                    await persistence_manager.save_event(ev, chat_id, enterprise_id)  # type: ignore[arg-type]
+            except Exception as e:
+                logger.warning(f"Failed to save TextEvent for {chat_id}: {e}")
+
+            if isinstance(ev, SelectSpeakerEvent):
+                if turn_agent and turn_started is not None:
+                    duration = max(0.0, time.perf_counter() - turn_started)
+                    prompt_delta = completion_delta = 0
+                    cost_delta = 0.0
+                    if turn_agent in agents and turn_agent in last_agent_usage:
+                        agent = agents[turn_agent]
+                        try:
+                            if hasattr(agent, "get_actual_usage"):
+                                current_usage = agent.get_actual_usage()
+                                if current_usage:
+                                    last_usage = last_agent_usage[turn_agent]
+                                    prompt_delta = (
+                                        current_usage.get("prompt_tokens", 0) - last_usage["prompt_tokens"]
+                                    )
+                                    completion_delta = (
+                                        current_usage.get("completion_tokens", 0)
+                                        - last_usage["completion_tokens"]
+                                    )
+                                    cost_delta = (
+                                        current_usage.get("total_cost", 0.0) - last_usage["total_cost"]
+                                    )
+                                    last_agent_usage[turn_agent] = {
+                                        "prompt_tokens": current_usage.get("prompt_tokens", 0),
+                                        "completion_tokens": current_usage.get("completion_tokens", 0),
+                                        "total_cost": current_usage.get("total_cost", 0.0),
+                                    }
+                        except Exception as e:
+                            logger.debug(f"Failed to get usage for agent {turn_agent}: {e}")
+                    safe_prompt = max(0, prompt_delta)
+                    safe_completion = max(0, completion_delta)
+                    safe_cost = max(0.0, cost_delta)
+                    if safe_prompt or safe_completion or safe_cost:
+                        try:
+                            await persistence_manager.update_session_metrics(
+                                chat_id=chat_id,
+                                enterprise_id=enterprise_id,
+                                user_id=user_id or "unknown",
+                                workflow_name=workflow_name,
+                                prompt_tokens=safe_prompt,
+                                completion_tokens=safe_completion,
+                                cost_usd=safe_cost,
+                                agent_name=turn_agent,
+                                event_ts=datetime.utcnow(),
+                            )
+                        except Exception as m_err:
+                            logger.exception(f"Metrics update failed for turn {turn_agent}: {m_err}")
+                    try:
+                        await perf_mgr.record_agent_turn(
+                            chat_id=chat_id,
+                            agent_name=turn_agent,
+                            duration_sec=duration,
+                            model=None,
+                            prompt_tokens=safe_prompt,
+                            completion_tokens=safe_completion,
+                            cost=safe_cost,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to record turn for {turn_agent}: {e}")
+                turn_agent = getattr(ev, "sender", None) or getattr(ev, "agent", None)
+                if turn_agent:
+                    executed_agents.add(str(turn_agent))
+                turn_started = time.perf_counter()
+                wf_logger.debug(
+                    f"🔄 [{workflow_name_upper}] New turn started with agent={turn_agent} seq={sequence_counter} chat_id={chat_id}"
+                )
+
+            if isinstance(ev, InputRequestEvent):
+                request_id = getattr(ev, "id", None) or getattr(ev, "uuid", None)
+                request_id = str(request_id)
+                respond_cb = getattr(getattr(ev, "content", None), "respond", None)
+                if respond_cb:
+                    pending_input_requests[request_id] = respond_cb
+                    try:
+                        if transport:
+                            transport.register_input_request(chat_id, request_id, respond_cb)  # type: ignore[attr-defined]
+                    except Exception as e:
+                        logger.debug(f"Failed to register input request {request_id}: {e}")
+
+            if transport:
+                try:
+                    from autogen.events.agent_events import (
+                        TextEvent as _T,
+                        InputRequestEvent as _IR,
+                        RunCompletionEvent as _RC,
+                        ErrorEvent as _EE,
+                        FunctionCallEvent as _FCe,
+                        ToolCallEvent as _TCe,
+                        FunctionResponseEvent as _FRe,
+                        ToolResponseEvent as _TRe,
+                        SelectSpeakerEvent as _SS,
+                        GroupChatResumeEvent as _GR,
+                    )
+                    from autogen.events.client_events import UsageSummaryEvent as _US
+                    from autogen.events.print_event import PrintEvent as _PE
+                    et_name = ev.__class__.__name__
+                    payload: Dict[str, Any] = {"event_type": et_name}
+                    if isinstance(ev, _T):
+                        sender = _extract_agent_name(ev)
+                        raw_content = getattr(ev, "content", None)
+                        payload.update({"kind": "text", "agent": sender, "content": raw_content})
+                        try:
+                            if sender and workflow_name and agent_has_structured_output(workflow_name, sender):
+                                structured = _PM._extract_json_from_text(raw_content) if hasattr(_PM, '_extract_json_from_text') else None
+                                if structured:
+                                    payload["structured_output"] = structured
+                                    schema_fields = get_structured_output_model_fields(workflow_name, sender)
+                                    if schema_fields:
+                                        payload["structured_schema"] = schema_fields
+                        except Exception as so_err:  # pragma: no cover
+                            wf_logger.debug(f"Structured output attach failed sender={sender}: {so_err}")
+                    elif isinstance(ev, _PE):
+                        payload.update(
+                            {
+                                "kind": "print",
+                                "agent": _extract_agent_name(ev),
+                                "content": getattr(ev, "content", None),
+                            }
+                        )
+                    elif isinstance(ev, _IR):
+                        # Extract agent name
+                        agent_name = _extract_agent_name(ev)
+                        payload.update(
+                            {
+                                "kind": "input_request",
+                                "agent": agent_name,
+                                "request_id": getattr(ev, "id", None) or getattr(ev, "input_request_id", None),
+                                "prompt": getattr(ev, "content", None),
+                            }
+                        )
+                    elif isinstance(ev, _ITO):
+                        # Extract agent name  
+                        agent_name = _extract_agent_name(ev)
+                        payload.update(
+                            {
+                                "kind": "input_timeout",
+                                "agent": agent_name,
+                                "input_request_id": getattr(ev, "input_request_id", None),
+                                "timeout_seconds": getattr(ev, "timeout_seconds", None),
+                            }
+                        )
+                    elif isinstance(ev, _SS):
+                        # Extract both current agent and next agent
+                        agent_name = _extract_agent_name(ev)
+                        next_agent_obj = getattr(ev, "agent", None)
+                        next_agent = None
+                        if next_agent_obj:
+                            next_agent = getattr(next_agent_obj, "name", None) or str(next_agent_obj)
+                        payload.update(
+                            {
+                                "kind": "select_speaker",
+                                "agent": agent_name,
+                                "next": next_agent,
+                            }
+                        )
+                    elif isinstance(ev, _GR):
+                        payload.update({"kind": "resume_boundary"})
+                    elif isinstance(ev, (_FCe, _TCe)):
+                        # Initialize to ensure availability for later debug logging even if early branches set tool_name
+                        content_obj = None  # predefine to avoid potential UnboundLocalError in logging
+                        tool_name = None
+                        # ToolCallEvent path
+                        tool_calls = getattr(ev, "tool_calls", None)
+                        if isinstance(tool_calls, list) and tool_calls:
+                            first_call = tool_calls[0]
+                            fn = getattr(first_call, "function", None)
+                            name_attr = getattr(fn, "name", None)
+                            if isinstance(name_attr, str):
+                                tool_name = name_attr
+                        # FunctionCallEvent path
+                        if not tool_name:
+                            function_call = getattr(ev, "function_call", None)
+                            fn_name = getattr(function_call, "name", None)
+                            if isinstance(fn_name, str):
+                                tool_name = fn_name
+                        if not tool_name:
+                            content_obj = getattr(ev, "content", None)
+                            tool_name = (
+                                getattr(ev, "tool_name", None)
+                                or getattr(content_obj, "name", None)
+                                or getattr(content_obj, "tool_name", None)
+                            )
+                            # NEW: Check tool_calls array for function name
+                            if not tool_name and content_obj:
+                                tool_calls = getattr(content_obj, "tool_calls", None)
+                                if isinstance(tool_calls, list) and tool_calls:
+                                    first_tool = tool_calls[0]
+                                    function_obj = getattr(first_tool, "function", None)
+                                    if function_obj:
+                                        tool_name = getattr(function_obj, "name", None)
+                                        if tool_name:
+                                            wf_logger.debug(f"✅ [TOOL_EXTRACT] Found tool name: {tool_name}")
+                        if not tool_name:
+                            tool_name = "unknown_tool"
+                        tool_call_id = (
+                            getattr(ev, "id", None)
+                            or getattr(ev, "uuid", None)
+                            or f"tool_{tool_name}"
+                        )
+                        payload.update(
+                            {
+                                "kind": "tool_call",
+                                # Include initiating agent for UI display
+                                "agent": _extract_agent_name(ev),
+                                "tool_name": str(tool_name),
+                                "tool_call_id": str(tool_call_id),
+                                "corr": str(tool_call_id),
+                                "component_type": "inline",
+                                "awaiting_response": True,
+                                "payload": {
+                                    "tool_args": {},
+                                    "interaction_type": "input",
+                                    "agent_name": getattr(ev, "sender", None),
+                                },
+                            }
+                        )
+                        # Cache initiating agent for later tool_response events
+                        init_agent = payload.get("agent")
+                        if init_agent:
+                            tool_call_initiators[str(tool_call_id)] = init_agent
+                            wf_logger.debug(f"🛠️ [TOOL_CALL] agent={init_agent} tool={tool_name} id={tool_call_id}")
+                    elif isinstance(ev, (_FRe, _TRe)):
+                        # Extract tool name using same logic as tool call events
+                        tool_name = getattr(ev, "tool_name", None)
+                        content_obj = getattr(ev, "content", None)
+                        if not tool_name and content_obj:
+                            tool_name = (
+                                getattr(content_obj, "tool_name", None)
+                                or getattr(content_obj, "name", None)
+                            )
+                        # NEW: Check tool_calls array for function name (same as tool call events)
+                        if not tool_name and content_obj:
+                            tool_calls = getattr(content_obj, "tool_calls", None)
+                            if isinstance(tool_calls, list) and tool_calls:
+                                first_tool = tool_calls[0]
+                                function_obj = getattr(first_tool, "function", None)
+                                if function_obj:
+                                    tool_name = getattr(function_obj, "name", None)
+                                    if tool_name:
+                                        wf_logger.debug(f"✅ [TOOL_EXTRACT_RESPONSE] Found tool name: {tool_name}")
+                        if not tool_name:
+                            tool_name = "unknown_tool"
+                        
+                        # Extract agent name using same logic as text events
+                        agent_name = _extract_agent_name(ev)
+                        
+                        tool_response_id = (
+                            getattr(ev, "id", None)
+                            or getattr(ev, "uuid", None)
+                            or getattr(ev, "tool_call_id", None)
+                        )
+                        # Fallback: if no agent_name extracted, reuse initiator agent
+                        if not agent_name and tool_response_id:
+                            fallback_agent = tool_call_initiators.get(str(tool_response_id))
+                            if fallback_agent:
+                                agent_name = fallback_agent
+                                wf_logger.debug(
+                                    f"♻️ [TOOL_RESPONSE_AGENT_FALLBACK] Using initiator agent={agent_name} for tool_response id={tool_response_id}"
+                                )
+                        payload.update(
+                            {
+                                "kind": "tool_response",
+                                "tool_name": str(tool_name),
+                                "agent": agent_name,
+                                "tool_call_id": str(tool_response_id) if tool_response_id else None,
+                                "corr": str(tool_response_id) if tool_response_id else None,
+                                "content": getattr(ev, "content", None),
+                            }
+                        )
+                        wf_logger.debug(
+                            f"✅ [TOOL_RESPONSE] agent={agent_name} tool={tool_name} id={tool_response_id}"
+                        )
+                    elif isinstance(ev, _US):
+                        for f in (
+                            "total_tokens",
+                            "prompt_tokens",
+                            "completion_tokens",
+                            "cost",
+                            "model",
+                        ):
+                            if hasattr(ev, f):
+                                payload[f] = getattr(ev, f)
+                        payload.update({"kind": "usage_summary"})
+                    elif isinstance(ev, _EE):
+                        # Extract agent name
+                        agent_name = _extract_agent_name(ev)
+                        payload.update(
+                            {
+                                "kind": "error",
+                                "agent": agent_name,
+                                "message": getattr(ev, "message", None)
+                                or getattr(ev, "content", None)
+                                or str(ev),
+                            }
+                        )
+                    elif isinstance(ev, _RC):
+                        rc_agent = _extract_agent_name(ev) or getattr(ev, "agent", None) or "workflow"
+                        payload.update(
+                            {
+                                "kind": "run_complete",
+                                "agent": rc_agent,
+                            }
+                        )
+                    else:
+                        payload.update({"kind": "unknown"})
+                    if payload.get("kind") == "run_complete" and not payload.get("agent"):
+                        payload["agent"] = turn_agent or "workflow"
+                    await transport.send_event_to_ui(payload, chat_id)
+                except Exception as e:
+                    logger.debug(f"Failed to send event to UI for {chat_id}: {e}")
+
+            if isinstance(ev, (_FC, _TC)):
+                try:
+                    ui_response = await handle_tool_call_for_ui_interaction(ev, chat_id)
+                    if ui_response and transport:
+                        try:
+                            await transport.send_event_to_ui(
+                                {
+                                    "kind": "tool_ui_response",
+                                    "tool_name": getattr(ev, "tool_name", None),
+                                    "response": ui_response,
+                                    "chat_id": chat_id,
+                                },
+                                chat_id,
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to send tool UI response for {chat_id}: {e}")
+                except Exception as tool_err:
+                    wf_logger.debug(f"Tool UI interaction error: {tool_err}")
+
+            if isinstance(ev, UsageSummaryEvent):
+                try:
+                    content_obj = getattr(ev, "content", None)
+                    agg_prompt = (
+                        getattr(content_obj, "prompt_tokens", 0) if content_obj else 0
+                    )
+                    agg_completion = (
+                        getattr(content_obj, "completion_tokens", 0) if content_obj else 0
+                    )
+                    agg_cost = getattr(content_obj, "cost", 0.0) if content_obj else 0.0
+                    tracked_prompt = sum(u["prompt_tokens"] for u in last_agent_usage.values())
+                    tracked_completion = sum(
+                        u["completion_tokens"] for u in last_agent_usage.values()
+                    )
+                    tracked_cost = sum(u["total_cost"] for u in last_agent_usage.values())
+                    delta_prompt = max(0, int(agg_prompt - tracked_prompt))
+                    delta_completion = max(0, int(agg_completion - tracked_completion))
+                    delta_cost = max(0.0, float(agg_cost - tracked_cost))
+                    if delta_prompt or delta_completion or delta_cost:
+                        await persistence_manager.update_session_metrics(
+                            chat_id=chat_id,
+                            enterprise_id=enterprise_id,
+                            user_id=user_id or "unknown",
+                            workflow_name=workflow_name,
+                            prompt_tokens=delta_prompt,
+                            completion_tokens=delta_completion,
+                            cost_usd=delta_cost,
+                            agent_name=None,
+                            event_ts=datetime.utcnow(),
+                        )
+                except Exception as e:
+                    logger.exception(
+                        f"UsageSummaryEvent reconciliation failed: {e}"
+                    )
+
+            if isinstance(ev, RunCompletionEvent):
+                try:
+                    from .handoffs import handoff_manager  # noqa: F401 (for side-effects / attr access)
+                    remaining_after_work = []
+                    for a_name, a_obj in agents.items():
+                        tgt = None
+                        try:
+                            h = getattr(a_obj, "handoffs", None)
+                            if h and hasattr(h, "after_work"):
+                                tgt = getattr(h, "after_work", None)
+                        except Exception:
+                            pass
+                        if tgt and a_name not in executed_agents:
+                            remaining_after_work.append(
+                                f"{a_name}->{getattr(getattr(tgt,'target',None),'name',getattr(tgt,'target',None))}"
+                            )
+                    if remaining_after_work:
+                        wf_logger.warning(
+                            f"⚠️ [{workflow_name_upper}] RunCompletionEvent early. Executed: {sorted(executed_agents)} | Pending after_work chain: {remaining_after_work}"
+                        )
+                except Exception as diag_err:
+                    wf_logger.debug(
+                        f"Early termination diagnostics failed: {diag_err}"
+                    )
+                wf_logger.info(
+                    f"✅ [{workflow_name_upper}] Run complete chat_id={chat_id} events={sequence_counter} executed_agents={sorted(executed_agents)}"
+                )
+                break
+    except Exception as loop_err:
+        wf_logger.error(f"Event loop failure: {loop_err}")
+
+    return {
+        "response": response,
+        "turn_agent": turn_agent,
+        "turn_started": turn_started,
+        "last_agent_usage": last_agent_usage,
+    }
+
 
 async def run_workflow_orchestration(
     workflow_name: str,
@@ -153,8 +912,16 @@ async def run_workflow_orchestration(
     orchestration_pattern = "unknown"
     agents: Dict[str, Any] = {}
 
+    # Create workflow logger for this session  
+    wf_lifecycle_logger = get_workflow_logger(workflow_name, chat_id=chat_id)
+    
     wf_logger = get_workflow_logger(workflow_name, chat_id=chat_id, enterprise_id=enterprise_id)
-    logger.info(f"🚀 CONSOLIDATED workflow orchestration: {workflow_name}")
+    
+    # Log orchestration start with session summary instead of verbose details
+    logger.info(f"🚀 [ORCHESTRATION] Starting {workflow_name} workflow")
+    
+    # Use existing workflow logger as session logger
+    session_logger = wf_logger
 
     # Persistence / transport / termination handler 
     persistence_manager = AG2PersistenceManager()
@@ -173,7 +940,20 @@ async def run_workflow_orchestration(
 
     tracer = trace.get_tracer("mozaiks.workflow")
     result_payload: Optional[Dict[str, Any]] = None
-    # legacy streaming manager removed; context manager based install only
+    runtime_logging_started = False
+    runtime_logging_session_id: Optional[str] = None
+    runtime_mode = os.getenv("AUTOGEN_RUNTIME_LOGGING")  # any truthy value enables file logging
+    if runtime_mode:
+        try:
+            fname = os.getenv("AUTOGEN_RUNTIME_LOG_FILE", "runtime.log")
+            runtime_logging_session_id = runtime_logging.start(logger_type="file", config={"filename": fname})
+            runtime_logging_started = True
+            if runtime_mode.lower() not in ("file", "1", "true", "yes"):  # notify about forced file mode
+                logger.info(f"AG2 runtime logging forcing file mode (requested '{runtime_mode}') session_id={runtime_logging_session_id}")
+            else:
+                logger.info(f"AG2 runtime logging started file session_id={runtime_logging_session_id}")
+        except Exception as rl_err:  # pragma: no cover - non critical
+            logger.warning(f"Failed to start AG2 runtime logging (file mode): {rl_err}")
 
     # -----------------------------------------------------------------
     # Reconnect handshake (optional) - if client supplies last_seen_sequence
@@ -182,49 +962,6 @@ async def run_workflow_orchestration(
     # BEFORE starting the AG2 pattern run. This is a best-effort replay; any
     # failures are logged and ignored (live stream then proceeds).
     # -----------------------------------------------------------------
-    last_seen_sequence = None
-    try:
-        if 'last_seen_sequence' in kwargs and kwargs['last_seen_sequence'] is not None:
-            last_seen_sequence = int(kwargs['last_seen_sequence'])
-    except Exception:
-        last_seen_sequence = None
-
-    if last_seen_sequence is not None:
-        try:
-            # Fetch diff from persistence (normalized envelopes)
-            fetch_diff = getattr(persistence_manager, 'fetch_event_diff', None)
-            if callable(fetch_diff):
-                diff = await fetch_diff(chat_id=chat_id, enterprise_id=enterprise_id, last_sequence=last_seen_sequence)  # type: ignore[arg-type]
-                if diff:
-                    # Annotate replay flag and send in order
-                    for env in diff:
-                        payload = {
-                            "kind": "replay_event",
-                            "sequence": env.get("sequence"),
-                            "event_type": env.get("event_type"),
-                            "role": env.get("role"),
-                            "name": env.get("name"),
-                            "content": env.get("content"),
-                            "meta": env.get("meta"),
-                            "replay": True,
-                        }
-                        try:
-                            if transport:
-                                await transport.send_event_to_ui(payload, chat_id)  # type: ignore[arg-type]
-                        except Exception:
-                            pass
-                    # Notify UI that replay complete and live stream will follow
-                    try:
-                        if transport:
-                            await transport.send_event_to_ui({
-                                "kind": "replay_complete",
-                                "last_replayed_sequence": diff[-1]["sequence"],
-                                "event_type": "ReplayComplete"
-                            }, chat_id)  # type: ignore[arg-type]
-                    except Exception:
-                        pass
-        except Exception as e:
-            wf_logger.error(f"Reconnect replay failed: {e}")
 
     perf_mgr = await get_performance_manager()
     await perf_mgr.initialize()
@@ -239,7 +976,13 @@ async def run_workflow_orchestration(
             "user_id": user_id or "unknown"
         }
     ) as root_span:
-        trace_id_hex = format(root_span.get_span_context().trace_id, '032x')
+        span_ctx = root_span.get_span_context()
+        trace_id_hex = format(span_ctx.trace_id, '032x')
+        # Fallback: some OTEL setups may yield 0 trace id if provider not initialized
+        if trace_id_hex == '0' * 32:
+            import uuid
+            trace_id_hex = uuid.uuid4().hex
+            logger.debug(f"Generated fallback trace_id for workflow {workflow_name}: {trace_id_hex}")
         try:
             await perf_mgr.attach_trace_id(chat_id, trace_id_hex)
         except Exception as e:
@@ -249,60 +992,36 @@ async def run_workflow_orchestration(
             # -----------------------------------------------------------------
             # 1) Load configuration
             # -----------------------------------------------------------------
-            from .workflow_config import workflow_config
-            config = workflow_config.get_config(workflow_name)
-            max_turns = config.get("max_turns", 50)
-            orchestration_pattern = config.get("orchestration_pattern", "AutoPattern")
-            startup_mode = config.get("startup_mode", "AgentDriven")
-            human_in_loop = config.get("human_in_the_loop", False)
-            initial_agent_name = config.get("initial_agent", None)
+            cfg = _load_workflow_config(workflow_name)
+            config = cfg["config"]
+            max_turns = cfg["max_turns"]
+            orchestration_pattern = cfg["orchestration_pattern"]
+            startup_mode = cfg["startup_mode"]
+            human_in_loop = cfg["human_in_loop"]
+            initial_agent_name = cfg["initial_agent_name"]
 
             # -----------------------------------------------------------------
             # 2) Resume or start chat
             # -----------------------------------------------------------------
-            resumed_messages = await persistence_manager.resume_chat(chat_id, enterprise_id)
+            resumed_messages, initial_messages = await _resume_or_initialize_chat(
+                persistence_manager=persistence_manager,
+                termination_handler=termination_handler,
+                config=config,
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
+                workflow_name=workflow_name,
+                user_id=user_id,
+                initial_message=initial_message,
+                wf_logger=wf_logger,
+            )
 
-            if resumed_messages and len(resumed_messages) > 0:
-                logger.info(f"🔄 Resuming chat {chat_id} with {len(resumed_messages)} messages.")
-                initial_messages: List[Dict[str, Any]] = resumed_messages
-                # Allow an extra incoming user message on resume
-                if initial_message:
-                    initial_messages.append({"role": "user", "name": "user", "content": initial_message})
-            else:
-                logger.info(f"🚀 Starting new chat session for {chat_id}")
-                initial_messages = []
-                if initial_message:
-                    # Seed strict user message
-                    initial_messages.append({"role": "user", "name": "user", "content": initial_message})
-
-                current_user_id = user_id or "system_user"
-                if not user_id:
-                    logger.warning(f"Starting chat {chat_id} without a specific user_id. Defaulting to 'system_user'.")
-
-                try:
-                    await termination_handler.on_conversation_start(user_id=current_user_id)
-                    logger.info(f"✅ Termination handler started for new conversation")
-                except Exception as start_err:
-                    logger.error(f"❌ Termination handler start failed: {start_err}")
-
-            # If still empty, optionally seed from workflow config
-            if not initial_messages:
-                seed = config.get("initial_message") or config.get("initial_message_to_user")
-                if seed:
-                    # Always seed as a user turn named "user" to keep schema strict
-                    initial_messages = [{"role": "user", "name": "user", "content": seed}]
+            # Track resume mode early so downstream logging can reference it safely
+            resumed_mode = bool(resumed_messages)
 
             # -----------------------------------------------------------------
             # 3) LLM config
             # -----------------------------------------------------------------
-            from .structured_outputs import get_llm_for_workflow
-            try:
-                _, llm_config = await get_llm_for_workflow(workflow_name, "base")
-                wf_logger.info(f"✅ [{workflow_name_upper}] Using workflow-specific LLM config")
-            except (ValueError, FileNotFoundError):
-                from core.core_config import make_llm_config
-                _, llm_config = await make_llm_config()
-                wf_logger.info(f"✅ [{workflow_name_upper}] Using default LLM config")
+            llm_config = await _load_llm_config(workflow_name, wf_logger, workflow_name_upper)
 
             # Log start
             chat_logger.info(f"[{workflow_name_upper}] WORKFLOW_STARTED chat_id={chat_id} pattern={orchestration_pattern}")
@@ -324,19 +1043,21 @@ async def run_workflow_orchestration(
             # -----------------------------------------------------------------
             context = None
             context_start = perf_counter()
-            with timed_span("workflow.context_build", attributes={
-                "workflow_name": workflow_name,
-                "chat_id": chat_id,
-                "enterprise_id": enterprise_id,
-            }):
-                if context_factory:
-                    context = context_factory()
-                else:
-                    try:
-                        from .context_variables import get_context
-                        context = get_context(workflow_name, enterprise_id)
-                    except Exception as e:
-                        wf_logger.error(f"❌ [{workflow_name_upper}] Context load failed: {e}")
+            with timed_span(
+                "workflow.context_build",
+                attributes={
+                    "workflow_name": workflow_name,
+                    "chat_id": chat_id,
+                    "enterprise_id": enterprise_id,
+                },
+            ):
+                context = _build_context(
+                    context_factory=context_factory,
+                    workflow_name=workflow_name,
+                    enterprise_id=enterprise_id,
+                    wf_logger=wf_logger,
+                    workflow_name_upper=workflow_name_upper,
+                )
             context_time = (perf_counter() - context_start) * 1000
             performance_logger.info(
                 "context_load_duration_ms",
@@ -349,78 +1070,75 @@ async def run_workflow_orchestration(
                 },
             )
 
-            # (Removed legacy AG2StreamingManager usage; streaming handled by context manager when needed)
-
             # -----------------------------------------------------------------
             # 6) Agents definition + tool registry
             # -----------------------------------------------------------------
-            if agents_factory:
-                agents = await agents_factory()
-            else:
-                from .agents import define_agents
-                agents = await define_agents(workflow_name)
+            agents = await _define_agents(agents_factory, workflow_name)
             agents = agents or {}
 
+            # Get tool binding data for summary
+            from .agent_tools import load_agent_tool_functions
+            agent_tools = load_agent_tool_functions(workflow_name)
             try:
-                registry = WorkflowToolRegistry(workflow_name)
-                registry.load_configuration()
-                registry.register_agent_tools(list(agents.values()))
-                wf_logger.info(f"🔧 [{workflow_name_upper}] Registered tools for {len(agents)} agents")
-            except Exception as reg_err:
-                wf_logger.warning(f"⚠️ [{workflow_name_upper}] Tool registration skipped/failed: {reg_err}")
+                # Produce a concise debug summary of loaded tools per agent
+                _tool_summary = {a: [getattr(f, '__name__', '<noname>') for f in funcs] for a, funcs in agent_tools.items()}
+                workflow_logger.debug(f"[ORCH][TRACE] Loaded agent tool mapping for {workflow_name}: {_tool_summary}")
+            except Exception as _e:  # pragma: no cover
+                workflow_logger.debug(f"[ORCH][TRACE] Failed building tool summary: {_e}")
+            
+            # Log consolidated agent setup summary using existing logger
+            try:
+                wf_logger.info(
+                    f"🏗️ [WORKFLOW_SETUP] {workflow_name}: agents={list(agents.keys())} tools={len(agent_tools)}"
+                )
+            except Exception as log_err:
+                logger.debug(f"Agent setup summary logging failed: {log_err}")
+
+            # Defer start log until after agents + initiating agent known
+            try:
+                context_var_count = (len(context) if context is not None and hasattr(context, '__len__') else 0)
+            except Exception:
+                context_var_count = 0
+
+            wf_logger.debug(
+                f"🚀 [{workflow_name_upper}] Chat START chat_id={chat_id} agents={len(agents)} max_turns={max_turns} "
+                f"startup_mode={startup_mode} human_in_loop={human_in_loop} context_vars={context_var_count} resumed={resumed_mode}"
+            )
+
+            # -----------------------------------------------------------------
+            wf_logger.info(f"🔧 [{workflow_name_upper}] Tools already bound at agent creation; skipping runtime registration")
 
             # Store agents on transport
             try:
                 if transport and hasattr(transport, 'connections') and chat_id in transport.connections:
                     transport.connections[chat_id]['agents'] = agents
+                    # Expose context for component actions & UI updates
+                    if context is not None:
+                        transport.connections[chat_id]['context'] = context
             except Exception as _agents_store_err:
                 wf_logger.debug(f"agent store failed: {_agents_store_err}")
 
             # Ensure user proxy presence (always named "user")
-            user_proxy_agent: Optional[UserProxyAgent] = None
-            user_proxy_exists = any(
-                hasattr(a, "name") and a.name.lower() in ("user", "userproxy", "userproxyagent")
-                for a in agents.values()
+            agents, user_proxy_agent, human_in_loop = _ensure_user_proxy(
+                agents=agents,
+                config=config,
+                startup_mode=startup_mode,
+                llm_config=llm_config,
+                human_in_loop=human_in_loop,
             )
-            if not user_proxy_exists:
-                human_in_loop_flag = config.get("human_in_the_loop", False)
-                if startup_mode == "BackendOnly":
-                    human_input_mode = "NEVER"
-                elif startup_mode == "UserDriven":
-                    human_input_mode = "ALWAYS"
-                else:
-                    human_input_mode = "TERMINATE"
-                user_proxy_agent = UserProxyAgent(
-                    name="user",
-                    human_input_mode=human_input_mode,
-                    max_consecutive_auto_reply=0,
-                    code_execution_config={"use_docker": False},
-                    system_message="You are a helpful user proxy.",
-                    llm_config=llm_config
-                )
-                agents["user"] = user_proxy_agent
-                human_in_loop = human_in_loop_flag
-            else:
-                for a in agents.values():
-                    if hasattr(a, "name") and a.name.lower() in ("user", "userproxy", "userproxyagent"):
-                        user_proxy_agent = a  # type: ignore[assignment]
-                        break
 
             # -----------------------------------------------------------------
             # 7) Initiating agent (explicit or first available)
             # -----------------------------------------------------------------
-            initiating_agent = None
-            if initial_agent_name:
-                initiating_agent = agents.get(initial_agent_name)
-                if not initiating_agent:
-                    for a in agents.values():
-                        if getattr(a, 'name', None) == initial_agent_name:
-                            initiating_agent = a
-                            break
-            if not initiating_agent:
-                initiating_agent = next(iter(agents.values())) if agents else None
-                if not initiating_agent:
-                    raise ValueError(f"No agents available for workflow {workflow_name}")
+            initiating_agent = _resolve_initiating_agent(
+                agents=agents,
+                initial_agent_name=initial_agent_name,
+                workflow_name=workflow_name,
+            )
+
+            wf_logger.info(
+                f"🎯 [{workflow_name_upper}] Initial agent resolved: {getattr(initiating_agent,'name',None)}"
+            )
 
             # -----------------------------------------------------------------
             # 8) STRICT resume prep: normalize + enforce HIL (no tail stripping)
@@ -434,236 +1152,119 @@ async def run_workflow_orchestration(
             # -----------------------------------------------------------------
             # 9) Pattern creation (AG2 native)
             # -----------------------------------------------------------------
-            agents_list = [
-                a for n, a in agents.items()
-                if not (n == "user" and human_in_loop and user_proxy_agent is not None)
-            ]
-            pattern = create_orchestration_pattern(
-                pattern_name=orchestration_pattern,
-                initial_agent=initiating_agent,
-                agents=agents_list,
-                user_agent=user_proxy_agent,
-                context_variables=context,
-                human_in_the_loop=human_in_loop,
-                group_manager_args={"llm_config": llm_config}
+            pattern = await _create_pattern_and_handoffs(
+                orchestration_pattern=orchestration_pattern,
+                workflow_name=workflow_name,
+                agents=agents,
+                initiating_agent=initiating_agent,
+                user_proxy_agent=user_proxy_agent,
+                human_in_loop=human_in_loop,
+                context=context,
+                llm_config=llm_config,
+                handoffs_factory=handoffs_factory,
+                wf_logger=wf_logger,
             )
-
-            # -----------------------------------------------------------------
-            # 10) Handoffs (DefaultPattern only)
-            # -----------------------------------------------------------------
-            if orchestration_pattern == "DefaultPattern":
-                try:
-                    if handoffs_factory:
-                        await handoffs_factory(agents)
-                    else:
-                        from .handoffs import wire_handoffs_with_debugging
-                        wire_handoffs_with_debugging(workflow_name, agents)
-                except Exception as he:
-                    wf_logger.warning(f"Handoffs wiring failed: {he}")
-
+            # 10.5) Hook registration removed (was duplicate)
+            # Hooks are now registered once inside define_agents() via workflow_manager.register_hooks.
+            # This avoids duplicate log noise and ensures _hooks_loaded_workflows gating is respected.
             # -----------------------------------------------------------------
             # 11) Execute group chat with AG2's event streaming
             # -----------------------------------------------------------------
-            from autogen.agentchat import a_run_group_chat
-            from autogen.events.agent_events import (
-                TextEvent,
-                InputRequestEvent,
-                GroupChatResumeEvent,
-                SelectSpeakerEvent,
-                RunCompletionEvent,
-                ErrorEvent,
+            # Log execution start with summary
+            wf_lifecycle_logger.info(
+                f"🚀 [{workflow_name_upper}] Starting workflow execution",
+                agent_count=len(agents),
+                tool_count=sum(len(getattr(agent, 'tool_names', [])) for agent in agents.values()),
+                pattern_name=orchestration_pattern,
+                message_count=len(initial_messages),
+                max_turns=max_turns,
+                is_resume=bool(resumed_messages)
             )
-            from autogen.events.client_events import UsageSummaryEvent
-            from core.transport.ag2_iostream import install_streaming_iostream
-
-            # Install minimal streaming IOStream only if streaming configured
-            should_stream = bool(llm_config and isinstance(llm_config, dict) and llm_config.get("stream"))
-            # Production input timeout: 120 seconds
-            input_timeout_seconds = 120.0
-            iostream_cm = install_streaming_iostream(
-                chat_id,
-                enterprise_id,
-                user_id=user_id or "unknown",
+            
+            stream_state = await _stream_events(
+                pattern=pattern,
+                resumed_messages=resumed_messages,
+                initial_messages=initial_messages,
+                max_turns=max_turns,
+                agents=agents,
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
                 workflow_name=workflow_name,
-                input_timeout_seconds=input_timeout_seconds,
-            ) if should_stream else None
+                wf_logger=wf_logger,
+                workflow_name_upper=workflow_name_upper,
+                transport=transport,
+                termination_handler=termination_handler,
+                user_id=user_id,
+                persistence_manager=persistence_manager,
+                perf_mgr=perf_mgr,
+            )
+            response = stream_state["response"]
+            turn_agent = stream_state["turn_agent"]
+            turn_started = stream_state["turn_started"]
+            last_agent_usage = stream_state["last_agent_usage"]
 
-            async def _run_chat() -> Any:
-                return await asyncio.wait_for(
-                    a_run_group_chat(
-                        pattern=pattern,
-                        messages=initial_messages,
-                        max_rounds=max_turns
-                    ),
-                    timeout=300.0
-                )
-
-            if iostream_cm:
-                with iostream_cm:  # type: ignore[arg-type]
-                    response = await _run_chat()
-            else:
-                response = await _run_chat()
-
-            # Refactored event loop (dispatcher + normalized persistence + registry)
-            from core.transport.simple_transport import SimpleTransport
-            transport = SimpleTransport._get_instance()
-            # If we supplied multiple initial messages, expect a replay boundary event.
-            # Otherwise (fresh conversation) we can persist immediately.
-            resume_boundary_reached = not (len(initial_messages) > 1)
-            turn_agent: Optional[str] = None
-            turn_started: Optional[float] = None
-            sequence_counter = 0
-            usage_seen = False
-
-            try:
-                # Main event consumption loop
-                async for ev in response.events:  # type: ignore[attr-defined]
-                    # Detect resume boundary (skip persistence before it)
-                    if isinstance(ev, GroupChatResumeEvent):
-                        resume_boundary_reached = True
-                        sequence_counter = 0
-                        if transport:
-                            try:
-                                await transport.send_event_to_ui({  # type: ignore[arg-type]
-                                    "type": "resume_boundary",
-                                    "chat_id": chat_id,
-                                }, chat_id)
-                            except Exception:
-                                pass
-                        continue
-
-                    # Skip replayed history events emitted before boundary
-                    if not resume_boundary_reached:
-                        continue
-
-                    sequence_counter += 1
-                    # Persist normalized envelope (delegates to persistence manager util if available)
-                    try:
-                        envelope = normalize_event(ev, sequence=sequence_counter, chat_id=chat_id)
-                        save_norm = getattr(persistence_manager, 'save_normalized_event', None)
-                        if callable(save_norm):
-                            await save_norm(
-                                envelope=envelope,
-                                chat_id=chat_id,
-                                enterprise_id=enterprise_id,
-                                workflow_name=workflow_name,
-                                user_id=user_id or "unknown",
-                            )  # type: ignore[arg-type]
-                        else:  # fallback to legacy method if present
-                            await persistence_manager.save_event(  # type: ignore[call-arg]
-                                event=ev,
-                                chat_id=chat_id,
-                                enterprise_id=enterprise_id,
-                                workflow_name=workflow_name,
-                                user_id=user_id or "unknown",
-                            )
-                    except Exception:
-                        pass
-
-                    # Turn timing using SelectSpeakerEvent boundaries
-                    if isinstance(ev, SelectSpeakerEvent):
-                        # Close previous turn
-                        if turn_agent and turn_started is not None:
-                            try:
-                                duration = max(0.0, time.perf_counter() - turn_started)
-                                await perf_mgr.record_agent_turn(
-                                    chat_id=chat_id,
-                                    agent_name=turn_agent,
-                                    duration_sec=duration,
-                                    model=None,
-                                )
-                            except Exception:
-                                pass
-                        # Start new turn
-                        turn_agent = getattr(ev, "sender", None) or getattr(ev, "agent", None)
-                        turn_started = time.perf_counter()
-
-                    # Stream / forward events via dispatcher
-                    if transport:
-                        try:
-                            payload = event_to_ui_payload(ev)
-                            await transport.send_event_to_ui(payload, chat_id)
-                        except Exception:
-                            pass
-
-                    # Handle interactive tool calls that require UI interaction
-                    if isinstance(ev, (FunctionCallEvent, ToolCallEvent)):
-                        try:
-                            ui_response = await handle_tool_call_for_ui_interaction(ev, chat_id)
-                            if ui_response:
-                                # Send the UI response back through the transport for the agent to see
-                                if transport:
-                                    try:
-                                        await transport.send_event_to_ui({
-                                            "kind": "tool_ui_response",
-                                            "tool_name": getattr(ev, "tool_name", None) or getattr(ev, "function_name", None),
-                                            "response": ui_response,
-                                            "chat_id": chat_id,
-                                        }, chat_id)
-                                    except Exception:
-                                        pass
-                        except Exception as tool_err:
-                            wf_logger.debug(f"Tool UI interaction error: {tool_err}")
-
-                    if isinstance(ev, UsageSummaryEvent):
-                        usage_seen = True
-                        try:
-                            await perf_mgr.record_final_usage_from_agents(
-                                chat_id=chat_id,
-                                enterprise_id=enterprise_id,
-                                user_id=user_id or "unknown",
-                                agents=list(agents.values())
-                            )
-                        except Exception:
-                            pass
-
-                    if isinstance(ev, ErrorEvent):
-                        # Optionally could escalate termination here
-                        pass
-
-                    if isinstance(ev, RunCompletionEvent):
-                        break
-            except Exception as loop_err:
-                # Log and proceed to finalization steps below
-                wf_logger.error(f"Event loop failure: {loop_err}")
-
-            # Close last turn (even if loop errored)
+            # Close last turn (even if loop errored) with final usage delta
             if turn_agent and turn_started is not None:
+                duration = max(0.0, time.perf_counter() - turn_started)
+                
+                # Calculate final usage delta for the last agent
+                prompt_delta = 0
+                completion_delta = 0
+                cost_delta = 0.0
+                
+                if turn_agent in agents and turn_agent in last_agent_usage:
+                    agent = agents[turn_agent]
+                    try:
+                        if hasattr(agent, 'get_actual_usage'):
+                            current_usage = agent.get_actual_usage()
+                            if current_usage:
+                                last_usage = last_agent_usage[turn_agent]
+                                prompt_delta = current_usage.get('prompt_tokens', 0) - last_usage['prompt_tokens']
+                                completion_delta = current_usage.get('completion_tokens', 0) - last_usage['completion_tokens']
+                                cost_delta = current_usage.get('total_cost', 0.0) - last_usage['total_cost']
+                    except Exception as e:
+                        logger.debug(f"Failed to get final usage for agent {turn_agent}: {e}")
+                
+                safe_prompt = max(0, prompt_delta)
+                safe_completion = max(0, completion_delta)
+                safe_cost = max(0.0, cost_delta)
+                if safe_prompt or safe_completion or safe_cost:
+                    try:
+                        await persistence_manager.update_session_metrics(
+                            chat_id=chat_id,
+                            enterprise_id=enterprise_id,
+                            user_id=user_id or "unknown",
+                            workflow_name=workflow_name,
+                            prompt_tokens=safe_prompt,
+                            completion_tokens=safe_completion,
+                            cost_usd=safe_cost,
+                            agent_name=turn_agent,
+                            event_ts=datetime.utcnow()
+                        )
+                    except Exception as m_err:
+                        logger.exception(f"Final metrics update failed for {turn_agent}: {m_err}")
                 try:
-                    duration = max(0.0, time.perf_counter() - turn_started)
                     await perf_mgr.record_agent_turn(
                         chat_id=chat_id,
                         agent_name=turn_agent,
                         duration_sec=duration,
                         model=None,
+                        prompt_tokens=safe_prompt,
+                        completion_tokens=safe_completion,
+                        cost=safe_cost
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to record final turn for {turn_agent}: {e}")
+                # Final turn complete
 
-            # Final usage reconciliation if UsageSummaryEvent absent
-            try:
-                if not usage_seen:
-                    final_summary = gather_usage_summary(list(agents.values()))
-                    if final_summary:
-                        await perf_mgr.record_final_usage_from_agents(
-                            chat_id=chat_id,
-                            enterprise_id=enterprise_id,
-                            user_id=user_id or "unknown",
-                            agents=list(agents.values())
-                        )
-            except InsufficientTokensError:
-                await termination_handler.on_conversation_end(termination_reason="insufficient_tokens")
-                return
-            except Exception:
-                pass
+            # Final usage reconciliation: Real-time billing already handled per-turn via record_agent_turn
+            # No additional reconciliation needed since we track deltas throughout execution
 
-            termination_reason = getattr(response, 'termination_reason', None) or "completed"
             max_turns_reached = getattr(response, 'max_turns_reached', False)
 
             # Ensure termination handler is called to update status
             try:
                 termination_result = await termination_handler.on_conversation_end(
-                    termination_reason=termination_reason,
                     max_turns_reached=max_turns_reached
                 )
                 try:
@@ -684,28 +1285,32 @@ async def run_workflow_orchestration(
             except Exception as log_err:
                 logger.error(f"❌ Failed to log conversation to agent chat file for {chat_id}: {log_err}")
 
+            # Log execution completion
+            duration_sec = perf_counter() - start_time
+            wf_logger.info(f"⏱️ [EXECUTION_COMPLETE] Duration: {duration_sec:.2f}s")
+
             result_payload = {
                 "workflow_name": workflow_name,
                 "chat_id": chat_id,
                 "enterprise_id": enterprise_id,
                 "user_id": user_id,
                 "messages": getattr(response, 'messages', None),
-                "termination_reason": termination_reason,
                 "max_turns_reached": max_turns_reached,
                 "response": response
             }
         except Exception as e:
             logger.error(f"❌ [{workflow_name_upper}] Orchestration failed: {e}", exc_info=True)
             try:
-                await termination_handler.on_conversation_end(termination_reason="error")
+                await termination_handler.on_conversation_end()
                 logger.info("✅ Termination handler called for error case")
             except Exception as term_err:
                 logger.error(f"❌ Termination handler error cleanup failed: {term_err}")
             raise
         finally:
-            status = "completed"
+            from core.data.models import WorkflowStatus
+            status = WorkflowStatus.COMPLETED
             try:
-                await perf_mgr.record_workflow_end(chat_id, status)
+                await perf_mgr.record_workflow_end(chat_id, int(status))
                 await perf_mgr.flush(chat_id)
             except Exception as e:
                 logger.debug(f"perf finalize failed: {e}")
@@ -714,28 +1319,36 @@ async def run_workflow_orchestration(
                 root_span.set_attribute("workflow.duration_sec", duration_sec)
                 root_span.set_attribute("agent.count", len(agents))
                 root_span.set_attribute("orchestration.pattern", orchestration_pattern)
+            if runtime_logging_started:
+                try:
+                    runtime_logging.stop()
+                    logger.info(f"AG2 runtime logging stopped session_id={runtime_logging_session_id}")
+                except Exception as rl_stop_err:  # pragma: no cover
+                    logger.warning(f"Failed stopping AG2 runtime logging: {rl_stop_err}")
 
     # OUTSIDE span: final logging & cleanup
     try:
         duration = perf_counter() - start_time
-        logger.info(f"✅ [{workflow_name_upper}] orchestration completed in {duration:.2f}s")
-        chat_logger.info(f"[{workflow_name_upper}] WORKFLOW_COMPLETED chat_id={chat_id} duration={duration:.2f}s")
-        wf_logger.info(
-            "WORKFLOW_COMPLETED",
-            event_type=f"{workflow_name_upper}_WORKFLOW_COMPLETED",
-            description=f"{workflow_name} workflow orchestration completed",
-            enterprise_id=enterprise_id,
-            chat_id=chat_id,
-            total_duration_seconds=duration,
+        
+        # Log workflow completion with summary
+        wf_lifecycle_logger.info(
+            f"✅ [{workflow_name_upper}] Workflow completed",
+            duration_sec=duration,
+            event_count=getattr(stream_state, 'sequence_counter', 0) if stream_state else 0,
             agent_count=len(agents),
             pattern_used=orchestration_pattern,
-            result_status="completed" if result_payload else "error",
+            chat_id=chat_id,
+            enterprise_id=enterprise_id,
+            result_status="success" if result_payload else "empty"
         )
-    # (No legacy streaming manager cleanup required)
+        
+        # Single consolidated completion log instead of multiple lines
+        chat_logger.info(f"[{workflow_name_upper}] WORKFLOW_COMPLETED chat_id={chat_id} duration={duration:.2f}s agents={len(agents)}")
+        
     finally:
-        ...
+        # Keeping block to preserve structure for future extension (e.g., tracing export hooks).
+        return result_payload
 
-    return result_payload
 
 # ==============================================================================
 # AG2 PATTERN FACTORY - Direct AG2 Pattern Usage
@@ -878,7 +1491,7 @@ async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str
                     )
                     try:
                         from core.transport.simple_transport import SimpleTransport
-                        transport = SimpleTransport._get_instance()
+                        transport = await SimpleTransport.get_instance()
                         if transport:
                             await transport.send_chat_message(
                                 message=clean_content,

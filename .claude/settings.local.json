@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest test_transport_workflow.py -v)",
+      "Bash(python -m pytest test_core_functionality.py -v)",
+      "Bash(grep:*)",
+      "Bash(rm:*)",
+      "Bash(python -m pytest test_chat_workflow_models.py -v)",
+      "Bash(python -m pytest test_schema_validation.py -v)",
+      "Bash(flake8:*)",
+      "Bash(pip install:*)",
+      "Bash(python test_structured_outputs_refactor.py)",
+      "Bash(python:*)",
+      "Bash(npm install:*)",
+      "Bash(npm start)",
+      "Bash(curl:*)",
+      "Bash(del profile.png)",
+      "Bash(del \"C:\\Users\\Owner\\Desktop\\BlocUnited\\BlocUnited Code\\MozaiksAI\\workflows\\Generator\\tools\\save_api_key_metadata.py\")",
+      "Bash(docker stop:*)",
+      "Bash(taskkill:*)",
+      "Bash(echo $MOZAIKS_PERSIST_PERF)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

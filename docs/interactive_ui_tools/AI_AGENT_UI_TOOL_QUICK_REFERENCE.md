@@ -22,15 +22,20 @@ Need UI component?
 ```python
 from core.workflow.ui_tools import emit_ui_tool_event, wait_for_ui_tool_response
 
-async def {tool_name}(main_param: str, chat_id: Optional[str] = None) -> {ReturnType}:
+async def {tool_name}(main_param: str, chat_id: Optional[str] = None, workflow_name: str = "unknown") -> {ReturnType}:
     payload = {
         "main_data": main_param,
         "component_props": {"type": "{type}", "validation": {}},
         "metadata": {"tool_name": "{tool_name}"}
     }
     
-    display_type = "inline"  # or "artifact" for large components
-    event_id = await emit_ui_tool_event("{tool_name}", payload, display_type, chat_id)
+    event_id = await emit_ui_tool_event(
+        tool_id="{tool_name}",
+        payload=payload, 
+        display="inline",  # or "artifact" for large components
+        chat_id=chat_id,
+        workflow_name=workflow_name
+    )
     response = await wait_for_ui_tool_response(event_id)
     
     if response.get("cancelled"):

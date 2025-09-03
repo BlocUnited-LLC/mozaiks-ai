@@ -21,6 +21,7 @@ import { handleEvent } from '../eventDispatcher';
 const UIToolRenderer = ({ 
   event, 
   onResponse,
+  submitInputRequest,
   className = ""
 }) => {
   // Validate event structure
@@ -35,7 +36,7 @@ const UIToolRenderer = ({
 
   try {
     // Use the event dispatcher to render the component
-    const renderedComponent = handleEvent(event, onResponse);
+    const renderedComponent = handleEvent(event, onResponse, submitInputRequest);
 
     if (!renderedComponent) {
       return (

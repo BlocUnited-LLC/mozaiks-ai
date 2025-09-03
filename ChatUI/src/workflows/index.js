@@ -8,11 +8,11 @@
  * 🎯 WORKFLOW REGISTRY - API DRIVEN CLEAN VERSION
  * 
  * Registry for workflow metadata fetched from backend API.
- * Single source of truth: YAML files in backend, accessed via /api/workflows
+ * Single source of truth: json files in backend, accessed via /api/workflows
  * No duplicate configuration files, no hardcoded metadata.
  * 
  * Benefits:
- * - Single source of truth (backend YAML files)
+ * - Single source of truth (backend json files)
  * - No duplicate metadata
  * - Real-time configuration updates
  * - Clean separation of concerns
@@ -38,7 +38,7 @@ class WorkflowRegistry {
 
     try {
       // Fetch all workflow configurations from backend API
-      // This reads the YAML files from the backend (single source of truth)
+      // This reads the json files from the backend (single source of truth)
       const response = await fetch(`${this.apiBaseUrl}/workflows`);
       
       if (!response.ok) {
@@ -54,6 +54,20 @@ class WorkflowRegistry {
           displayName: config.name || workflowName,
           description: `${config.name || workflowName} workflow`,
           version: '1.0.0',
+          // Build structured outputs mapping for agents (agentName -> bool)
+          structuredOutputs: (() => {
+            const map = {};
+            try {
+              const so = config.structured_outputs || {};
+              const registry = so.registry || so.models || so || {};
+              if (Array.isArray(registry)) {
+                registry.forEach(a => { if (typeof a === 'string') map[a] = true; else if (a && a.name) map[a.name] = true; });
+              } else if (typeof registry === 'object') {
+                Object.keys(registry).forEach(k => { map[k] = true; });
+              }
+            } catch (e) { /* ignore parsing errors */ }
+            return map;
+          })(),
           metadata: {
             maxTurns: config.max_turns,
             humanInTheLoop: config.human_in_the_loop,

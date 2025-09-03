@@ -130,7 +130,7 @@ const Header = ({
                   {currentUser.userPhoto ? (
                     <img src={currentUser.userPhoto} alt="User" className="w-full h-full object-cover" />
                   ) : (
-                    <img src="/profile.png" alt="profileicon" className="w-full h-full object-cover" />
+                    <img src="/profile.svg" alt="profileicon" className="w-full h-full object-cover" />
                   )}
                 </div>
                 <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-400 rounded-full border border-slate-900"></div>
@@ -151,7 +151,7 @@ const Header = ({
                         {currentUser.userPhoto ? (
                           <img src={currentUser.userPhoto} alt="User" className="w-full h-full object-cover" />
                         ) : (
-                          <img src="/profile.png" alt="profileicon" className="w-full h-full object-cover" />
+                          <img src="/profile.svg" alt="profileicon" className="w-full h-full object-cover" />
                         )}
                       </div>
                       <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-slate-900"></div>

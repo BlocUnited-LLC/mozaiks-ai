@@ -6,40 +6,33 @@
 import React, { useState } from 'react';
 
 /**
- * AgentAPIKeyInput - Workflow-agnostic API key input component
+ * AgentAPIKeyInput - Production AG2 component for secure API key collection
  * 
- * This component handles secure API key collection for ANY service and communicates 
- * with the backend via the event dispatcher response system. The service type is 
- * dynamically determined by the AG2 agent's request.
+ * Handles secure API key collection for ANY service within the AG2 workflow system.
+ * Fully integrated with chat.* event protocol and WebSocket communication.
  */
 const AgentAPIKeyInput = ({ 
   payload = {},
   onResponse,
-  onCancel,
-  // Legacy props for backward compatibility
   ui_tool_id,
   eventId,
   workflowName,
-  placeholder,
-  label,
-  description,
-  required = true,
-  maskInput = true,
-  service = "openai",
   componentId = "AgentAPIKeyInput"
 }) => {
   // DEV NOTE: This component receives the agent's contextual message via the
   // `payload.description` prop. This is the standardized convention for all
   // dynamic UI components in this application.
-  // Extract dynamic configuration from agent payload
+  // Extract dynamic configuration from AG2 agent payload
   const config = {
-    service: payload.service || service,
-    label: payload.label || label || `${(payload.service || service).toUpperCase()} API Key`,
-    description: payload.description || description || `Enter your ${payload.service || service} API key to continue`,
-    placeholder: payload.placeholder || placeholder || `Enter your ${(payload.service || service).toUpperCase()} API key...`,
-    required: payload.required !== undefined ? payload.required : required,
-    maskInput: payload.maskInput !== undefined ? payload.maskInput : maskInput
+    service: payload.service || "openai",
+    label: payload.label || `${(payload.service || "openai").toUpperCase()} API Key`,
+    description: payload.description || `Enter your ${payload.service || "openai"} API key to continue`,
+    placeholder: payload.placeholder || `Enter your ${(payload.service || "openai").toUpperCase()} API key...`,
+    required: payload.required !== undefined ? payload.required : true,
+    maskInput: payload.maskInput !== undefined ? payload.maskInput : true
   };
+  // Correlate with originating agent message (added in backend payload)
+  const agentMessageId = payload.agent_message_id;
   const [apiKey, setApiKey] = useState('');
   const [isVisible, setIsVisible] = useState(!config.maskInput);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -67,7 +60,7 @@ const AgentAPIKeyInput = ({
     
     try {
       // Prepare response for backend (don't send actual key in logs)
-      const response = {
+    const response = {
         status: 'success',
         action: 'submit',
         data: {
@@ -78,7 +71,8 @@ const AgentAPIKeyInput = ({
           submissionTime: new Date().toISOString(),
           ui_tool_id,
           eventId,
-          workflowName
+      workflowName,
+      agent_message_id: agentMessageId
         }
       };
 
@@ -101,7 +95,7 @@ const AgentAPIKeyInput = ({
           status: 'error',
           action: 'submit',
           error: error.message,
-          data: { service: config.service, ui_tool_id, eventId }
+          data: { service: config.service, ui_tool_id, eventId, agent_message_id: agentMessageId }
         });
       }
     } finally {
@@ -112,7 +106,7 @@ const AgentAPIKeyInput = ({
   const handleCancel = async () => {
     try {
       // Send cancel response to backend
-      const response = {
+    const response = {
         status: 'cancelled',
         action: 'cancel',
         data: {
@@ -120,7 +114,8 @@ const AgentAPIKeyInput = ({
           cancelTime: new Date().toISOString(),
           ui_tool_id,
           eventId,
-          workflowName
+      workflowName,
+      agent_message_id: agentMessageId
         }
       };
 
@@ -143,7 +138,7 @@ const AgentAPIKeyInput = ({
   };
 
   return (
-    <div className="agent-api-key-input rounded-lg p-6 max-w-md mx-auto border-cyan-500/30 bg-gray-900">
+  <div className="agent-api-key-input rounded-lg p-6 max-w-md mx-auto border-cyan-500/30 bg-gray-900" data-agent-message-id={agentMessageId || undefined}>
       <div className="header mb-4">
         <h3 className="text-cyan-400 text-lg font-semibold mb-2 flex items-center gap-2">
           <span>🔑</span>
@@ -231,13 +226,4 @@ const AgentAPIKeyInput = ({
 AgentAPIKeyInput.displayName = 'AgentAPIKeyInput';
 
 // Component metadata for the dynamic UI system (MASTER_UI_TOOL_AGENT_PROMPT requirement)
-export const componentMetadata = {
-  name: 'request_api_key',
-  type: 'inline',
-  pythonTool: 'workflows.Generator.tools.request_api_key.request_api_key',
-  category: 'input',
-  description: 'Secure API key input component',
-  version: '1.0.0'
-};
-
 export default AgentAPIKeyInput;

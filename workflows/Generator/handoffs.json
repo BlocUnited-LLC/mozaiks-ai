@@ -1,0 +1,111 @@
+{
+  "handoffs": {
+    "handoff_rules": [
+      {
+        "source_agent": "ContextAgent",
+        "target_agent": "ToolsManagerAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "ToolsManagerAgent",
+        "target_agent": "UIFileGenerator",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "UIFileGenerator",
+        "target_agent": "AgentToolsFileGenerator",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "AgentToolsFileGenerator",
+        "target_agent": "HookAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "HookAgent",
+        "target_agent": "AgentsAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "AgentsAgent",
+        "target_agent": "ContextVariablesAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "ContextVariablesAgent",
+        "target_agent": "HandoffsAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "HandoffsAgent",
+        "target_agent": "OrchestratorAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "OrchestratorAgent",
+        "target_agent": "StructuredOutputsAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "StructuredOutputsAgent",
+        "target_agent": "APIKeyAgent",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "APIKeyAgent",
+        "target_agent": "user",
+        "handoff_type": "condition",
+        "condition": "When external API keys are required and at least one key is not yet collected.",
+        "transition_target": "RevertToUserTarget"
+      },
+      {
+        "source_agent": "APIKeyAgent",
+        "target_agent": "UserFeedbackAgent",
+        "handoff_type": "condition",
+        "condition": "When no external API keys are required OR all required keys have been successfully collected.",
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "UserFeedbackAgent",
+        "target_agent": "user",
+        "handoff_type": "after_work",
+        "condition": null,
+        "transition_target": "RevertToUserTarget"
+      },
+      {
+        "source_agent": "user",
+        "target_agent": "terminate",
+        "handoff_type": "condition",
+        "condition": "When the user explicitly accepts the final generated workflow artifacts or confirms completion (e.g., 'I accept', 'download complete', 'this works', 'I'm satisfied').",
+        "transition_target": "TerminateTarget"
+      },
+      {
+        "source_agent": "user",
+        "target_agent": "ContextAgent",
+        "handoff_type": "condition",
+        "condition": "When the user wants to restart, modify requirements, or begin a different approach.",
+        "transition_target": "AgentTarget"
+      }
+    ]
+  }
+}

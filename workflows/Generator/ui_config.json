@@ -1,0 +1,8 @@
+{
+  "visual_agents": [
+    "user",
+    "ContextAgent",
+    "APIKeyAgent",
+    "UserFeedbackAgent"
+  ]
+}

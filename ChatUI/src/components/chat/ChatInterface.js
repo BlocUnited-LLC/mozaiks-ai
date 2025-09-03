@@ -6,7 +6,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import UIToolRenderer from "../../core/ui/UIToolRenderer";
 
 // UI Tool Renderer - handles workflow-agnostic UI tool events
-const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse }) => {
+const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRequest }) => {
   if (!uiToolEvent || !uiToolEvent.ui_tool_id) {
     return null;
   }
@@ -18,6 +18,7 @@ const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse }) => {
       <UIToolRenderer 
         event={uiToolEvent}
         onResponse={onResponse}
+        submitInputRequest={submitInputRequest}
         className="ui-tool-in-chat"
       />
     </div>
@@ -33,10 +34,12 @@ const ModernChatInterface = ({
   connectionStatus,
   transportType,
   workflowName,
+  structuredOutputs = {},
   startupMode,
   initialMessageToUser,
   onRetry,
-  tokensExhausted = false
+  tokensExhausted = false,
+  submitInputRequest // F5: WebSocket input submission function
 }) => {
   const [message, setMessage] = useState('');
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
@@ -45,7 +48,7 @@ const ModernChatInterface = ({
   const [buttonText, setButtonText] = useState('SEND');
   const [isScrolledUp, setIsScrolledUp] = useState(false);
   const navigate = useNavigate();
-  const renderCountRef = useRef(0);
+  // const renderCountRef = useRef(0); // For debugging renders if needed
   
   // Optional debug: enable to trace renders
   // renderCountRef.current += 1;
@@ -248,6 +251,9 @@ const ModernChatInterface = ({
               return null;
             }
             
+            // annotate message with workflow mapping if missing
+            const derivedHasStructured = (typeof chat.hasStructuredOutputs === 'boolean') ? chat.hasStructuredOutputs : !!(chat.agentName && structuredOutputs[chat.agentName]);
+
             return (
               <div key={index}>
                 <ChatMessage
@@ -257,12 +263,14 @@ const ModernChatInterface = ({
                   isTokenMessage={chat.isTokenMessage}
                   isWarningMessage={chat.isWarningMessage}
                   isLatest={index === lastContentIndex}
+                  hasStructuredOutputs={derivedHasStructured}
                 />
                 
                 {/* Render UI Tool Events */}
                 {chat.uiToolEvent && (
                   <UIToolEventRenderer 
                     uiToolEvent={chat.uiToolEvent}
+                    submitInputRequest={submitInputRequest}
                     onResponse={(response) => {
                       // console.debug('UI tool response from chat');
                       // Use the handleAgentAction function to process the response

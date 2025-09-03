@@ -28,6 +28,7 @@ const WorkflowUIRouter = ({
   payload, 
   onResponse, 
   onCancel,
+  submitInputRequest,
   ui_tool_id,
   eventId
 }) => {
@@ -39,9 +40,10 @@ const WorkflowUIRouter = ({
   const workflowName = payload?.workflow || payload?.workflow_name || 'Unknown';
   const componentType = payload?.component_type || 'UnknownComponent';
   
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   React.useEffect(() => {
     loadWorkflowComponent(workflowName, componentType);
-  }, [workflowName, componentType]);
+  }, [workflowName, componentType]); // loadWorkflowComponent is defined inside this component and doesn't need to be in deps
 
   /**
    * Dynamically load workflow component - NO HARDCODING
@@ -77,7 +79,28 @@ const WorkflowUIRouter = ({
       console.log(`✅ WorkflowUIRouter: Loaded ${workflow}:${component}`);
       
     } catch (loadError) {
-      console.error(`❌ WorkflowUIRouter: Failed to load ${workflow}:${component}`, loadError);
+      console.warn(`⚠️ WorkflowUIRouter: Failed to load ${workflow}:${component}, trying core components`, loadError);
+      
+      // Fallback to core components (F5: UserInputRequest support)
+      try {
+        const coreModule = await import('./ui/index.js');
+        const coreComponents = {
+          'UserInputRequest': coreModule.UserInputRequest,
+          'user_input': coreModule.UserInputRequest, // Map user_input to UserInputRequest
+        };
+        
+        const coreComponent = coreComponents[component] || coreComponents[ui_tool_id];
+        if (coreComponent) {
+          console.log(`✅ WorkflowUIRouter: Using core component ${component || ui_tool_id}`);
+          setComponent(() => coreComponent);
+          setIsLoading(false);
+          return;
+        }
+      } catch (coreError) {
+        console.warn(`⚠️ WorkflowUIRouter: Failed to load core components`, coreError);
+      }
+      
+      // No fallback found
       setError({
         type: 'component_not_found',
         workflow,
@@ -144,6 +167,7 @@ const WorkflowUIRouter = ({
         payload={payload}
         onResponse={onResponse}
         onCancel={onCancel}
+        submitInputRequest={submitInputRequest}
         ui_tool_id={ui_tool_id}
         eventId={eventId}
         workflowName={workflowName}

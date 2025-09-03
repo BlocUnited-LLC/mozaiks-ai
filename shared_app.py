@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from core.core_config import get_mongo_client
 from core.transport.simple_transport import SimpleTransport
-from core.workflow.init_registry import  workflow_status_summary, get_workflow_transport, get_workflow_tools
+from core.workflow.workflow_manager import workflow_status_summary, get_workflow_transport, get_workflow_tools
 from core.data.persistence_manager import AG2PersistenceManager
 
 # Initialize persistence manager (handles lean chat session storage internally)
@@ -84,6 +84,7 @@ from core.observability.performance_manager import get_performance_manager
 from opentelemetry import trace
 tracer = trace.get_tracer("mozaiks.app")
 from core.observability.otel_helpers import timed_span
+from core.observability.otel_helpers import telemetry_status
 from core.workflow.orchestration_patterns import get_run_registry_summary
 
 # FastAPI app
@@ -114,6 +115,54 @@ async def health_active_runs():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/metrics/perf/aggregate")
+async def metrics_perf_aggregate():
+    """Return aggregate in-memory performance counters (no DB hits)."""
+    try:
+        perf_mgr = await get_performance_manager()
+        return await perf_mgr.aggregate()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to collect aggregate metrics: {e}")
+
+@app.get("/metrics/perf/chats")
+async def metrics_perf_chats():
+    """Return per-chat in-memory performance snapshots."""
+    try:
+        perf_mgr = await get_performance_manager()
+        return await perf_mgr.snapshot_all()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to collect chat metrics: {e}")
+
+@app.get("/metrics/perf/chats/{chat_id}")
+async def metrics_perf_chat(chat_id: str):
+    try:
+        perf_mgr = await get_performance_manager()
+        snap = await perf_mgr.snapshot_chat(chat_id)
+        if not snap:
+            raise HTTPException(status_code=404, detail="Chat not tracked")
+        return snap
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to collect chat metric: {e}")
+
+@app.get("/metrics/telemetry/status")
+async def metrics_telemetry_status():
+    return telemetry_status()
+
+@app.get("/metrics/prometheus")
+async def metrics_prometheus():
+    """Prometheus exposition format (subset) for quick scraping.
+
+    Note: Lightweight hand-crafted output; not a full client library export.
+    """
+    try:
+        perf_mgr = await get_performance_manager()
+        text = await perf_mgr.prometheus_metrics()
+        return Response(content=text, media_type="text/plain; version=0.0.4")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate prometheus metrics: {e}")
+
 
 # # ------------------------------------------------------------------------------
 # # SERVICE REGISTRY (backend-agnostic routing for artifact modules)
@@ -137,13 +186,19 @@ async def startup():
     """Initialize application on startup (with lean OTel span)."""
     global simple_transport
     startup_start = datetime.utcnow()
+    
+    wf_logger.info("🚀 APP_STARTUP: FastAPI startup event triggered")
+    wf_logger.info(f"🔧 APP_STARTUP: Environment = {env}")
+    
     # Use helper (mozaiks.app.startup span name becomes mozaiks.app.startup via prefix logic? timed_span adds mozaiks.<key>)
     # We'll pass key 'app.startup' so final span is mozaiks.app.startup for consistency.
     with timed_span("app.startup", attributes={"environment": env}) as span:
         try:
             # Initialize performance / observability
+            wf_logger.info("🔧 APP_STARTUP: Initializing performance manager...")
             perf_mgr = await get_performance_manager()
             await perf_mgr.initialize()
+            wf_logger.info("✅ APP_STARTUP: Performance manager initialized")
 
             # Initialize simple transport
             streaming_start = datetime.utcnow()
@@ -491,7 +546,7 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
                     "enterprise_id": enterprise_id,
                     "user_id": user_id,
                     "workflow_name": workflow_name,
-                    "status": "in_progress",
+                    "status": 0,
                     "created_at": {"$gte": reuse_cutoff},
                 }
                 if client_request_id:
@@ -587,65 +642,6 @@ async def list_chats(enterprise_id: str, workflow_name: str):
         logger.error(f"❌ Failed to list chats for enterprise {enterprise_id}, workflow {workflow_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list chats")
     
-@app.get("/api/chats/{enterprise_id}/{workflow_name}/{chat_id}/resume")
-async def resume_chat(enterprise_id: str, workflow_name: str, chat_id: str):
-    """Attempt to resume a chat session: return status & existing strict messages.
-
-    A session is resumable if it exists and status == 'in_progress'.
-    Returns a lightweight payload (no billing structs) to prime the UI.
-    """
-    try:
-        coll = await _chat_coll()
-        # enterprise_id may be stored as ObjectId or string – search both forms
-        try:
-            eid_obj = ObjectId(enterprise_id)
-            doc = await coll.find_one({"_id": chat_id, "workflow_name": workflow_name, "enterprise_id": {"$in": [enterprise_id, eid_obj]}})
-        except Exception:
-            doc = await coll.find_one({"_id": chat_id, "workflow_name": workflow_name, "enterprise_id": enterprise_id})
-        if not doc:
-            return {"success": False, "reason": "not_found"}
-        status = doc.get("status", "unknown")
-        messages = doc.get("messages", []) or []
-        resumable = status == "in_progress"
-        # Normalize messages for frontend (strip only needed fields)
-        normalized = []
-        for m in messages:
-            try:
-                role = m.get("role") or "assistant"
-                # New lean schema uses agent_name for assistants and no name for user
-                name = m.get("agent_name") if role == "assistant" else "user"
-                normalized.append({
-                    "role": role,
-                    "name": name,
-                    "content": m.get("content") or "",
-                    "timestamp": m.get("timestamp"),
-                    "event_id": m.get("event_id"),
-                    "event_type": m.get("event_type")
-                })
-            except Exception:
-                continue
-        get_workflow_logger("shared_app").info(
-            "CHAT_SESSION_RESUME: Resume attempt",
-            chat_id=chat_id,
-            workflow_name=workflow_name,
-            enterprise_id=enterprise_id,
-            status=status,
-            message_count=len(normalized),
-            can_resume=resumable,
-        )
-        return {
-            "success": True,
-            "chat_id": chat_id,
-            "workflow_name": workflow_name,
-            "enterprise_id": enterprise_id,
-            "status": status,
-            "can_resume": resumable,
-            "messages": normalized
-        }
-    except Exception as e:
-        logger.error(f"❌ Failed to resume chat {chat_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to resume chat")
-    
 
 @app.websocket("/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}")
 async def websocket_endpoint(
@@ -660,20 +656,48 @@ async def websocket_endpoint(
         await websocket.close(code=1000, reason="Transport service not available")
         return
 
-    wf_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_name}'")
+    wf_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_name}' (incoming chat_id={chat_id})")
+
+    # Auto resume vs new session selection
+    active_chat_id = chat_id
+    try:
+        coll = await _chat_coll()
+        latest = await coll.find({
+            "enterprise_id": enterprise_id,
+            "workflow_name": workflow_name,
+            "user_id": user_id
+        }).sort("created_at", -1).limit(1).to_list(length=1)
+        if latest:
+            latest_doc = latest[0]
+            latest_status = int(latest_doc.get("status", -1))
+            latest_id = latest_doc.get("_id")
+            if latest_status == 0:
+                active_chat_id = latest_id
+                wf_logger.info("WS_AUTO_RESUME", extra={"chat_id": active_chat_id, "incoming_chat_id": chat_id})
+            else:
+                # Ensure provided chat id exists (create minimal doc if missing)
+                if not await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}):
+                    await persistence_manager.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
+                    wf_logger.info("WS_NEW_SESSION_CREATED", extra={"chat_id": chat_id})
+        else:
+            if not await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}):
+                await persistence_manager.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
+                wf_logger.info("WS_FIRST_SESSION_CREATED", extra={"chat_id": chat_id})
+    except Exception as pre_err:
+        wf_logger.error(f"WS_SESSION_DETERMINATION_FAILED: {pre_err}")
 
     # Auto-start AgentDriven workflows once the socket is accepted and registered
     async def _auto_start_if_needed():
         try:
-            from core.workflow.workflow_config import workflow_config
-            cfg = workflow_config.get_config(workflow_name)
+            from core.workflow.workflow_manager import workflow_manager
+            cfg = workflow_manager.get_config(workflow_name)
             if cfg.get("startup_mode", "AgentDriven") == "AgentDriven":
                 local_transport = simple_transport
                 if not local_transport:
                     return
                 # wait until the connection is registered
-                for _ in range(20):
-                    conn = local_transport.connections.get(chat_id)
+                for _ in range(20):  # poll for registration using active_chat_id
+                    conn = local_transport.connections.get(active_chat_id)
                     if conn and conn.get("websocket") is not None:
                         # idempotency guard so auto-start runs at most once per socket
                         if conn.get("autostarted"):
@@ -683,20 +707,20 @@ async def websocket_endpoint(
                     await asyncio.sleep(0.1)
 
                 await local_transport.handle_user_input_from_api(
-                    chat_id=chat_id,
+                    chat_id=active_chat_id,
                     user_id=user_id,
                     workflow_name=workflow_name,
                     message=None,
                     enterprise_id=enterprise_id,
                 )
         except Exception as e:
-            logger.error(f"Auto-start failed for {workflow_name}/{chat_id}: {e}")
+            logger.error(f"Auto-start failed for {workflow_name}/{active_chat_id}: {e}")
 
     asyncio.create_task(_auto_start_if_needed())
     
     await simple_transport.handle_websocket(
         websocket=websocket,
-        chat_id=chat_id,
+        chat_id=active_chat_id,
         user_id=user_id,
         workflow_name=workflow_name,
         enterprise_id=enterprise_id
@@ -821,41 +845,18 @@ async def get_workflow_tools_info(workflow_name: str):
 async def get_workflow_ui_tools_manifest(workflow_name: str):
     """Get UI tools manifest with schemas for frontend development."""
     try:
-        # Get UI-specific tools (look for workflow_name + "_ui")
-        ui_workflow_name = f"{workflow_name}_ui"
-        ui_tools = get_workflow_tools(ui_workflow_name)
-        
+        from core.workflow.workflow_manager import workflow_manager
+        ui_tools = workflow_manager.get_workflow_tools(workflow_name)
         manifest = []
-        
-        # Extract UI tool registry from discovered tools
-        for tool_class in ui_tools:
-            # Check for module-level registry first
-            if hasattr(tool_class, '__module__'):
-                try:
-                    import importlib
-                    module = importlib.import_module(tool_class.__module__)
-                    if hasattr(module, 'get_ui_tool_registry'):
-                        registry = module.get_ui_tool_registry()
-                        for ui_tool_id, tool_info in registry.items():
-                            # Avoid duplicates
-                            if not any(item["ui_tool_id"] == ui_tool_id for item in manifest):
-                                manifest.append({
-                                    "ui_tool_id": ui_tool_id,
-                                    "description": tool_info.get("description", ""),
-                                    "payloadSchema": tool_info.get("payloadSchema", {}),
-                                    "workflow": workflow_name
-                                })
-                except Exception as e:
-                    logger.debug(f"Could not extract module-level UI tool registry: {e}")
-        
-        return {
-            "workflow_name": workflow_name,
-            "ui_tools_count": len(manifest),
-            "ui_tools": manifest,
-            "documentation": f"Each ui_tool_id must have a corresponding React component in the frontend. "
-                           f"Use the payloadSchema to implement the component's props interface.",
-            "usage": f"Backend emits: await channel.send_ui_tool(ui_tool_id, payload)"
-        }
+        for rec in ui_tools:
+            manifest.append({
+                "ui_tool_id": rec.get("tool_id"),
+                "component": rec.get("component"),
+                "mode": rec.get("mode"),
+                "agent": rec.get("agent"),
+                "workflow": workflow_name
+            })
+        return {"workflow_name": workflow_name, "ui_tools_count": len(manifest), "ui_tools": manifest}
         
     except Exception as e:
         logger.error(f"Error getting UI tools manifest for {workflow_name}: {e}")
@@ -912,11 +913,11 @@ async def consume_user_tokens(user_id: str, request: Request):
 async def get_workflows():
     """Get all workflows for frontend (alias for /api/workflows/config)"""
     try:
-        from core.workflow.workflow_config import workflow_config
+        from core.workflow.workflow_manager import workflow_manager
         
         configs = {}
-        for workflow_name in workflow_config.get_all_workflow_names():
-            configs[workflow_name] = workflow_config.get_config(workflow_name)
+        for workflow_name in workflow_manager.get_all_workflow_names():
+            configs[workflow_name] = workflow_manager.get_config(workflow_name)
         
         get_workflow_logger("shared_app").info(
             "WORKFLOWS_REQUESTED: Workflows requested by frontend",
@@ -933,11 +934,11 @@ async def get_workflows():
 async def get_workflow_configs():
     """Get all workflow configurations for frontend"""
     try:
-        from core.workflow.workflow_config import workflow_config
+        from core.workflow.workflow_manager import workflow_manager
         
         configs = {}
-        for workflow_name in workflow_config.get_all_workflow_names():
-            configs[workflow_name] = workflow_config.get_config(workflow_name)
+        for workflow_name in workflow_manager.get_all_workflow_names():
+            configs[workflow_name] = workflow_manager.get_config(workflow_name)
         
         get_workflow_logger("shared_app").info(
             "WORKFLOW_CONFIGS_REQUESTED: Workflow configurations requested by frontend",
@@ -977,51 +978,32 @@ async def handle_component_action(
         if not component_id or not action_type:
             raise HTTPException(status_code=400, detail="'component_id' and 'action_type' fields are required.")
 
-        logger.info(f"?? Received component action via HTTP: {component_id} -> {action_type}")
+        logger.info(f"🧩 Component action via HTTP: {component_id} -> {action_type}")
 
         try:
-            # This endpoint receives user interactions from UI components.
-            # The correct action is to submit this data as a response to a waiting agent tool,
-            # not to send a new UI event. We use submit_ui_tool_response for this.
-            # The 'component_id' from the frontend corresponds to the 'event_id' that the agent is waiting for.
-            event_id = component_id
-
-            # Package the rest of the data into the response_data dictionary.
-            response_data = {
-                "action_type": action_type,
-                "action_data": action_data,
-                "source": "http_endpoint"
-            }
-
-            success = await simple_transport.submit_ui_tool_response(
-                event_id=event_id,
-                response_data=response_data
+            result = await simple_transport.process_component_action(
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
+                component_id=component_id,
+                action_type=action_type,
+                action_data=action_data or {}
             )
-
-            if not success:
-                # The event_id might not be found if the agent is no longer waiting
-                # or if the frontend sent a stale/incorrect ID.
-                logger.warning(f"UI tool event '{event_id}' not found or already completed for chat {chat_id}.")
-                raise HTTPException(status_code=404, detail=f"UI tool event '{event_id}' not found or already completed.")
-            
-            logger.info(f"? Component action for event '{event_id}' submitted successfully.")
-            
             get_workflow_logger("shared_app").info(
                 "COMPONENT_ACTION_PROCESSED: Component action processed successfully",
                 chat_id=chat_id,
-                event_id=event_id,
-                submitted_to_workflow=True
+                component_id=component_id,
+                action_type=action_type,
+                applied_keys=list((result.get('applied') or {}).keys())
             )
-            
             return {
                 "status": "success",
-                "message": "Component action submitted to workflow",
+                "message": "Component action applied",
+                "applied": result.get('applied'),
                 "timestamp": datetime.utcnow().isoformat()
             }
-                
         except Exception as action_error:
-            logger.error(f"? Component action submission failed (HTTP): {action_error}")
-            raise HTTPException(status_code=500, detail=f"Component action submission failed: {action_error}")
+            logger.error(f"❌ Component action failed: {action_error}")
+            raise HTTPException(status_code=500, detail=f"Component action failed: {action_error}")
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")

@@ -6,16 +6,14 @@
 import React, { useState } from 'react';
 
 /**
- * FileDownloadCenter - Workflow-agnostic file download component
+ * FileDownloadCenter - Production AG2 component for file downloads
  * 
- * This component handles file downloads and communicates with the backend
- * via the event dispatcher response system.
+ * Handles file downloads with rich agent context feedback within the AG2 workflow system.
+ * Fully integrated with chat.* event protocol and provides detailed completion signals.
  */
 const FileDownloadCenter = ({ 
   payload = {},
   onResponse,
-  onCancel,
-  // Legacy props for backward compatibility
   ui_tool_id,
   eventId,
   workflowName,
@@ -29,6 +27,7 @@ const FileDownloadCenter = ({
     title: payload.title || "Generated Files",
     description: payload.description || null
   };
+  const agentMessageId = payload.agent_message_id;
   const [downloadStatus, setDownloadStatus] = useState({});
 
   const handleDownload = async (fileId, filename) => {
@@ -46,18 +45,10 @@ const FileDownloadCenter = ({
           ui_tool_id,
           eventId,
           workflowName,
-          // Additional context for agent decision making
-          userAction: 'download_initiated',
-          downloadMethod: 'single_file',
+          agent_message_id: agentMessageId,
           fileInfo: config.files.find(f => f.id === fileId) || { name: filename }
         },
-        // Agent context - helps agents understand what happened
-        agentContext: {
-          nextAction: 'continue_workflow',  // Suggest what agent should do next
-          userEngagement: 'positive',       // User is engaging with the content
-          workflowStage: 'file_delivery',   // What stage of workflow this represents
-          shouldContinue: true              // Whether workflow should continue
-        }
+        agentContext: { downloaded: true, type: 'single' }
       };
 
       // Call the response handler from event dispatcher
@@ -79,14 +70,8 @@ const FileDownloadCenter = ({
           status: 'error',
           action: 'download',
           error: error.message,
-          data: { fileId, filename, ui_tool_id, eventId },
-          agentContext: {
-            nextAction: 'retry_or_skip',
-            userEngagement: 'neutral',
-            workflowStage: 'file_delivery_failed',
-            shouldContinue: true,
-            errorRecovery: 'offer_alternative'
-          }
+          data: { fileId, filename, ui_tool_id, eventId, agent_message_id: agentMessageId },
+          agentContext: { downloaded: false, type: 'single', error: true }
         });
       }
     }
@@ -105,20 +90,10 @@ const FileDownloadCenter = ({
           ui_tool_id,
           eventId,
           workflowName,
-          // Additional context for agents
-          userAction: 'bulk_download_initiated',
-          downloadMethod: 'bulk_operation',
-          totalSize: config.files.reduce((sum, f) => sum + (f.size || 0), 0)
+          agent_message_id: agentMessageId,
+          totalSize: config.files.reduce((sum, f) => sum + (f.size_bytes || 0), 0)
         },
-        // Rich agent context for decision making
-        agentContext: {
-          nextAction: 'workflow_complete',    // User got all files - workflow likely complete
-          userEngagement: 'very_positive',    // User wants everything - high engagement
-          workflowStage: 'successful_completion',
-          shouldContinue: false,              // Workflow can end successfully
-          satisfactionLevel: 'high',          // User satisfaction indicator
-          completionSignal: true              // Signal that user's needs are met
-        }
+        agentContext: { downloaded: true, type: 'bulk', complete: true }
       };
 
       if (onResponse) {
@@ -142,14 +117,8 @@ const FileDownloadCenter = ({
           status: 'error',
           action: 'download_all',
           error: error.message,
-          data: { fileCount: config.files.length, ui_tool_id, eventId },
-          agentContext: {
-            nextAction: 'troubleshoot_bulk_download',
-            userEngagement: 'frustrated',
-            workflowStage: 'bulk_download_failed',
-            shouldContinue: true,
-            errorRecovery: 'offer_individual_downloads'
-          }
+          data: { fileCount: config.files.length, ui_tool_id, eventId, agent_message_id: agentMessageId },
+          agentContext: { downloaded: false, type: 'bulk', error: true }
         });
       }
     }
@@ -160,22 +129,14 @@ const FileDownloadCenter = ({
       onResponse({
         status: 'cancelled',
         action: 'cancel',
-        data: { ui_tool_id, eventId, workflowName },
-        // Rich cancellation context for agents
-        agentContext: {
-          nextAction: 'ask_about_alternatives',  // Agent should ask what user wants instead
-          userEngagement: 'disengaged',          // User doesn't want the files
-          workflowStage: 'file_delivery_rejected',
-          shouldContinue: true,                  // Continue workflow but adapt approach
-          rejectionReason: 'user_cancelled',     // Why the interaction failed
-          suggestedRecovery: 'offer_different_format_or_content'
-        }
+        data: { ui_tool_id, eventId, workflowName, agent_message_id: agentMessageId },
+        agentContext: { downloaded: false, cancelled: true }
       });
     }
   };
 
   return (
-    <div className="file-download-center bg-gray-900 border border-cyan-500/30 rounded-lg p-4">
+  <div className="file-download-center bg-gray-900 border border-cyan-500/30 rounded-lg p-4" data-agent-message-id={agentMessageId || undefined}>
       <div className="download-header flex justify-between items-center mb-4">
         <h3 className="text-cyan-400 text-lg font-semibold">{config.title}</h3>
         <div className="flex gap-2">
@@ -254,13 +215,4 @@ const FileDownloadCenter = ({
 FileDownloadCenter.displayName = 'FileDownloadCenter';
 
 // Component metadata for the dynamic UI system (MASTER_UI_TOOL_AGENT_PROMPT requirement)
-export const componentMetadata = {
-  name: 'generate_and_download',
-  type: 'artifact',
-  pythonTool: 'workflows.Generator.tools.generate_and_download.generate_and_download',
-  category: 'viewer',
-  description: 'File download center component',
-  version: '1.0.0'
-};
-
 export default FileDownloadCenter;

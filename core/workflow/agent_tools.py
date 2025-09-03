@@ -1,0 +1,166 @@
+# ============================================================================
+# FILE: core/workflow/agent_tools.py
+# DESCRIPTION:
+#   Agent tool function loading from workflows/<flow>/tools.json
+#   Loads ALL tools (Agent_Tool and UI_Tool) as agent functions.
+#   UI_Tools get special handling during execution but are still bound to agents.
+#   NOTE: UI interaction handling logic lives in ui_tools.py.
+# ============================================================================
+from __future__ import annotations
+import logging
+import importlib
+import importlib.util
+import sys
+from pathlib import Path
+from typing import Callable, Dict, List, Any, Optional
+
+import json
+
+logger = logging.getLogger(__name__)
+
+def load_agent_tool_functions(workflow_name: str) -> Dict[str, List[Callable]]:
+    """Discover and import per-agent tool functions for a workflow.
+
+    Reads workflows/<workflow_name>/tools.json and returns a mapping of
+    agent_name -> list[callable] so callers can pass functions=... to
+    ConversableAgent at construction time.
+
+    Loads ALL tools (both Agent_Tool and UI_Tool types) as agent functions.
+    UI_Tools get special handling during execution but still need to be
+    registered with their agents for proper function binding.
+    """
+    mapping: Dict[str, List[Callable]] = {}
+    base_dir = Path('workflows') / workflow_name
+    tools_json_path = base_dir / 'tools.json'
+    if not tools_json_path.exists():
+        logger.debug(f"[TOOLS] No tools.json for workflow '{workflow_name}'")
+        return mapping
+    try:
+        data = json.loads(tools_json_path.read_text(encoding='utf-8')) or {}
+    except Exception as jerr:
+        logger.warning(f"[TOOLS] Failed to parse tools.json for '{workflow_name}': {jerr}")
+        return mapping
+    entries = data.get('tools', []) or []
+    if not isinstance(entries, list):
+        logger.warning(f"[TOOLS] tools.json 'tools' section not a list in '{workflow_name}'")
+        return mapping
+    module_cache: Dict[Path, Any] = {}
+    logger.debug(f"[TOOLS][TRACE] Starting tool load for workflow '{workflow_name}' (entries={len(entries)})")
+    for idx, tool in enumerate(entries, start=1):
+        if not isinstance(tool, dict):
+            continue
+        # NOTE: We load ALL tools (including UI_Tools) as agent functions here.
+        # UI_Tools get special handling during execution but still need to be
+        # registered with the agent for proper function binding.
+        file_name = tool.get('file')
+        func_name = tool.get('function')
+        agent_field = tool.get('agent')
+        if not file_name or not func_name or not agent_field:
+            logger.warning(f"[TOOLS][TRACE] Skipping entry #{idx}: missing one of file/function/agent -> file={file_name} func={func_name} agent={agent_field}")
+            continue
+        # Support agent as str or list
+        if isinstance(agent_field, (list, tuple)):
+            agent_targets = [a for a in agent_field if isinstance(a, str)]
+        else:
+            agent_targets = [agent_field] if isinstance(agent_field, str) else []
+        if not agent_targets:
+            continue
+        # Resolve file path (support both root and tools/ subdir)
+        base_dir_tools = base_dir / 'tools'
+        candidate_paths = [base_dir / file_name, base_dir_tools / file_name]
+        file_path: Optional[Path] = next((p for p in candidate_paths if p.exists()), None)
+        if not file_path:
+            logger.warning(f"[TOOLS][TRACE] File not found for entry #{idx}: {file_name} (searched: {candidate_paths})")
+            continue
+        module = module_cache.get(file_path)
+        if module is None:
+            try:
+                spec = importlib.util.spec_from_file_location(f"mozaiks_{workflow_name}_{file_path.stem}", file_path)
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    # Clear any existing cache entry first to ensure fresh load
+                    if spec.name in sys.modules:
+                        logger.debug(f"[TOOLS] Clearing cached module: {spec.name}")
+                        del sys.modules[spec.name]
+                    # Load and cache the module
+                    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+                    sys.modules[spec.name] = module  # cache module
+                    module_cache[file_path] = module
+                    logger.debug(f"[TOOLS] Successfully loaded and cached module: {spec.name}")
+                else:
+                    logger.warning(f"[TOOLS] Could not load spec for {file_path}")
+                    continue
+            except Exception as imp_err:
+                logger.warning(f"[TOOLS][TRACE] Import failed for {file_path}: {imp_err}")
+                continue
+        try:
+            func = getattr(module, func_name)
+        except AttributeError:
+            logger.warning(f"[TOOLS][TRACE] Function '{func_name}' missing in {file_path.name}")
+            continue
+        if not callable(func):
+            logger.warning(f"[TOOLS][TRACE] Attribute '{func_name}' in {file_path.name} not callable")
+            continue
+        # Log binding details BEFORE adding
+        logger.debug(
+            "[TOOLS][TRACE] Preparing to bind function -> workflow=%s agent_targets=%s file=%s func=%s module=%s",
+            workflow_name, agent_targets, file_path.name, func_name, getattr(func, '__module__', None)
+        )
+        for ag in agent_targets:
+            mapping.setdefault(ag, []).append(func)
+            logger.debug(
+                "[TOOLS][TRACE] Bound function to agent -> workflow=%s agent=%s func=%s id=%s",
+                workflow_name, ag, func_name, hex(id(func))
+            )
+    # Emit a structured summary for post-mortem debugging
+    summary = {agent: [getattr(f, '__name__', '<noname>') for f in funcs] for agent, funcs in mapping.items()}
+    total_funcs = sum(len(v) for v in mapping.values())
+    logger.info(f"[TOOLS] Bound {total_funcs} tool functions across {len(mapping)} agents for '{workflow_name}'")
+    logger.debug(f"[TOOLS][TRACE] Tool binding summary for '{workflow_name}': {summary}")
+    return mapping
+
+def clear_tool_cache(workflow_name: Optional[str] = None) -> int:
+    """Clear cached tool modules to force fresh reload.
+    
+    Args:
+        workflow_name: If provided, only clear modules for this workflow.
+                      If None, clear all mozaiks_* modules.
+    
+    Returns:
+        Number of modules cleared from sys.modules cache.
+    """
+    cleared_count = 0
+    modules_to_clear = []
+    
+    # Find modules to clear
+    for module_name in sys.modules.keys():
+        if workflow_name:
+            # Clear only specific workflow modules
+            if module_name.startswith(f"mozaiks_{workflow_name}_"):
+                modules_to_clear.append(module_name)
+        else:
+            # Clear all mozaiks modules
+            if module_name.startswith("mozaiks_"):
+                modules_to_clear.append(module_name)
+    
+    # Clear the modules
+    for module_name in modules_to_clear:
+        try:
+            del sys.modules[module_name]
+            cleared_count += 1
+            logger.debug(f"[TOOLS] Cleared cached module: {module_name}")
+        except KeyError:
+            # Module was already removed by another thread
+            pass
+    
+    if cleared_count > 0:
+        logger.info(f"[TOOLS] Cleared {cleared_count} cached tool modules")
+    else:
+        logger.debug("[TOOLS] No cached tool modules found to clear")
+    
+    return cleared_count
+
+__all__ = [
+    'load_agent_tool_functions',
+    'clear_tool_cache',
+]

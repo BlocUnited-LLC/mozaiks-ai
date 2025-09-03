@@ -3,10 +3,9 @@
 # DESCRIPTION: Centralized event dispatcher for all event types in MozaiksAI
 # ==============================================================================
 
-import asyncio
 import logging
 import uuid
-from typing import Dict, Any, Optional, Union, Callable, List
+from typing import Dict, Any, Optional, Union, List
 from datetime import datetime
 from enum import Enum
 from dataclasses import dataclass, field
@@ -55,23 +54,36 @@ class UIToolEvent:
     event_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     category: str = field(default="ui_tool")
 
+@dataclass
+class SessionPausedEvent:
+    """Session paused due to insufficient tokens or other conditions"""
+    chat_id: str
+    reason: str
+    user_id: str
+    enterprise_id: str
+    required_tokens: Optional[int] = None
+    context: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=lambda: datetime.utcnow())
+    event_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    category: str = field(default="business")
+
 # ==============================================================================
 # EVENT HANDLERS (Abstract Base Classes)
 # ==============================================================================
 
 # Type alias for all event types
-EventType = Union[BusinessLogEvent, UIToolEvent]
+EventType = Union[BusinessLogEvent, UIToolEvent, SessionPausedEvent]
 
 class EventHandler(ABC):
     """Abstract base class for event handlers"""
     
     @abstractmethod
-    async def handle(self, event: EventType) -> bool:
+    async def handle(self, _event: EventType) -> bool:
         """Handle an event. Returns True if handled successfully."""
         pass
     
     @abstractmethod
-    def can_handle(self, event: EventType) -> bool:
+    def can_handle(self, _event: EventType) -> bool:
         """Check if this handler can process the given event."""
         pass
 
@@ -83,21 +95,41 @@ class BusinessLogHandler(EventHandler):
     
     async def handle(self, event: EventType) -> bool:
         """Handle business logging events"""
-        if not isinstance(event, BusinessLogEvent):
-            return False
-            
-        try:
-            # Log business event details using workflow logger
-            level = getattr(wf_logger, event.level.lower(), wf_logger.info)
-            level(
-                f"BUSINESS_EVENT {event.log_event_type}: {event.description}",
-                **(event.context or {})
-            )
-            wf_logger.debug(f"📊 Business event processed: {event.log_event_type}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Failed to handle business event {event.log_event_type}: {e}")
-            return False
+        if isinstance(event, BusinessLogEvent):
+            try:
+                # Log business event details using workflow logger
+                level = getattr(wf_logger, event.level.lower(), wf_logger.info)
+                level(
+                    f"BUSINESS_EVENT {event.log_event_type}: {event.description}",
+                    **(event.context or {})
+                )
+                wf_logger.debug(f"📊 Business event processed: {event.log_event_type}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to handle business event: {e}")
+                return False
+        
+        elif isinstance(event, SessionPausedEvent):
+            try:
+                # Log the session pause
+                wf_logger.warning(f"⏸️ Session paused: {event.reason} (chat_id: {event.chat_id})")
+                
+                # Emit to transport layer for UI notification  
+                try:
+                    from core.transport.simple_transport import SimpleTransport
+                    # Get singleton instance without parameters
+                    transport = await SimpleTransport.get_instance()
+                    if transport:
+                        await transport.emit_session_paused(event)
+                except ImportError:
+                    logger.warning("SimpleTransport not available for session paused notification")
+                    
+                return True
+            except Exception as e:
+                logger.error(f"Failed to handle session paused event: {e}")
+                return False
+        
+        return False
 
 class UIToolHandler(EventHandler):
     """Handler for UI tool events (user interactions)"""

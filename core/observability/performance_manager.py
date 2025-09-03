@@ -1,29 +1,25 @@
 from __future__ import annotations
-"""Lean Performance Manager aligned with new chat_sessions schema.
+"""Lean Performance Manager aligned with new ChatSessions schema.
 
-Removes heavy real_time_tracking persistence; only maintains minimal in-memory
-metrics and updates session duration / a few flattened usage fields.
+Maintains minimal in-memory metrics and updates session duration / a few flattened usage fields.
 """
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Dict, Any, Optional, List
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, List, Union
 
 from opentelemetry import trace
 from core.observability.otel_helpers import timed_span, ensure_telemetry_initialized, get_duration_hist
 from logs.logging_config import get_workflow_logger
 from core.data.persistence_manager import AG2PersistenceManager
-from autogen import gather_usage_summary
-
-logger = get_workflow_logger("performance_manager")
+from core.data.models import WorkflowStatus
 
 logger = get_workflow_logger("performance_manager")
 perf_logger = get_workflow_logger("performance")
 tracer = trace.get_tracer(__name__)
 
-class InsufficientTokensError(Exception):
-    pass
+# Removed unused InsufficientTokensError
 
 @dataclass
 class PerformanceConfig:
@@ -36,12 +32,16 @@ class ChatPerfState:
     enterprise_id: str
     workflow_name: str
     user_id: str
-    started_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ended_at: Optional[datetime] = None
     agent_turns: int = 0
     tool_calls: int = 0
     errors: int = 0
     last_turn_duration_sec: Optional[float] = None
+    # Removed unused detailed latency/token speed metrics for simplification
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_cost: float = 0.0
 
 class PerformanceManager:
     def __init__(self, config: Optional[PerformanceConfig] = None):
@@ -54,22 +54,120 @@ class PerformanceManager:
         self._agent_turn_duration = None
         self._workflow_duration = None
         self.initialized = False
-        self._billed_totals: Dict[str, int] = {}
+
+    # --------------------------------------------------
+    # Snapshot helpers (in-memory only, no DB dependency)
+    # --------------------------------------------------
+    async def snapshot_chat(self, chat_id: str) -> Optional[Dict[str, Any]]:
+        """Return an in-memory snapshot for a single chat (no DB reads).
+
+        Includes derived runtime duration (seconds) whether or not workflow ended.
+        Returns None if chat_id not tracked yet.
+        """
+        async with self._lock:
+            st = self._states.get(chat_id)
+            if not st:
+                return None
+            ended_at = st.ended_at or datetime.now(timezone.utc)
+            runtime_sec = (ended_at - st.started_at).total_seconds()
+            return {
+                "chat_id": st.chat_id,
+                "enterprise_id": st.enterprise_id,
+                "workflow_name": st.workflow_name,
+                "user_id": st.user_id,
+                "started_at": st.started_at.isoformat(),
+                "ended_at": st.ended_at.isoformat() if st.ended_at else None,
+                "runtime_sec": runtime_sec,
+                "agent_turns": st.agent_turns,
+                "tool_calls": st.tool_calls,
+                "errors": st.errors,
+                "last_turn_duration_sec": st.last_turn_duration_sec,
+                "prompt_tokens": st.total_prompt_tokens,
+                "completion_tokens": st.total_completion_tokens,
+                "cost": st.total_cost,
+            }
+
+    async def snapshot_all(self) -> List[Dict[str, Any]]:
+        async with self._lock:
+            ids = list(self._states.keys())
+        out: List[Dict[str, Any]] = []
+        for cid in ids:
+            snap = await self.snapshot_chat(cid)
+            if snap:
+                out.append(snap)
+        return out
+
+    async def aggregate(self) -> Dict[str, Any]:
+        """Aggregate simple counters across all tracked chats for quick polling."""
+        snaps = await self.snapshot_all()
+        total_agent_turns = sum(s["agent_turns"] for s in snaps)
+        total_tool_calls = sum(s["tool_calls"] for s in snaps)
+        total_errors = sum(s["errors"] for s in snaps)
+        total_prompt_tokens = sum(s["prompt_tokens"] for s in snaps)
+        total_completion_tokens = sum(s["completion_tokens"] for s in snaps)
+        total_cost = sum(s["cost"] for s in snaps)
+        active_chats = sum(1 for s in snaps if s["ended_at"] is None)
+        return {
+            "active_chats": active_chats,
+            "tracked_chats": len(snaps),
+            "total_agent_turns": total_agent_turns,
+            "total_tool_calls": total_tool_calls,
+            "total_errors": total_errors,
+            "total_prompt_tokens": total_prompt_tokens,
+            "total_completion_tokens": total_completion_tokens,
+            "total_cost": total_cost,
+            "chats": snaps,
+        }
+
+    async def prometheus_metrics(self) -> str:
+        """Return minimal Prometheus exposition text for in-memory counters.
+
+        Metric names prefixed with mozaiks_. This is *not* using the official
+        client library to keep dependencies lean; suitable for low-volume scrape.
+        """
+        snaps = await self.snapshot_all()
+        lines: List[str] = []
+        def esc(val: str) -> str:
+            return val.replace("\\", "\\\\").replace("\"", "\\\"")
+        lines.append("# TYPE mozaiks_active_chats gauge")
+        lines.append(f"mozaiks_active_chats {sum(1 for s in snaps if s['ended_at'] is None)}")
+        lines.append("# TYPE mozaiks_tracked_chats gauge")
+        lines.append(f"mozaiks_tracked_chats {len(snaps)}")
+        lines.append("# TYPE mozaiks_chat_agent_turns_total counter")
+        lines.append("# TYPE mozaiks_chat_tool_calls_total counter")
+        lines.append("# TYPE mozaiks_chat_errors_total counter")
+        lines.append("# TYPE mozaiks_chat_prompt_tokens_total counter")
+        lines.append("# TYPE mozaiks_chat_completion_tokens_total counter")
+        lines.append("# TYPE mozaiks_chat_cost_total counter")
+        for s in snaps:
+            labels = f"chat_id=\"{esc(str(s['chat_id']))}\",workflow=\"{esc(str(s['workflow_name']))}\""
+            lines.append(f"mozaiks_chat_agent_turns_total{{{labels}}} {s['agent_turns']}")
+            lines.append(f"mozaiks_chat_tool_calls_total{{{labels}}} {s['tool_calls']}")
+            lines.append(f"mozaiks_chat_errors_total{{{labels}}} {s['errors']}")
+            lines.append(f"mozaiks_chat_prompt_tokens_total{{{labels}}} {s['prompt_tokens']}")
+            lines.append(f"mozaiks_chat_completion_tokens_total{{{labels}}} {s['completion_tokens']}")
+            lines.append(f"mozaiks_chat_cost_total{{{labels}}} {s['cost']}")
+        return "\n".join(lines) + "\n"
 
     async def _get_coll(self):
         if self._chat_coll is None:
             await self._persistence.persistence._ensure_client()
-            client = self._persistence.persistence.client
-            if client is None:
+            client_obj = self._persistence.persistence.client
+            if client_obj is None:
                 raise RuntimeError("Mongo client unavailable")
-            self._chat_coll = client["MozaiksAI"]["chat_sessions"]
+            # Updated collection name
+            self._chat_coll = client_obj["MozaiksAI"]["ChatSessions"]
         return self._chat_coll
 
     async def initialize(self):
         if self.initialized:
+            logger.info("🔍 PERF_INIT: Performance manager already initialized, skipping")
             return
-        ensure_telemetry_initialized(
-            endpoint="http://localhost:4317",
+        
+        logger.info("🔧 PERF_INIT: Starting performance manager initialization")
+        
+        # Let environment / defaults determine OTLP endpoint; users can set MOZAIKS_OTEL_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT.
+        telemetry_result = ensure_telemetry_initialized(
             service_name="mozaiks-ai",
             environment="dev",
             service_version="1.0.0",
@@ -77,11 +175,23 @@ class PerformanceManager:
             connection_test_timeout_sec=0.3,
             enabled=self.config.enabled,
         )
+        
+        if telemetry_result:
+            logger.info("✅ PERF_INIT: Telemetry initialization successful")
+        else:
+            logger.warning("❌ PERF_INIT: Telemetry initialization failed or disabled")
+        
         self._agent_turn_duration = get_duration_hist("agent_turn", "Agent turn duration")
         self._workflow_duration = get_duration_hist("workflow_duration", "Workflow duration")
+        
         if self.config.flush_interval_sec > 0:
+            logger.info(f"🔧 PERF_INIT: Starting periodic flush task (interval={self.config.flush_interval_sec}s)")
             self._flush_task = asyncio.create_task(self._periodic_flush())
+        else:
+            logger.info("🔧 PERF_INIT: Periodic flush disabled (interval=0)")
+            
         self.initialized = True
+        logger.info("✅ PERF_INIT: Performance manager initialization completed")
 
     async def _periodic_flush(self):
         while True:
@@ -94,115 +204,182 @@ class PerformanceManager:
     async def record_workflow_start(self, chat_id: str, enterprise_id: str, workflow_name: str, user_id: str):
         async with self._lock:
             if chat_id not in self._states:
-                self._states[chat_id] = ChatPerfState(chat_id, enterprise_id, workflow_name, user_id)
-        # Ensure lean session doc exists
-        coll = await self._get_coll()
-        now = datetime.utcnow()
-        await coll.update_one(
-            {"_id": chat_id, "enterprise_id": enterprise_id},
-            {"$setOnInsert": {
-                "_id": chat_id,
-                "enterprise_id": enterprise_id,
-                "workflow_name": workflow_name,
-                "user_id": user_id,
-                "status": "in_progress",
-                "created_at": now,
-                "last_updated_at": now,
-                "duration_sec": 0.0,
-                "messages": []
-            }},
-            upsert=True,
-        )
+                self._states[chat_id] = ChatPerfState(
+                    chat_id=chat_id,
+                    enterprise_id=enterprise_id,
+                    workflow_name=workflow_name,
+                    user_id=user_id,
+                )
+        # Delegate creation to AG2PersistenceManager (single source of truth)
+        try:
+            await self._persistence.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
+        except Exception:
+            # Fallback: direct minimal upsert if persistence manager path changes
+            coll = await self._get_coll()
+            now = datetime.now(timezone.utc)
+            await coll.update_one(
+                {"_id": chat_id, "enterprise_id": enterprise_id},
+                {"$setOnInsert": {
+                    "_id": chat_id,
+                    "enterprise_id": enterprise_id,
+                    "workflow_name": workflow_name,
+                    "user_id": user_id,
+                    "status": 0,
+                    "created_at": now,
+                    "last_updated_at": now,
+                    "duration_sec": 0.0,
+                    "messages": []
+                }},
+                upsert=True,
+            )
         perf_logger.info("workflow_start", chat_id=chat_id, workflow=workflow_name)
 
     async def attach_trace_id(self, chat_id: str, trace_id: str):
+        if not trace_id or trace_id == '0' * 32:
+            # Ignore invalid trace ids; caller should provide fallback
+            perf_logger.warning(f"ignored_zero_trace_id chat_id={chat_id}")
+            return
         coll = await self._get_coll()
         await coll.update_one({"_id": chat_id}, {"$set": {"trace_id": trace_id}})
 
     async def record_agent_turn(self, chat_id: str, agent_name: str, duration_sec: float, model: Optional[str], prompt_tokens: int = 0, completion_tokens: int = 0, cost: float = 0.0):
-        with timed_span("agent_turn", attributes={"chat_id": chat_id}):
+        st_ref = self._states.get(chat_id)
+        with timed_span(
+            "agent_turn",
+            attributes={
+                "chat_id": chat_id,
+                # Add workflow + enterprise for performance_store aggregation parity with WorkflowStats
+                "workflow": st_ref.workflow_name if st_ref else None,
+                "enterprise_id": st_ref.enterprise_id if st_ref else None,
+                "agent": agent_name,
+                "model": model or "unknown",
+                "prompt_tokens": int(prompt_tokens),
+                "completion_tokens": int(completion_tokens),
+                "total_tokens": int(prompt_tokens + completion_tokens),
+                "cost_usd": float(cost),
+            },
+        ):
             async with self._lock:
                 st = self._states.get(chat_id)
                 if not st:
                     return
                 st.agent_turns += 1
                 st.last_turn_duration_sec = duration_sec
+                if prompt_tokens:
+                    st.total_prompt_tokens += int(prompt_tokens)
+                if completion_tokens:
+                    st.total_completion_tokens += int(completion_tokens)
+                if cost:
+                    st.total_cost += float(cost)
             if self._agent_turn_duration:
                 self._agent_turn_duration.record(duration_sec, {"chat_id": chat_id})
-            coll = await self._get_coll()
-            await coll.update_one({"_id": chat_id}, {"$set": {"last_updated_at": datetime.utcnow()}})
 
-    async def record_tool_call(self, chat_id: str, tool_name: str, duration_sec: float, success: bool, error_type: Optional[str] = None):
-        async with self._lock:
-            st = self._states.get(chat_id)
-            if st:
-                st.tool_calls += 1
-                if not success:
-                    st.errors += 1
+            # Update real-time metrics instead of ChatSession
+            if prompt_tokens > 0 or completion_tokens > 0 or cost > 0:
+                await self._persistence.update_session_metrics(
+                    chat_id, st.enterprise_id, st.user_id, st.workflow_name,
+                    prompt_tokens, completion_tokens, cost, agent_name
+                )
 
-    async def record_workflow_end(self, chat_id: str, status: str, termination_reason: Optional[str] = None):
+    async def record_tool_call(self, chat_id: str, tool_name: str, success: bool):
+        """Increment tool call counters.
+
+        Duration/error attribution removed; upstream callers may choose their own
+        measurement strategy if needed. We only count global success vs error totals.
+        """
         async with self._lock:
             st = self._states.get(chat_id)
             if not st:
                 return
-            st.ended_at = datetime.utcnow()
+            st.tool_calls += 1
+            if not success:
+                st.errors += 1
+        perf_logger.debug("tool_call", chat_id=chat_id, tool=tool_name, success=success)
+
+    async def record_workflow_end(self, chat_id: str, status: Union[int, str, WorkflowStatus]):
+        async with self._lock:
+            st = self._states.get(chat_id)
+            if not st:
+                return
+            st.ended_at = datetime.now(timezone.utc)
+
+        # record duration metric
         if self._workflow_duration:
-            duration = (st.ended_at - st.started_at).total_seconds()  # type: ignore[name-defined]
-            self._workflow_duration.record(duration, {"workflow_name": st.workflow_name, "status": status})
+            duration = (st.ended_at - st.started_at).total_seconds()  # type: ignore[arg-type]
+            # store status as string in telemetry attributes to avoid serializer issues
+            self._workflow_duration.record(duration, {"workflow_name": st.workflow_name, "status": str(status)})
+
+        # Persist final status / end time prior to duration flush
+        coll = await self._get_coll()
+
+        # Normalize status to WorkflowStatus enum if passed as string
+        # Normalize status to WorkflowStatus numeric
+        if isinstance(status, WorkflowStatus):
+            status_enum = status
+        elif isinstance(status, int):
+            status_enum = WorkflowStatus.COMPLETED if status == 1 else WorkflowStatus.IN_PROGRESS
+        else:
+            status_enum = WorkflowStatus.COMPLETED if str(status).lower() == "completed" else WorkflowStatus.IN_PROGRESS
+
+        # Only update the DB status if it differs from current stored value to avoid duplicate writes
+        update_doc: Dict[str, Any] = {}
+        update_doc["ended_at"] = st.ended_at
+        update_doc["last_updated_at"] = datetime.now(timezone.utc)
+
+        try:
+            existing = await coll.find_one({"_id": chat_id}, {"status": 1})
+            existing_status = existing.get("status") if existing else None
+        except Exception:
+            existing_status = None
+
+        if existing_status is None or int(existing_status) != int(status_enum):
+            update_doc["status"] = int(status_enum)
+
+        if update_doc:
+            await coll.update_one({"_id": chat_id}, {"$set": update_doc})
+
+        # Final flush to persist computed duration_sec
         await self.flush(chat_id)
+
+        # Best-effort workflow summary refresh (does not block)
+        if status_enum == WorkflowStatus.COMPLETED:
+            try:  # pragma: no cover
+                from core.data.models import refresh_workflow_rollup_by_id
+
+                summary_id = f"mon_{st.enterprise_id}_{st.workflow_name}"
+                asyncio.create_task(refresh_workflow_rollup_by_id(summary_id))
+            except Exception:
+                pass
 
     async def flush(self, chat_id: str):
         async with self._lock:
             st = self._states.get(chat_id)
             if not st:
                 return
-            runtime_sec = ((st.ended_at or datetime.utcnow()) - st.started_at).total_seconds()
+            runtime_sec = ((st.ended_at or datetime.now(timezone.utc)) - st.started_at).total_seconds()
         coll = await self._get_coll()
-        await coll.update_one({"_id": chat_id}, {"$set": {"duration_sec": runtime_sec, "last_updated_at": datetime.utcnow()}})
+        await coll.update_one({"_id": chat_id}, {"$set": {"duration_sec": runtime_sec, "last_updated_at": datetime.now(timezone.utc)}})
 
-    # Simplified billing (delta tokens) kept for compatibility with existing calls
-    def _fold_usage(self, summary: dict) -> int:
-        if not isinstance(summary, dict):
-            return 0
-        total = 0
-        for model, data in summary.items():
-            if model == "total_cost" or not isinstance(data, dict):
-                continue
-            tt = data.get("total_tokens")
-            if isinstance(tt, int):
-                total += tt
-            else:
-                total += int(data.get("prompt_tokens", 0)) + int(data.get("completion_tokens", 0))
-        return total
 
-    async def bill_usage_from_print_summary(self, chat_id: str, enterprise_id: str, user_id: str, agents: List[Any]) -> int:
-        try:
-            summary = gather_usage_summary(agents)
-        except Exception:
-            return 0
-        current = summary.get("usage_including_cached_inference") or {}
-        cumulative = self._fold_usage(current)
-        last = self._billed_totals.get(chat_id, 0)
-        delta = max(0, cumulative - last)
-        self._billed_totals[chat_id] = cumulative
-        return delta
-
-    async def record_final_usage_from_agents(self, chat_id: str, enterprise_id: str, user_id: str, agents: List[Any]) -> None:
-        try:
-            summary = gather_usage_summary(agents)
-        except Exception:
-            return
-        current = summary.get("usage_including_cached_inference") or {}
-        cumulative = self._fold_usage(current)
-        self._billed_totals[chat_id] = cumulative
-        coll = await self._get_coll()
-        await coll.update_one({"_id": chat_id}, {"$set": {"usage_total_tokens_final": cumulative, "last_updated_at": datetime.utcnow()}})
-
-_perf_instance: Optional[PerformanceManager] = None
+class _PerformanceManagerSingleton:
+    _instance: Optional[PerformanceManager] = None
+    _lock = asyncio.Lock()
+    
+    @classmethod
+    async def get_instance(cls) -> PerformanceManager:
+        if cls._instance is None:
+            logger.info("🔧 PERF_SINGLETON: Creating new PerformanceManager instance")
+            async with cls._lock:
+                if cls._instance is None:
+                    logger.info("🔧 PERF_SINGLETON: Double-checked lock - creating instance")
+                    cls._instance = PerformanceManager()
+                    await cls._instance.initialize()
+                    logger.info("✅ PERF_SINGLETON: PerformanceManager singleton created and initialized")
+                else:
+                    logger.info("🔍 PERF_SINGLETON: Instance already created by another coroutine")
+        else:
+            logger.info("🔍 PERF_SINGLETON: Using existing PerformanceManager instance")
+        return cls._instance
 
 async def get_performance_manager() -> PerformanceManager:
-    global _perf_instance
-    if _perf_instance is None:
-        _perf_instance = PerformanceManager()
-        await _perf_instance.initialize()
-    return _perf_instance
+    return await _PerformanceManagerSingleton.get_instance()

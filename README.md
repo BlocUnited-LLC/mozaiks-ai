@@ -77,6 +77,42 @@ Notes:
 - Set `OPENLIT_ENABLED=true` to emit OTEL telemetry; otherwise the app runs without telemetry.
 - File logs map to `logs/logs` on the host by default. You can override the directory with `LOGS_BASE_DIR`. Combine with `LOGS_AS_JSON` to switch file format inside containers.
 
+### Telemetry & Metrics Quick Reference
+
+Runtime provides two layers:
+
+1. OpenTelemetry (traces + histograms) exported to the in-cluster collector (OTLP HTTP at `otel-collector:4318` via compose). If the collector is down, initialization degrades silently.
+2. Lightweight in-memory performance counters + token usage exposed directly via HTTP.
+
+HTTP Endpoints (no auth in dev):
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/metrics/perf/aggregate` | JSON aggregate (turns, tool calls, tokens, cost) |
+| `/metrics/perf/chats` | JSON array of per‑chat snapshots |
+| `/metrics/perf/chats/{chat_id}` | Single chat snapshot |
+| `/metrics/telemetry/status` | Current OTEL env + init status |
+| `/metrics/prometheus` | Prometheus exposition (scraped by collector) |
+
+Prometheus Scrape: Collector config now includes a `prometheus` receiver scraping `/metrics/prometheus` every 10s; metrics forwarded to the `logging` exporter. Replace or extend exporters (e.g. Prometheus remote write, Grafana Cloud) as needed.
+
+Disable Telemetry Completely:
+```
+set OTEL_TRACES_EXPORTER=none (Windows) or export OTEL_TRACES_EXPORTER=none (bash)
+```
+or unset `OTEL_EXPORTER_OTLP_ENDPOINT` before startup. The perf endpoints continue working because they are in-memory only.
+
+Cost & Token Fields: Accumulated per chat (prompt_tokens, completion_tokens, cost) and surfaced in all snapshot endpoints and Prometheus counters.
+
+Minimal Local Verification (PowerShell):
+```powershell
+Invoke-RestMethod http://localhost:8000/metrics/perf/aggregate | ConvertTo-Json -Depth 4
+Invoke-WebRequest http://localhost:8000/metrics/prometheus | Select -Expand Content
+Invoke-RestMethod http://localhost:8000/metrics/telemetry/status
+```
+
+If you don't want the collector, remove the `otel-collector` service from compose and the related env vars; the app will still run and expose the raw endpoints.
+
 ### Viewing Logs
 
 - Files: `logs/logs/*.log` (filenames are constant)

@@ -1,6 +1,6 @@
 import React from 'react';
 
-const ArtifactPanel = ({ onClose, isMobile = false }) => {
+const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
   const containerClasses = isMobile 
     ? "fixed inset-0 z-50" 
     : "flex flex-col w-full transition-all duration-500 ease-in-out";
@@ -45,18 +45,51 @@ const ArtifactPanel = ({ onClose, isMobile = false }) => {
         {/* Artifact Content Area - ONLY THIS SCROLLS */}
         <div className="flex-1 relative overflow-hidden">
           <div className="absolute inset-0 overflow-y-auto p-6 space-y-4 my-scroll1">
-            {/* Welcome State */}
-            <div className="text-center space-y-6 mt-8">
-              <div className="flex items-center justify-center h-full min-h-[400px]">
-                <div className="w-32 h-32 bg-gradient-to-br from-cyan-500/10 to-purple-500/10 rounded-2xl border border-cyan-400/30 flex items-center justify-center backdrop-blur-sm shadow-lg">
-                  <img 
-                    src="/mozaik_logo.svg" 
-                    alt="Mozaik Logo" 
-                    className="w-16 h-16 opacity-60"
-                  />
+            {/* If no structured messages, show welcome state */}
+            {(!messages || messages.length === 0) ? (
+              <div className="text-center space-y-6 mt-8">
+                <div className="flex items-center justify-center h-full min-h-[400px]">
+                  <div className="w-32 h-32 bg-gradient-to-br from-cyan-500/10 to-purple-500/10 rounded-2xl border border-cyan-400/30 flex items-center justify-center backdrop-blur-sm shadow-lg">
+                    <img 
+                      src="/mozaik_logo.svg" 
+                      alt="Mozaik Logo" 
+                      className="w-16 h-16 opacity-60"
+                    />
+                  </div>
                 </div>
+                <div className="text-sm text-gray-300">No structured artifacts yet. Agent structured outputs will appear here.</div>
               </div>
-            </div>
+            ) : (
+              <div className="space-y-6">
+                {messages.map((m, idx) => {
+                  let parsed = null;
+                  try {
+                    const jsonMatch = (typeof m.content === 'string') ? m.content.match(/\{[\s\S]*\}/) : null;
+                    if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+                    else if (typeof m.content === 'object') parsed = m.content;
+                  } catch (e) { parsed = null; }
+
+                  return (
+                    <div key={m.id || idx} className="bg-black/20 border border-gray-700 rounded-lg p-4">
+                      <div className="flex items-start justify-between mb-2">
+                        <div>
+                          <div className="text-xs text-cyan-300">{m.agentName || 'Agent'}</div>
+                          <div className="text-sm text-gray-200 font-semibold">Structured Output</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => { if (navigator.clipboard && parsed) { navigator.clipboard.writeText(JSON.stringify(parsed, null, 2)); } }} className="text-xs px-2 py-1 bg-gray-800/50 rounded text-gray-200">Copy JSON</button>
+                        </div>
+                      </div>
+                      {parsed ? (
+                        <pre className="text-xs text-gray-300 bg-black/30 p-3 rounded overflow-auto max-h-72">{JSON.stringify(parsed, null, 2)}</pre>
+                      ) : (
+                        <div className="text-sm text-gray-400">Could not parse structured output for this artifact.</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>

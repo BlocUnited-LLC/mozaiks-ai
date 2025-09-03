@@ -3,10 +3,10 @@ AG2 Termination Handler with Status Management
 Automatically updates workflow status from 0 → 1 when AG2 conversations terminate
 Based on TerminateTarget patterns logic (0 = resumable, 1 = completed)
 """
-import logging
 import asyncio
 from time import perf_counter
-from typing import Optional, Dict, Any, Callable, Union, TYPE_CHECKING
+from datetime import datetime
+from typing import Optional, Dict, Any, Union, Callable, TYPE_CHECKING
 from dataclasses import dataclass
 
 from logs.logging_config import get_workflow_logger
@@ -21,10 +21,9 @@ wf_logger = get_workflow_logger("termination_handler")
 
 @dataclass
 class TerminationResult:
-    """Result of conversation termination processing"""
+    """Result of conversation termination processing (numeric status: 0 in-progress, 1 completed)."""
     terminated: bool
-    termination_reason: str
-    status: str  # 'in_progress' | 'completed'
+    status: int  # 0 | 1
     workflow_complete: bool
     session_summary: Optional[Dict[str, Any]] = None
 
@@ -112,14 +111,13 @@ class AG2TerminationHandler:
 
             wf_logger.info(f"🚀 AG2 conversation started for {self.workflow_name}")
     
-    async def on_conversation_end(self, 
-                                termination_reason: str = "completed",
-                                max_turns_reached: bool = False) -> TerminationResult:
+    async def on_conversation_end(self,
+                                  *,
+                                  max_turns_reached: bool = False) -> TerminationResult:
         """
         Called when AG2 conversation ends (TerminateTarget triggered or max_turns reached)
         
         Args:
-            termination_reason: Why the conversation ended
             max_turns_reached: Whether conversation ended due to max turns limit
         
         Returns:
@@ -134,8 +132,7 @@ class AG2TerminationHandler:
                 wf_logger.warning(f"⚠️ Termination handler called but conversation not active")
                 return TerminationResult(
                     terminated=False,
-                    termination_reason="not_active",
-                    status="in_progress",  # Represents 'in_progress' or 'not_started'
+                    status=0,
                     workflow_complete=False
                 )
 
@@ -149,13 +146,9 @@ class AG2TerminationHandler:
                 "enterprise_id": self.enterprise_id
             }, record_metric=False) as span:
                 try:
-                    # Adjust termination reason if max turns was reached
-                    if max_turns_reached and termination_reason == "completed":
-                        termination_reason = "max_turns_reached"
-
-                    # Mark the chat as completed in the database
+                    # Mark the chat as completed in the database (reason removed)
                     status_updated = await self.persistence_manager.mark_chat_completed(
-                        self.chat_id, self.enterprise_id, termination_reason
+                        self.chat_id, self.enterprise_id
                     )
 
                     if not status_updated:
@@ -163,24 +156,27 @@ class AG2TerminationHandler:
 
                     # Emit a dedicated event to the UI to signal completion
                     if self.transport:
-                        await self.transport.send_to_ui(
-                            message={"status": "completed", "reason": termination_reason},
-                            message_type="workflow_completed",
-                            chat_id=self.chat_id
+                        completion_event = {
+                            "type": "chat.run_complete",
+                            "data": {
+                                "chat_id": self.chat_id,
+                                "status": 1,
+                                "timestamp": datetime.utcnow().isoformat()
+                            }
+                        }
+                        await self.transport.send_event_to_ui(completion_event, self.chat_id
                         )
                         wf_logger.info(f"✅ Sent 'workflow_completed' event to UI for chat {self.chat_id}")
 
                     # Create termination result
                     session_summary = {
                         "duration_sec": conversation_duration,
-                        "termination_reason": termination_reason,
                         "max_turns_reached": max_turns_reached,
                         "completed": True,
                     }
                     result = TerminationResult(
                         terminated=True,
-                        termination_reason=termination_reason,
-                        status="completed",
+                        status=1,
                         workflow_complete=True,
                         session_summary=session_summary
                     )
@@ -190,14 +186,13 @@ class AG2TerminationHandler:
                         dispatcher = get_event_dispatcher()
                         await dispatcher.emit_business_event(
                             log_event_type="CONVERSATION_TERMINATED",
-                            description=f"AG2 conversation terminated: {termination_reason}",
+                            description="AG2 conversation terminated",
                             context={
                                 "chat_id": self.chat_id,
                                 "enterprise_id": self.enterprise_id,
                                 "workflow_name": self.workflow_name,
                                 "status": result.status,
                                 "duration_ms": conversation_duration * 1000,
-                                "termination_reason": termination_reason,
                                 "max_turns_reached": max_turns_reached,
                                 "workflow_complete": result.workflow_complete,
                             },
@@ -215,12 +210,12 @@ class AG2TerminationHandler:
                     # Attach overall conversation duration (start→end, not just span duration)
                     try:
                         span.set_attribute("conversation.duration_sec", conversation_duration)
-                        span.set_attribute("termination.reason", termination_reason)
+                        # Reason removed – only record max_turns flag
                         span.set_attribute("termination.max_turns_reached", bool(max_turns_reached))
                     except Exception:
                         pass
 
-                    wf_logger.info(f"✅ AG2 conversation terminated successfully: {termination_reason} (status: {result.status})")
+                    wf_logger.info(f"✅ AG2 conversation terminated successfully (status={result.status})")
                     # Mark ended & cache result (outside lock minimal risk; attributes immutable)
                     self._ended = True
                     self._last_result = result
@@ -232,8 +227,7 @@ class AG2TerminationHandler:
                     # Return failure result
                     failure_result = TerminationResult(
                         terminated=False,
-                        termination_reason="termination_error",
-                        status="completed",  # Conservatively mark completed; DB was updated above
+                        status=1,  # Conservatively mark completed; DB was updated above
                         workflow_complete=False
                     )
                     self._ended = True
@@ -271,42 +265,34 @@ class AG2TerminationHandler:
     async def check_completion_status(self) -> Dict[str, Any]:
         """Return current chat session completion status.
 
-        Uses the lean persistence manager's internal collection accessor instead of the
-        removed legacy _repo layer. A session is considered complete when status == 'completed'.
+        Uses the lean persistence manager's internal collection accessor
+        A session is considered complete when status == 'completed'.
         We query by the canonical _id (chat_id) + enterprise_id to match create / completion writes.
         """
         try:
             coll = await self.persistence_manager._coll()
-            # New schema stores the session id as _id; chat_id kept only for backward compatibility.
+            # New schema stores the session id as _id; chat_id maintained for compatibility.
             session = await coll.find_one({"_id": self.chat_id, "enterprise_id": self.enterprise_id})
 
             if not session:
                 return {
-                    "current_status": "not_found",
-                    "can_resume": False,
-                    "is_complete": False,
+                    "status": -1,
+                    "reason": "not_found",
                     "conversation_active": self.conversation_active,
                     "workflow_name": self.workflow_name,
                 }
 
-            status = session.get("status", "unknown")
-            is_complete = status == "completed"
-            termination_reason = session.get("termination_reason")
-
+            status = int(session.get("status", -1))
             return {
-                "current_status": status,
-                "can_resume": not is_complete,
-                "is_complete": is_complete,
+                "status": status,
                 "conversation_active": self.conversation_active,
                 "workflow_name": self.workflow_name,
-                "termination_reason": termination_reason,
             }
         except Exception as e:
             wf_logger.error(f"❌ Failed to check completion status: {e}")
             return {
-                "current_status": "error",
-                "can_resume": False,
-                "is_complete": False,
+                "status": -1,
+                "reason": "error",
                 "conversation_active": self.conversation_active,
                 "workflow_name": self.workflow_name,
                 "error": str(e),

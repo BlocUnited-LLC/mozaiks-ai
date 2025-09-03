@@ -25,9 +25,10 @@ export class DynamicUIHandler {
    * Setup default event handlers for backend UI events
    */
   setupDefaultHandlers() {
-    // UI tool events (NEW - uses event dispatcher)
-    this.registerHandler('ui_tool', this.handleUIToolEvent.bind(this));
-    this.registerHandler('UI_TOOL', this.handleUIToolEvent.bind(this));
+    // UI tool events (normalized + legacy)
+    this.registerHandler('ui_tool_event', this.handleUIToolEvent.bind(this));
+    
+    
     
   // User input requests (bridge to UI tool rendering)
   this.registerHandler('user_input_request', this.handleUserInputRequest.bind(this));
@@ -277,7 +278,7 @@ export class DynamicUIHandler {
     try {
       console.log('🎯 DynamicUIHandler: Processing UI tool event', eventData);
 
-      const { ui_tool_id, payload, eventId, workflowname } = eventData;
+      const { ui_tool_id, payload, eventId, workflow_name } = eventData;
 
       if (!ui_tool_id) {
         console.error('❌ Missing ui_tool_id in UI tool event');
@@ -293,7 +294,7 @@ export class DynamicUIHandler {
             type: 'ui_tool_response',
             ui_tool_id,
             eventId,
-            workflowname,
+            workflow_name,
             payload,
             response
           });
@@ -307,7 +308,7 @@ export class DynamicUIHandler {
         ui_tool_id,
         payload,
         eventId,
-        workflowname,
+        workflow_name,
         onResponse
       });
 

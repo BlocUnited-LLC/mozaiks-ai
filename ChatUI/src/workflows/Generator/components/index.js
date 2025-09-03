@@ -4,8 +4,8 @@
 // ==============================================================================
 
 // Import Generator-specific components
-import AgentAPIKeyInput, { componentMetadata as apiKeyMetadata } from './AgentAPIKeyInput';
-import FileDownloadCenter, { componentMetadata as downloadMetadata } from './FileDownloadCenter';
+import AgentAPIKeyInput from './AgentAPIKeyInput';
+import FileDownloadCenter from './FileDownloadCenter';
 
 /**
  * 🎯 GENERATOR WORKFLOW COMPONENTS
@@ -22,11 +22,7 @@ const GeneratorComponents = {
   FileDownloadCenter
 };
 
-// Export component metadata for dynamic UI system
-export const componentMetadata = {
-  AgentAPIKeyInput: apiKeyMetadata,
-  FileDownloadCenter: downloadMetadata
-};
+
 
 export default GeneratorComponents;
 

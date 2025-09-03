@@ -27,9 +27,10 @@ class EventDispatcher {
    * Handle a UI tool event from the backend
    * @param {Object} event - Event object with ui_tool_id and payload
    * @param {Function} onResponse - Callback to send response back to backend
+   * @param {Function} submitInputRequest - WebSocket input submission function (F5)
    * @returns {React.Element|null} - Rendered component or null
    */
-  handleEvent(event, onResponse = null) {
+  handleEvent(event, onResponse = null, submitInputRequest = null) {
     try {
       const { ui_tool_id, payload = {}, eventId, workflow_name } = event;
 
@@ -107,6 +108,7 @@ class EventDispatcher {
         },
         onResponse: responseHandler,
         onCancel: cancelHandler,
+        submitInputRequest,
         ui_tool_id,
         eventId
       });
@@ -201,8 +203,8 @@ const eventDispatcher = new EventDispatcher();
 // Export both the instance and the main handler for convenience
 export default eventDispatcher;
 
-export const handleEvent = (event, onResponse) => 
-  eventDispatcher.handleEvent(event, onResponse);
+export const handleEvent = (event, onResponse, submitInputRequest) => 
+  eventDispatcher.handleEvent(event, onResponse, submitInputRequest);
 
 export const registerEventHandler = (eventType, handler) =>
   eventDispatcher.registerEventHandler(eventType, handler);

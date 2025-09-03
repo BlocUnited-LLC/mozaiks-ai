@@ -5,7 +5,7 @@
 # ======================================================================
 from __future__ import annotations
 
-import logging, logging.handlers, os, json, traceback, sys, time
+import logging, logging.handlers, os, json, traceback, sys, time, re
 from time import perf_counter
 from pathlib import Path
 import os
@@ -31,6 +31,7 @@ LOGS_AS_JSON = os.getenv("LOGS_AS_JSON", "").lower() in ("1", "true", "yes", "on
 CHAT_LOG_FILE        = LOGS_DIR / "agent_chat.log"
 WORKFLOW_LOG_FILE    = LOGS_DIR / "workflows.log"
 ERRORS_LOG_FILE      = LOGS_DIR / "errors.log"
+AUTOGEN_LOG_FILE     = LOGS_DIR / "autogen_agentchat.log"
 
 # Sensitive key substrings for redaction
 _SENSITIVE_KEYS = {"api_key", "apikey", "authorization", "auth", "secret", "password", "token"}
@@ -66,11 +67,14 @@ class ProductionJSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         # Choose an emoji based on logger/level/content for quick visual scan (also useful to surface in readers)
         emoji = _pick_emoji(record)
+        raw_msg = record.getMessage()
+        # Sanitize highly specific secrets / tenant GUIDs from noisy third-party libs (msal)
+        raw_msg = _sanitize_log_message(raw_msg)
         base = {
             "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "msg": record.getMessage(),
+            "msg": raw_msg,
             "mod": record.module,
             "fn": record.funcName,
             "line": record.lineno,
@@ -117,7 +121,7 @@ def _pick_emoji(record: logging.LogRecord) -> str:
         return "⏱️"
     if name.startswith("token.") or "token" in msg:
         return "🪙"
-    if "websocket" in name or "transport" in name or "ws" in msg:
+    if "websocket" in name or "transport" in name or "mon" in msg:
         return "🔌"
     if "workflow" in name:
         return "🧩"
@@ -125,6 +129,21 @@ def _pick_emoji(record: logging.LogRecord) -> str:
         return "🎯"
     # Level-based fallback
     return {"DEBUG": "🐛", "INFO": "ℹ️", "WARNING": "⚠️", "ERROR": "❌", "CRITICAL": "🚨"}.get(level, "•")
+
+# ----------------------------------------------------------------------
+# Message sanitization helper (tenant/client IDs, GUIDs from msal noise)
+# ----------------------------------------------------------------------
+_GUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+
+def _sanitize_log_message(message: str) -> str:
+    if not isinstance(message, str) or not message:
+        return message
+    # Redact GUIDs that appear in Azure tenant / client logs
+    msg = _GUID_RE.sub(lambda m: m.group(0)[:4] + "***REDACTED***" + m.group(0)[-4:], message)
+    # Collapse excessive whitespace from large JSON dumps
+    if len(msg) > 2000:
+        msg = msg[:2000] + "...<truncated>"
+    return msg
 
 class PrettyConsoleFormatter(logging.Formatter):
     """Human-friendly console formatter with emojis, colors, and file context.
@@ -144,7 +163,7 @@ class PrettyConsoleFormatter(logging.Formatter):
         color = _LEVEL_COLORS.get(level, "") if not self.no_color else ""
         reset = _RESET if color else ""
         logger_name = record.name
-        msg = record.getMessage()
+        msg = _sanitize_log_message(record.getMessage())
         file = getattr(record, "filename", "")
         line = record.lineno
         func = record.funcName
@@ -239,6 +258,24 @@ def setup_logging(
     global _logging_initialized
     if _logging_initialized: return
     _logging_initialized = True
+
+    # Optional clearing of existing log files (pre-handler creation) ------------------
+    cleared_files: list[str] = []
+    clear_flag = os.getenv("CLEAR_LOGS_ON_START", "0").lower() in ("1","true","yes","on")
+    if clear_flag:
+        for f in (CHAT_LOG_FILE, WORKFLOW_LOG_FILE, ERRORS_LOG_FILE, AUTOGEN_LOG_FILE):
+            try:
+                if f.exists():
+                    try:
+                        f.unlink()  # remove so RotatingFileHandler starts fresh
+                    except Exception:
+                        # Fallback: truncate if unlink fails (e.g. locked on Windows)
+                        with open(f, 'w', encoding='utf-8') as fp:
+                            fp.truncate(0)
+                    cleared_files.append(str(f))
+            except Exception:
+                pass  # silent; not critical
+
     root = logging.getLogger(); root.handlers.clear(); root.setLevel(logging.DEBUG)
     # Choose file formatter based on env; console remains pretty
     file_fmt = ProductionJSONFormatter() if LOGS_AS_JSON else PrettyConsoleFormatter(no_color=True)
@@ -249,11 +286,30 @@ def setup_logging(
     ]
     for path, lvl, flt in spec:
         root.addHandler(_make_handler(path, lvl, file_fmt, log_filter=flt, max_bytes=max_file_size, backup_count=backup_count))
+    # Dedicated autogen handler so AG2/internal autogen logs have their own file
+    try:
+        # Allow overriding autogen log level via env var; default to DEBUG so users actually see AG2 internals.
+        autogen_level_env = os.getenv("AUTOGEN_LOG_LEVEL", "DEBUG").upper()
+        autogen_level = getattr(logging, autogen_level_env, logging.DEBUG)
+        autogen_handler = _make_handler(
+            AUTOGEN_LOG_FILE,
+            autogen_level,
+            file_fmt,
+            log_filter=None,
+            max_bytes=max_file_size,
+            backup_count=backup_count
+        )
+        autogen_logger = logging.getLogger('autogen')
+        autogen_logger.setLevel(autogen_level)
+        autogen_logger.addHandler(autogen_handler)
+    except Exception:
+        # Non-fatal: if we cannot create autogen handler, continue with default handlers
+        logging.getLogger(__name__).warning('Failed to initialize autogen dedicated log handler')
     # Dedicated errors log capturing all ERROR+ across all categories
     err_handler = _make_handler(ERRORS_LOG_FILE, logging.ERROR, file_fmt, log_filter=None, max_bytes=max_file_size, backup_count=backup_count)
     root.addHandler(err_handler)
     ch = logging.StreamHandler(); ch.setLevel(getattr(logging, console_level.upper())); ch.setFormatter(console_fmt); root.addHandler(ch)
-    for noisy in ("openai","httpx","urllib3","azure","motor","pymongo","uvicorn.access","openlit"):
+    for noisy in ("openai","httpx","urllib3","azure","motor","pymongo","uvicorn.access","openlit","msal"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.getLogger(__name__).info(
         "Logging initialized",
@@ -262,8 +318,14 @@ def setup_logging(
             "files_as_json": LOGS_AS_JSON,
             "file_extension": ".log",
             "file_format": "jsonl" if LOGS_AS_JSON else "pretty",
+            "cleared_on_start": clear_flag,
+            "cleared_files_count": len(cleared_files),
         },
     )
+    if clear_flag and cleared_files:
+        logging.getLogger(__name__).info(
+            "Cleared existing log files", extra={"cleared_files": cleared_files}
+        )
 
 def reset_logging_state():
     """Reset logging initialization state for testing purposes"""
@@ -318,3 +380,163 @@ def log_operation(logger: ContextLogger | logging.Logger, operation_name: str, *
 def setup_production_logging(): setup_logging(chat_level="INFO", console_level="WARNING", max_file_size=50*1024*1024, backup_count=10)
 
 def setup_development_logging(): setup_logging(chat_level="DEBUG", console_level="INFO")
+
+# ----------------------------------------------------------------------
+# Consolidated Workflow Logging (replaces separate workflow_logging.py)
+# ----------------------------------------------------------------------
+class WorkflowLogger:
+    """Consolidated logging for AG2 workflows to reduce verbosity and duplication."""
+    
+    def __init__(self, workflow_name: str, chat_id: str | None = None):
+        self.workflow_name = workflow_name
+        self.chat_id = chat_id
+        self.workflow_logger = logging.getLogger("mozaiks.workflow")
+        self.chat_logger = logging.getLogger("chat.workflow")
+    
+    def log_agent_setup_summary(self, agents: dict, agent_tools: dict, hooks_count: int = 0):
+        """Log a consolidated summary of agent setup instead of verbose individual logs."""
+        total_tools = sum(len(tools) for tools in agent_tools.values())
+        agent_summary = []
+        
+        for name, agent in agents.items():
+            tool_count = len(agent_tools.get(name, []))
+            agent_summary.append(f"{name}({tool_count})")
+        
+        summary = f"🏗️ [WORKFLOW_SETUP] {self.workflow_name}: agents=[{', '.join(agent_summary)}] hooks={hooks_count} total_tools={total_tools}"
+        
+        self.workflow_logger.info(summary)
+        if self.chat_id:
+            self.chat_logger.info(f"💼 [SESSION] {summary} | chat_id={self.chat_id}")
+    
+    def log_execution_start(self, pattern_name: str, message_count: int, max_turns: int, is_resume: bool):
+        """Log AG2 execution start with key parameters."""
+        mode = "RESUME" if is_resume else "FRESH"
+        summary = f"🚀 [AG2_{mode}] {self.workflow_name}: pattern={pattern_name} messages={message_count} max_turns={max_turns}"
+        
+        self.workflow_logger.info(summary)
+        if self.chat_id:
+            self.chat_logger.info(f"▶️ [EXECUTION] {summary} | chat_id={self.chat_id}")
+    
+    def log_execution_complete(self, duration_sec: float, event_count: int = 0):
+        """Log AG2 execution completion with metrics."""
+        summary = f"✅ [AG2_COMPLETE] {self.workflow_name}: duration={duration_sec:.2f}s events={event_count}"
+        
+        self.workflow_logger.info(summary)
+        if self.chat_id:
+            self.chat_logger.info(f"🏁 [COMPLETE] {summary} | chat_id={self.chat_id}")
+    
+    def log_tool_binding_summary(self, agent_name: str, tool_count: int, tool_names: list | None = None):
+        """Log tool binding results for debugging."""
+        tools_str = f"[{', '.join(tool_names)}]" if tool_names else f"({tool_count} tools)"
+        summary = f"🔧 [TOOLS] {agent_name}: {tools_str}"
+        
+        self.workflow_logger.debug(summary)
+    
+    def log_hook_registration_summary(self, workflow_name: str, hook_count: int):
+        """Log hook registration summary."""
+        summary = f"🪝 [HOOKS] {workflow_name}: registered {hook_count} hooks"
+        
+        self.workflow_logger.info(summary)
+
+def get_workflow_session_logger(workflow_name: str, chat_id: str | None = None) -> WorkflowLogger:
+    """Factory function to create a WorkflowLogger instance."""
+    return WorkflowLogger(workflow_name, chat_id)
+
+# ----------------------------------------------------------------------
+# Lightweight AG2 runtime log summarizer (file-only, no pandas/sqlite)
+# ----------------------------------------------------------------------
+def summarize_autogen_runtime_file(  # pragma: no cover - utility
+    logging_session_id: str | None = None,
+    filename: str | None = None,
+    *,
+    limit: int | None = None,
+    emit_log: bool = True,
+    logger: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """Summarize AG2 runtime logging (file mode) without pandas/sqlite.
+
+    Expects lines of JSON produced when AUTOGEN_RUNTIME_LOGGING=file was used:
+      runtime_logging.start(logger_type="file", config={"filename": "runtime.log"})
+
+    Returns dict with totals. If logging_session_id provided, adds per-session figures.
+
+    Parameters
+    ----------
+    logging_session_id: optional session id (string) to isolate per-session totals.
+    filename: path to runtime log file (defaults to AUTOGEN_RUNTIME_LOG_FILE or runtime.log).
+    limit: stop after processing N lines (for quick checks).
+    emit_log: if True, writes a one-line summary via provided logger (or root).
+    logger: optional logger (defaults to root if None).
+    """
+    import json, os
+    path = filename or os.getenv("AUTOGEN_RUNTIME_LOG_FILE", "runtime.log")
+    stats = {
+        "file": path,
+        "records": 0,
+        "total_tokens": 0,
+        "total_cost": 0.0,
+        "session_tokens": 0,
+        "session_cost": 0.0,
+        "session_id": logging_session_id,
+    }
+    lg = logger or logging.getLogger("autogen.runtime.summary")
+    if not os.path.exists(path):
+        if emit_log:
+            lg.warning(f"Runtime log file not found: {path}")
+        return stats
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for i, line in enumerate(f):
+                if limit and i >= limit:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                stats["records"] += 1
+                # Extract cost if present
+                cost = rec.get("cost")
+                if isinstance(cost, (int, float)):
+                    stats["total_cost"] += float(cost)
+                # Parse response usage if present
+                resp = rec.get("response")
+                if isinstance(resp, str):
+                    try:
+                        resp_json = json.loads(resp)
+                    except Exception:
+                        resp_json = None
+                else:
+                    resp_json = resp if isinstance(resp, dict) else None
+                if isinstance(resp_json, dict):
+                    usage = resp_json.get("usage") or {}
+                    tks = usage.get("total_tokens")
+                    if isinstance(tks, (int, float)):
+                        stats["total_tokens"] += int(tks)
+                # Session-specific accumulation
+                if logging_session_id is not None:
+                    sid = rec.get("session_id") or rec.get("session") or rec.get("sid")
+                    if sid and str(sid) == str(logging_session_id):
+                        if isinstance(cost, (int, float)):
+                            stats["session_cost"] += float(cost)
+                        if isinstance(resp_json, dict):
+                            usage = resp_json.get("usage") or {}
+                            tks = usage.get("total_tokens")
+                            if isinstance(tks, (int, float)):
+                                stats["session_tokens"] += int(tks)
+        # Rounding for readability
+        stats["total_cost"] = round(stats["total_cost"], 6)
+        stats["session_cost"] = round(stats["session_cost"], 6)
+        if emit_log:
+            lg.info(
+                "AG2_RUNTIME_SUMMARY file=%s records=%s total_tokens=%s total_cost=%s session_id=%s session_tokens=%s session_cost=%s",
+                stats["file"], stats["records"], stats["total_tokens"], stats["total_cost"],
+                stats["session_id"], stats["session_tokens"], stats["session_cost"],
+            )
+    except Exception as e:  # pragma: no cover - defensive
+        if emit_log:
+            lg.error(f"Failed summarizing runtime log {path}: {e}")
+    return stats
+

@@ -9,14 +9,19 @@ import json
 import traceback
 from typing import Dict, Any, Optional, Union, Tuple, List
 from fastapi import WebSocket
-from datetime import datetime
+from datetime import datetime, timezone
+try:  # pymongo optional in some test environments
+    from pymongo import ReturnDocument  # type: ignore
+except Exception:  # pragma: no cover
+    class ReturnDocument:  # minimal fallback so attribute exists
+        BEFORE = 0
+        AFTER = 1
 
 # AG2 imports for event type checking
 from autogen.events import BaseEvent
 
 # Import workflow configuration for agent visibility filtering
-from core.workflow.workflow_config import workflow_config
-from core.workflow.helpers import get_formatted_agent_name
+from core.workflow.workflow_manager import workflow_manager
 
 # Logging setup
 logger = logging.getLogger(__name__)
@@ -31,35 +36,6 @@ chat_logger = get_chat_logger("agent_messages")
 # COMMUNICATION CHANNEL WRAPPER & MESSAGE FILTERING
 # ==================================================================================
 
-class MessageFilter:
-    """Simple message filter to remove AutoGen noise"""
-    
-    def should_stream_message(self, sender_name: str, message_content: str) -> bool:
-        """Core filtering logic - this is the real MVP"""
-        
-        # Filter out internal AutoGen agents
-        internal_agents = {"chat_manager", "manager", "coordinator", "groupchat_manager"}
-        if sender_name.lower() in internal_agents:
-            return False
-        
-        # Filter out empty or very short messages
-        if not message_content or len(message_content.strip()) < 5:
-            return False
-        
-        # Filter out coordination messages
-        coordination_keywords = [
-            "next speaker:", "terminating.", "function_call", "recipient:",
-            "sender:", "groupchat_manager", "Let me route this"
-        ]
-        content_lower = message_content.lower()
-        if any(keyword in content_lower for keyword in coordination_keywords):
-            return False
-        
-        # Filter out JSON-like structures and UUIDs
-        if message_content.strip().startswith(("{", "[")) or len(message_content.replace("-", "")) == 32:
-            return False
-        
-        return True
 
 # ==================================================================================
 # MAIN TRANSPORT CLASS
@@ -91,20 +67,36 @@ class SimpleTransport:
         return cls._instance
 
     def __init__(self):
-        # Prevent re-initialization of singleton
-        if hasattr(self, '_initialized'):
+        """Singleton initializer (idempotent)."""
+        if getattr(self, '_initialized', False):
             return
-            
+
+        # Core structures
         self.connections: Dict[str, Dict[str, Any]] = {}
-        self.message_filter = MessageFilter()
-        
-        # User input collection mechanism
-        self.pending_input_requests: Dict[str, asyncio.Future] = {}
+
+        # AG2-aligned input request callback registry
+        self._input_request_registries: Dict[str, Dict[str, Any]] = {}
+
+        # T1-T5: WebSocket protocol support structures
+        self._input_callbacks: Dict[str, Any] = {}            # T1
+        self._ui_tool_futures: Dict[str, Any] = {}            # T4
+        self._sequence_counters: Dict[str, int] = {}          # T3
+
+        # H1-H2: Hardening features
+        self._message_queues: Dict[str, List[Dict[str, Any]]] = {}  # H1
+        self._heartbeat_tasks: Dict[str, asyncio.Task] = {}         # H2
+        self._max_queue_size = 100
+        self._heartbeat_interval = 30
+
+        # H4: Pre-connection buffering (delivery reliability)
+        self._pre_connection_buffers: Dict[str, List[Dict[str, Any]]] = {}
+        self._max_pre_connection_buffer = 200
+        self._scheduled_flush_tasks: Dict[str, asyncio.Task] = {}
+
+        # UI tool response correlation
         self.pending_ui_tool_responses: Dict[str, asyncio.Future] = {}
-        
-        # Mark as initialized
+
         self._initialized = True
-        
         logger.info("🚀 SimpleTransport singleton initialized")
         
     # ==================================================================================
@@ -128,39 +120,11 @@ class SimpleTransport:
                 "chat_id": chat_id,
                 "payload": payload,
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         await self._broadcast_to_websockets(event_data, chat_id)
         logger.info(f"📤 Sent user input request {input_request_id} to chat {chat_id}")
 
-    @classmethod
-    async def wait_for_user_input(cls, input_request_id: str) -> str:
-        """
-        Wait indefinitely for user input response for a specific input request.
-        
-        This is called by AG2StreamingIOStream when agents request user input.
-        The frontend will call submit_user_input() to provide the response.
-        
-        No timeout - like ChatGPT, we wait indefinitely. Users can resume conversations
-        using the AG2 resume functionality if they leave and come back.
-        """
-        # Access the singleton instance
-        instance = cls._get_instance()
-        if not instance:
-            raise RuntimeError("SimpleTransport instance not available")
-            
-        if input_request_id not in instance.pending_input_requests:
-            # Create a future to wait for the input
-            instance.pending_input_requests[input_request_id] = asyncio.Future()
-        
-        try:
-            # Wait indefinitely for user input - no timeout
-            user_input = await instance.pending_input_requests[input_request_id]
-            return user_input
-        finally:
-            # Clean up the pending request
-            if input_request_id in instance.pending_input_requests:
-                del instance.pending_input_requests[input_request_id]
     
     async def submit_user_input(self, input_request_id: str, user_input: str) -> bool:
         """
@@ -168,24 +132,57 @@ class SimpleTransport:
         
         This method is called by the API endpoint when the frontend submits user input.
         """
-        if input_request_id in self.pending_input_requests:
-            future = self.pending_input_requests[input_request_id]
-            if not future.done():
-                future.set_result(user_input)
-                logger.info(f"✅ [INPUT] Submitted user input for request {input_request_id}")
-                return True
-            else:
-                logger.warning(f"⚠️ [INPUT] Request {input_request_id} already completed")
-                return False
-        else:
-            logger.warning(f"⚠️ [INPUT] No pending request found for {input_request_id}")
-            return False
+        # First try orchestration registry respond callback(s)
+        handled = False
+        ack_chat_id = None
+        for chat_id, reg in list(self._input_request_registries.items()):
+            respond_cb = reg.get(input_request_id)
+            if respond_cb:
+                try:
+                    # Support both async and sync lambdas assigned by AG2
+                    result = respond_cb(user_input)
+                    if asyncio.iscoroutine(result):
+                        await result
+                    handled = True
+                    ack_chat_id = chat_id
+                    logger.info(f"✅ [INPUT] Respond callback invoked for request {input_request_id} (chat {chat_id})")
+                except Exception as e:
+                    logger.error(f"❌ [INPUT] Respond callback failed {input_request_id}: {e}")
+                finally:
+                    # Remove after use
+                    try:
+                        del reg[input_request_id]
+                    except Exception:
+                        pass
+                break
+        if handled:
+            # Emit chat.input_ack for B9/B10 protocol compliance
+            if ack_chat_id:
+                try:
+                    await self.send_event_to_ui({
+                        'kind': 'input_ack',
+                        'request_id': input_request_id,
+                        'corr': input_request_id,
+                    }, ack_chat_id)
+                except Exception as e:
+                    logger.warning(f"Failed to emit input_ack: {e}")
+            return True
+        
+        logger.error(f"❌ [INPUT] No active request found for {input_request_id}")
+        return False
+
+    # ------------------------------------------------------------------
+    # Orchestration registry integration
+    # ------------------------------------------------------------------
+    def register_orchestration_input_registry(self, chat_id: str, registry: Dict[str, Any]) -> None:
+        self._input_request_registries[chat_id] = registry
+
+    def register_input_request(self, chat_id: str, request_id: str, respond_cb: Any) -> None:
+        if chat_id not in self._input_request_registries:
+            self._input_request_registries[chat_id] = {}
+        self._input_request_registries[chat_id][request_id] = respond_cb
+        logger.debug(f"Registered input request {request_id} for chat {chat_id}")
     
-    @classmethod
-    def _get_instance(cls):
-        if cls._instance is None:
-            raise RuntimeError("SimpleTransport has not been initialized. Call get_instance() first.")
-        return cls._instance
     
     @classmethod
     async def reset_instance(cls):
@@ -205,7 +202,7 @@ class SimpleTransport:
         # If we have workflow type, use visual_agents filtering
         if workflow_name:
             try:
-                config = workflow_config.get_config(workflow_name)
+                config = workflow_manager.get_config(workflow_name)
                 visual_agents = config.get("visual_agents")
                 
                 # If visual_agents is defined, only show messages from those agents
@@ -228,91 +225,111 @@ class SimpleTransport:
                 pass
         
         return True
-        
-    def format_agent_name(self, agent_name: Optional[str]) -> str:
-        """Format agent name for display using the centralized helper."""
-        return get_formatted_agent_name(agent_name)
-    
+
     # ==================================================================================
-    # CORE MESSAGE SENDING
+    # UNIFIED USER MESSAGE INGESTION
     # ==================================================================================
-    
-    async def send_to_ui(
-        self,
-        message: Union[str, Dict[str, Any], Any],
-        agent_name: Optional[str] = None,
-        message_type: str = "chat_message",
-        chat_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        bypass_filter: bool = False,
-    ) -> None:
+    async def process_incoming_user_message(self, *, chat_id: str, user_id: Optional[str], content: str, source: str = 'ws') -> None:
+        """Persist and forward a free-form user message into the active workflow orchestration.
+
+        This is used by both WebSocket (user.input.submit without request_id) and
+        HTTP input endpoint. It appends the message to persistence so that future
+        resume operations have it, and (if an orchestration is already running)
+        attempts to surface it to the user proxy agent if available.
         """
-        Send messages to UI via WebSocket broadcast.
+        if not content:
+            return
+        index: Optional[int] = None
+        try:
+            from core.data.persistence_manager import AG2PersistenceManager
+            pm = getattr(self, '_persistence_manager', None)
+            if not pm:
+                pm = AG2PersistenceManager()
+                self._persistence_manager = pm
+            coll = await pm._coll()  # type: ignore[attr-defined]
+            now_dt = datetime.now(timezone.utc)
+            bump = await coll.find_one_and_update(
+                {"_id": chat_id},
+                {"$inc": {"last_sequence": 1}, "$set": {"last_updated_at": now_dt}},
+                return_document=ReturnDocument.AFTER,
+            )
+            seq = int(bump.get('last_sequence', 1)) if bump else 1
+            index = seq - 1  # zero-based index for UI
+            msg_doc = {
+                'role': 'user',
+                'name': 'user',
+                'content': content,
+                'timestamp': now_dt,
+                'event_type': 'message.created',
+                'sequence': seq,
+                'source': source,
+            }
+            await coll.update_one({"_id": chat_id}, {"$push": {"messages": msg_doc}})
+        except Exception as e:
+            # Persistence failure should not block UI emission; fall back to in-memory sequence
+            logger.error(f"Failed to persist user message for {chat_id}: {e}")
+            try:
+                # Use transport sequence counter (converted to zero-based)
+                seq_fallback = self._get_next_sequence(chat_id)
+                index = max(0, seq_fallback - 1)
+            except Exception:
+                index = 0
+        # Always emit event (best-effort) even if persistence failed
+        try:
+            await self.send_event_to_ui({'kind': 'text', 'agent': 'user', 'content': content, 'index': index}, chat_id)
+        except Exception as emit_err:
+            logger.error(f"Failed to emit user message event for {chat_id}: {emit_err}")
+
+    async def process_component_action(self, *, chat_id: str, enterprise_id: str, component_id: str, action_type: str, action_data: dict) -> Dict[str, Any]:
+        """Apply a component action to context variables and emit acknowledgement.
+
+        Returns a structured result indicating applied changes.
         """
-        
-        # Extract clean content from AG2 UUID-formatted messages
-        clean_message = self._extract_clean_content(message)
-        
-        # Filter out unwanted system messages before any processing
-        if not bypass_filter:
-            if isinstance(clean_message, str):
-                if not self.message_filter.should_stream_message(agent_name or "system", clean_message):
-                    return
-        
-        # If agent_name is generic (Unknown Agent, Assistant, system), try to extract from message content
-        if agent_name in [None, "Unknown Agent", "Assistant", "system"] and isinstance(message, str):
-            extracted_name = self._extract_agent_name_from_uuid_content(message)
-            if extracted_name:
-                agent_name = extracted_name
-        
-        # Additional extraction for stringified content that didn't match UUID pattern
-        if agent_name in [None, "Unknown Agent", "Assistant", "system"] and isinstance(clean_message, str):
-            # Try to extract from various AG2 format patterns
-            import re
-            # Pattern: sender='AgentName'
-            sender_match = re.search(r"sender='([^']+)'", clean_message)
-            if not sender_match:
-                sender_match = re.search(r'sender="([^"]+)"', clean_message)
-            if sender_match:
-                extracted = sender_match.group(1)
-                if extracted and extracted not in ["user", "system"]:
-                    agent_name = extracted
-        
-        # For simple strings, apply traditional visibility filtering
-        if not bypass_filter:
-            if isinstance(clean_message, str):
-                if not self.should_show_to_user(agent_name, chat_id):
-                    return
-        
-        # Format agent name
-        formatted_agent = self.format_agent_name(agent_name)
-        
-        # Log agent message to agent_chat.log for tracking
-        if isinstance(clean_message, str) and formatted_agent and formatted_agent != "Assistant":
-            chat_logger.info(f"AGENT_MESSAGE | Chat: {chat_id} | Agent: {formatted_agent} | Message: {clean_message}")
-        elif isinstance(clean_message, str):
-            chat_logger.info(f"SYSTEM_MESSAGE | Chat: {chat_id} | Message: {clean_message}")
-        
-        # Create event data
-        event_data = {
-            "type": "chat_message",
-            "data": {
-                "message": str(clean_message),
-                "agent_name": formatted_agent,
-                "chat_id": chat_id,
-                "metadata": metadata or {},
-                "message_type": message_type
-            },
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        # Broadcast to WebSocket connections only
-        await self._broadcast_to_websockets(event_data, chat_id)
-        
-        logger.info(f"📤 {formatted_agent}: {str(clean_message)[:100]}...")
+        conn = self.connections.get(chat_id) or {}
+        context = conn.get('context')
+        applied: Dict[str, Any] = {}
+        try:
+            # Basic pattern: if action_data has 'set': {k: v} apply to context
+            sets = action_data.get('set') if isinstance(action_data, dict) else None
+            if context and isinstance(sets, dict):
+                for k, v in sets.items():
+                    try:
+                        context.set(k, v)
+                        applied[k] = v
+                    except Exception as ce:
+                        logger.debug(f"Context set failed for {k}: {ce}")
+                # Persist a lightweight snapshot of changed keys ONLY
+                try:
+                    from core.data.persistence_manager import AG2PersistenceManager
+                    pm = getattr(self, '_persistence_manager', None) or AG2PersistenceManager()
+                    self._persistence_manager = pm
+                    coll = await pm._coll()  # type: ignore[attr-defined]
+                    now = datetime.now(timezone.utc)
+                    snapshot_doc = {
+                        'role': 'system',
+                        'name': 'context',
+                        'content': {'updated': applied, 'component_id': component_id, 'action_type': action_type},
+                        'timestamp': now,
+                        'event_type': 'context.updated',
+                    }
+                    await coll.update_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"$push": {"messages": snapshot_doc}, "$set": {"last_updated_at": now}})
+                except Exception as pe:
+                    logger.debug(f"Context snapshot persistence failed: {pe}")
+            # Emit acknowledgement event
+            await self.send_event_to_ui({
+                'kind': 'component_action_ack',
+                'component_id': component_id,
+                'action_type': action_type,
+                'applied': applied,
+                'chat_id': chat_id,
+            }, chat_id)
+            return {'applied': applied, 'component_id': component_id, 'action_type': action_type}
+        except Exception as e:
+            logger.error(f"Component action processing failed for {chat_id}: {e}")
+            raise
         
     # ==================================================================================
-    # AG2 EVENT SENDING
+    # AG2 EVENT SENDING (Production)
     # ==================================================================================
     
     async def send_event_to_ui(self, event: Any, chat_id: Optional[str] = None) -> None:
@@ -321,22 +338,67 @@ class SimpleTransport:
         This is the primary method for forwarding AG2 native events.
         """
         try:
+            # Fast-path: already normalized dict produced by orchestration (event_to_ui_payload)
+            if isinstance(event, dict) and 'kind' in event:
+                kind = event.get('kind')
+                # Correlation convenience: for input_request expose corr=request_id
+                if kind == 'input_request' and 'request_id' in event and 'corr' not in event:
+                    event['corr'] = event['request_id']
+                # Add structured outputs info for text/print events
+                if kind in ('text', 'print'):
+                    agent_name = event.get('agent')
+                    if agent_name and chat_id and chat_id in self.connections:
+                        workflow_name = self.connections[chat_id].get("workflow_name")
+                        if workflow_name:
+                            try:
+                                structured_outputs_config = workflow_manager.get_agent_structured_outputs_config(workflow_name)
+                                event['has_structured_outputs'] = structured_outputs_config.get(agent_name, False)
+                            except Exception:
+                                event['has_structured_outputs'] = False
+                
+                # Namespace mapping (strict mode)
+                ns_map = {
+                    'print': 'chat.print',
+                    'text': 'chat.text',
+                    'input_request': 'chat.input_request',
+                    'input_ack': 'chat.input_ack',
+                    'input_timeout': 'chat.input_timeout',
+                    'select_speaker': 'chat.select_speaker',
+                    'resume_boundary': 'chat.resume_boundary',
+                    'usage_summary': 'chat.usage_summary',
+                    'run_complete': 'chat.run_complete',
+                    'error': 'chat.error',
+                    'tool_call': 'chat.tool_call',
+                    'tool_response': 'chat.tool_response',
+                }
+                # Ensure kind is a string for dict lookup
+                kind_key = str(kind) if kind is not None else "unknown"
+                namespaced_type = ns_map.get(kind_key, kind_key)
+                # Attach monotonically increasing transport sequence for printable events
+                if namespaced_type in ("chat.print", "chat.text") and chat_id:
+                    try:
+                        event['sequence'] = self._get_next_sequence(chat_id)
+                    except Exception:
+                        pass
+                timestamp = datetime.now(timezone.utc).isoformat()
+                # Emit namespaced event only
+                await self._broadcast_to_websockets({
+                    'type': namespaced_type,
+                    'data': event,
+                    'timestamp': timestamp,
+                }, chat_id)
+                return
             # Best-effort telemetry for tool/function calls
             try:
                 et_name = type(event).__name__
                 looks_like_tool = ("Tool" in et_name) or ("Function" in et_name) or ("Call" in et_name)
                 if looks_like_tool:
-                    tool_name = None
-                    for attr in ("tool_name", "function_name", "name"):
-                        val = getattr(event, attr, None)
-                        if isinstance(val, str) and val.strip():
-                            tool_name = val.strip()
-                            break
-                    if tool_name:
+                    tool_name = getattr(event, "tool_name", None)
+                    if isinstance(tool_name, str) and tool_name.strip():
                         try:
                             from core.observability.performance_manager import get_performance_manager
                             perf = await get_performance_manager()
-                            await perf.record_tool_call(chat_id or "unknown", tool_name, 0.0, True)
+                            await perf.record_tool_call(chat_id or "unknown", tool_name.strip(), True)
                         except Exception:
                             pass
             except Exception:
@@ -351,8 +413,8 @@ class SimpleTransport:
                 logger.debug(f"🚫 Filtered out AG2 event from agent '{agent_name}' for chat {chat_id}")
                 return
 
-            # Basic serialization for UI consumption
-            # In a real-world scenario, you might use Pydantic's .dict() or a custom serializer
+            # Production serialization for UI consumption
+            # Use Pydantic's .dict() or custom serializer for complex event types
             if isinstance(event, BaseEvent):
                 try:
                     payload = event.dict()
@@ -372,7 +434,7 @@ class SimpleTransport:
             event_data = {
                 "type": "ag2_event",
                 "data": payload,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             await self._broadcast_to_websockets(event_data, chat_id)
             logger.debug(f"📤 Forwarded AG2 event {type(event).__name__} to chat {chat_id}")
@@ -422,20 +484,28 @@ class SimpleTransport:
         if target_chat_id:
             connection_info = self.connections.get(target_chat_id)
             if connection_info and connection_info.get("websocket"):
-                try:
-                    await connection_info["websocket"].send_json(event_data)
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to send to WebSocket for chat {target_chat_id}: {e}")
+                # H1: Use message queuing with backpressure control
+                await self._queue_message_with_backpressure(target_chat_id, event_data)
+                await self._flush_message_queue(target_chat_id)
+            else:
+                # H4: Buffer message until the websocket connects
+                buf = self._pre_connection_buffers.setdefault(target_chat_id, [])
+                buf.append(event_data)
+                if len(buf) > self._max_pre_connection_buffer:
+                    # Drop oldest while keeping newest insight
+                    overflow = len(buf) - self._max_pre_connection_buffer
+                    del buf[0:overflow]
+                    logger.warning(f"🧹 Dropped {overflow} pre-connection buffered messages for {target_chat_id}")
+                logger.debug(f"🕑 Buffered pre-connection message for {target_chat_id} (size={len(buf)})")
             return
 
         # Otherwise, broadcast to all connections
         for chat_id, info in active_connections:
             websocket = info.get("websocket")
             if websocket:
-                try:
-                    await websocket.send_json(event_data)
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to send to WebSocket for chat {chat_id}: {e}", exc_info=False)
+                # H1: Use message queuing with backpressure control
+                await self._queue_message_with_backpressure(chat_id, event_data)
+                await self._flush_message_queue(chat_id)
 
     def _stringify_unknown(self, obj: Any) -> str:
         """Safely convert any object to a string for logging/transport."""
@@ -451,6 +521,248 @@ class SimpleTransport:
                 return str(obj)
             except Exception:
                 return "<unserializable>"
+
+    def _serialize_ag2_events(self, obj: Any) -> Any:
+        """Convert AG2 event objects to JSON-serializable format."""
+        try:
+            # Lazy imports (wrapped) so absence of autogen doesn't break app start.
+            try:
+                from autogen.events.agent_events import TextEvent, InputRequestEvent  # type: ignore
+            except Exception:  # pragma: no cover - autogen optional
+                TextEvent = InputRequestEvent = tuple()  # type: ignore
+
+            # Optional tool events (some versions place them elsewhere)
+            ToolResponseEvent = None  # default
+            for mod_path in [
+                "autogen.events.tool_events",
+                "autogen.events.agent_events",  # fallback if class relocated
+            ]:
+                if ToolResponseEvent:
+                    break
+                try:  # pragma: no cover - defensive import paths
+                    mod = __import__(mod_path, fromlist=["ToolResponseEvent"])
+                    ToolResponseEvent = getattr(mod, "ToolResponseEvent", None)
+                except Exception:
+                    continue
+
+            # Primitive fast-path
+            if obj is None or isinstance(obj, (str, int, float, bool)):
+                return obj
+
+            # Dict / list recursive handling
+            if isinstance(obj, dict):
+                return {k: self._serialize_ag2_events(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple, set)):
+                return [self._serialize_ag2_events(v) for v in list(obj)]
+
+            # Specific AG2 event shapes
+            def _extract_sender(o):
+                s = getattr(o, "sender", None)
+                try:
+                    if s is not None and hasattr(s, "name"):
+                        return getattr(s, "name")
+                except Exception:
+                    pass
+                return self._stringify_unknown(s)
+
+            def _extract_recipient(o):
+                r = getattr(o, "recipient", None)
+                try:
+                    if r is not None and hasattr(r, "name"):
+                        return getattr(r, "name")
+                except Exception:
+                    pass
+                return self._stringify_unknown(r)
+
+            cls_name = obj.__class__.__name__
+
+            # TextEvent
+            try:
+                if "TextEvent" in cls_name:
+                    return {
+                        "uuid": str(getattr(obj, "uuid", "")),
+                        "content": self._stringify_unknown(getattr(obj, "content", None)),
+                        "sender": _extract_sender(obj),
+                        "recipient": _extract_recipient(obj),
+                        "_ag2_event_type": "TextEvent",
+                    }
+            except Exception:
+                pass
+
+            # InputRequestEvent
+            if InputRequestEvent and isinstance(obj, InputRequestEvent):  # type: ignore[arg-type]
+                return {
+                    "uuid": str(getattr(obj, "uuid", "")),
+                    "prompt": self._stringify_unknown(getattr(obj, "prompt", None)),
+                    "password": None,  # never forward secrets
+                    "type": self._stringify_unknown(getattr(obj, "type", None)),
+                    "_ag2_event_type": "InputRequestEvent",
+                }
+
+            # ToolResponseEvent (covers tool outputs)
+            if ToolResponseEvent and isinstance(obj, ToolResponseEvent):  # type: ignore[arg-type]
+                return {
+                    "uuid": str(getattr(obj, "uuid", "")),
+                    "tool_name": self._stringify_unknown(getattr(obj, "tool_name", None)),
+                    "content": self._stringify_unknown(getattr(obj, "content", getattr(obj, "result", None))),
+                    "sender": _extract_sender(obj),
+                    "recipient": _extract_recipient(obj),
+                    "_ag2_event_type": "ToolResponseEvent",
+                }
+
+            # Generic event-like objects with a small public attribute surface.
+            public_attrs = {}
+            # Avoid exploding on very large objects; cap attributes
+            attr_count = 0
+            for name in dir(obj):
+                if name.startswith("_"):
+                    continue
+                if attr_count > 25:
+                    break
+                try:
+                    value = getattr(obj, name)
+                except Exception:
+                    continue
+                # Skip callables
+                if callable(value):
+                    continue
+                attr_count += 1
+                public_attrs[name] = self._serialize_ag2_events(value)
+
+            if public_attrs:
+                public_attrs["_ag2_event_type"] = cls_name
+                return public_attrs
+
+            # Fallback textual representation
+            return self._stringify_unknown(obj)
+        except Exception:
+            # Final safety fallback
+            return self._stringify_unknown(obj)
+
+    async def _handle_resume_request(self, chat_id: str, last_client_index: int, websocket) -> None:
+        """Resume protocol aligned with AG2 GroupChat resume semantics.
+
+        We DO NOT compute sequence diffs via a bespoke diff endpoint anymore.
+        Instead we:
+          1. Load the authoritative persisted message list for the chat.
+          2. Determine the slice of messages the client is missing based on the
+             last message *index* the client reports it has (last_client_index).
+             The client sends -1 if it has none.
+          3. Re-emit each missing message to the client as chat.text with a
+             replay flag and a stable index. We keep an internal sequence counter
+             but its primary purpose is ordering of new live events; indexes are
+             sufficient for replay correctness.
+          4. Emit chat.resume_boundary summarizing counts and boundaries.
+
+        This mirrors AG2's requirement that the *messages array* is the source
+        of truth for preparing agents via GroupChatManager.resume, while giving
+        the WebSocket consumer a minimal, deterministic replay mechanism.
+        """
+        try:
+            from core.data.persistence_manager import AG2PersistenceManager
+            if not hasattr(self, '_persistence_manager'):
+                self._persistence_manager = AG2PersistenceManager()
+            conn_meta = self.connections.get(chat_id) or {}
+            enterprise_id = conn_meta.get('enterprise_id')
+            if not enterprise_id:
+                raise RuntimeError("Missing enterprise_id for resume")
+
+            # Fetch full message history (in-progress or completed allowed).
+            # We intentionally do not restrict to IN_PROGRESS so a user can
+            # re-open a completed chat in a read-only fashion.
+            coll = await self._persistence_manager._coll()  # type: ignore[attr-defined]
+            doc = await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"messages": 1})
+            full_messages: List[Dict[str, Any]] = doc.get("messages", []) if doc else []
+
+            if last_client_index < -1:
+                last_client_index = -1  # sanitize
+
+            # Determine missing slice (exclusive of last_client_index)
+            start_idx = last_client_index + 1
+            if start_idx < 0:
+                start_idx = 0
+            missing = full_messages[start_idx:]
+
+            replayed_count = 0
+            last_idx_sent = last_client_index
+            for idx_offset, env in enumerate(missing):
+                absolute_index = start_idx + idx_offset
+                last_idx_sent = absolute_index
+                try:
+                    role = env.get('role')
+                    if role == 'assistant':
+                        agent_name = env.get('agent_name') or env.get('name') or 'assistant'
+                    else:
+                        agent_name = 'user'
+                    await websocket.send_json({
+                        'type': 'chat.text',
+                        'data': {
+                            'agent': agent_name,
+                            'content': env.get('content'),
+                            'index': absolute_index,
+                            'replay': True,
+                            'chat_id': chat_id,
+                        },
+                        'timestamp': datetime.now(timezone.utc).isoformat()
+                    })
+                    replayed_count += 1
+                except Exception as re:
+                    logger.warning(f"Failed to replay message index={absolute_index}: {re}")
+
+            await websocket.send_json({
+                'type': 'chat.resume_boundary',
+                'data': {
+                    'chat_id': chat_id,
+                    'replayed_messages': replayed_count,
+                    'last_message_index': last_idx_sent,
+                    'total_messages': len(full_messages)
+                },
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+
+            # Real-time sequence continuity: if we already had a higher
+            # counter (e.g. resumed mid-flight) we do not reduce it.
+            if replayed_count:
+                existing_seq = self._sequence_counters.get(chat_id, 0)
+                if existing_seq < last_idx_sent + 1:
+                    self._sequence_counters[chat_id] = last_idx_sent + 1
+
+            logger.info(
+                f"✅ Resume complete chat={chat_id} sent={replayed_count} missing_from>{last_client_index} now_at_index={last_idx_sent}"
+            )
+        except Exception as e:
+            logger.error(f"❌ Resume failed chat={chat_id}: {e}")
+            raise
+
+    def _validate_inbound_message(self, message_data: dict) -> bool:
+        """H3: Validate inbound WebSocket message schema"""
+        if not isinstance(message_data, dict):
+            return False
+        
+        msg_type = message_data.get('type') or message_data.get('kind')
+        if not msg_type or not isinstance(msg_type, str):
+            return False
+        
+        # T1: Validate required fields based on message type
+        if msg_type == "user.input.submit":
+            # Allow either (a) input_request response with request_id OR (b) free-form user chat message
+            base_ok = "chat_id" in message_data and "text" in message_data
+            if not base_ok:
+                return False
+            # request_id optional (only when responding to InputRequestEvent)
+            return True
+        
+        elif msg_type in ("inline_component.result", "artifact_component.result"):
+            required = ["chat_id", "corr", "data"]
+            return all(field in message_data for field in required)
+        
+        elif msg_type == "client.resume":
+            # Support legacy 'lastClientSeq' and new 'lastClientIndex'
+            has_index = "lastClientIndex" in message_data or "lastClientSeq" in message_data
+            return all(field in message_data for field in ["chat_id"]) and has_index
+        
+        # Unknown message types are invalid
+        return False
         
     async def send_error(
         self,
@@ -466,7 +778,7 @@ class SimpleTransport:
                 "error_code": error_code,
                 "chat_id": chat_id
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         await self._broadcast_to_websockets(event_data, chat_id)
@@ -486,7 +798,7 @@ class SimpleTransport:
                 "status_type": status_type,
                 "chat_id": chat_id
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         await self._broadcast_to_websockets(event_data, chat_id)
@@ -514,16 +826,114 @@ class SimpleTransport:
             "active": True,
         }
         logger.info(f"🔌 WebSocket connected for chat_id: {chat_id}")
+        
+        # H2: Start heartbeat for connection
+        await self._start_heartbeat(chat_id, websocket)
+        
+        # H1: Initialize message queue for backpressure control
+        self._message_queues[chat_id] = []
+
+        # H4: Flush any pre-connection buffered messages (if orchestration
+        # started emitting before the UI finished the handshake)
+        if chat_id in self._pre_connection_buffers:
+            buffered = self._pre_connection_buffers.pop(chat_id)
+            if buffered:
+                logger.info(f"📤 Flushing {len(buffered)} pre-connection buffered messages for {chat_id}")
+                for msg in buffered:
+                    await self._queue_message_with_backpressure(chat_id, msg)
+                await self._flush_message_queue(chat_id)
+        
         try:
+            # Inbound loop: receive JSON control messages from client
             while True:
-                # Keep the connection alive, processing is handled by the API
-                await asyncio.sleep(1)
+                try:
+                    msg = await websocket.receive_text()
+                except Exception as recv_err:
+                    # Client disconnected
+                    raise recv_err
+                if not msg:
+                    await asyncio.sleep(0.05)
+                    continue
+                try:
+                    data = json.loads(msg)
+                except Exception:
+                    logger.debug(f"⚠️ Received non-JSON message on WS chat {chat_id}: {msg[:80]}")
+                    continue
+                # H3: Validate message schema
+                if not self._validate_inbound_message(data):
+                    await websocket.send_json({
+                        "type": "chat.error",
+                        "data": {
+                            "message": "Invalid message schema",
+                            "error_code": "SCHEMA_VALIDATION_FAILED"
+                        },
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+                    continue
+
+                mtype = data.get('type') or data.get('kind')
+                # Handle user input submission (alternative to REST endpoint)
+                if mtype in ("user.input.submit", "user_input_submit"):
+                    req_id = data.get('input_request_id') or data.get('request_id')
+                    text = (data.get('text') or data.get('user_input') or "").strip()
+                    if req_id:
+                        # Treat as response to AG2 InputRequestEvent
+                        try:
+                            ok = await self.submit_user_input(req_id, text)
+                            await websocket.send_json({
+                                "type": "ack.input",
+                                "data": {"input_request_id": req_id, "status": "accepted" if ok else "rejected"},
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+                        except Exception as ie:
+                            logger.error(f"❌ Failed to process inbound user input {req_id}: {ie}")
+                    else:
+                        # Free-form user message (no pending request). Persist & feed to orchestrator.
+                        try:
+                            await self.process_incoming_user_message(
+                                chat_id=chat_id,
+                                user_id=self.connections.get(chat_id, {}).get('user_id'),
+                                content=text,
+                                source='ws'
+                            )
+                            await websocket.send_json({
+                                "type": "chat.input_ack",
+                                "data": {"chat_id": chat_id, "status": "accepted"},
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+                        except Exception as e:
+                            logger.error(f"Failed to process free-form user message for {chat_id}: {e}")
+                            await websocket.send_json({
+                                "type": "chat.error",
+                                "data": {"message": "User message failed", "error_code": "USER_MESSAGE_FAILED"},
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+                    continue
+                # Client resume handshake (B11)
+                if mtype == "client.resume":
+                    try:
+                        last_client_index = data.get("lastClientIndex")
+                        if last_client_index is None:
+                            # fallback for legacy client field name
+                            last_client_index = data.get("lastClientSeq", -1)
+                        if not isinstance(last_client_index, int):
+                            raise ValueError("lastClientIndex must be int")
+                        await self._handle_resume_request(chat_id, last_client_index, websocket)
+                    except Exception as re:
+                        logger.error(f"❌ Failed to process client.resume for chat {chat_id}: {re}")
+                        await websocket.send_json({
+                            "type": "chat.error",
+                            "data": {"message": f"Resume failed: {str(re)}", "error_code": "RESUME_FAILED"},
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    continue
+                # Unknown control message -> ignore silently
         except Exception as e:
             logger.warning(f"WebSocket error for chat {chat_id}: {e}")
         finally:
-            if chat_id in self.connections:
-                del self.connections[chat_id]
-                logger.info(f"🔌 WebSocket disconnected for chat_id: {chat_id}")
+            # H1-H2: Clean up connection resources (heartbeat, message queues, etc.)
+            await self._cleanup_connection(chat_id)
+            logger.info(f"🔌 WebSocket disconnected for chat_id: {chat_id}")
 
     # ==================================================================================
     # WORKFLOW INTEGRATION METHODS
@@ -547,13 +957,25 @@ class SimpleTransport:
         try:
             from core.workflow.orchestration_patterns import run_workflow_orchestration
             
-            # This is now the single entry point for any workflow
-            result = await run_workflow_orchestration(
+            # Persist user message early (so UI reconnect before orchestration still sees it)
+            if message:
+                try:
+                    await self.process_incoming_user_message(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        content=message,
+                        source='http'
+                    )
+                except Exception as persist_err:
+                    logger.debug(f"Early persistence of user message failed (non-fatal): {persist_err}")
+
+            # Launch orchestration (will also seed initial_messages including the persisted one)
+            await run_workflow_orchestration(
                 workflow_name=workflow_name,
                 enterprise_id=enterprise_id,
                 chat_id=chat_id,
                 user_id=user_id,
-                initial_message=message
+                initial_message=None  # already persisted & sent upstream
             )
             
             # The result from AG2 is now a rich object, but for the API response,
@@ -582,7 +1004,19 @@ class SimpleTransport:
         metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """Send chat message to user interface"""
-        await self.send_to_ui(message, agent_name, "chat_message", chat_id, metadata)
+        # Create properly formatted event data
+        event_data = {
+            "type": "chat.text",
+            "data": {
+                "chat_id": chat_id,
+                "agent": agent_name or "Agent",
+                "content": str(message),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        }
+        if metadata:
+            event_data["data"]["metadata"] = metadata
+        await self.send_event_to_ui(event_data, chat_id)
     
     async def send_simple_text_message(self, content: str, chat_id: Optional[str] = None, agent_name: Optional[str] = None) -> None:
         """
@@ -619,32 +1053,37 @@ class SimpleTransport:
                 "display_type": display_type,
                 "payload": payload,
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         await self._broadcast_to_websockets(event_data, chat_id)
         logger.info(f"📤 Sent UI tool event {event_id} ({component_name}) to chat {chat_id}")
 
     @classmethod
-    async def wait_for_ui_tool_response(cls, event_id: str) -> Dict[str, Any]:
+    async def wait_for_ui_tool_response(cls, event_id: str, timeout: Optional[float] = 300.0) -> Dict[str, Any]:
+        """Await a UI tool response with an optional timeout.
+
+        Args:
+            event_id: Correlation id originally sent in the ui_tool_event.
+            timeout: Seconds to wait before raising TimeoutError (None = wait forever).
         """
-        Wait indefinitely for a response from a UI tool component.
-        
-        This is called by agent tools after they emit a UI tool event.
-        The frontend will call submit_ui_tool_response() to provide the data.
-        """
-        instance = cls._get_instance()
+        instance = await cls.get_instance()
         if not instance:
             raise RuntimeError("SimpleTransport instance not available")
-            
+
         if event_id not in instance.pending_ui_tool_responses:
             instance.pending_ui_tool_responses[event_id] = asyncio.Future()
-        
+
+        fut = instance.pending_ui_tool_responses[event_id]
         try:
-            response_data = await instance.pending_ui_tool_responses[event_id]
+            response_data = await asyncio.wait_for(fut, timeout=timeout) if timeout else await fut
             return response_data
+        except asyncio.TimeoutError:
+            if not fut.done():
+                fut.set_exception(asyncio.TimeoutError("UI tool response timed out"))
+            logger.error(f"⏰ UI tool response timed out for event {event_id}")
+            raise
         finally:
-            if event_id in instance.pending_ui_tool_responses:
-                del instance.pending_ui_tool_responses[event_id]
+            instance.pending_ui_tool_responses.pop(event_id, None)
 
     async def submit_ui_tool_response(self, event_id: str, response_data: Dict[str, Any]) -> bool:
         """
@@ -665,5 +1104,286 @@ class SimpleTransport:
         else:
             logger.warning(f"⚠️ [UI_TOOL] No pending event found for {event_id}")
             return False
+
+    # T1: WebSocket message handling for input requests
+    async def _handle_websocket_message(self, websocket, message_data: dict, session) -> None:
+        """Handle inbound WebSocket messages from client."""
+        if not self._validate_inbound_message(message_data):
+            await self._send_error(websocket, "SCHEMA_VALIDATION_FAILED", "Invalid message format")
+            return
+        
+        message_type = message_data.get("type")
+        chat_id = message_data.get("chat_id")
+        
+        if message_type == "user.input.submit":
+            # Handle user input submission
+            request_id_raw = message_data.get("request_id")
+            request_id: Optional[str] = request_id_raw if isinstance(request_id_raw, str) and request_id_raw else None
+            text = message_data.get("text", "")
+
+            # Find and invoke callback
+            callback = self._input_callbacks.get(request_id) if request_id else None
+            if callback and request_id:
+                try:
+                    await callback(text)
+                except Exception as e:
+                    logger.error(f"Error invoking input callback for {request_id}: {e}")
+                finally:
+                    # Clean up after use
+                    if request_id in self._input_callbacks:
+                        self._input_callbacks.pop(request_id, None)
+            else:
+                logger.warning(f"No callback found for input request {request_id}")
+        
+        elif message_type in ("inline_component.result", "artifact_component.result"):
+            # Handle UI tool response (both inline and artifact components)
+            corr = message_data.get("corr")
+            data = message_data.get("data", {})
+            # Prefer resolving the canonical pending_ui_tool_responses future (used by wait_for_ui_tool_response)
+            if corr:
+                # If a caller is waiting via wait_for_ui_tool_response, resolve that future
+                if corr in self.pending_ui_tool_responses:
+                    future = self.pending_ui_tool_responses[corr]
+                    if not future.done():
+                        future.set_result(data)
+                    # cleanup
+                    try:
+                        del self.pending_ui_tool_responses[corr]
+                    except Exception:
+                        pass
+                # Fallback: resolve _ui_tool_futures if present
+                elif corr in self._ui_tool_futures:
+                    future = self._ui_tool_futures[corr]
+                    if not future.done():
+                        future.set_result(data)
+                    try:
+                        del self._ui_tool_futures[corr]
+                    except Exception:
+                        pass
+                else:
+                    logger.warning(f"⚠️ Received UI tool response for unknown event id: {corr}")
+        
+        elif message_type == "client.resume":
+            # Handle resume request
+            last_client_seq = message_data.get("lastClientSeq", 0)
+            # Validate chat_id presence to satisfy typed _handle_resume_request(str,...)
+            if not chat_id:
+                logger.warning(f"Resume request missing chat_id: {message_data}")
+                await self._send_error(websocket, "RESUME_FAILED", "Missing chat_id for resume request")
+                return
+            await self._handle_resume_request(chat_id, last_client_seq, websocket)
+        
+        else:
+            logger.warning(f"Unknown message type: {message_type}")
+
+    async def _send_error(self, websocket, error_code: str, message: str) -> None:
+        """Send error message to client."""
+        error_data = {
+            "type": "chat.error",
+            "data": {
+                "message": message,
+                "error_code": error_code,
+                "recoverable": True
+            }
+        }
+        try:
+            await websocket.send_json(error_data)
+        except Exception as e:
+            logger.error(f"Failed to send error message: {e}")
+
+    # T3: Sequence tracking methods for resume capability
+    def _get_next_sequence(self, chat_id: str) -> int:
+        """Get the next sequence number for a chat session."""
+        if chat_id not in self._sequence_counters:
+            self._sequence_counters[chat_id] = 0
+        self._sequence_counters[chat_id] += 1
+        return self._sequence_counters[chat_id]
+    
+    def _reset_sequence_after_resume(self, chat_id: str, last_seq: int) -> None:
+        """Reset sequence counter after resume to continue from last sequence."""
+        self._sequence_counters[chat_id] = last_seq
+        logger.info(f"Reset sequence counter for {chat_id} to {last_seq}")
+    
+    async def _get_chat_coll(self):
+        """Get MongoDB chat collection for persistence operations."""
+        # Production: connect to actual persistence layer
+        try:
+            from core.data.persistence_manager import AG2PersistenceManager
+            if not hasattr(self, '_persistence_manager'):
+                self._persistence_manager = AG2PersistenceManager()
+            
+            await self._persistence_manager.persistence._ensure_client()
+            client = self._persistence_manager.persistence.client
+            if client is None:
+                logger.warning("MongoDB client unavailable for chat collection")
+                return None
+            return client["MozaiksAI"]["ChatSessions"]
+        except Exception as e:
+            logger.error(f"Failed to get chat collection: {e}")
+            return None
+ 
+    # H1: Server backpressure implementation
+    async def _check_backpressure(self, chat_id: str) -> bool:
+        """Check if connection should be throttled due to backpressure."""
+        if chat_id not in self._message_queues:
+            self._message_queues[chat_id] = []
+        
+        queue_size = len(self._message_queues[chat_id])
+        if queue_size >= self._max_queue_size:
+            logger.warning(f"🚨 Backpressure triggered for {chat_id}: queue size {queue_size}")
+            # Drop oldest messages to make room
+            dropped = queue_size - self._max_queue_size + 10  # Keep some buffer
+            self._message_queues[chat_id] = self._message_queues[chat_id][dropped:]
+            logger.info(f"📉 Dropped {dropped} queued messages for {chat_id}")
+            return True
+        return False
+
+    async def _queue_message_with_backpressure(self, chat_id: str, message_data: Dict[str, Any]) -> bool:
+        """Queue message with backpressure control."""
+        if await self._check_backpressure(chat_id):
+            # Connection is under backpressure - message may have been dropped
+            pass
+        # Early serialization guard: ensure no raw AG2 objects linger in queue.
+        if not isinstance(message_data, (dict, list, tuple, str, int, float, bool, type(None))):
+            try:
+                message_data = self._serialize_ag2_events(message_data)
+            except Exception:
+                message_data = {"type": "log", "data": {"message": self._stringify_unknown(message_data)}}
+
+        self._message_queues[chat_id].append(message_data)
+        return True
+
+    async def _flush_message_queue(self, chat_id: str) -> None:
+        """Flush queued messages for a connection."""
+        if chat_id not in self._message_queues or not self._message_queues[chat_id]:
+            return
+        
+        if chat_id in self.connections:
+            websocket = self.connections[chat_id]["websocket"]
+            messages_to_send = self._message_queues[chat_id].copy()
+            self._message_queues[chat_id].clear()
+            
+            for message in messages_to_send:
+                try:
+                    # Check if message is already in proper format for WebSocket
+                    if isinstance(message, dict) and 'type' in message and 'data' in message:
+                        # Ensure the 'data' payload is JSON-serializable (may contain AG2 objects)
+                        try:
+                            safe_message = message.copy()
+                            safe_message['data'] = self._serialize_ag2_events(message['data'])
+                            await websocket.send_json(safe_message)
+                        except Exception:
+                            # Fallback: attempt to serialize whole message as a last resort
+                            try:
+                                await websocket.send_json(self._serialize_ag2_events(message))
+                            except Exception:
+                                raise
+                    else:
+                        serialized_message = self._serialize_ag2_events(message)
+                        await websocket.send_json(serialized_message)
+                except Exception as e:
+                    logger.error(f"Failed to send queued message to {chat_id}: {e}. Will retry shortly.")
+                    # Re-queue remaining (including current) for retry
+                    remaining = [message] + messages_to_send[messages_to_send.index(message)+1:]
+                    self._message_queues[chat_id] = remaining + self._message_queues[chat_id]
+                    # Schedule a retry flush with small backoff
+                    self._schedule_flush_retry(chat_id)
+                    break
+
+    def _schedule_flush_retry(self, chat_id: str, delay: float = 0.5) -> None:
+        """Schedule a single retry flush if not already pending."""
+        if chat_id in self._scheduled_flush_tasks and not self._scheduled_flush_tasks[chat_id].done():
+            return  # already scheduled
+        async def _delayed():
+            try:
+                await asyncio.sleep(delay)
+                await self._flush_message_queue(chat_id)
+            finally:
+                # Clear handle so future retries can be scheduled
+                self._scheduled_flush_tasks.pop(chat_id, None)
+        self._scheduled_flush_tasks[chat_id] = asyncio.create_task(_delayed())
+
+    # H2: Heartbeat implementation
+    async def _start_heartbeat(self, chat_id: str, websocket) -> None:
+        """Start heartbeat task for a connection."""
+        if chat_id in self._heartbeat_tasks:
+            self._heartbeat_tasks[chat_id].cancel()
+        
+        self._heartbeat_tasks[chat_id] = asyncio.create_task(
+            self._heartbeat_loop(chat_id, websocket)
+        )
+        logger.info(f"💓 Started heartbeat for {chat_id}")
+
+    async def _heartbeat_loop(self, chat_id: str, websocket) -> None:
+        """Heartbeat loop for detecting silent disconnects."""
+        try:
+            while chat_id in self.connections:
+                await asyncio.sleep(self._heartbeat_interval)
+                
+                # Send ping
+                ping_data = {
+                    "type": "ping",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                
+                try:
+                    await websocket.send_json(ping_data)
+                    logger.debug(f"📡 Sent ping to {chat_id}")
+                except Exception as e:
+                    logger.warning(f"💔 Heartbeat failed for {chat_id}: {e}")
+                    # Connection is dead - clean up
+                    await self._cleanup_connection(chat_id)
+                    break
+        except asyncio.CancelledError:
+            logger.debug(f"💔 Heartbeat cancelled for {chat_id}")
+        except Exception as e:
+            logger.error(f"💔 Heartbeat error for {chat_id}: {e}")
+
+    async def _stop_heartbeat(self, chat_id: str) -> None:
+        """Stop heartbeat task for a connection."""
+        if chat_id in self._heartbeat_tasks:
+            self._heartbeat_tasks[chat_id].cancel()
+            del self._heartbeat_tasks[chat_id]
+            logger.debug(f"💔 Stopped heartbeat for {chat_id}")
+
+    async def _cleanup_connection(self, chat_id: str) -> None:
+        """Clean up connection resources."""
+        if chat_id in self.connections:
+            del self.connections[chat_id]
+        
+        if chat_id in self._message_queues:
+            del self._message_queues[chat_id]
+        
+        await self._stop_heartbeat(chat_id)
+        logger.info(f"🧹 Cleaned up connection resources for {chat_id}")
+    
+    async def emit_session_paused(self, event) -> None:
+        """Emit session paused event to client WebSocket."""
+        from core.events.unified_event_dispatcher import SessionPausedEvent
+        if not isinstance(event, SessionPausedEvent):
+            return
+            
+        chat_id = event.chat_id
+        if chat_id not in self.connections:
+            logger.warning(f"No active connection for chat_id {chat_id} to emit session paused")
+            return
+            
+        try:
+            websocket = self.connections[chat_id]["websocket"]
+            message = {
+                "type": "session.paused",
+                "data": {
+                    "chat_id": chat_id,
+                    "reason": event.reason,
+                    "required_tokens": event.required_tokens,
+                    "message": "Session paused due to insufficient tokens. Please top up your balance to continue.",
+                    "timestamp": event.timestamp.isoformat()
+                },
+                "timestamp": event.timestamp.isoformat()
+            }
+            await websocket.send_json(message)
+            logger.info(f"⏸️ Emitted session paused event to {chat_id}")
+        except Exception as e:
+            logger.error(f"Failed to emit session paused event to {chat_id}: {e}")
 
 
