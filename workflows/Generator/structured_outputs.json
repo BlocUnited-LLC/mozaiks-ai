@@ -107,19 +107,6 @@
         }
       },
 
-      "HookFile": {
-        "type": "model",
-        "fields": {
-          "filename": {
-            "type": "str",
-            "description": "File path (tools/<hook_type>.py)"
-          },
-          "filecontent": {
-            "type": "str",
-            "description": "Hook implementation"
-          }
-        }
-      },
       "Hook": {
         "type": "model",
         "fields": {
@@ -137,14 +124,17 @@
             "type": "str",
             "description": "PascalCase agent name to attach hook to"
           },
+          "filename": {
+            "type": "str",
+            "description": "File path (tools/<hook_type>.py)"
+          },
           "function": {
             "type": "str",
-            "description": "Import path (module:function)"
+            "description": "Function name that implements the hook"
           },
-          "files": {
-            "type": "list",
-            "items": "HookFile",
-            "description": "Python modules defining the hook"
+          "filecontent": {
+            "type": "str",
+            "description": "Hook implementation source code that includes the function defined above"
           }
         }
       },
@@ -269,27 +259,30 @@
               "type": "model",
               "fields": {
                 "agent": { "type": "str", "description": "Agent name" },
-                "agent_definition": { "type": "str", "description": "Model name for this agent" }
+                "agent_definition": { 
+                  "type": "union[str,null]", 
+                  "description": "Model name for this agent, or null if no structured output applies"
+                }
               }
             }
           }
         }
       }
-    },
-
-    "registry": {
-      "ContextAgent": null,
-      "ToolsManagerAgent": "ToolsManagerAgentOutput",
-      "UIFileGenerator": "UIFileGeneratorOutput",
-      "AgentToolsFileGenerator": "AgentToolsFileGeneratorOutput",
-      "HookAgent": "HookAgentOutput",
-      "AgentsAgent": "AgentsAgentOutput",
-      "ContextVariablesAgent": "ContextVariablesAgentOutput",
-      "OrchestratorAgent": "OrchestratorAgentOutput",
-      "HandoffsAgent": "HandoffsAgentOutput",
-      "StructuredOutputsAgent": "StructuredOutputsAgentOutput",
-      "APIKeyAgent": null,
-      "UserFeedbackAgent": null
     }
+  },
+
+  "registry": {
+    "ContextAgent": null,
+    "ToolsManagerAgent": "ToolsManagerAgentOutput",
+    "UIFileGenerator": "UIFileGeneratorOutput",
+    "AgentToolsFileGenerator": "AgentToolsFileGeneratorOutput",
+    "HookAgent": "HookAgentOutput",
+    "AgentsAgent": "AgentsAgentOutput",
+    "ContextVariablesAgent": "ContextVariablesAgentOutput",
+    "OrchestratorAgent": "OrchestratorAgentOutput",
+    "HandoffsAgent": "HandoffsAgentOutput",
+    "StructuredOutputsAgent": "StructuredOutputsAgentOutput",
+    "APIKeyAgent": null,
+    "UserFeedbackAgent": null
   }
 }

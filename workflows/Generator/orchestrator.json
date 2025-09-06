@@ -5,6 +5,6 @@
   "startup_mode": "AgentDriven",
   "orchestration_pattern": "DefaultPattern",
   "initial_message_to_user": null,
-  "initial_message": "You are part of a collaborative effort to generate a multi-agent workflow per AG2 (formerly autogen). ContextAgent, start immediately by analyzing the 'concept_overview' provided in the context variables. Clearly identify and summarize the single most impactful agentic function that will form the basis of the agent architecture.",
+  "initial_message": "You are part of a collaborative effort to generate a multi-agent workflow per AG2 (formerly autogen). ContextAgent, start immediately by analyzing the 'concept_overview' provided in the context variables.",
   "initial_agent": "ContextAgent"
 }

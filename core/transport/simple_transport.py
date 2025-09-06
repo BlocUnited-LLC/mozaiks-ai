@@ -23,13 +23,11 @@ from autogen.events import BaseEvent
 # Import workflow configuration for agent visibility filtering
 from core.workflow.workflow_manager import workflow_manager
 
-# Logging setup
-logger = logging.getLogger(__name__)
+# Enhanced logging setup
+from logs.logging_config import get_core_logger, get_chat_logger
 
-# Import chat logger for agent message tracking
-from logs.logging_config import get_chat_logger
-
-# Get our chat logger (logging setup happens in main app)
+# Get our enhanced loggers
+logger = get_core_logger("simple_transport")
 chat_logger = get_chat_logger("agent_messages")
 
 # ==================================================================================
@@ -338,7 +336,7 @@ class SimpleTransport:
         This is the primary method for forwarding AG2 native events.
         """
         try:
-            # Fast-path: already normalized dict produced by orchestration (event_to_ui_payload)
+            # Fast-path: already normalized dict produced by orchestration (event_to_payload)
             if isinstance(event, dict) and 'kind' in event:
                 kind = event.get('kind')
                 # Correlation convenience: for input_request expose corr=request_id

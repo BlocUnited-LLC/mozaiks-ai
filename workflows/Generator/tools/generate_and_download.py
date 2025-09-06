@@ -233,7 +233,7 @@ NON-GOALS / DECLINED BEHAVIORS:
                             cp["size"] = _format_bytes(sb)
                     ui_files.append(cp)
 
-    ui_payload = {
+    payload = {
         "downloadType": "bulk" if len(ui_files) > 1 else "single",
         "files": ui_files,
         "description": description or "Your generated workflow files are ready for download.",
@@ -246,7 +246,7 @@ NON-GOALS / DECLINED BEHAVIORS:
     try:
         response = await use_ui_tool(
             tool_id="FileDownloadCenter",
-            payload=ui_payload,
+            payload=payload,
             chat_id=chat_id,
             workflow_name=wf_name,
             display="artifact",

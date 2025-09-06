@@ -11,11 +11,11 @@ from enum import Enum
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 
-# Import our logging configuration
-from logs.logging_config import get_workflow_logger
+# Enhanced logging setup
+from logs.logging_config import get_core_logger, get_workflow_logger
 
-# Core logger for the event dispatcher
-logger = logging.getLogger(__name__)
+# Get our enhanced loggers
+logger = get_core_logger("unified_event_dispatcher")
 wf_logger = get_workflow_logger("event_dispatcher")
 
 # ==============================================================================

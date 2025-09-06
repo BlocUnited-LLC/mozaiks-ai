@@ -40,15 +40,10 @@ const WorkflowUIRouter = ({
   const workflowName = payload?.workflow || payload?.workflow_name || 'Unknown';
   const componentType = payload?.component_type || 'UnknownComponent';
   
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  React.useEffect(() => {
-    loadWorkflowComponent(workflowName, componentType);
-  }, [workflowName, componentType]); // loadWorkflowComponent is defined inside this component and doesn't need to be in deps
-
   /**
    * Dynamically load workflow component - NO HARDCODING
    */
-  const loadWorkflowComponent = async (workflow, component) => {
+  const loadWorkflowComponent = React.useCallback(async (workflow, component) => {
     try {
       setIsLoading(true);
       setError(null);
@@ -110,7 +105,11 @@ const WorkflowUIRouter = ({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [ui_tool_id]); // useCallback dependencies - include ui_tool_id since it's used in the function
+
+  React.useEffect(() => {
+    loadWorkflowComponent(workflowName, componentType);
+  }, [workflowName, componentType, loadWorkflowComponent]);
 
   // Loading state
   if (isLoading) {

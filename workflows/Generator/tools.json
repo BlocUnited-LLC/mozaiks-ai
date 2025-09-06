@@ -24,9 +24,20 @@
     },
     {
       "agent": "ContextAgent",
+      "file": "action_plan.py",
+      "function": "action_plan",
+      "description": "Provide action plan to user to sign off on workflow suggestion.",
+      "tool_type": "UI_Tool",
+      "ui": {
+        "component": "ActionPlan",
+        "mode": "artifact"
+      }
+    },
+    {
+      "agent": "OrchestratorAgent",
       "file": "echo.py",
       "function": "echo",
-      "description": "Echo back the provided input for verification.",
+      "description": "Testing tool that echoes back.",
       "tool_type": "Agent_Tool",
       "ui": {
         "component": null,

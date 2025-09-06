@@ -7,11 +7,11 @@ JSON FORMAT (current implementation expects either of these per entry):
 
   - hook_type: process_message_before_send | update_agent_state | process_last_received_message | process_all_messages_before_reply
     hook_agent: <AgentName>
-    file: redaction.py              # Python filename relative to workflow root OR tools/ directory
+    filename: redaction.py          # Python filename relative to workflow root OR tools/ directory
     function: echo_before_send       # Name of the function inside the file
 
 Resolution rules:
-1. If `file` present, we form import path relative to workflow directory.
+1. If `filename` present, we form import path relative to workflow directory.
    - If the file is inside `<workflow>/tools/`, we add `workflows.<workflow>.tools.<module>`.
    - Otherwise we use `workflows.<workflow>.<module>`.
 2. If only `function` provided and it contains ':' or '.', we attempt to parse module + function directly.
@@ -176,7 +176,7 @@ def register_hooks_for_workflow(workflow_name: str, agents: Dict[str, Any], *, b
                 continue
             hook_type = entry.get("hook_type")
             hook_agent = entry.get("hook_agent")
-            file_value = entry.get("file")
+            file_value = entry.get("filename")  # Updated to use "filename" instead of "file"
             fn_value = entry.get("function")
             if hook_type not in VALID_HOOK_TYPES:
                 skipped_unknown_type += 1

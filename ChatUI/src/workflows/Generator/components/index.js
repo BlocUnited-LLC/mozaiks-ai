@@ -6,6 +6,7 @@
 // Import Generator-specific components
 import AgentAPIKeyInput from './AgentAPIKeyInput';
 import FileDownloadCenter from './FileDownloadCenter';
+import ActionPlan from './ActionPlan';
 
 /**
  * 🎯 GENERATOR WORKFLOW COMPONENTS
@@ -15,11 +16,13 @@ import FileDownloadCenter from './FileDownloadCenter';
  * Components exported here:
  * - AgentAPIKeyInput: Handles API key requests for Generator workflow
  * - FileDownloadCenter: Handles file downloads for Generator workflow
+ * - ActionPlan: Visualizes workflow steps and status
  */
 
 const GeneratorComponents = {
   AgentAPIKeyInput,
-  FileDownloadCenter
+  FileDownloadCenter,
+  ActionPlan
 };
 
 
@@ -29,5 +32,6 @@ export default GeneratorComponents;
 // Named exports for convenience
 export {
   AgentAPIKeyInput,
-  FileDownloadCenter
+  FileDownloadCenter,
+  ActionPlan
 };

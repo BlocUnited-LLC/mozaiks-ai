@@ -33,6 +33,15 @@ WORKFLOW_LOG_FILE    = LOGS_DIR / "workflows.log"
 ERRORS_LOG_FILE      = LOGS_DIR / "errors.log"
 AUTOGEN_LOG_FILE     = LOGS_DIR / "autogen_agentchat.log"
 
+# Enhanced logging files
+ALL_CORE_LOG_FILE    = LOGS_DIR / "all_core.log"
+CORE_DATA_LOG_FILE   = LOGS_DIR / "core_data.log"
+CORE_EVENTS_LOG_FILE = LOGS_DIR / "core_events.log"
+CORE_OBSERVABILITY_LOG_FILE = LOGS_DIR / "core_observability.log"
+CORE_TRANSPORT_LOG_FILE = LOGS_DIR / "core_transport.log"
+CORE_WORKFLOW_LOG_FILE = LOGS_DIR / "core_workflow.log"
+CORE_ROOT_LOG_FILE   = LOGS_DIR / "core_root.log"
+
 # Sensitive key substrings for redaction
 _SENSITIVE_KEYS = {"api_key", "apikey", "authorization", "auth", "secret", "password", "token"}
 
@@ -214,6 +223,15 @@ ChatLogFilter   = lambda: KeywordFilter(_chat_kw)
 _exclude_chat_kw    = _chat_kw + ['chat.', 'groupchat']
 WorkflowFilter  = lambda: KeywordFilter(_workflow_kw, exclude_keywords=_exclude_chat_kw)
 
+# Core module filters for granular logging
+CoreDataFilter = lambda: KeywordFilter(['core.data', 'persistence', 'models', 'mongodb'])
+CoreEventsFilter = lambda: KeywordFilter(['core.events', 'unified_event', 'event_dispatcher'])
+CoreObservabilityFilter = lambda: KeywordFilter(['core.observability', 'performance', 'otel', 'token_logger'])
+CoreTransportFilter = lambda: KeywordFilter(['core.transport', 'websocket', 'simple_transport'])
+CoreWorkflowFilter = lambda: KeywordFilter(['core.workflow', 'agents', 'tools', 'handoffs', 'orchestration'])
+CoreRootFilter = lambda: KeywordFilter(['core.core_config'])
+AllCoreFilter = lambda: KeywordFilter(['core.'])
+
 # ----------------------------------------------------------------------
 # Handler factory
 # ----------------------------------------------------------------------
@@ -263,7 +281,13 @@ def setup_logging(
     cleared_files: list[str] = []
     clear_flag = os.getenv("CLEAR_LOGS_ON_START", "0").lower() in ("1","true","yes","on")
     if clear_flag:
-        for f in (CHAT_LOG_FILE, WORKFLOW_LOG_FILE, ERRORS_LOG_FILE, AUTOGEN_LOG_FILE):
+        all_log_files = (
+            CHAT_LOG_FILE, WORKFLOW_LOG_FILE, ERRORS_LOG_FILE, AUTOGEN_LOG_FILE,
+            ALL_CORE_LOG_FILE, CORE_DATA_LOG_FILE, CORE_EVENTS_LOG_FILE,
+            CORE_OBSERVABILITY_LOG_FILE, CORE_TRANSPORT_LOG_FILE, 
+            CORE_WORKFLOW_LOG_FILE, CORE_ROOT_LOG_FILE
+        )
+        for f in all_log_files:
             try:
                 if f.exists():
                     try:
@@ -280,11 +304,26 @@ def setup_logging(
     # Choose file formatter based on env; console remains pretty
     file_fmt = ProductionJSONFormatter() if LOGS_AS_JSON else PrettyConsoleFormatter(no_color=True)
     console_fmt = PrettyConsoleFormatter()
+    
+    # Original handlers
     spec = [
         (CHAT_LOG_FILE,        getattr(logging, chat_level.upper()), ChatLogFilter()),
         (WORKFLOW_LOG_FILE,    logging.DEBUG,                        WorkflowFilter()),
     ]
     for path, lvl, flt in spec:
+        root.addHandler(_make_handler(path, lvl, file_fmt, log_filter=flt, max_bytes=max_file_size, backup_count=backup_count))
+    
+    # Enhanced core logging handlers
+    core_handlers_spec = [
+        (ALL_CORE_LOG_FILE,           logging.DEBUG, AllCoreFilter()),
+        (CORE_DATA_LOG_FILE,          logging.DEBUG, CoreDataFilter()),
+        (CORE_EVENTS_LOG_FILE,        logging.DEBUG, CoreEventsFilter()),
+        (CORE_OBSERVABILITY_LOG_FILE, logging.DEBUG, CoreObservabilityFilter()),
+        (CORE_TRANSPORT_LOG_FILE,     logging.DEBUG, CoreTransportFilter()),
+        (CORE_WORKFLOW_LOG_FILE,      logging.DEBUG, CoreWorkflowFilter()),
+        (CORE_ROOT_LOG_FILE,          logging.DEBUG, CoreRootFilter()),
+    ]
+    for path, lvl, flt in core_handlers_spec:
         root.addHandler(_make_handler(path, lvl, file_fmt, log_filter=flt, max_bytes=max_file_size, backup_count=backup_count))
     # Dedicated autogen handler so AG2/internal autogen logs have their own file
     try:
@@ -326,6 +365,9 @@ def setup_logging(
         logging.getLogger(__name__).info(
             "Cleared existing log files", extra={"cleared_files": cleared_files}
         )
+    
+    # Log information about the enhanced core logging system
+    log_core_system_info()
 
 def reset_logging_state():
     """Reset logging initialization state for testing purposes"""
@@ -333,6 +375,48 @@ def reset_logging_state():
 
 # Public getters -----------------------------------------------------
 get_chat_logger = lambda name: logging.getLogger(f"chat.{name}")
+
+# Enhanced core module loggers
+def get_core_logger(module_name: str) -> logging.Logger:
+    """Get a logger for a specific core module file.
+    
+    Args:
+        module_name: Name of the module (e.g., 'persistence_manager', 'simple_transport')
+                    or full path like 'core.data.persistence_manager'
+    
+    Returns:
+        Logger configured for the specified core module
+    """
+    if module_name.startswith('core.'):
+        logger_name = module_name
+    else:
+        # Auto-detect the module category based on common patterns
+        if module_name in ['models', 'persistence_manager']:
+            logger_name = f"core.data.{module_name}"
+        elif module_name in ['unified_event_dispatcher']:
+            logger_name = f"core.events.{module_name}"
+        elif module_name in ['otel_helpers', 'performance_manager', 'performance_store', 'realtime_token_logger']:
+            logger_name = f"core.observability.{module_name}"
+        elif module_name in ['simple_transport']:
+            logger_name = f"core.transport.{module_name}"
+        elif module_name in ['agents', 'agent_tools', 'context_variables', 'db_manager', 'handoffs', 
+                            'hooks_loader', 'llm_config', 'orchestration_patterns', 'structured_outputs',
+                            'termination_handler', 'ui_tools', 'workflow_manager']:
+            logger_name = f"core.workflow.{module_name}"
+        elif module_name == 'core_config':
+            logger_name = f"core.{module_name}"
+        else:
+            logger_name = f"core.{module_name}"
+    
+    return logging.getLogger(logger_name)
+
+# Convenience functions for each core module
+get_data_logger = lambda name="data": logging.getLogger(f"core.data.{name}")
+get_events_logger = lambda name="events": logging.getLogger(f"core.events.{name}")  
+get_observability_logger = lambda name="observability": logging.getLogger(f"core.observability.{name}")
+get_transport_logger = lambda name="transport": logging.getLogger(f"core.transport.{name}")
+get_workflow_logger_detailed = lambda name="workflow": logging.getLogger(f"core.workflow.{name}")
+get_core_config_logger = lambda: logging.getLogger("core.core_config")
 
 # Context logger -----------------------------------------------------
 class ContextLogger:
@@ -380,6 +464,69 @@ def log_operation(logger: ContextLogger | logging.Logger, operation_name: str, *
 def setup_production_logging(): setup_logging(chat_level="INFO", console_level="WARNING", max_file_size=50*1024*1024, backup_count=10)
 
 def setup_development_logging(): setup_logging(chat_level="DEBUG", console_level="INFO")
+
+# ----------------------------------------------------------------------
+# Auto-discovered Core File Loggers
+# ----------------------------------------------------------------------
+def get_core_file_loggers() -> Dict[str, logging.Logger]:
+    """
+    Returns a dictionary of all discovered core module loggers.
+    This is useful for debugging or getting an overview of all core loggers.
+    
+    Returns:
+        Dict mapping file paths to their logger instances
+    """
+    import os
+    import pathlib
+    
+    core_files = {}
+    project_root = pathlib.Path(__file__).parent.parent
+    core_dir = project_root / "core"
+    
+    if not core_dir.exists():
+        return core_files
+    
+    for py_file in core_dir.rglob("*.py"):
+        if py_file.name == "__init__.py":
+            continue
+        
+        # Create relative path from core directory
+        rel_path = py_file.relative_to(core_dir)
+        module_parts = []
+        
+        for part in rel_path.parts[:-1]:  # All parts except filename
+            module_parts.append(part)
+        
+        # Add filename without .py extension
+        module_parts.append(py_file.stem)
+        
+        # Create logger name
+        logger_name = f"core.{'.'.join(module_parts)}"
+        core_files[str(rel_path)] = logging.getLogger(logger_name)
+    
+    return core_files
+
+def log_core_system_info():
+    """Log information about the enhanced core logging system"""
+    logger = logging.getLogger(__name__)
+    core_loggers = get_core_file_loggers()
+    
+    logger.info(
+        "Enhanced core logging system initialized",
+        extra={
+            "total_core_files": len(core_loggers),
+            "log_files": [
+                "all_core.log (consolidated)",
+                "core_data.log (data module)",
+                "core_events.log (events module)", 
+                "core_observability.log (observability module)",
+                "core_transport.log (transport module)",
+                "core_workflow.log (workflow module)",
+                "core_root.log (root config)"
+            ],
+            "usage_example": "from logs.logging_config import get_core_logger; logger = get_core_logger('persistence_manager')"
+        }
+    )
 
 # ----------------------------------------------------------------------
 # Consolidated Workflow Logging (replaces separate workflow_logging.py)

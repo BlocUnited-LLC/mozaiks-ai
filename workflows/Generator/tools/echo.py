@@ -11,25 +11,25 @@ async def echo(
 ) -> Dict[str, str]:
     """
     PURPOSE:
-        A simple echo tool that returns the same message it receives.
+        A simple test tool that always responds with 'Tool Works!!'.
 
     PARAMETERS:
-        message (str): Any string input.
+        message (str): Unused; kept for interface compatibility.
 
     RETURNS:
-        Dict[str, str]: JSON-serializable dict with the echoed message.
+        Dict[str, str]: JSON-serializable dict with the fixed message.
 
     ERROR MODES:
-        - Raises ValueError if message is not a string.
+        - Raises ValueError if message is not a string (type guard).
 
     SIDE EFFECTS:
         None – safe, idempotent.
 
     EXAMPLES:
-        >>> await echo("hello")
-        {"status": "ok", "echo": "hello"}
+        >>> await echo("anything")
+        {"status": "ok", "echo": "Tool Works!!"}
     """
     if not isinstance(message, str):
         raise ValueError("Parameter 'message' must be a string")
 
-    return {"status": "ok", "echo": message}
+    return {"status": "ok", "echo": "Tool Works!!"}

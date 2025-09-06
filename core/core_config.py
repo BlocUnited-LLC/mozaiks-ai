@@ -7,14 +7,14 @@
 import os
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
-import logging
+from logs.logging_config import get_core_logger
 
 # Azure SDK imports are kept, but we won't construct credentials at import time
 from azure.identity import DefaultAzureCredential
 from motor.motor_asyncio import AsyncIOMotorClient
 
 load_dotenv()
-logger = logging.getLogger(__name__)
+logger = get_core_logger("core_config")
 
 # -----------------------------
 # Azure Key Vault utilities (lazy, optional)
@@ -134,12 +134,6 @@ def get_free_trial_config() -> Dict[str, Any]:
     """Get free trial configuration from environment variables"""
     return {
         "enabled": os.getenv("FREE_TRIAL_ENABLED", "true").lower() == "true"
-    }
-
-def get_rate_limits() -> Dict[str, str]:
-    """Get rate limiting configuration - not implemented yet"""
-    return {
-        "note": "Rate limiting not implemented yet"
     }
 
 # -----------------------------------------------------------------------------

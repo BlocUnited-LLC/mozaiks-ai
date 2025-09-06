@@ -9,7 +9,7 @@ Backend
 - B1: Single entry point enforced (`a_run_group_chat` only) in `run_workflow_orchestration`.
 - B2: Removed custom streaming IO reliance (no install of `ag2_iostream`).
 - B3: Event loop normalizes & persists (skips `PrintEvent` persistence) with `sequence_counter` reset after `GroupChatResumeEvent`.
-- B4: `PrintEvent` mapped to `kind=print` in `event_to_ui_payload`.
+- B4: `PrintEvent` mapped to `kind=print` in `event_to_payload`.
 - B5: Input request respond callback registry integrated (pending_input_requests + transport registry) and `submit_user_input` invokes `respond`.
 - B6: WebSocket inbound handler added (supports `user.input.submit`, placeholder `client.resume`).
 - B7: Pass-through fast path in `send_event_to_ui` for already-normalized dicts.
@@ -36,7 +36,7 @@ Safety / Filtering
 
 #### ✅ Production Implementation Complete (2025-08-26)
 Backend
-- B9: ✅ COMPLETE - Extended `event_to_ui_payload` and transport namespace mapping to emit full protocol event set (`chat.tool_call`, `chat.tool_response`, `chat.input_ack`, `chat.usage_summary`, `chat.run_complete`, `chat.error`).
+- B9: ✅ COMPLETE - Extended `event_to_payload` and transport namespace mapping to emit full protocol event set (`chat.tool_call`, `chat.tool_response`, `chat.input_ack`, `chat.usage_summary`, `chat.run_complete`, `chat.error`).
 - B10: ✅ COMPLETE - Added correlation ID propagation for tool events (tool_call_id → corr) and input_ack emission.
 - B11: ✅ COMPLETE - Implemented `_handle_resume_request` method with event replay, `chat.resume_boundary` emission, and WebSocket resume handshake.
 - B12: ✅ COMPLETE - Removed legacy future-based pending input path. Only AG2 callback-based approach remains.
@@ -146,10 +146,10 @@ Legend:
 | Event persistence (normalized) | `core/workflow/orchestration_patterns.py` | event loop | 532–575 | Custom |
 | Event normalization | `core/workflow/ui_tools.py` | `normalize_event` | 73–116 | Custom |
 | Event→UI mapping | `core/workflow/ui_tools.py` | `event_to_
-ui_payload` | 118–260 | Custom |
+payload` | 118–260 | Custom |
 | Tool UI round‑trip | `core/workflow/ui_tools.py` | `handle_tool_call_for_ui_interaction` | 300+ | Custom |
 | Transport send | `core/transport/simple_transport.py` | `send_event_to_ui` | 250+ | Custom |
-| Agent message detection | `core/workflow/ui_tools.py` | `PrintEvent` handling in `event_to_ui_payload` | 178–207 | Custom |
+| Agent message detection | `core/workflow/ui_tools.py` | `PrintEvent` handling in `event_to_payload` | 178–207 | Custom |
 | AG2 internal resume decision | `.venv/.../autogen/agentchat/group/multi_agent_chat.py` | `a_initiate_group_chat` | 55–108 | AG2-native |
 | Async event queue & respond hook | `.venv/.../autogen/io/run_response.py` | `AsyncRunResponse._queue_generator` | 82–132 | AG2-native |
 
@@ -157,7 +157,7 @@ ui_payload` | 118–260 | Custom |
 **Primary Flow:**
 User/API → `run_workflow_orchestration` → (resume history via `AG2PersistenceManager`) → build agents & pattern → call `a_run_group_chat` → AG2 constructs `AsyncThreadIOStream` internally → events flow through `AsyncRunResponse.events` → event processing loop:
 1. **Event Normalization**: `normalize_event()` → persistence envelope
-2. **UI Payload Transform**: `event_to_ui_payload()` → chat.* events
+2. **UI Payload Transform**: `event_to_payload()` → chat.* events
 3. **Transport**: `send_event_to_ui()` → WebSocket broadcast
 4. **Persistence**: Substantive events saved, streaming chunks filtered
 
@@ -214,7 +214,7 @@ Manual turn timing using `SelectSpeakerEvent` | `orchestration_patterns.py` | Ac
 
 Missing pieces:
 - No handler to call `event.content.respond` for `InputRequestEvent`.
-- `PrintEvent` not translated in `event_to_ui_payload` (lose streaming fidelity).
+- `PrintEvent` not translated in `event_to_payload` (lose streaming fidelity).
 - Protocol not formally specified (added now in `protocol.md`).
 
 ---
@@ -246,7 +246,7 @@ Planned changes (all minimal, AG2-aligned):
 Module | Change Summary
 -------|---------------
 `core/workflow/orchestration_patterns.py` | Remove `install_streaming_iostream` usage; add handling for `InputRequestEvent` & `PrintEvent`; register respond callbacks; call them when transport receives user reply (plumb through `SimpleTransport.submit_user_input`).
-`core/workflow/ui_tools.py` | Extend `event_to_ui_payload` to map `PrintEvent` → `print`; avoid treating streaming as text message.
+`core/workflow/ui_tools.py` | Extend `event_to_payload` to map `PrintEvent` → `print`; avoid treating streaming as text message.
 `core/transport/simple_transport.py` | Add method `register_input_request(event)` storing callback (or store in orchestration via closure); modify `submit_user_input` to first look for active request dictionary and call `respond()`; deprecate pending_input_requests future mechanism when using official path.
 `core/transport/ag2_iostream.py` | Mark deprecated; remove from import path; leave file with docstring note or schedule deletion.
 `core/data/persistence_manager.py` | Ensure resumed messages carry explicit `name` for user turns (already partially handled).

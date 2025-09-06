@@ -51,10 +51,8 @@ def is_ui_tool(tool_id: str) -> bool:
     Thin wrapper over workflow_manager registry; keeps runtime surface minimal.
     """
     try:
-        # Avoid circular import issues at module load
-        recs = workflow_manager.iter_ui_tools()  # list of records
-        for rec in recs:
-            if rec.get('tool_id') == tool_id:
+        for rec in workflow_manager.iter_ui_tools():
+            if rec.get('tool_id') == tool_id or rec.get('fn') == tool_id:
                 return True
     except Exception:
         return False
@@ -240,9 +238,11 @@ async def handle_tool_call_for_ui_interaction(tool_call_event: Any, chat_id: str
     
     # Use configuration-driven detection
     requires_ui, tool_config = workflow_manager.detect_ui_tool_event(tool_call_event)
-    
-    if not requires_ui:
-        wf_logger.debug(f"Tool does not require UI interaction")
+
+    # Only orchestrator-manage UI emission when explicitly flagged in tool config.
+    # By default, UI tools emit their own UI from within the tool function via use_ui_tool().
+    if not requires_ui or not tool_config or not tool_config.get('orchestrator_managed', False):
+        wf_logger.debug("Skipping orchestrator-managed UI for this tool (handled by tool function or not a UI tool)")
         return None
     
     # Extract tool information
@@ -261,6 +261,12 @@ async def handle_tool_call_for_ui_interaction(tool_call_event: Any, chat_id: str
         tool_args = content.get("arguments", {}) or content
     else:
         tool_args = {}
+
+    # If no arguments are present, avoid emitting UI at this stage.
+    # Many UI tools construct their payload inside the tool function itself.
+    if not tool_args:
+        wf_logger.info(f"🔇 Orchestrator UI emission suppressed for '{tool_name}' (no args provided in call)")
+        return None
     
     # Use configuration-driven component type and display mode
     component_type = effective_component
@@ -268,7 +274,7 @@ async def handle_tool_call_for_ui_interaction(tool_call_event: Any, chat_id: str
     ui_tool_id = tool_config.get('tool_id', str(tool_name))
     
     # Prepare UI tool payload
-    ui_payload = {
+    payload = {
     "tool_name": tool_name,
         "tool_args": tool_args,
         "component_type": component_type,
@@ -280,7 +286,7 @@ async def handle_tool_call_for_ui_interaction(tool_call_event: Any, chat_id: str
     try:
         event_id = await _emit_ui_tool_event_core(
             tool_id=ui_tool_id,
-            payload=ui_payload,
+            payload=payload,
             display=display_mode,
             chat_id=chat_id,
             workflow_name=tool_config.get('workflow_name', 'tool_interaction')

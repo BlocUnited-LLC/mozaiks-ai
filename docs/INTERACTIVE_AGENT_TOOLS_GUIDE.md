@@ -149,7 +149,7 @@ async def code_editor_artifact(code: str, language: str = "python", editable: bo
 The system automatically detects UI tools based on naming patterns:
 
 ```python
-# In core/workflow/ui_tools.py - event_to_ui_payload()
+# In core/workflow/ui_tools.py - event_to_payload()
 is_ui_tool = any(pattern in str(tool_name).lower() for pattern in [
     "input", "confirm", "select", "upload", "download", 
     "edit", "api_key", "form", "artifact"

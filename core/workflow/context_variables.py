@@ -17,6 +17,29 @@ from logs.logging_config import get_workflow_logger
 # Get logger
 business_logger = get_workflow_logger("context_variables")
 
+
+def _format_for_log(value: Any) -> str:
+    """Best-effort, safe formatter for logging context variable values.
+
+    - Truncates long strings
+    - Summarizes lists/dicts to avoid huge log lines
+    - Falls back to repr for other types
+    """
+    try:
+        if isinstance(value, str):
+            if len(value) > 400:
+                return f"{value[:200]}... [truncated {len(value)-200} chars]"
+            return value
+        if isinstance(value, list):
+            return f"list(len={len(value)})"
+        if isinstance(value, dict):
+            keys_preview = list(value.keys())[:10]
+            extra = "" if len(value) <= 10 else f", +{len(value)-10} more"
+            return f"dict(keys={keys_preview}{extra})"
+        return repr(value)
+    except Exception:
+        return "<unloggable>"
+
 def get_context(workflow_name: str, enterprise_id: Optional[str] = None) -> ContextVariables:
     """
     Create context variables for any workflow.
@@ -101,31 +124,37 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
     # Load workflow configuration  
     config = _load_workflow_config(workflow_name)
     
-    # Handle schema_overview configuration
+    # NOTE: By product decision, do NOT expose 'schema_overview' as a user context variable.
+    # If configured, we skip loading/setting it entirely to keep context minimal and focused.
+    # (Previously this populated a large text blob that isn't needed by agents.)
     schema_config = config.get('schema_overview', {})
-    if isinstance(schema_config, dict) and schema_config.get('enabled', False) and internal_enterprise_id:
-        schema_database = schema_config.get('database_name', 'MozaiksAI')
-        schema_info = await _get_database_schema_async(schema_database, internal_enterprise_id)
-        # Only add the schema_overview content, not database_name as separate variable
-        if 'schema_overview' in schema_info:
-            context.set("schema_overview", schema_info['schema_overview'])
     
     # Load specific variables from database
     variables = config.get('variables', [])
     if variables and internal_enterprise_id:
-        # Use default database name if not specified in schema config
-        default_db = config.get('database_name', 'MozaiksAI')
-        if isinstance(schema_config, dict) and 'database_name' in schema_config:
-            default_db = schema_config['database_name']
-        
+        # Determine default database name strictly from config; do NOT fall back to a hardcoded default
+        default_db = config.get('database_name')
+        if isinstance(schema_config, dict) and 'database_name' in schema_config and schema_config.get('database_name'):
+            default_db = schema_config.get('database_name')
+
+        if not default_db:
+            business_logger.warning("⚠️ No default database_name configured for context variables; each variable must specify database.database_name explicitly.")
+
         loaded_data = await _load_specific_data_async(variables, default_db, internal_enterprise_id)
         for key, value in loaded_data.items():
             context.set(key, value)
+            business_logger.info(f"🧩 ContextVar {key} = {_format_for_log(value)}")
     
     # Log the final context summary - only user-facing variables
     variable_names = list(context.data.keys())
     user_variables = [name for name in variable_names if name not in ['enterprise_id', 'database_name']]
     business_logger.info(f"✅ Context loaded: {len(user_variables)} user context variables: {user_variables}")
+    # Print each user-visible variable with a safe value preview
+    for _var in user_variables:
+        try:
+            business_logger.debug(f"   • {_var} => {_format_for_log(context.data.get(_var))}")
+        except Exception:
+            pass
     
     # Add enterprise_id for internal use but don't count it in summary
     if internal_enterprise_id:
@@ -236,7 +265,7 @@ async def _get_database_schema_async(database_name: str, enterprise_id: str) -> 
     
     return schema_info
 
-async def _load_specific_data_async(variables: List[Dict[str, Any]], default_database_name: str, enterprise_id: str) -> Dict[str, Any]:
+async def _load_specific_data_async(variables: List[Dict[str, Any]], default_database_name: Optional[str], enterprise_id: str) -> Dict[str, Any]:
     """
     FEATURE 2: Load specific data based on json configuration
     Allows users to extract specific endpoints/data without full schema.
@@ -264,6 +293,9 @@ async def _load_specific_data_async(variables: List[Dict[str, Any]], default_dat
                 
                 # Use variable-specific database name if provided, otherwise use default
                 variable_database_name = db_config.get('database_name', default_database_name)
+                if not variable_database_name:
+                    business_logger.warning(f"⚠️ Skipping '{var_name}' - no database_name provided and no default configured")
+                    continue
                 
                 if not collection_name:
                     business_logger.warning(f"⚠️ No collection specified for {var_name}")

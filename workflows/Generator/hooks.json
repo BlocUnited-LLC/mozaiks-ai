@@ -2,47 +2,15 @@
   "hooks": [
     {
       "hook_type": "process_message_before_send",
-      "hook_agent": "HookAgent",
-      "function": "redaction:echo_before_send",
-      "files": [
-        {
-          "filename": "redaction.py",
-          "filecontent": "..."
-        }
-      ]
-    },
-    {
-      "hook_type": "update_agent_state",
       "hook_agent": "UserFeedbackAgent",
-      "function": "state:echo_update_state",
-      "files": [
-        {
-          "filename": "state.py",
-          "filecontent": "..."
-        }
-      ]
+      "filename": "hook_tokengate.py",
+      "function": "add_usage_footer"
     },
     {
       "hook_type": "process_last_received_message",
       "hook_agent": "ContextAgent",
-      "function": "normalize:echo_last_message",
-      "files": [
-        {
-          "filename": "normalize.py",
-          "filecontent": "..."
-        }
-      ]
-    },
-    {
-      "hook_type": "process_all_messages_before_reply",
-      "hook_agent": "OrchestratorAgent",
-      "function": "transform:echo_all_messages",
-      "files": [
-        {
-          "filename": "transform.py",
-          "filecontent": "..."
-        }
-      ]
+      "filename": "hook_gaurdrail.py",
+      "function": "soft_policy_label"
     }
   ]
 }

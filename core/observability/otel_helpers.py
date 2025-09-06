@@ -65,6 +65,8 @@ def ensure_telemetry_initialized(*, endpoint: Optional[str] = None, service_name
     if not enabled:
         logger.info("❌ TELEMETRY_INIT: Telemetry disabled via enabled=False parameter")
         return False
+    
+    
     # Determine endpoint precedence: explicit argument > env > default
     env_ep = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     # Allow custom override via MOZAIKS_OTEL_ENDPOINT first

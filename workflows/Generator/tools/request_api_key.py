@@ -1,8 +1,7 @@
 # ==============================================================================
 # FILE: workflows/Generator/tools/request_api_key.py
 # DESCRIPTION: UI tool function to request an external service API key from the user.
-# CONTRACT: Single async function export `request_api_key` used by `APIKeyAgent`.
-# SECURITY: Never logs, returns, or echoes any portion (even masked) of the API key.
+#              Never logs, returns, or echoes any portion (even masked) of the API key.
 # RUNTIME PARAMS (injected via **runtime): chat_id, enterprise_id, workflow_name, context_variables.
 # ==============================================================================
 import uuid
@@ -55,7 +54,7 @@ async def request_api_key(
 
     agent_message_id = f"msg_{uuid.uuid4().hex[:10]}"
 
-    ui_payload: Dict[str, Any] = {
+    payload: Dict[str, Any] = {
         "service": service_norm,
         "label": f"{service_norm.replace('_', ' ').title()} API Key",
         "description": description or f"Enter your {service_norm} API key to continue",
@@ -69,7 +68,7 @@ async def request_api_key(
     try:
         response = await use_ui_tool(
             "AgentAPIKeyInput",
-            ui_payload,
+            payload,
             chat_id=chat_id,
             workflow_name=str(workflow_name),
             display="inline",

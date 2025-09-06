@@ -23,6 +23,7 @@ import time
 from time import perf_counter
 import asyncio
 import os
+import inspect
 from opentelemetry import trace
 from core.observability.otel_helpers import timed_span
 
@@ -242,16 +243,30 @@ async def _load_llm_config(workflow_name: str, wf_logger, workflow_name_upper: s
     return llm_config
 
 
-def _build_context(context_factory: Optional[Callable], workflow_name: str, enterprise_id: str, wf_logger, workflow_name_upper: str):
-    context = None
-    if context_factory:
-        return context_factory()
+async def _build_context_blocking(
+    context_factory: Optional[Callable],
+    workflow_name: str,
+    enterprise_id: str,
+    wf_logger,
+    workflow_name_upper: str,
+):
+    """Build context and wait for it to be fully populated before first turn.
+
+    - If a context_factory is provided, supports both sync and async factories.
+    - Otherwise, uses context_variables.get_context_async to load context blocking.
+    """
     try:
-        from .context_variables import get_context
-        context = get_context(workflow_name, enterprise_id)
+        if context_factory:
+            result = context_factory()
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        from .context_variables import _load_context_async
+        # Use the internal async loader directly to ensure blocking population
+        return await _load_context_async(workflow_name, enterprise_id)
     except Exception as e:
         wf_logger.error(f"❌ [{workflow_name_upper}] Context load failed: {e}")
-    return context
+        return None
 
 
 async def _define_agents(agents_factory: Optional[Callable], workflow_name: str):
@@ -330,15 +345,48 @@ async def _create_pattern_and_handoffs(
     agents_list = [
         a for n, a in agents.items() if not (n == "user" and human_in_loop and user_proxy_agent is not None)
     ]
+    # Ensure context is an AG2 ContextVariables instance if possible
+    ag2_context = context
+    try:
+        from autogen.agentchat.group import ContextVariables as _AG2Context
+        if context is None:
+            ag2_context = _AG2Context()
+        elif not isinstance(context, _AG2Context):
+            # Attempt to coerce from dict-like
+            if hasattr(context, 'to_dict'):
+                ag2_context = _AG2Context(data=context.to_dict())
+            elif isinstance(context, dict):
+                ag2_context = _AG2Context(data=context)
+            else:
+                # Fallback: wrap as single value for visibility
+                ag2_context = _AG2Context(data={"value": context})
+        wf_logger.info(
+            f"🧠 [CONTEXT] Prepared AG2 ContextVariables for pattern | keys={list(getattr(ag2_context,'data',{}).keys())}"
+        )
+    except Exception as _cv_err:
+        wf_logger.warning(f"⚠️ [CONTEXT] Could not coerce context to AG2 ContextVariables: {_cv_err}")
+        ag2_context = context
+
     pattern = create_orchestration_pattern(
         pattern_name=orchestration_pattern,
         initial_agent=initiating_agent,
         agents=agents_list,
         user_agent=user_proxy_agent,
-        context_variables=context,
+        context_variables=ag2_context,
         human_in_the_loop=human_in_loop,
         group_manager_args={"llm_config": llm_config},
     )
+    try:
+        # Light sanity: if pattern exposes group_manager/context_variables, log keys
+        gm = getattr(pattern, "group_manager", None)
+        if gm and hasattr(gm, "context_variables"):
+            cv = getattr(gm, "context_variables")
+            keys = list(getattr(cv, "data", {}).keys()) if hasattr(cv, "data") else []
+            wf_logger.info(f"🔗 [PATTERN] ContextVariables attached to group manager | keys={keys}")
+        else:
+            wf_logger.debug("[PATTERN] Group manager or context_variables attribute not available for logging")
+    except Exception as _pat_log_err:
+        wf_logger.debug(f"[PATTERN] Context logging skipped: {_pat_log_err}")
     if orchestration_pattern == "DefaultPattern":
         try:
             if handoffs_factory:
@@ -384,6 +432,19 @@ async def _stream_events(
         PrintEvent = object  # type: ignore
 
     resumed_mode = bool(resumed_messages)
+    # Log which context keys are present at stream start for diagnostics
+    try:
+        gm_ctx_keys = []
+        gm = getattr(pattern, "group_manager", None)
+        if gm and hasattr(gm, "context_variables"):
+            cv = getattr(gm, "context_variables")
+            if hasattr(cv, "data") and isinstance(getattr(cv, "data"), dict):
+                gm_ctx_keys = list(cv.data.keys())
+            elif hasattr(cv, "to_dict"):
+                gm_ctx_keys = list(cv.to_dict().keys())
+        wf_logger.info(f"🧭 [EVENTS_INIT] ContextVariables available at start | keys={gm_ctx_keys}")
+    except Exception as _ctx_log_err:
+        wf_logger.debug(f"[EVENTS_INIT] ContextVariables keys logging skipped: {_ctx_log_err}")
     if resumed_mode:
         wf_logger.info(f"🔄 [AG2_RESUME] Using AG2 a_resume path for chat {chat_id} (history={len(initial_messages)} messages)")
         wf_logger.info(f"🔄 [AG2_RESUME] Pattern type: {type(pattern).__name__} | Messages count: {len(initial_messages)}")
@@ -469,6 +530,8 @@ async def _stream_events(
     pending_input_requests: dict[str, Any] = {}
     # Track which agent initiated each tool call so we can echo it on the response if missing
     tool_call_initiators: dict[str, str] = {}
+    # Track tool names by id so responses can be labeled even if AG2 omits tool_name
+    tool_names_by_id: dict[str, str] = {}
     try:
         if transport:
             transport.register_orchestration_input_registry(chat_id, pending_input_requests)  # type: ignore[attr-defined]
@@ -492,17 +555,30 @@ async def _stream_events(
             except Exception as e:
                 logger.warning(f"Failed to save TextEvent for {chat_id}: {e}")
 
+            # Note: FunctionCallEvent/ToolCallEvent are handled by AG2's executor.
+            # Tool functions themselves should call use_ui_tool() to emit UI artifacts
+            # and await user responses. Orchestration remains workflow-agnostic here.
+
             if isinstance(ev, SelectSpeakerEvent):
                 if turn_agent and turn_started is not None:
                     duration = max(0.0, time.perf_counter() - turn_started)
                     prompt_delta = completion_delta = 0
                     cost_delta = 0.0
-                    if turn_agent in agents and turn_agent in last_agent_usage:
+                    if turn_agent in agents:
                         agent = agents[turn_agent]
                         try:
                             if hasattr(agent, "get_actual_usage"):
                                 current_usage = agent.get_actual_usage()
                                 if current_usage:
+                                    # Ensure agent is in last_agent_usage (first-time agent handling)
+                                    if turn_agent not in last_agent_usage:
+                                        last_agent_usage[turn_agent] = {
+                                            "prompt_tokens": 0,
+                                            "completion_tokens": 0,
+                                            "total_cost": 0.0,
+                                        }
+                                        logger.debug(f"Initialized last_agent_usage for new agent: {turn_agent}")
+                                    
                                     last_usage = last_agent_usage[turn_agent]
                                     prompt_delta = (
                                         current_usage.get("prompt_tokens", 0) - last_usage["prompt_tokens"]
@@ -514,11 +590,22 @@ async def _stream_events(
                                     cost_delta = (
                                         current_usage.get("total_cost", 0.0) - last_usage["total_cost"]
                                     )
+                                    
+                                    # DEBUG: Log token detection
+                                    if prompt_delta > 0 or completion_delta > 0 or cost_delta > 0:
+                                        logger.debug(f"Token usage detected: agent={turn_agent} "
+                                                   f"prompt_delta={prompt_delta} completion_delta={completion_delta} "
+                                                   f"cost_delta={cost_delta}")
+                                    
                                     last_agent_usage[turn_agent] = {
                                         "prompt_tokens": current_usage.get("prompt_tokens", 0),
                                         "completion_tokens": current_usage.get("completion_tokens", 0),
                                         "total_cost": current_usage.get("total_cost", 0.0),
                                     }
+                                else:
+                                    logger.debug(f"Agent {turn_agent} get_actual_usage() returned None/empty")
+                            else:
+                                logger.debug(f"Agent {turn_agent} does not have get_actual_usage() method")
                         except Exception as e:
                             logger.debug(f"Failed to get usage for agent {turn_agent}: {e}")
                     safe_prompt = max(0, prompt_delta)
@@ -691,28 +778,63 @@ async def _stream_events(
                             or getattr(ev, "uuid", None)
                             or f"tool_{tool_name}"
                         )
-                        payload.update(
-                            {
-                                "kind": "tool_call",
-                                # Include initiating agent for UI display
-                                "agent": _extract_agent_name(ev),
-                                "tool_name": str(tool_name),
-                                "tool_call_id": str(tool_call_id),
-                                "corr": str(tool_call_id),
-                                "component_type": "inline",
-                                "awaiting_response": True,
-                                "payload": {
-                                    "tool_args": {},
-                                    "interaction_type": "input",
-                                    "agent_name": getattr(ev, "sender", None),
-                                },
-                            }
-                        )
-                        # Cache initiating agent for later tool_response events
-                        init_agent = payload.get("agent")
-                        if init_agent:
+                        # Attempt to extract tool arguments from multiple possible AG2 event shapes
+                        extracted_args = {}
+                        try:
+                            # From tool_calls array (function.arguments)
+                            if isinstance(tool_calls, list) and tool_calls:
+                                first_tool = tool_calls[0]
+                                f_fn = getattr(first_tool, "function", None)
+                                if f_fn is not None:
+                                    poss_args = getattr(f_fn, "arguments", None)
+                                    if isinstance(poss_args, dict):
+                                        extracted_args = poss_args
+                            # From function_call attribute
+                            if not extracted_args:
+                                function_call = getattr(ev, "function_call", None)
+                                if function_call is not None:
+                                    poss_args = getattr(function_call, "arguments", None)
+                                    if isinstance(poss_args, dict):
+                                        extracted_args = poss_args
+                            # From content object
+                            if not extracted_args and content_obj is None:
+                                content_obj = getattr(ev, "content", None)
+                            if not extracted_args and content_obj is not None:
+                                poss_args = getattr(content_obj, "arguments", None)
+                                if isinstance(poss_args, dict):
+                                    extracted_args = poss_args
+                        except Exception as arg_ex:
+                            wf_logger.debug(f"[TOOL_ARGS] extraction failed for {tool_name}: {arg_ex}")
+
+                        agent_for_tool = _extract_agent_name(ev) or turn_agent or getattr(ev, "sender", None)
+                        # Cache tool name and initiator for later correlation
+                        if tool_call_id:
+                            tool_names_by_id[str(tool_call_id)] = str(tool_name)
+                        init_agent = agent_for_tool or payload.get("agent")
+                        if init_agent and tool_call_id:
                             tool_call_initiators[str(tool_call_id)] = init_agent
-                            wf_logger.debug(f"🛠️ [TOOL_CALL] agent={init_agent} tool={tool_name} id={tool_call_id}")
+                        # Only emit a chat.tool_call to the UI when arguments exist; otherwise the tool likely manages its own UI
+                        if extracted_args:
+                            payload.update(
+                                {
+                                    "kind": "tool_call",
+                                    "agent": agent_for_tool,
+                                    "tool_name": str(tool_name),
+                                    "tool_call_id": str(tool_call_id),
+                                    "corr": str(tool_call_id),
+                                    "component_type": "inline",
+                                    "awaiting_response": True,
+                                    "payload": {
+                                        "tool_args": extracted_args,
+                                        "interaction_type": "input",
+                                        "agent_name": agent_for_tool,
+                                    },
+                                }
+                            )
+                            wf_logger.debug(f"🛠️ [TOOL_CALL] agent={agent_for_tool} tool={tool_name} id={tool_call_id} args_keys={list(extracted_args.keys())}")
+                        else:
+                            # No args: skip emitting tool_call to UI to avoid confusion/noise
+                            wf_logger.debug(f"� [TOOL_CALL_SUPPRESSED] tool={tool_name} id={tool_call_id} (no args)")
                     elif isinstance(ev, (_FRe, _TRe)):
                         # Extract tool name using same logic as tool call events
                         tool_name = getattr(ev, "tool_name", None)
@@ -751,6 +873,9 @@ async def _stream_events(
                                 wf_logger.debug(
                                     f"♻️ [TOOL_RESPONSE_AGENT_FALLBACK] Using initiator agent={agent_name} for tool_response id={tool_response_id}"
                                 )
+                        # Try to backfill tool_name using prior mapping if still unknown
+                        if (not tool_name or tool_name == "unknown_tool") and tool_response_id:
+                            tool_name = tool_names_by_id.get(str(tool_response_id), tool_name)
                         payload.update(
                             {
                                 "kind": "tool_response",
@@ -1023,6 +1148,17 @@ async def run_workflow_orchestration(
             # -----------------------------------------------------------------
             llm_config = await _load_llm_config(workflow_name, wf_logger, workflow_name_upper)
 
+            # -----------------------------------------------------------------
+            # 3.5) Structured outputs preload (blocking)
+            # -----------------------------------------------------------------
+            try:
+                from .structured_outputs import load_workflow_structured_outputs as _preload_so
+                _preload_so(workflow_name)
+                wf_logger.info(f"✅ [{workflow_name_upper}] Structured outputs preloaded")
+            except Exception as so_err:
+                # Do not fail the run, but surface misconfiguration early
+                wf_logger.warning(f"⚠️ [{workflow_name_upper}] Structured outputs preload failed: {so_err}")
+
             # Log start
             chat_logger.info(f"[{workflow_name_upper}] WORKFLOW_STARTED chat_id={chat_id} pattern={orchestration_pattern}")
             wf_logger.info(
@@ -1051,7 +1187,7 @@ async def run_workflow_orchestration(
                     "enterprise_id": enterprise_id,
                 },
             ):
-                context = _build_context(
+                context = await _build_context_blocking(
                     context_factory=context_factory,
                     workflow_name=workflow_name,
                     enterprise_id=enterprise_id,
@@ -1070,11 +1206,18 @@ async def run_workflow_orchestration(
                 },
             )
 
+            # Note: We intentionally do NOT inject context variables into prompts.
+            # Per AG2 design, ContextVariables remain separate from LLM prompts and are
+            # accessed via tools, system templates, or handoffs. This keeps prompts clean
+            # and token-efficient.
+
             # -----------------------------------------------------------------
             # 6) Agents definition + tool registry
             # -----------------------------------------------------------------
             agents = await _define_agents(agents_factory, workflow_name)
             agents = agents or {}
+            if not agents:
+                raise RuntimeError(f"No agents defined for workflow '{workflow_name}'")
 
             # Get tool binding data for summary
             from .agent_tools import load_agent_tool_functions
@@ -1085,6 +1228,9 @@ async def run_workflow_orchestration(
                 workflow_logger.debug(f"[ORCH][TRACE] Loaded agent tool mapping for {workflow_name}: {_tool_summary}")
             except Exception as _e:  # pragma: no cover
                 workflow_logger.debug(f"[ORCH][TRACE] Failed building tool summary: {_e}")
+            # Basic sanity: at least one tool across all agents if workflow expects tools
+            total_tool_count = sum(len(funcs) for funcs in agent_tools.values())
+            wf_logger.info(f"🔧 [{workflow_name_upper}] Tools bound across agents: {total_tool_count}")
             
             # Log consolidated agent setup summary using existing logger
             try:
@@ -1093,6 +1239,18 @@ async def run_workflow_orchestration(
                 )
             except Exception as log_err:
                 logger.debug(f"Agent setup summary logging failed: {log_err}")
+
+            # -----------------------------------------------------------------
+            # 6.5) Hooks readiness snapshot (blocking check via current agents)
+            # -----------------------------------------------------------------
+            try:
+                from .agents import list_hooks_for_workflow as _list_hooks
+                hooks_snapshot = _list_hooks(agents)
+                total_hooks = sum(len(funcs) for agent_hooks in hooks_snapshot.values() for funcs in agent_hooks.values())
+                wf_logger.info(f"🪝 [{workflow_name_upper}] Hooks registered across agents: {total_hooks}")
+                workflow_logger.debug(f"[ORCH][TRACE] Hooks snapshot: {hooks_snapshot}")
+            except Exception as hook_snap_err:  # pragma: no cover
+                wf_logger.debug(f"Hooks snapshot failed: {hook_snap_err}")
 
             # Defer start log until after agents + initiating agent known
             try:
@@ -1375,8 +1533,8 @@ def create_orchestration_pattern(
     }
 
     if pattern_name not in pattern_map:
-        logger.warning(f"⚠️ Unknown pattern '{pattern_name}', defaulting to DefaultPattern")
-        pattern_name = "DefaultPattern"
+        # Fail fast so misconfiguration is visible instead of silently defaulting
+        raise ValueError(f"Unknown orchestration pattern: {pattern_name}")
 
     pattern_class = pattern_map[pattern_name]
 
@@ -1384,11 +1542,28 @@ def create_orchestration_pattern(
     logger.info(f"🔍 Pattern setup - initial_agent: {initial_agent.name}")
     logger.info(f"🔍 Pattern setup - agents count: {len(agents)}")
     logger.info(f"🔍 Pattern setup - user_agent included: {user_agent is not None and human_in_the_loop}")
-    logger.info(f"🔍 Pattern setup - context_variables: {context_variables is not None}")
+    if context_variables is not None:
+        try:
+            # Best-effort context diagnostics
+            cv_type = type(context_variables).__name__
+            cv_keys = []
+            if hasattr(context_variables, 'to_dict'):
+                cv_keys = list(context_variables.to_dict().keys())
+            elif hasattr(context_variables, 'data') and isinstance(getattr(context_variables, 'data', None), dict):
+                cv_keys = list(context_variables.data.keys())
+            elif isinstance(context_variables, dict):
+                cv_keys = list(context_variables.keys())
+            logger.info(f"🔍 Pattern setup - context_variables: True | type={cv_type} | keys={cv_keys}")
+        except Exception as _log_err:
+            logger.info(f"🔍 Pattern setup - context_variables: True (keys unavailable: {_log_err})")
+    else:
+        logger.info(f"🔍 Pattern setup - context_variables: False")
 
+    # Build pattern arguments - AG2 patterns need all core parameters
     pattern_args = {
         "initial_agent": initial_agent,
         "agents": agents,
+        "context_variables": context_variables,  # Always pass context_variables (AG2 handles None case)
     }
 
     if human_in_the_loop and user_agent is not None:
@@ -1397,9 +1572,7 @@ def create_orchestration_pattern(
     else:
         logger.info(f"ℹ️ User agent excluded from pattern (human_in_the_loop={human_in_the_loop})")
 
-    if context_variables is not None:
-        pattern_args["context_variables"] = context_variables
-
+    # Pass group_manager_args to the pattern (not nested inside it)
     if group_manager_args is not None:
         pattern_args["group_manager_args"] = group_manager_args
 
@@ -1408,6 +1581,20 @@ def create_orchestration_pattern(
     try:
         pattern = pattern_class(**pattern_args)
         logger.info(f"✅ {pattern_name} AG2 pattern created successfully")
+        # Verify context presence on the created pattern/manager
+        try:
+            gm = getattr(pattern, 'group_manager', None)
+            cv = getattr(gm, 'context_variables', None) if gm else None
+            if cv is not None:
+                try:
+                    keys = list(cv.data.keys()) if hasattr(cv, 'data') else list(cv.to_dict().keys()) if hasattr(cv, 'to_dict') else []
+                except Exception:
+                    keys = []
+                logger.info(f"🧩 Pattern created with ContextVariables attached to group_manager | keys={keys}")
+            else:
+                logger.debug("Pattern created; group_manager.context_variables not exposed at pattern level (will be set up in prepare_group_chat)")
+        except Exception as _post_err:
+            logger.debug(f"ContextVariables post-create check skipped: {_post_err}")
         return pattern
     except Exception as e:
         logger.warning(f"⚠️ Failed to create {pattern_name} with all args, trying minimal: {e}")
@@ -1418,8 +1605,13 @@ def create_orchestration_pattern(
         if human_in_the_loop and user_agent is not None:
             minimal_args["user_agent"] = user_agent
 
+        # For minimal pattern, still try to include context_variables
+        if context_variables is not None:
+            minimal_args["context_variables"] = context_variables
+            
         minimal_pattern = pattern_class(**minimal_args)
-        logger.info(f"✅ {pattern_name} AG2 pattern created with minimal args")
+        logger.info(f"✅ {pattern_name} AG2 pattern created with minimal args (including context_variables)")
+        
         return minimal_pattern
 
 # ==============================================================================

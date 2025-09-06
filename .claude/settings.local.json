@@ -18,7 +18,9 @@
       "Bash(del \"C:\\Users\\Owner\\Desktop\\BlocUnited\\BlocUnited Code\\MozaiksAI\\workflows\\Generator\\tools\\save_api_key_metadata.py\")",
       "Bash(docker stop:*)",
       "Bash(taskkill:*)",
-      "Bash(echo $MOZAIKS_PERSIST_PERF)"
+      "Bash(echo $MOZAIKS_PERSIST_PERF)",
+      "Bash(dir \"C:\\Users\\Owner\\Desktop\\BlocUnited\\BlocUnited Code\\MozaiksAI\\logs\\logs\")",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

@@ -80,9 +80,11 @@ class UnifiedWorkflowManager:
         tools_json_path = _P(workflow_path) / "tools.json"
         if not tools_json_path.exists():
             return
+
         workflow_name = _P(workflow_path).name
         if workflow_name in self._ui_loaded_workflows:
             return
+
         try:
             with open(tools_json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f) or {}
@@ -90,43 +92,105 @@ class UnifiedWorkflowManager:
             if not isinstance(entries, list):
                 logger.warning(f"Invalid tools list in {tools_json_path}")
                 return
+
             ui_ct = 0
+            seen_ids: set[str] = set()
+
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
-                path = entry.get('path')
-                tool_type = entry.get('tool_type') or entry.get('type')
-                tool_id = entry.get('name') or (path.split('.')[-1] if path else None)
+
+                # --- Accept both legacy and new schema ---
+                # Legacy fields
+                legacy_path = entry.get('path')
+                legacy_name = entry.get('name')
+
+                # New schema fields (from ToolsManagerAgent)
+                file_name = entry.get('file')  # e.g., "request_api_key.py"
+                function = entry.get('function')  # e.g., "request_api_key"
+
+                # Compute tool_id
+                tool_id = None
+                if isinstance(function, str) and function.strip():
+                    tool_id = function.strip()
+                elif isinstance(legacy_name, str) and legacy_name.strip():
+                    tool_id = legacy_name.strip()
+                elif isinstance(legacy_path, str) and legacy_path.strip():
+                    tool_id = legacy_path.strip().split('.')[-1]
+
                 if not tool_id:
+                    # nothing we can do
                     continue
+
+                # Ensure uniqueness (avoid collisions across entries)
+                base_tool_id = tool_id
+                suffix = 2
+                while tool_id in seen_ids:
+                    tool_id = f"{base_tool_id}_{suffix}"
+                    suffix += 1
+                seen_ids.add(tool_id)
+
+                # Determine module path (best-effort)
+                module_path = legacy_path
+                if not module_path and file_name and function:
+                    # Map to "workflows.<flow>.tools.<module>:<function>"
+                    mod = file_name.replace('\\', '/').split('/')[-1].rsplit('.', 1)[0]
+                    module_path = f"workflows.{workflow_name}.tools.{mod}:{function}"
+
+                # Agent field
                 agent = entry.get('agent') or entry.get('caller') or entry.get('executor')
+
+                # UI detection
                 ui_block = entry.get('ui') if isinstance(entry.get('ui'), dict) else None
-                # Check if ui_block has meaningful values (not just null/empty)
-                has_meaningful_ui = ui_block and (ui_block.get('component') or ui_block.get('mode'))
-                if has_meaningful_ui or (tool_type == 'UI_Tool'):
+                tool_type = entry.get('tool_type') or entry.get('type')
+                has_meaningful_ui = bool(ui_block and (ui_block.get('component') or ui_block.get('mode')))
+                # If ui block provided, assume UI_Tool when tool_type missing
+                if not tool_type and has_meaningful_ui:
+                    tool_type = 'UI_Tool'
+
+                # inside _load_workflow_tools(), in the for-entry loop:
+                if has_meaningful_ui or tool_type == 'UI_Tool':
                     ui_ct += 1
-                    component = ui_block.get('component') if ui_block else entry.get('component')
-                    mode = ui_block.get('mode', 'inline') if ui_block else entry.get('mode', 'inline')
+                    component = None
+                    mode = 'inline'
+                    if ui_block:
+                        component = ui_block.get('component')
+                        mode = ui_block.get('mode', 'inline')
+                    else:
+                        component = entry.get('component')
+                        mode = entry.get('mode', 'inline')
+
+                    # Fallback: if "function" not present, try to pull it from module_path "pkg.mod:func"
+                    fn_name = function
+                    if not fn_name and isinstance(module_path, str) and ':' in module_path:
+                        fn_name = module_path.split(':', 1)[1].strip() or None
+
                     rec = {
                         'workflow_name': workflow_name,
-                        'tool_id': tool_id,
+                        'tool_id': tool_id,          # possibly suffixed for uniqueness
+                        'fn': fn_name,               # raw function name for runtime event matching
                         'agent': agent,
-                        'path': path,
+                        'path': module_path,
                         'component': component,
                         'mode': mode,
                         'classification': 'ui',
-                        'tool_type': tool_type
+                        'tool_type': tool_type,
                     }
+
                     key = f"{workflow_name}.{tool_id}"
                     self._ui_registry[key] = rec
-                    if path:
-                        self._ui_tool_path_cache[path] = key
+                    if module_path:
+                        self._ui_tool_path_cache[module_path] = key
                     continue
-                # Agent tools ignored here
+
+
+                # Non-UI tools are ignored here on purpose
+
             self._ui_loaded_workflows.add(workflow_name)
             logger.info(f"Tools loaded for {workflow_name}: ui={ui_ct}")
         except Exception as e:  # pragma: no cover
             logger.error(f"Failed parsing tools.json for {workflow_name}: {e}")
+
 
     def get_ui_tool_record(self, tool_path_or_id: str) -> Optional[Dict[str, Any]]:
         """Lookup UI tool record by module path or tool id.
@@ -146,17 +210,14 @@ class UnifiedWorkflowManager:
         return list(self._ui_registry.values())
 
     def detect_ui_tool_event(self, event: Any) -> Tuple[bool, Dict[str, Any]]:
-        """Return (is_ui_tool, record) matching by tool/function name."""
         name = getattr(event, "tool_name", None)
-        if not isinstance(name, str):
-            return False, {}
-        if not name:
+        if not isinstance(name, str) or not name:
             return False, {}
         for rec in self._ui_registry.values():
-            if rec.get('tool_id') == name:
+            if rec.get('tool_id') == name or rec.get('fn') == name:
                 return True, rec
         return False, {}
-    
+
     # ========================================================================
     # DISCOVERY & LOADING
     # ========================================================================
@@ -278,17 +339,49 @@ class UnifiedWorkflowManager:
         config = self.get_config(workflow_name)
         return config.get("ui_capable_agents", [])
 
+    def get_structured_output_registry(self, workflow_name: str) -> Dict[str, Optional[str]]:
+        """Return a normalized mapping: agent_name -> model_name or None.
+
+        Supports both the new dict-based registry ({"Agent": "Model"|None})
+        and the legacy list-based registry ([{"agent": "...","agent_definition": "...|None"}]).
+        """
+        config = self.get_config(workflow_name)
+        so = config.get("structured_outputs") or {}
+        reg = so.get("registry")
+
+        normalized: Dict[str, Optional[str]] = {}
+
+        # New schema: dict mapping
+        if isinstance(reg, dict):
+            for agent, model in reg.items():
+                if isinstance(agent, str):
+                    normalized[agent] = model if isinstance(model, str) else None
+            return normalized
+
+        # Legacy schema: list of {agent, agent_definition}
+        if isinstance(reg, list):
+            for item in reg:
+                if isinstance(item, dict):
+                    agent = item.get("agent")
+                    model = item.get("agent_definition")
+                    if isinstance(agent, str):
+                        normalized[agent] = model if isinstance(model, str) else None
+            return normalized
+
+        # Defensive: handle accidental nesting like {"structured_outputs": {...}}
+        if isinstance(reg, dict) and "structured_outputs" in reg:
+            nested = reg.get("structured_outputs")
+            if isinstance(nested, dict):
+                for agent, model in nested.items():
+                    if isinstance(agent, str):
+                        normalized[agent] = model if isinstance(model, str) else None
+
+        return normalized
+
     def get_agent_structured_outputs_config(self, workflow_name: str) -> Dict[str, bool]:
-        """Return agent -> bool indicating presence of structured output model in registry."""
-        try:
-            config = self.get_config(workflow_name)
-            registry = (config.get("structured_outputs", {}) or {}).get('registry', {})
-            if 'structured_outputs' in registry:  # nested defensive
-                registry = registry['structured_outputs']
-            return {agent_name: True for agent_name, model_name in registry.items() if model_name}
-        except Exception as e:  # pragma: no cover
-            logger.warning(f"Could not load structured outputs registry for {workflow_name}: {e}")
-            return {}
+        """Return agent -> bool indicating whether a structured model is assigned."""
+        reg = self.get_structured_output_registry(workflow_name)
+        return {agent: (model is not None) for agent, model in reg.items()}
     
     def get_all_workflow_names(self) -> List[str]:
         """Get list of all loaded workflow names"""
