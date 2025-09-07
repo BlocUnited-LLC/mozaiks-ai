@@ -56,7 +56,7 @@ _LAST_API_KEYS: Set[str] = set()
 _CACHE_TTL = int(os.getenv("LLM_CONFIG_CACHE_TTL", "300"))
 
 # Deterministic seed for Autogen caching layer; can be overridden later.
-_DEFAULT_CACHE_SEED = 154
+_DEFAULT_CACHE_SEED = 157
 
 # Static price map (prompt, completion) USD per 1K tokens (example values)
 PRICE_MAP: Dict[str, List[float]] = {
@@ -99,7 +99,30 @@ async def _load_raw_config_list(force: bool = False) -> List[ProviderConfig]:
                 logger.debug(f"[LLM_CONFIG] Mongo fetch failed, will fallback: {e}")
 
         if db_doc and isinstance(db_doc, dict):
-            logger.debug(f"[LLM_CONFIG] DB document found: {db_doc}")
+            # Avoid dumping raw secrets from the DB document
+            def _redact_val(v: Any) -> Any:
+                if not isinstance(v, str):
+                    return v
+                if len(v) <= 8:
+                    return "***"
+                return v[:4] + "***REDACTED***" + v[-4:]
+
+            def _redact_mapping(d: Dict[str, Any]) -> Dict[str, Any]:
+                sens_keys = {"api_key", "apikey", "authorization", "secret", "password", "token", "clientsecret", "accountkey"}
+                out: Dict[str, Any] = {}
+                for k, v in d.items():
+                    if isinstance(v, dict):
+                        out[k] = _redact_mapping(v)
+                    elif any(s in k.lower() for s in sens_keys):
+                        out[k] = _redact_val(v)
+                    else:
+                        out[k] = v
+                return out
+
+            try:
+                logger.debug(f"[LLM_CONFIG] DB document found: {_redact_mapping(db_doc)}")
+            except Exception:
+                logger.debug("[LLM_CONFIG] DB document found (redaction failed to serialize)")
             # Expect a shape like: { model: 'gpt-4o-mini', price: {...}, ... }
             # Support single or list of providers.
             providers = db_doc.get("providers") or db_doc.get("models") or [db_doc]
@@ -107,7 +130,10 @@ async def _load_raw_config_list(force: bool = False) -> List[ProviderConfig]:
                 providers = [providers]
             logger.debug(f"[LLM_CONFIG] Processing {len(providers)} providers from DB")
             for i, p in enumerate(providers):
-                logger.debug(f"[LLM_CONFIG] Processing provider {i}: {p}")
+                try:
+                    logger.debug(f"[LLM_CONFIG] Processing provider {i}: {_redact_mapping(p)}")
+                except Exception:
+                    logger.debug(f"[LLM_CONFIG] Processing provider {i}: <redaction error>")
                 model_name = p.get("model") or p.get("Model") or p.get("name") or os.getenv("DEFAULT_LLM_MODEL", "gpt-4o-mini")
                 # First check if API key is in the DB document
                 api_key = p.get("api_key") or p.get("ApiKey") or p.get("OPENAI_API_KEY")
@@ -123,7 +149,8 @@ async def _load_raw_config_list(force: bool = False) -> List[ProviderConfig]:
                 else:
                     if model_name in PRICE_MAP:
                         entry["price"] = PRICE_MAP[model_name]
-                logger.debug(f"[LLM_CONFIG] Created entry {i}: {entry}")
+                safe_entry = {**entry, "api_key": "***REDACTED***" if entry.get("api_key") else entry.get("api_key")}
+                logger.debug(f"[LLM_CONFIG] Created entry {i}: {safe_entry}")
                 config_list.append(entry)
 
         # Fallback if empty
@@ -182,7 +209,8 @@ async def _load_raw_config_list(force: bool = False) -> List[ProviderConfig]:
         logger.debug(f"[LLM_CONFIG] Provider signature generation failed (non-fatal): {sig_err}")
     # Debug: log each config entry
     for i, entry in enumerate(config_list):
-        logger.debug(f"[LLM_CONFIG] config_list[{i}]: {entry}")
+        safe_entry = {**entry, "api_key": "***REDACTED***" if entry.get("api_key") else entry.get("api_key")}
+        logger.debug(f"[LLM_CONFIG] config_list[{i}]: {safe_entry}")
     return config_list
 
 
@@ -241,6 +269,7 @@ async def get_llm_config(
         "timeout": extra_config.get("timeout") if extra_config and "timeout" in extra_config else 600,
         "cache_seed": extra_config.get("cache_seed") if extra_config and "cache_seed" in extra_config else _DEFAULT_CACHE_SEED,
         "config_list": config_list,
+        "tools": [],  # Required by AG2 for tool registration
     }
     if response_format is not None:
         llm_config["response_format"] = response_format

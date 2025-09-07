@@ -28,19 +28,8 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 # Toggle file format via env: when true, file contents are JSON lines; otherwise, human-readable text.
 LOGS_AS_JSON = os.getenv("LOGS_AS_JSON", "").lower() in ("1", "true", "yes", "on")
 
-CHAT_LOG_FILE        = LOGS_DIR / "agent_chat.log"
-WORKFLOW_LOG_FILE    = LOGS_DIR / "workflows.log"
-ERRORS_LOG_FILE      = LOGS_DIR / "errors.log"
-AUTOGEN_LOG_FILE     = LOGS_DIR / "autogen_agentchat.log"
-
-# Enhanced logging files
-ALL_CORE_LOG_FILE    = LOGS_DIR / "all_core.log"
-CORE_DATA_LOG_FILE   = LOGS_DIR / "core_data.log"
-CORE_EVENTS_LOG_FILE = LOGS_DIR / "core_events.log"
-CORE_OBSERVABILITY_LOG_FILE = LOGS_DIR / "core_observability.log"
-CORE_TRANSPORT_LOG_FILE = LOGS_DIR / "core_transport.log"
-CORE_WORKFLOW_LOG_FILE = LOGS_DIR / "core_workflow.log"
-CORE_ROOT_LOG_FILE   = LOGS_DIR / "core_root.log"
+# Single log file for everything
+MAIN_LOG_FILE = LOGS_DIR / "mozaiks.log"
 
 # Sensitive key substrings for redaction
 _SENSITIVE_KEYS = {"api_key", "apikey", "authorization", "auth", "secret", "password", "token"}
@@ -143,12 +132,36 @@ def _pick_emoji(record: logging.LogRecord) -> str:
 # Message sanitization helper (tenant/client IDs, GUIDs from msal noise)
 # ----------------------------------------------------------------------
 _GUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+# Common secret/value redaction patterns in log messages (not just extras)
+# 1) JSON-like key/value pairs: api_key, token, secret, password, authorization, clientSecret, etc.
+_JSON_SECRET_KV_RE = re.compile(
+    r"(\b(?:api[_-]?key|authorization|secret|password|token|client[_-]?secret|accountkey)\b\s*[:=]\s*[\"']?)([^\"'\s;]+)([\"']?)",
+    re.IGNORECASE,
+)
+# 2) Bearer tokens
+_BEARER_RE = re.compile(r"(Bearer\s+)([A-Za-z0-9._\-~+/=]+)", re.IGNORECASE)
+# 3) sk- style OpenAI keys
+_OPENAI_SK_RE = re.compile(r"(sk-[A-Za-z0-9]{4})([A-Za-z0-9]+)([A-Za-z0-9]{4})")
+# 4) Mongo connection strings with credentials
+_MONGO_RE = re.compile(r"(mongodb\+srv://)([^:@/]+):([^@/]+)(@)", re.IGNORECASE)
+# 5) Azure Storage connection string AccountKey
+_AZURE_ACC_KEY_RE = re.compile(r"(AccountKey=)([^;]+)(;)", re.IGNORECASE)
 
 def _sanitize_log_message(message: str) -> str:
     if not isinstance(message, str) or not message:
         return message
     # Redact GUIDs that appear in Azure tenant / client logs
     msg = _GUID_RE.sub(lambda m: m.group(0)[:4] + "***REDACTED***" + m.group(0)[-4:], message)
+    # Redact api keys, tokens and secrets in JSON-ish text
+    msg = _JSON_SECRET_KV_RE.sub(lambda m: m.group(1) + "***REDACTED***" + m.group(3), msg)
+    # Redact common bearer tokens
+    msg = _BEARER_RE.sub(lambda m: m.group(1) + "***REDACTED***", msg)
+    # Redact sk- OpenAI keys while keeping short prefix/suffix for diagnostics
+    msg = _OPENAI_SK_RE.sub(lambda m: m.group(1) + "***REDACTED***" + m.group(3), msg)
+    # Redact credentials in Mongo URIs
+    msg = _MONGO_RE.sub(lambda m: m.group(1) + "***:***" + m.group(4), msg)
+    # Redact Azure Storage AccountKey
+    msg = _AZURE_ACC_KEY_RE.sub(lambda m: m.group(1) + "***REDACTED***" + m.group(3), msg)
     # Collapse excessive whitespace from large JSON dumps
     if len(msg) > 2000:
         msg = msg[:2000] + "...<truncated>"
@@ -213,24 +226,7 @@ class KeywordFilter(logging.Filter):
         if not self.kw: return True
         return any(k in msg or k in name for k in self.kw)
 
-# Domain-specific filters (lambdas keep the file short & declarative)
-_chat_kw        = ['agent_chat','conversation','reply','message_from','message_to','user_input','autogen.agentchat','handoff_executed','agent_response','group_chat','ag2','initiate_chat','chat.']
-# Keep workflow logs clean by excluding chat-related noise. All operational logs should use the workflow logger name.
-_workflow_kw    = ['workflow','orchestration','handoff','workflow_execution','transport','performance','token','observability','tools','file_manager']
-
-ChatLogFilter   = lambda: KeywordFilter(_chat_kw)
-# Exclude chat keywords from workflows log
-_exclude_chat_kw    = _chat_kw + ['chat.', 'groupchat']
-WorkflowFilter  = lambda: KeywordFilter(_workflow_kw, exclude_keywords=_exclude_chat_kw)
-
-# Core module filters for granular logging
-CoreDataFilter = lambda: KeywordFilter(['core.data', 'persistence', 'models', 'mongodb'])
-CoreEventsFilter = lambda: KeywordFilter(['core.events', 'unified_event', 'event_dispatcher'])
-CoreObservabilityFilter = lambda: KeywordFilter(['core.observability', 'performance', 'otel', 'token_logger'])
-CoreTransportFilter = lambda: KeywordFilter(['core.transport', 'websocket', 'simple_transport'])
-CoreWorkflowFilter = lambda: KeywordFilter(['core.workflow', 'agents', 'tools', 'handoffs', 'orchestration'])
-CoreRootFilter = lambda: KeywordFilter(['core.core_config'])
-AllCoreFilter = lambda: KeywordFilter(['core.'])
+# No filters needed for single log file
 
 # ----------------------------------------------------------------------
 # Handler factory
@@ -277,78 +273,36 @@ def setup_logging(
     if _logging_initialized: return
     _logging_initialized = True
 
-    # Optional clearing of existing log files (pre-handler creation) ------------------
+    # Optional clearing of existing log files
     cleared_files: list[str] = []
     clear_flag = os.getenv("CLEAR_LOGS_ON_START", "0").lower() in ("1","true","yes","on")
-    if clear_flag:
-        all_log_files = (
-            CHAT_LOG_FILE, WORKFLOW_LOG_FILE, ERRORS_LOG_FILE, AUTOGEN_LOG_FILE,
-            ALL_CORE_LOG_FILE, CORE_DATA_LOG_FILE, CORE_EVENTS_LOG_FILE,
-            CORE_OBSERVABILITY_LOG_FILE, CORE_TRANSPORT_LOG_FILE, 
-            CORE_WORKFLOW_LOG_FILE, CORE_ROOT_LOG_FILE
-        )
-        for f in all_log_files:
-            try:
-                if f.exists():
-                    try:
-                        f.unlink()  # remove so RotatingFileHandler starts fresh
-                    except Exception:
-                        # Fallback: truncate if unlink fails (e.g. locked on Windows)
-                        with open(f, 'w', encoding='utf-8') as fp:
-                            fp.truncate(0)
-                    cleared_files.append(str(f))
-            except Exception:
-                pass  # silent; not critical
+    if clear_flag and MAIN_LOG_FILE.exists():
+        try:
+            MAIN_LOG_FILE.unlink()
+            cleared_files.append(str(MAIN_LOG_FILE))
+        except Exception:
+            # Fallback: truncate if unlink fails
+            with open(MAIN_LOG_FILE, 'w', encoding='utf-8') as fp:
+                fp.truncate(0)
+            cleared_files.append(str(MAIN_LOG_FILE))
 
     root = logging.getLogger(); root.handlers.clear(); root.setLevel(logging.DEBUG)
     # Choose file formatter based on env; console remains pretty
     file_fmt = ProductionJSONFormatter() if LOGS_AS_JSON else PrettyConsoleFormatter(no_color=True)
     console_fmt = PrettyConsoleFormatter()
     
-    # Original handlers
-    spec = [
-        (CHAT_LOG_FILE,        getattr(logging, chat_level.upper()), ChatLogFilter()),
-        (WORKFLOW_LOG_FILE,    logging.DEBUG,                        WorkflowFilter()),
-    ]
-    for path, lvl, flt in spec:
-        root.addHandler(_make_handler(path, lvl, file_fmt, log_filter=flt, max_bytes=max_file_size, backup_count=backup_count))
-    
-    # Enhanced core logging handlers
-    core_handlers_spec = [
-        (ALL_CORE_LOG_FILE,           logging.DEBUG, AllCoreFilter()),
-        (CORE_DATA_LOG_FILE,          logging.DEBUG, CoreDataFilter()),
-        (CORE_EVENTS_LOG_FILE,        logging.DEBUG, CoreEventsFilter()),
-        (CORE_OBSERVABILITY_LOG_FILE, logging.DEBUG, CoreObservabilityFilter()),
-        (CORE_TRANSPORT_LOG_FILE,     logging.DEBUG, CoreTransportFilter()),
-        (CORE_WORKFLOW_LOG_FILE,      logging.DEBUG, CoreWorkflowFilter()),
-        (CORE_ROOT_LOG_FILE,          logging.DEBUG, CoreRootFilter()),
-    ]
-    for path, lvl, flt in core_handlers_spec:
-        root.addHandler(_make_handler(path, lvl, file_fmt, log_filter=flt, max_bytes=max_file_size, backup_count=backup_count))
-    # Dedicated autogen handler so AG2/internal autogen logs have their own file
-    try:
-        # Allow overriding autogen log level via env var; default to DEBUG so users actually see AG2 internals.
-        autogen_level_env = os.getenv("AUTOGEN_LOG_LEVEL", "DEBUG").upper()
-        autogen_level = getattr(logging, autogen_level_env, logging.DEBUG)
-        autogen_handler = _make_handler(
-            AUTOGEN_LOG_FILE,
-            autogen_level,
-            file_fmt,
-            log_filter=None,
-            max_bytes=max_file_size,
-            backup_count=backup_count
-        )
-        autogen_logger = logging.getLogger('autogen')
-        autogen_logger.setLevel(autogen_level)
-        autogen_logger.addHandler(autogen_handler)
-    except Exception:
-        # Non-fatal: if we cannot create autogen handler, continue with default handlers
-        logging.getLogger(__name__).warning('Failed to initialize autogen dedicated log handler')
-    # Dedicated errors log capturing all ERROR+ across all categories
-    err_handler = _make_handler(ERRORS_LOG_FILE, logging.ERROR, file_fmt, log_filter=None, max_bytes=max_file_size, backup_count=backup_count)
-    root.addHandler(err_handler)
+    # Single file handler for everything  
+    file_handler = _make_handler(
+        MAIN_LOG_FILE, 
+        getattr(logging, chat_level.upper()), 
+        file_fmt, 
+        log_filter=None, 
+        max_bytes=max_file_size, 
+        backup_count=backup_count
+    )
+    root.addHandler(file_handler)
     ch = logging.StreamHandler(); ch.setLevel(getattr(logging, console_level.upper())); ch.setFormatter(console_fmt); root.addHandler(ch)
-    for noisy in ("openai","httpx","urllib3","azure","motor","pymongo","uvicorn.access","openlit","msal"):
+    for noisy in ("openai","httpx","urllib3","azure","motor","pymongo","uvicorn.access","openlit","msal","autogen","autogen.logger.file_logger"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.getLogger(__name__).info(
         "Logging initialized",
@@ -366,16 +320,12 @@ def setup_logging(
             "Cleared existing log files", extra={"cleared_files": cleared_files}
         )
     
-    # Log information about the enhanced core logging system
-    log_core_system_info()
 
 def reset_logging_state():
     """Reset logging initialization state for testing purposes"""
     global _logging_initialized; _logging_initialized = False
 
 # Public getters -----------------------------------------------------
-get_chat_logger = lambda name: logging.getLogger(f"chat.{name}")
-
 # Enhanced core module loggers
 def get_core_logger(module_name: str) -> logging.Logger:
     """Get a logger for a specific core module file.
@@ -465,68 +415,6 @@ def setup_production_logging(): setup_logging(chat_level="INFO", console_level="
 
 def setup_development_logging(): setup_logging(chat_level="DEBUG", console_level="INFO")
 
-# ----------------------------------------------------------------------
-# Auto-discovered Core File Loggers
-# ----------------------------------------------------------------------
-def get_core_file_loggers() -> Dict[str, logging.Logger]:
-    """
-    Returns a dictionary of all discovered core module loggers.
-    This is useful for debugging or getting an overview of all core loggers.
-    
-    Returns:
-        Dict mapping file paths to their logger instances
-    """
-    import os
-    import pathlib
-    
-    core_files = {}
-    project_root = pathlib.Path(__file__).parent.parent
-    core_dir = project_root / "core"
-    
-    if not core_dir.exists():
-        return core_files
-    
-    for py_file in core_dir.rglob("*.py"):
-        if py_file.name == "__init__.py":
-            continue
-        
-        # Create relative path from core directory
-        rel_path = py_file.relative_to(core_dir)
-        module_parts = []
-        
-        for part in rel_path.parts[:-1]:  # All parts except filename
-            module_parts.append(part)
-        
-        # Add filename without .py extension
-        module_parts.append(py_file.stem)
-        
-        # Create logger name
-        logger_name = f"core.{'.'.join(module_parts)}"
-        core_files[str(rel_path)] = logging.getLogger(logger_name)
-    
-    return core_files
-
-def log_core_system_info():
-    """Log information about the enhanced core logging system"""
-    logger = logging.getLogger(__name__)
-    core_loggers = get_core_file_loggers()
-    
-    logger.info(
-        "Enhanced core logging system initialized",
-        extra={
-            "total_core_files": len(core_loggers),
-            "log_files": [
-                "all_core.log (consolidated)",
-                "core_data.log (data module)",
-                "core_events.log (events module)", 
-                "core_observability.log (observability module)",
-                "core_transport.log (transport module)",
-                "core_workflow.log (workflow module)",
-                "core_root.log (root config)"
-            ],
-            "usage_example": "from logs.logging_config import get_core_logger; logger = get_core_logger('persistence_manager')"
-        }
-    )
 
 # ----------------------------------------------------------------------
 # Consolidated Workflow Logging (replaces separate workflow_logging.py)
@@ -537,8 +425,7 @@ class WorkflowLogger:
     def __init__(self, workflow_name: str, chat_id: str | None = None):
         self.workflow_name = workflow_name
         self.chat_id = chat_id
-        self.workflow_logger = logging.getLogger("mozaiks.workflow")
-        self.chat_logger = logging.getLogger("chat.workflow")
+        self.logger = logging.getLogger()
     
     def log_agent_setup_summary(self, agents: dict, agent_tools: dict, hooks_count: int = 0):
         """Log a consolidated summary of agent setup instead of verbose individual logs."""
@@ -551,39 +438,42 @@ class WorkflowLogger:
         
         summary = f"🏗️ [WORKFLOW_SETUP] {self.workflow_name}: agents=[{', '.join(agent_summary)}] hooks={hooks_count} total_tools={total_tools}"
         
-        self.workflow_logger.info(summary)
+        extra = {"workflow_name": self.workflow_name}
         if self.chat_id:
-            self.chat_logger.info(f"💼 [SESSION] {summary} | chat_id={self.chat_id}")
+            extra["chat_id"] = self.chat_id
+        self.logger.info(summary, extra=extra)
     
     def log_execution_start(self, pattern_name: str, message_count: int, max_turns: int, is_resume: bool):
         """Log AG2 execution start with key parameters."""
         mode = "RESUME" if is_resume else "FRESH"
         summary = f"🚀 [AG2_{mode}] {self.workflow_name}: pattern={pattern_name} messages={message_count} max_turns={max_turns}"
         
-        self.workflow_logger.info(summary)
+        extra = {"workflow_name": self.workflow_name, "pattern_name": pattern_name}
         if self.chat_id:
-            self.chat_logger.info(f"▶️ [EXECUTION] {summary} | chat_id={self.chat_id}")
+            extra["chat_id"] = self.chat_id
+        self.logger.info(summary, extra=extra)
     
     def log_execution_complete(self, duration_sec: float, event_count: int = 0):
         """Log AG2 execution completion with metrics."""
         summary = f"✅ [AG2_COMPLETE] {self.workflow_name}: duration={duration_sec:.2f}s events={event_count}"
         
-        self.workflow_logger.info(summary)
+        extra = {"workflow_name": self.workflow_name, "duration_seconds": duration_sec}
         if self.chat_id:
-            self.chat_logger.info(f"🏁 [COMPLETE] {summary} | chat_id={self.chat_id}")
+            extra["chat_id"] = self.chat_id
+        self.logger.info(summary, extra=extra)
     
     def log_tool_binding_summary(self, agent_name: str, tool_count: int, tool_names: list | None = None):
         """Log tool binding results for debugging."""
         tools_str = f"[{', '.join(tool_names)}]" if tool_names else f"({tool_count} tools)"
         summary = f"🔧 [TOOLS] {agent_name}: {tools_str}"
         
-        self.workflow_logger.debug(summary)
+        extra = {"workflow_name": self.workflow_name, "agent_name": agent_name}
+        self.logger.debug(summary, extra=extra)
     
     def log_hook_registration_summary(self, workflow_name: str, hook_count: int):
         """Log hook registration summary."""
         summary = f"🪝 [HOOKS] {workflow_name}: registered {hook_count} hooks"
-        
-        self.workflow_logger.info(summary)
+        self.logger.info(summary, extra={"workflow_name": workflow_name})
 
 def get_workflow_session_logger(workflow_name: str, chat_id: str | None = None) -> WorkflowLogger:
     """Factory function to create a WorkflowLogger instance."""

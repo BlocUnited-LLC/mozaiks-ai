@@ -24,11 +24,12 @@ from autogen.events import BaseEvent
 from core.workflow.workflow_manager import workflow_manager
 
 # Enhanced logging setup
-from logs.logging_config import get_core_logger, get_chat_logger
+from logs.logging_config import get_core_logger, get_workflow_logger
 
 # Get our enhanced loggers
 logger = get_core_logger("simple_transport")
-chat_logger = get_chat_logger("agent_messages")
+# Context-aware logger for agent messages category (used where applicable)
+chat_logger = get_workflow_logger("agent_messages")
 
 # ==================================================================================
 # COMMUNICATION CHANNEL WRAPPER & MESSAGE FILTERING
@@ -1041,14 +1042,24 @@ class SimpleTransport:
         """
         Send a dedicated event to the frontend to render a specific UI component.
         """
+        # Derive workflow name if provided inside payload
+        wf_name = None
+        try:
+            wf_name = payload.get("workflow_name") if isinstance(payload, dict) else None
+        except Exception:
+            wf_name = None
+
         event_data = {
             "type": "ui_tool_event",
             "data": {
                 "event_id": event_id,
+                "eventId": event_id,  # frontend expects camelCase alias
                 "chat_id": chat_id,
                 "tool_name": tool_name,
                 "component_name": component_name,
+                "ui_tool_id": component_name,  # frontend expects ui_tool_id
                 "display_type": display_type,
+                "workflow_name": wf_name,
                 "payload": payload,
             },
             "timestamp": datetime.now(timezone.utc).isoformat()

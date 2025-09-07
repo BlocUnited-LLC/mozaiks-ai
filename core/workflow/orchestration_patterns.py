@@ -17,6 +17,7 @@ Sections (skim map)
 """
 
 from typing import Dict, List, Optional, Any, Callable, Tuple
+from pathlib import Path
 from datetime import datetime
 import logging
 import time
@@ -35,8 +36,16 @@ from autogen.agentchat.group.patterns import (
     RandomPattern as AG2RandomPattern,
 )
 from autogen.events.agent_events import (
-    FunctionCallEvent, 
+    FunctionCallEvent,
+    FunctionResponseEvent, 
     ToolCallEvent,
+    ToolResponseEvent,
+    TextEvent,
+    InputRequestEvent,
+    SelectSpeakerEvent,
+    GroupChatResumeEvent,
+    RunCompletionEvent,
+    ErrorEvent,
 )
 from core.workflow.structured_outputs import agent_has_structured_output, get_structured_output_model_fields
 from core.data.persistence_manager import AG2PersistenceManager as _PM
@@ -44,7 +53,6 @@ from core.data.persistence_manager import AG2PersistenceManager as _PM
 from ..data.persistence_manager import AG2PersistenceManager
 from .termination_handler import create_termination_handler
 from logs.logging_config import (
-    get_chat_logger,
     get_workflow_logger,
     WorkflowLogger,
 )
@@ -55,7 +63,7 @@ from core.observability.performance_manager import get_performance_manager
 logger = logging.getLogger(__name__)
 
 # Consolidated logging with optimized workflow logger
-chat_logger = get_chat_logger("orchestration")
+chat_logger = get_workflow_logger("orchestration")
 workflow_logger = get_workflow_logger("orchestration")
 performance_logger = get_workflow_logger("performance.orchestration")
 
@@ -63,7 +71,7 @@ from .ui_tools import InputTimeoutEvent
 
 __all__ = [
     'run_workflow_orchestration',
-    'create_orchestration_pattern',
+    'create_ag2_pattern', 
     'InputTimeoutEvent'
 ]
 
@@ -247,6 +255,8 @@ async def _build_context_blocking(
     context_factory: Optional[Callable],
     workflow_name: str,
     enterprise_id: str,
+    chat_id: str,
+    user_id: Optional[str],
     wf_logger,
     workflow_name_upper: str,
 ):
@@ -269,11 +279,12 @@ async def _build_context_blocking(
         return None
 
 
-async def _define_agents(agents_factory: Optional[Callable], workflow_name: str):
+async def _create_agents(agents_factory: Optional[Callable], workflow_name: str, context_variables=None):
+    """Create agents for the workflow following AG2 patterns."""
     if agents_factory:
         return await agents_factory()
-    from .agents import define_agents
-    return await define_agents(workflow_name)
+    from .agents import create_agents
+    return await create_agents(workflow_name, context_variables=context_variables)
 
 
 def _ensure_user_proxy(
@@ -330,50 +341,69 @@ def _resolve_initiating_agent(agents: Dict[str, ConversableAgent], initial_agent
     return initiating_agent
 
 
-async def _create_pattern_and_handoffs(
+async def _create_ag2_pattern(
     orchestration_pattern: str,
     workflow_name: str,
     agents: Dict[str, ConversableAgent],
     initiating_agent: ConversableAgent,
     user_proxy_agent: Optional[UserProxyAgent],
     human_in_loop: bool,
-    context: Any,
+    context_variables: Any,
     llm_config: Dict[str, Any],
     handoffs_factory: Optional[Callable],
     wf_logger,
+    chat_id: str,
+    enterprise_id: str,
 ):
+    """Create AG2 Pattern with proper context variables integration."""
+    # Convert agents dict to list for AG2 pattern (exclude user proxy if handled separately)
     agents_list = [
         a for n, a in agents.items() if not (n == "user" and human_in_loop and user_proxy_agent is not None)
     ]
-    # Ensure context is an AG2 ContextVariables instance if possible
-    ag2_context = context
-    try:
-        from autogen.agentchat.group import ContextVariables as _AG2Context
-        if context is None:
-            ag2_context = _AG2Context()
-        elif not isinstance(context, _AG2Context):
-            # Attempt to coerce from dict-like
-            if hasattr(context, 'to_dict'):
-                ag2_context = _AG2Context(data=context.to_dict())
-            elif isinstance(context, dict):
-                ag2_context = _AG2Context(data=context)
+    
+    # Ensure we have proper AG2 ContextVariables instance
+    from autogen.agentchat.group import ContextVariables as AG2ContextVariables
+    
+    if context_variables is None:
+        ag2_context = AG2ContextVariables()
+    elif isinstance(context_variables, AG2ContextVariables):
+        ag2_context = context_variables
+    else:
+        # Convert from our context system to AG2 ContextVariables
+        try:
+            if hasattr(context_variables, 'to_dict'):
+                ag2_context = AG2ContextVariables(data=context_variables.to_dict())
+            elif isinstance(context_variables, dict):
+                ag2_context = AG2ContextVariables(data=context_variables)
             else:
-                # Fallback: wrap as single value for visibility
-                ag2_context = _AG2Context(data={"value": context})
-        wf_logger.info(
-            f"🧠 [CONTEXT] Prepared AG2 ContextVariables for pattern | keys={list(getattr(ag2_context,'data',{}).keys())}"
-        )
-    except Exception as _cv_err:
-        wf_logger.warning(f"⚠️ [CONTEXT] Could not coerce context to AG2 ContextVariables: {_cv_err}")
-        ag2_context = context
+                ag2_context = AG2ContextVariables(data={"value": context_variables})
+        except Exception as _cv_err:
+            wf_logger.warning(f"⚠️ [CONTEXT] Context conversion failed: {_cv_err}")
+            ag2_context = AG2ContextVariables()
+    
+    # Ensure core WebSocket path parameters are always available
+    # These may already be set by _build_context_blocking, but we ensure they're present
+    if not ag2_context.get("workflow_name"):
+        ag2_context.set("workflow_name", workflow_name)
+    if not ag2_context.get("enterprise_id"):
+        ag2_context.set("enterprise_id", enterprise_id)
+    if not ag2_context.get("chat_id"):
+        ag2_context.set("chat_id", chat_id)
+    
+    # Log final context state with emphasis on auto-injected parameters
+    context_keys = list(ag2_context.data.keys())
+    websocket_params = [k for k in context_keys if k in ["workflow_name", "enterprise_id", "chat_id", "user_id"]]
+    wf_logger.info(
+        f"🧠 [CONTEXT] AG2 ContextVariables ready | total_keys={len(context_keys)} | websocket_params={websocket_params}"
+    )
 
-    pattern = create_orchestration_pattern(
+    # Create AG2 Pattern following proper constructor signature
+    pattern = create_ag2_pattern(
         pattern_name=orchestration_pattern,
         initial_agent=initiating_agent,
         agents=agents_list,
         user_agent=user_proxy_agent,
         context_variables=ag2_context,
-        human_in_the_loop=human_in_loop,
         group_manager_args={"llm_config": llm_config},
     )
     try:
@@ -416,20 +446,32 @@ async def _stream_events(
     persistence_manager: AG2PersistenceManager,
     perf_mgr,
 ):
+    # Import AG2 group chat execution and events
     from autogen.agentchat import a_run_group_chat
-    from autogen.events.agent_events import (
-        TextEvent,
-        InputRequestEvent,
-        GroupChatResumeEvent,
-        SelectSpeakerEvent,
-        RunCompletionEvent,
-        ErrorEvent,
-    )
     from autogen.events.client_events import UsageSummaryEvent
     try:
         from autogen.events.print_event import PrintEvent
     except Exception:  # pragma: no cover
         PrintEvent = object  # type: ignore
+
+    # CRITICAL: Set execution context for tool injection
+    from core.workflow.agent_tools import (
+        set_current_execution_context,
+        clear_current_execution_context,
+    )
+    
+    # Get context variables from pattern if available
+    ag2_context = None
+    try:
+        gm = getattr(pattern, "group_manager", None)
+        if gm and hasattr(gm, "context_variables"):
+            ag2_context = getattr(gm, "context_variables")
+    except Exception:
+        pass
+    
+    # Set thread-local context for tool injection
+    set_current_execution_context(chat_id, enterprise_id, workflow_name, ag2_context)
+    wf_logger.info(f"🔧 [CONTEXT] Set execution context for tools: chat_id={chat_id}, enterprise_id={enterprise_id}")
 
     resumed_mode = bool(resumed_messages)
     # Log which context keys are present at stream start for diagnostics
@@ -470,10 +512,9 @@ async def _stream_events(
         wf_logger.info(f"🚀 [AG2_RESUME] Calling group_manager.a_resume() with {len(initial_messages)} messages, max_rounds={max_turns}")
         
         try:
-            response = await asyncio.wait_for(
-                group_manager.a_resume(messages=initial_messages, max_rounds=max_turns), timeout=300.0
-            )  # type: ignore[attr-defined]
-            wf_logger.info(f"✅ [AG2_RESUME] a_resume() completed successfully!")
+            # Remove hard timeout to avoid cancelling when user feedback is slow
+            response = await group_manager.a_resume(messages=initial_messages, max_rounds=max_turns)  # type: ignore[attr-defined]
+            wf_logger.info(f"✅ [AG2_RESUME] a_resume() initialized successfully!")
         except Exception as resume_err:
             wf_logger.error(f"❌ [AG2_RESUME] a_resume() failed: {resume_err}")
             raise
@@ -485,13 +526,48 @@ async def _stream_events(
         for i, msg in enumerate(initial_messages):
             wf_logger.debug(f"🚀 [AG2_RUN] Message[{i}]: {msg.get('role', 'unknown')} from {msg.get('name', 'unknown')} - {str(msg.get('content', ''))[:100]}")
             
+        # ⚡ CRITICAL FIX: Setup context variables before a_run_group_chat
+        # AG2's a_run_group_chat doesn't automatically call setup_context_variables,
+        # so we need to do it manually to ensure context variables reach all agents
+        try:
+            if hasattr(pattern, 'context_variables') and pattern.context_variables:
+                wf_logger.info(f"🧩 [AG2_RUN] Setting up context variables for all agents...")
+                
+                # Call prepare_group_chat to get group manager and tool executor
+                prep_result = pattern.prepare_group_chat(max_rounds=max_turns, messages=initial_messages)
+                if asyncio.iscoroutine(prep_result):
+                    prep_result = await prep_result
+                
+                # Extract components from prepare_group_chat result tuple
+                # Format: (agents_list, agents_exclude_list, user_proxy, context_vars, initial_agent, group_after_work, tool_executor, group_chat, group_manager)
+                if isinstance(prep_result, tuple) and len(prep_result) >= 9:
+                    tool_executor = prep_result[6]
+                    group_manager = prep_result[8]
+                    
+                    # Import and call setup_context_variables from AG2
+                    from autogen.agentchat.group.group_utils import setup_context_variables
+                    setup_context_variables(
+                        tool_execution=tool_executor,
+                        agents=pattern.agents,
+                        manager=group_manager, 
+                        user_agent=pattern.user_agent,
+                        context_variables=pattern.context_variables
+                    )
+                    
+                    wf_logger.info(f"✅ [AG2_RUN] Context variables connected to all agents and group manager")
+                else:
+                    wf_logger.warning(f"⚠️ [AG2_RUN] Unexpected prepare_group_chat result format")
+            else:
+                wf_logger.debug(f"🧩 [AG2_RUN] No context variables to set up")
+        except Exception as context_setup_err:
+            wf_logger.warning(f"⚠️ [AG2_RUN] Failed to setup context variables: {context_setup_err}")
+        
         wf_logger.info(f"🔥 [AG2_RUN] Calling a_run_group_chat() NOW...")
         
         try:
-            response = await asyncio.wait_for(
-                a_run_group_chat(pattern=pattern, messages=initial_messages, max_rounds=max_turns), timeout=300.0
-            )
-            wf_logger.info(f"✅ [AG2_RUN] a_run_group_chat() completed successfully!")
+            # Remove hard timeout to avoid cancelling when user feedback is slow
+            response = await a_run_group_chat(pattern=pattern, messages=initial_messages, max_rounds=max_turns)
+            wf_logger.info(f"✅ [AG2_RUN] a_run_group_chat() initialized successfully!")
         except Exception as run_err:
             wf_logger.error(f"❌ [AG2_RUN] a_run_group_chat() failed: {run_err}")
             raise
@@ -550,14 +626,14 @@ async def _stream_events(
                 first_event_logged = True
             sequence_counter += 1
             try:
+                # Save AG2 TextEvent to persistence
                 if isinstance(ev, TextEvent):
                     await persistence_manager.save_event(ev, chat_id, enterprise_id)  # type: ignore[arg-type]
             except Exception as e:
-                logger.warning(f"Failed to save TextEvent for {chat_id}: {e}")
+                logger.warning(f"Failed to save AG2 TextEvent for {chat_id}: {e}")
 
-            # Note: FunctionCallEvent/ToolCallEvent are handled by AG2's executor.
-            # Tool functions themselves should call use_ui_tool() to emit UI artifacts
-            # and await user responses. Orchestration remains workflow-agnostic here.
+            # AG2 FunctionCallEvent/ToolCallEvent are handled by the executor
+            # Tools emit UI artifacts via use_ui_tool() calls
 
             if isinstance(ev, SelectSpeakerEvent):
                 if turn_agent and turn_started is not None:
@@ -660,6 +736,7 @@ async def _stream_events(
 
             if transport:
                 try:
+                    # AG2 event types for proper event handling
                     from autogen.events.agent_events import (
                         TextEvent as _T,
                         InputRequestEvent as _IR,
@@ -688,6 +765,26 @@ async def _stream_events(
                                     schema_fields = get_structured_output_model_fields(workflow_name, sender)
                                     if schema_fields:
                                         payload["structured_schema"] = schema_fields
+                                    # Print/log structured outputs for visibility
+                                    try:
+                                        import json as _json
+                                        # Build a compact, safe one-liner for logs
+                                        if isinstance(structured, dict):
+                                            so_keys = list(structured.keys())
+                                        elif isinstance(structured, list):
+                                            so_keys = [f"list[{len(structured)}]"]
+                                        else:
+                                            so_keys = [type(structured).__name__]
+                                        # Serialize and truncate to avoid huge logs
+                                        so_json = _json.dumps(structured, ensure_ascii=False)
+                                        max_len = 2000
+                                        if len(so_json) > max_len:
+                                            so_json = so_json[:max_len] + "...<truncated>"
+                                        wf_logger.info(
+                                            f"🧩 [STRUCTURED_OUTPUT] agent={sender} keys={so_keys} json={so_json}"
+                                        )
+                                    except Exception as _so_log_err:  # pragma: no cover
+                                        wf_logger.debug(f"[STRUCTURED_OUTPUT] log skipped: {_so_log_err}")
                         except Exception as so_err:  # pragma: no cover
                             wf_logger.debug(f"Structured output attach failed sender={sender}: {so_err}")
                     elif isinstance(ev, _PE):
@@ -1012,6 +1109,9 @@ async def _stream_events(
                 break
     except Exception as loop_err:
         wf_logger.error(f"Event loop failure: {loop_err}")
+    finally:
+        # Always clear execution context after workflow completion
+        clear_current_execution_context()
 
     return {
         "response": response,
@@ -1067,16 +1167,15 @@ async def run_workflow_orchestration(
     result_payload: Optional[Dict[str, Any]] = None
     runtime_logging_started = False
     runtime_logging_session_id: Optional[str] = None
-    runtime_mode = os.getenv("AUTOGEN_RUNTIME_LOGGING")  # any truthy value enables file logging
-    if runtime_mode:
+    # Only enable AG2 runtime file logging when explicitly requested as 'file'
+    runtime_mode = (os.getenv("AUTOGEN_RUNTIME_LOGGING", "") or "").strip().lower()
+    if runtime_mode == "file":
         try:
-            fname = os.getenv("AUTOGEN_RUNTIME_LOG_FILE", "runtime.log")
+            # Default to logs/logs/runtime.log inside repo if not set
+            fname = os.getenv("AUTOGEN_RUNTIME_LOG_FILE", str(Path("logs").joinpath("logs", "runtime.log")))
             runtime_logging_session_id = runtime_logging.start(logger_type="file", config={"filename": fname})
             runtime_logging_started = True
-            if runtime_mode.lower() not in ("file", "1", "true", "yes"):  # notify about forced file mode
-                logger.info(f"AG2 runtime logging forcing file mode (requested '{runtime_mode}') session_id={runtime_logging_session_id}")
-            else:
-                logger.info(f"AG2 runtime logging started file session_id={runtime_logging_session_id}")
+            logger.info(f"AG2 runtime logging started (file) session_id={runtime_logging_session_id}")
         except Exception as rl_err:  # pragma: no cover - non critical
             logger.warning(f"Failed to start AG2 runtime logging (file mode): {rl_err}")
 
@@ -1191,6 +1290,8 @@ async def run_workflow_orchestration(
                     context_factory=context_factory,
                     workflow_name=workflow_name,
                     enterprise_id=enterprise_id,
+                    chat_id=chat_id,
+                    user_id=user_id,
                     wf_logger=wf_logger,
                     workflow_name_upper=workflow_name_upper,
                 )
@@ -1212,9 +1313,9 @@ async def run_workflow_orchestration(
             # and token-efficient.
 
             # -----------------------------------------------------------------
-            # 6) Agents definition + tool registry
+            # 6) Agents creation following AG2 patterns
             # -----------------------------------------------------------------
-            agents = await _define_agents(agents_factory, workflow_name)
+            agents = await _create_agents(agents_factory, workflow_name, context_variables=context)
             agents = agents or {}
             if not agents:
                 raise RuntimeError(f"No agents defined for workflow '{workflow_name}'")
@@ -1310,27 +1411,28 @@ async def run_workflow_orchestration(
             # -----------------------------------------------------------------
             # 9) Pattern creation (AG2 native)
             # -----------------------------------------------------------------
-            pattern = await _create_pattern_and_handoffs(
+            pattern = await _create_ag2_pattern(
                 orchestration_pattern=orchestration_pattern,
                 workflow_name=workflow_name,
                 agents=agents,
                 initiating_agent=initiating_agent,
                 user_proxy_agent=user_proxy_agent,
                 human_in_loop=human_in_loop,
-                context=context,
+                context_variables=context,
                 llm_config=llm_config,
                 handoffs_factory=handoffs_factory,
                 wf_logger=wf_logger,
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
             )
             # 10.5) Hook registration removed (was duplicate)
             # Hooks are now registered once inside define_agents() via workflow_manager.register_hooks.
             # This avoids duplicate log noise and ensures _hooks_loaded_workflows gating is respected.
             # -----------------------------------------------------------------
-            # 11) Execute group chat with AG2's event streaming
+            # 11) Execute AG2 group chat with proper event streaming
             # -----------------------------------------------------------------
-            # Log execution start with summary
             wf_lifecycle_logger.info(
-                f"🚀 [{workflow_name_upper}] Starting workflow execution",
+                f"🚀 [{workflow_name_upper}] Starting AG2 workflow execution",
                 agent_count=len(agents),
                 tool_count=sum(len(getattr(agent, 'tool_names', [])) for agent in agents.values()),
                 pattern_name=orchestration_pattern,
@@ -1481,6 +1583,14 @@ async def run_workflow_orchestration(
                 try:
                     runtime_logging.stop()
                     logger.info(f"AG2 runtime logging stopped session_id={runtime_logging_session_id}")
+                    # Sanitize the runtime log after stopping to redact any secrets captured during the run
+                    try:
+                        from logs.runtime_sanitizer import sanitize_runtime_log_file
+                        fname = os.getenv("AUTOGEN_RUNTIME_LOG_FILE", str(Path("logs").joinpath("logs", "runtime.log")))
+                        sanitize_runtime_log_file(fname, in_place=True)
+                        logger.info("AG2 runtime log sanitized for secrets")
+                    except Exception as san_err:
+                        logger.debug(f"Runtime log sanitizer skipped: {san_err}")
                 except Exception as rl_stop_err:  # pragma: no cover
                     logger.warning(f"Failed stopping AG2 runtime logging: {rl_stop_err}")
 
@@ -1512,18 +1622,24 @@ async def run_workflow_orchestration(
 # AG2 PATTERN FACTORY - Direct AG2 Pattern Usage
 # ==============================================================================
 
-def create_orchestration_pattern(
+def create_ag2_pattern(
     pattern_name: str,
     initial_agent: ConversableAgent,
     agents: List[ConversableAgent],
     user_agent: Optional[UserProxyAgent] = None,
     context_variables: Optional[Any] = None,
     group_manager_args: Optional[Dict[str, Any]] = None,
-    human_in_the_loop: bool = False,
     **pattern_kwargs
 ) -> Any:
     """
-    Factory to create AG2's native orchestration patterns.
+    Create AG2 Pattern following proper constructor signature.
+    
+    AG2 Pattern constructor signature:
+    - initial_agent: ConversableAgent
+    - agents: List[ConversableAgent] 
+    - user_agent: Optional[ConversableAgent]
+    - context_variables: Optional[ContextVariables]
+    - group_manager_args: Optional[Dict[str, Any]]
     """
     pattern_map = {
         "AutoPattern": AG2AutoPattern,
@@ -1541,7 +1657,7 @@ def create_orchestration_pattern(
     logger.info(f"🎯 Creating {pattern_name} using AG2's native implementation")
     logger.info(f"🔍 Pattern setup - initial_agent: {initial_agent.name}")
     logger.info(f"🔍 Pattern setup - agents count: {len(agents)}")
-    logger.info(f"🔍 Pattern setup - user_agent included: {user_agent is not None and human_in_the_loop}")
+    logger.info(f"🔍 Pattern setup - user_agent included: {user_agent is not None}")
     if context_variables is not None:
         try:
             # Best-effort context diagnostics
@@ -1559,23 +1675,23 @@ def create_orchestration_pattern(
     else:
         logger.info(f"🔍 Pattern setup - context_variables: False")
 
-    # Build pattern arguments - AG2 patterns need all core parameters
+    # Build AG2 Pattern constructor arguments following proper signature
     pattern_args = {
         "initial_agent": initial_agent,
         "agents": agents,
-        "context_variables": context_variables,  # Always pass context_variables (AG2 handles None case)
+        "context_variables": context_variables,  # AG2 ContextVariables instance
     }
 
-    if human_in_the_loop and user_agent is not None:
+    # Add user_agent if provided (AG2 handles human-in-the-loop logic)
+    if user_agent is not None:
         pattern_args["user_agent"] = user_agent
-        logger.info(f"✅ User agent included in pattern (human_in_the_loop=true)")
-    else:
-        logger.info(f"ℹ️ User agent excluded from pattern (human_in_the_loop={human_in_the_loop})")
+        logger.info(f"✅ User agent included in AG2 pattern")
 
-    # Pass group_manager_args to the pattern (not nested inside it)
+    # Add group_manager_args for GroupChatManager configuration
     if group_manager_args is not None:
         pattern_args["group_manager_args"] = group_manager_args
 
+    # Add any additional pattern-specific kwargs
     pattern_args.update(pattern_kwargs)
 
     try:
@@ -1602,15 +1718,15 @@ def create_orchestration_pattern(
             "initial_agent": initial_agent,
             "agents": agents,
         }
-        if human_in_the_loop and user_agent is not None:
+        if user_agent is not None:
             minimal_args["user_agent"] = user_agent
 
-        # For minimal pattern, still try to include context_variables
+        # Include context_variables in minimal args if available
         if context_variables is not None:
             minimal_args["context_variables"] = context_variables
             
         minimal_pattern = pattern_class(**minimal_args)
-        logger.info(f"✅ {pattern_name} AG2 pattern created with minimal args (including context_variables)")
+        logger.info(f"✅ {pattern_name} AG2 pattern created with minimal args")
         
         return minimal_pattern
 
@@ -1635,7 +1751,7 @@ async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str
     Log the complete AG2 conversation to the agent chat log file.
     """
     try:
-        agent_chat_logger = get_chat_logger("agent_messages")
+        agent_chat_logger = get_workflow_logger("agent_messages")
 
         if not conversation_history:
             agent_chat_logger.info(f"🔍 [{workflow_name}] No conversation history to log for chat {chat_id}")

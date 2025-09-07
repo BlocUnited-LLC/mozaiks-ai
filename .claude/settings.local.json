@@ -20,7 +20,12 @@
       "Bash(taskkill:*)",
       "Bash(echo $MOZAIKS_PERSIST_PERF)",
       "Bash(dir \"C:\\Users\\Owner\\Desktop\\BlocUnited\\BlocUnited Code\\MozaiksAI\\logs\\logs\")",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "Bash(docker system prune:*)",
+      "Bash(.start-app.ps1)",
+      "Bash(powershell:*)",
+      "Bash(docker compose:*)"
     ],
     "deny": [],
     "ask": []

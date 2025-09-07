@@ -11,13 +11,39 @@ const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRe
     return null;
   }
 
-  // console.debug('Rendering UI tool event:', uiToolEvent.ui_tool_id);
-  
+  // Local completion indicator for inline components only
+  const [completed, setCompleted] = React.useState(false);
+
+  const handleResponse = async (resp) => {
+    try {
+      if (onResponse) {
+        await onResponse(resp);
+      }
+    } finally {
+      // Non-clickable "Completed" state for inline tools
+      const displayMode = uiToolEvent.display || uiToolEvent.payload?.display || uiToolEvent.payload?.mode || 'inline';
+      if (displayMode === 'inline') {
+        setCompleted(true);
+      }
+    }
+  };
+
   return (
     <div className="my-4 p-4 border border-cyan-400/20 rounded-lg bg-gradient-to-r from-cyan-500/5 to-purple-500/5">
-      <UIToolRenderer 
+      {/* Inline-only completion chip */}
+      {completed && ((uiToolEvent.display || uiToolEvent.payload?.display || uiToolEvent.payload?.mode || 'inline') === 'inline') && (
+        <div className="mb-2">
+          <span
+            aria-label="Completed"
+            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 select-none"
+          >
+            ✓ Completed
+          </span>
+        </div>
+      )}
+      <UIToolRenderer
         event={uiToolEvent}
-        onResponse={onResponse}
+        onResponse={handleResponse}
         submitInputRequest={submitInputRequest}
         className="ui-tool-in-chat"
       />

@@ -47,11 +47,13 @@ const WorkflowUIRouter = ({
     try {
       setIsLoading(true);
       setError(null);
+      console.log('🛰️ WorkflowUIRouter: Loading component', { workflow, component });
       
       const cacheKey = `${workflow}:${component}`;
       
       // Check cache first
       if (componentCache.has(cacheKey)) {
+        console.log('🛰️ WorkflowUIRouter: Cache hit', { cacheKey });
         setComponent(componentCache.get(cacheKey));
         setIsLoading(false);
         return;

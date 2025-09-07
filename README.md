@@ -132,8 +132,7 @@ Remove-Item Env:LOGS_AS_JSON; python run_server.py
 ### Logging quickstart
 
 - Two file sinks only:
-    - `workflows.log` — operational workflow/runtime logs (no chat transcripts)
-    - `agent_chat.log` — chat transcripts and agent/user messages
+    - `mozaiks.log` — operational workflow/runtime logs (no chat transcripts)
 - Filenames are fixed; content switches between pretty text and JSON via `LOGS_AS_JSON`.
 - Override the logs folder with `LOGS_BASE_DIR` (default is `logs/logs` relative to this repo).
 

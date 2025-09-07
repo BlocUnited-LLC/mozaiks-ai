@@ -107,6 +107,39 @@
         }
       },
 
+      "FeatureSpec": {
+        "type": "model",
+        "fields": {
+          "feature_title": { "type": "str", "description": "Short feature name" },
+          "description": { "type": "str", "description": "What the feature provides" }
+        }
+      },
+      "TechnologySpec": {
+        "type": "model",
+        "fields": {
+          "technology_title": { "type": "str", "description": "Third-party technology or service" },
+          "description": { "type": "str", "description": "How this technology is used in the workflow" }
+        }
+      },
+      "ActionPlan": {
+        "type": "model",
+        "fields": {
+          "workflow_title": { "type": "str", "description": "Concise workflow title" },
+          "workflow_description": { "type": "str", "description": "Short description of purpose and value" },
+          "suggested_features": { "type": "list", "items": "FeatureSpec", "description": "List of key features" },
+          "mermaid_flow": { "type": "str", "description": "Mermaid sequence diagram; MUST start with 'sequenceDiagram' and use only linear arrows (->>, -->>)." },
+          "third_party_integrations": { "type": "list", "items": "TechnologySpec", "description": "Third-party tools/services with usage notes" },
+          "constraints": { "type": "list", "items": "str", "description": "Explicit rules, preferences, or limitations" }
+        }
+      },
+      "ContextAgentOutput": {
+        "type": "model",
+        "fields": {
+          "action_plan": { "type": "ActionPlan", "description": "The Action Plan object (required)" },
+          "agent_message": { "type": "optional_str", "description": "Optional agent message or note" }
+        }
+      },
+
       "Hook": {
         "type": "model",
         "fields": {
@@ -245,6 +278,16 @@
           "fields": { "type": "list", "items": "StructuredModelField" }
         }
       },
+      "AgentRegistryEntry": {
+        "type": "model",
+        "fields": {
+          "agent": { "type": "str", "description": "Agent name" },
+          "agent_definition": { 
+            "type": "optional_str", 
+            "description": "Model name for this agent, or null if no structured output applies"
+          }
+        }
+      },
       "StructuredOutputsAgentOutput": {
         "type": "model",
         "fields": {
@@ -255,16 +298,7 @@
           },
           "registry": {
             "type": "list",
-            "items": {
-              "type": "model",
-              "fields": {
-                "agent": { "type": "str", "description": "Agent name" },
-                "agent_definition": { 
-                  "type": "union[str,null]", 
-                  "description": "Model name for this agent, or null if no structured output applies"
-                }
-              }
-            }
+            "items": "AgentRegistryEntry"
           }
         }
       }
@@ -272,7 +306,7 @@
   },
 
   "registry": {
-    "ContextAgent": null,
+    "ContextAgent": "ContextAgentOutput",
     "ToolsManagerAgent": "ToolsManagerAgentOutput",
     "UIFileGenerator": "UIFileGeneratorOutput",
     "AgentToolsFileGenerator": "AgentToolsFileGeneratorOutput",

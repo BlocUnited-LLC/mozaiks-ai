@@ -41,8 +41,7 @@ class StartChatRequest(BaseModel):
 from logs.logging_config import (
     setup_development_logging, 
     setup_production_logging, 
-    get_workflow_logger, 
-    get_chat_logger,
+    get_workflow_logger,
 )
 
 # Setup logging based on environment ASAP (before any KV/DB work)
@@ -65,7 +64,7 @@ logging.getLogger('autogen').setLevel(logging.DEBUG)
 
 # Get specialized loggers
 wf_logger = get_workflow_logger("shared_app")
-chat_logger = get_chat_logger("shared_app")
+chat_logger = get_workflow_logger("shared_app")
 performance_logger = get_workflow_logger("performance.shared_app")
 logger = logging.getLogger(__name__)
 
@@ -189,6 +188,42 @@ async def startup():
     
     wf_logger.info("🚀 APP_STARTUP: FastAPI startup event triggered")
     wf_logger.info(f"🔧 APP_STARTUP: Environment = {env}")
+    
+    # -----------------------------
+    # Cache behavior controls (expert defaults)
+    # - Tools: clear on start in development by default so tool edits take effect
+    # - LLM: do NOT clear by default; allow opt-in via env
+    #   Use LLM_CONFIG_CACHE_TTL env to tighten dev TTL (e.g., 0) if desired
+    # -----------------------------
+    def _env_bool(name: str, default: bool = False) -> bool:
+        val = os.getenv(name)
+        if val is None:
+            return default
+        return str(val).lower() in ("1", "true", "yes", "y", "on")
+
+    # Clear workflow tool module cache on startup (default ON in dev)
+    try:
+        clear_tools = _env_bool("CLEAR_TOOL_CACHE_ON_START", default=(env != "production"))
+        if clear_tools:
+            from core.workflow.agent_tools import clear_tool_cache
+            cleared = clear_tool_cache()  # clear all workflow tool modules
+            wf_logger.info(f"🧹 TOOL_CACHE: Cleared {cleared} cached tool modules on startup")
+        else:
+            wf_logger.info("🧹 TOOL_CACHE: Preserve cached tool modules (CLEAR_TOOL_CACHE_ON_START=0)")
+    except Exception as e:
+        wf_logger.error("TOOL_CACHE_CLEAR_FAILED: Failed to clear tool cache on startup", error=str(e))
+
+    # Optional: clear LLM caches on startup (default OFF)
+    try:
+        if _env_bool("CLEAR_LLM_CACHES_ON_START", default=False):
+            from core.workflow.llm_config import clear_llm_caches
+            clear_llm_caches(raw=True, built=True)
+            wf_logger.info("🧹 LLM_CACHE: Cleared raw and built llm_config caches on startup")
+        # Log effective TTL to aid ops visibility
+        ttl = os.getenv("LLM_CONFIG_CACHE_TTL", "300")
+        wf_logger.info(f"⏱️ LLM_CACHE: Effective TTL (secs) = {ttl}")
+    except Exception as e:
+        wf_logger.error("LLM_CACHE_CLEAR_FAILED: Failed LLM cache management on startup", error=str(e))
     
     # Use helper (mozaiks.app.startup span name becomes mozaiks.app.startup via prefix logic? timed_span adds mozaiks.<key>)
     # We'll pass key 'app.startup' so final span is mozaiks.app.startup for consistency.

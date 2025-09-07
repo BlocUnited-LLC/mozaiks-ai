@@ -488,10 +488,10 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                 wf_logger.info(f"🧩 [CREATE_WORKFLOW_FILES] Collected {len(hook_extra_files)} hook implementation files")
 
         # Extract context variables from ContextVariablesAgent output
-        context_vars_output = data.get('context_variables_output', {})
-        if context_vars_output and 'context_variables' in context_vars_output:
-            config['context_variables'] = context_vars_output
-            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(context_vars_output['context_variables'])} context variables")
+        context_variables_output = data.get('context_variables_output', {})
+        if context_variables_output and 'context_variables' in context_variables_output:
+            config['context_variables'] = context_variables_output
+            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(context_variables_output['context_variables'])} context variables")
 
         # -----------------------------
         # Structured outputs (MERGE)

@@ -15,6 +15,11 @@ from logs.logging_config import get_workflow_logger
 from core.data.persistence_manager import AG2PersistenceManager
 from core.workflow.ui_tools import use_ui_tool, UIToolError
 from workflows.Generator.tools.workflow_converter import create_workflow_files
+try:
+    from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
+except Exception:
+    _get_tool_logger = None  # type: ignore
+    _log_tool_event = None  # type: ignore
 
 async def generate_and_download(
     description: Optional[str] = None,
@@ -62,6 +67,14 @@ NON-GOALS / DECLINED BEHAVIORS:
     context_variables: Optional[Any] = runtime.get("context_variables")
 
     wf_logger = get_workflow_logger(workflow_name=(workflow_name or "missing"), chat_id=chat_id, enterprise_id=enterprise_id)
+    tlog = None
+    if _get_tool_logger:
+        try:
+            tlog = _get_tool_logger(tool_name="GenerateAndDownload", chat_id=chat_id, enterprise_id=enterprise_id, workflow_name=(workflow_name or "missing"))
+            if _log_tool_event:
+                _log_tool_event(tlog, action="start", status="ok")
+        except Exception:
+            tlog = None
     wf_logger.info(f"🏗️ Starting workflow generation for chat: {chat_id}")
 
     agent_message = description or "I'm creating your workflow files. Please use the download center below when ready."
@@ -244,6 +257,8 @@ NON-GOALS / DECLINED BEHAVIORS:
 
     # 5. Emit UI + wait
     try:
+        if tlog and _log_tool_event:
+            _log_tool_event(tlog, action="emit_ui", status="start", display="artifact", agent_message_id=agent_message_id)
         response = await use_ui_tool(
             tool_id="FileDownloadCenter",
             payload=payload,
@@ -252,6 +267,8 @@ NON-GOALS / DECLINED BEHAVIORS:
             display="artifact",
         )
         wf_logger.info(f"📥 File download UI completed with status: {response.get('status', 'unknown')}")
+        if tlog and _log_tool_event:
+            _log_tool_event(tlog, action="emit_ui", status="done", result_status=response.get('status', 'unknown'))
     except UIToolError:
         raise
     except Exception as e:
@@ -272,8 +289,12 @@ NON-GOALS / DECLINED BEHAVIORS:
             if storage_result:
                 response = {**response, "storage": storage_result}
                 wf_logger.info(f"✅ Storage completed: {storage_result.get('status')}")
+                if tlog and _log_tool_event:
+                    _log_tool_event(tlog, action="storage", status=str(storage_result.get('status', 'unknown')))
         except Exception as se:
             wf_logger.warning(f"⚠️ Storage action failed: {se}")
+            if tlog and _log_tool_event:
+                _log_tool_event(tlog, action="storage", status="error", error=str(se))
 
     return {
         "status": "success",

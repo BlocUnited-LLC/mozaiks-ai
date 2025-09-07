@@ -7,7 +7,7 @@ these re-exports are provided for convenience and a stable public surface.
 
 from .workflow import (
 	run_workflow_orchestration,
-	create_orchestration_pattern,
+	create_ag2_pattern,
 	register_workflow,
 	get_workflow_handler,
 	get_workflow_transport,
@@ -31,7 +31,7 @@ from .events import (
 __all__ = [
 	# Workflow
 	"run_workflow_orchestration",
-	"create_orchestration_pattern",
+	"create_ag2_pattern",
 	"register_workflow",
 	"get_workflow_handler",
 	"get_workflow_transport",

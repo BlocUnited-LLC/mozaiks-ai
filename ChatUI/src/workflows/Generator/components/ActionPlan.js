@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { FileText, Zap, Settings, AlertCircle, ExternalLink, Eye } from 'lucide-react';
+import { createToolsLogger } from '../../../core/toolsLogger';
 
 /**
  * ActionPlan - Production AG2 component for workflow visualization
@@ -34,12 +35,14 @@ const ActionPlan = ({
   };
   
   const agentMessageId = payload.agent_message_id;
+  const tlog = createToolsLogger({ tool: ui_tool_id || componentId, eventId, workflowName, agentMessageId });
   const [actionStatus, setActionStatus] = useState({});
 
   const handleAction = async (action, data = {}) => {
     setActionStatus(prev => ({ ...prev, [action]: 'processing' }));
     
     try {
+      tlog.event(action, 'start');
       // Enhanced response with rich agent feedback information
       const response = {
         status: 'success',
@@ -68,10 +71,10 @@ const ActionPlan = ({
       
       setActionStatus(prev => ({ ...prev, [action]: 'completed' }));
       
-      console.log(`✅ ActionPlan: ${action} completed with agent context`);
+  tlog.event(action, 'done', { ok: true });
       
     } catch (error) {
-      console.error(`❌ ActionPlan: ${action} failed:`, error);
+  tlog.error(`${action} failed`, { error: error?.message });
       setActionStatus(prev => ({ ...prev, [action]: 'error' }));
       
       // Enhanced error response with context
@@ -93,7 +96,8 @@ const ActionPlan = ({
   };
 
   const handleCancel = () => {
-    if (onResponse) {
+  tlog.event('cancel', 'start');
+  if (onResponse) {
       onResponse({
         status: 'cancelled',
         action: 'cancel',
@@ -104,7 +108,8 @@ const ActionPlan = ({
           cancelled: true 
         }
       });
-    }
+  }
+  tlog.event('cancel', 'done');
   };
 
   // Mermaid diagram component

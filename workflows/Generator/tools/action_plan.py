@@ -138,8 +138,10 @@ def _normalize_action_plan(ap: Dict[str, Any]) -> Dict[str, Any]:
 
 async def action_plan(
     *,
-    action_plan: Annotated[dict[str, Any], "Required Action Plan object. Must include keys: workflow_title, workflow_description, suggested_features (list of {feature_title, description}), mermaid_flow (sequenceDiagram), third_party_integrations (list of {technology_title, description}), constraints (list[str])."],
+    action_plan: Annotated[Optional[dict[str, Any]], "Action Plan object with workflow details. Must include keys: workflow_title, workflow_description, suggested_features (list of {feature_title, description}), mermaid_flow (sequenceDiagram), third_party_integrations (list of {technology_title, description}), constraints (list[str])."] = None,
     agent_message: Annotated[Optional[str], "Optional short sentence displayed above the artifact for context."] = None,
+    # AG2 context injection - these will be automatically provided
+    context_variables: Annotated[Optional[Any], "Context variables provided by AG2"] = None,
     **runtime: Any,
 ) -> dict[str, Any]:
     """
@@ -180,7 +182,7 @@ async def action_plan(
     chat_id: Optional[str] = runtime.get("chat_id")
     enterprise_id: Optional[str] = runtime.get("enterprise_id")
     workflow_name: Optional[str] = runtime.get("workflow_name") or runtime.get("workflow")
-    context_variables: Optional[Any] = runtime.get("context_variables")
+    context_variables = context_variables or runtime.get("context_variables")
 
     # Resolve IDs from context if needed
     if (not chat_id or not enterprise_id or not workflow_name) and context_variables is not None:
@@ -197,6 +199,13 @@ async def action_plan(
 
     wf_name = workflow_name or "Generated_Workflow"
     wf_logger = get_workflow_logger(workflow_name=wf_name, chat_id=chat_id, enterprise_id=enterprise_id)
+    # Lazy import tool logger to avoid static analysis issues if module path shifts
+    try:
+        from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
+        tlog = _get_tool_logger(tool_name="ActionPlan", chat_id=chat_id, enterprise_id=enterprise_id, workflow_name=wf_name)
+        _log_tool_event(tlog, action="start", status="ok")
+    except Exception:
+        tlog = None
 
     # Normalize/validate the provided Action Plan (do NOT invent new logic)
     if not isinstance(action_plan, dict):
@@ -216,6 +225,9 @@ async def action_plan(
 
     # Emit UI artifact and wait for a response
     try:
+        if tlog:
+            from logs.tools_logs import log_tool_event as _log_tool_event  # type: ignore
+            _log_tool_event(tlog, action="emit_ui", status="start", display="artifact", agent_message_id=agent_message_id)
         resp = await use_ui_tool(
             tool_id="ActionPlan",
             payload=ui_payload,
@@ -226,6 +238,9 @@ async def action_plan(
         # The UI layer adds 'ui_event_id' to its response in ui_tools.py
         ui_event_id = resp.get("ui_event_id") if isinstance(resp, dict) else None
         wf_logger.info("🧭 ActionPlan UI completed")
+        if tlog:
+            from logs.tools_logs import log_tool_event as _log_tool_event  # type: ignore
+            _log_tool_event(tlog, action="emit_ui", status="done", ui_event_id=ui_event_id, result_status=resp.get("status", "unknown"))
         return {
             "status": "success",
             "ui_response": resp,
@@ -236,4 +251,10 @@ async def action_plan(
         }
     except UIToolError as e:
         wf_logger.error(f"❌ ActionPlan UI interaction failed: {e}")
+        if tlog:
+            try:
+                from logs.tools_logs import log_tool_event as _log_tool_event  # type: ignore
+                _log_tool_event(tlog, action="emit_ui", status="error", error=str(e))
+            except Exception:
+                pass
         return {"status": "error", "message": str(e), "agent_message_id": agent_message_id}

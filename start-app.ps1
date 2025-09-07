@@ -4,15 +4,25 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Resolve repository root regardless of current working directory
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$PreviousLocation = Get-Location
+Set-Location $ScriptRoot
+
 # Ensure UTF-8 output (compatible with PowerShell 5.1)
 chcp 65001 | Out-Null
 $utf8 = [System.Text.Encoding]::UTF8
 $OutputEncoding = [Console]::OutputEncoding = $utf8
 
-# Enable BuildKit
-if (-not $env:DOCKER_BUILDKIT) { $env:DOCKER_BUILDKIT = "1" }
+# Enable BuildKit (force on if unset or set to 0)
+if (-not $env:DOCKER_BUILDKIT -or $env:DOCKER_BUILDKIT -ne "1") { $env:DOCKER_BUILDKIT = "1" }
 
-$composeFile = "infra/compose/docker-compose.yml"
+$composeFile = Join-Path $ScriptRoot "infra/compose/docker-compose.yml"
+if (-not (Test-Path $composeFile)) {
+  Write-Host "Compose file not found at $composeFile" -ForegroundColor Red
+  Set-Location $PreviousLocation
+  exit 1
+}
 
 # Emoji/icons (constructed safely so the file avoids direct surrogate encoding issues)
 $rocket = "$( [char]0xD83D )$( [char]0xDE80 )"   # 🚀
@@ -42,7 +52,13 @@ Write-Host ("$rocket Starting MozaiksAI...") -ForegroundColor Green
 
 if (-not $NoBuild) {
   Write-Host "Building app image..." -ForegroundColor Yellow
-  docker build -f infra/docker/Dockerfile -t mozaiksai-app:latest .
+  $dockerfile = Join-Path $ScriptRoot "infra/docker/Dockerfile"
+  if (-not (Test-Path $dockerfile)) {
+    Write-Host ("$cross Dockerfile not found at $dockerfile") -ForegroundColor Red
+    Set-Location $PreviousLocation
+    exit 1
+  }
+  docker build -f $dockerfile -t mozaiksai-app:latest $ScriptRoot
   if ($LASTEXITCODE -ne 0) { Write-Host ("$cross Failed to build image") -ForegroundColor Red; exit 1 }
   Write-Host ("$check Image built successfully") -ForegroundColor Green
 } else {
@@ -62,3 +78,6 @@ Write-Host ("$globe App available at: http://localhost:8000") -ForegroundColor C
 
 Write-Host ("`n$clip Service Status:") -ForegroundColor Yellow
 docker compose -f $composeFile ps
+
+# Return to previous directory before exit
+Set-Location $PreviousLocation

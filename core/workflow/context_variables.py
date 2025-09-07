@@ -7,6 +7,7 @@
 # ==============================================================================
 
 import asyncio
+import os
 from typing import Dict, Any, Optional, List
 from autogen.agentchat.group import ContextVariables
 
@@ -124,10 +125,40 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
     # Load workflow configuration  
     config = _load_workflow_config(workflow_name)
     
-    # NOTE: By product decision, do NOT expose 'schema_overview' as a user context variable.
-    # If configured, we skip loading/setting it entirely to keep context minimal and focused.
-    # (Previously this populated a large text blob that isn't needed by agents.)
+    # Optionally attach a compact schema overview based on env toggle (default off).
+    # Toggle: CONTEXT_INCLUDE_SCHEMA=true|false (default false)
+    # DB source precedence for schema: CONTEXT_SCHEMA_DB env -> JSON schema_overview.database_name -> single DB from variables
     schema_config = config.get('schema_overview', {})
+    try:
+        include_schema_env = os.getenv("CONTEXT_INCLUDE_SCHEMA", "false").lower() in ("1", "true", "yes", "on")
+        if include_schema_env:
+            # Decide database used for schema extraction
+            db_name = os.getenv("CONTEXT_SCHEMA_DB")
+            if not db_name and isinstance(schema_config, dict):
+                db_name = schema_config.get('database_name')
+            if not db_name:
+                # Fallback: infer from variables if exactly one database is referenced
+                var_dbs = set()
+                for v in config.get('variables', []) or []:
+                    dbn = ((v or {}).get('database') or {}).get('database_name')
+                    if dbn:
+                        var_dbs.add(dbn)
+                if len(var_dbs) == 1:
+                    db_name = next(iter(var_dbs))
+            if db_name:
+                overview_info = await _get_database_schema_async(db_name, internal_enterprise_id or "")
+                overview_text = overview_info.get("schema_overview")
+                if overview_text:
+                    # Fixed safety cap to avoid pathological token usage (no env required)
+                    MAX_SCHEMA_CHARS = 4000
+                    if len(overview_text) > MAX_SCHEMA_CHARS:
+                        overview_text = f"{overview_text[:MAX_SCHEMA_CHARS]}... [truncated {len(overview_text)-MAX_SCHEMA_CHARS} chars]"
+                    context.set("schema_overview", overview_text)
+                    business_logger.info(f"📘 Attached schema_overview to context (db={db_name}, len={len(overview_text)})")
+            else:
+                business_logger.debug("Schema overview requested but no database_name could be determined; skipping")
+    except Exception as _sch_err:
+        business_logger.debug(f"Schema overview attachment skipped: {_sch_err}")
     
     # Load specific variables from database
     variables = config.get('variables', [])
@@ -172,6 +203,21 @@ def _load_workflow_config(workflow_name: str) -> Dict[str, Any]:
             if isinstance(context_section, dict) and 'context_variables' in context_section:
                 return context_section['context_variables']
             return context_section
+        # If no context_variables section in main config, try loading a separate context_variables.json file
+        try:
+            from pathlib import Path
+            import json
+            # workflow_manager._workflows stores WorkflowInfo with path to workflow folder
+            wf_info = getattr(workflow_manager, '_workflows', {}).get(workflow_name.lower())
+            if wf_info and hasattr(wf_info, 'path'):
+                ext_file = Path(wf_info.path) / 'context_variables.json'
+                if ext_file.exists():
+                    business_logger.info(f"🔍 Loading external context_variables.json for {workflow_name}")
+                    raw = ext_file.read_text(encoding='utf-8')
+                    data = json.loads(raw)
+                    return data.get('context_variables', {}) or {}
+        except Exception as ext_err:  # pragma: no cover
+            business_logger.debug(f"⚠️ External context_variables.json load failed: {ext_err}")
         return {}
     except Exception as e:  # pragma: no cover
         business_logger.warning(f"⚠️ Could not load config for {workflow_name}: {e}")

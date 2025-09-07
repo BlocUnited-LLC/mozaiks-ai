@@ -15,7 +15,7 @@ import datetime as _dt
 
 logger = logging.getLogger(__name__)
 
-from logs.logging_config import get_workflow_logger, get_chat_logger
+from logs.logging_config import get_workflow_logger
 from core.workflow.workflow_manager import workflow_manager
 
 try:  # Prefer pydantic if available
@@ -83,7 +83,7 @@ async def _emit_ui_tool_event_core(
     """
     event_id = f"{tool_id}_{str(uuid.uuid4())[:8]}"
     wf_logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id)
-    chat_logger = get_chat_logger("ui_tools")
+    chat_logger = get_workflow_logger("ui_tools", chat_id=chat_id)
     
     try:
         from core.transport.simple_transport import SimpleTransport
@@ -116,12 +116,10 @@ async def _wait_for_ui_tool_response_internal(event_id: str, timeout: Optional[f
     from core.transport.simple_transport import SimpleTransport  # local import
     transport = await SimpleTransport.get_instance()
     try:
-        fut = transport.wait_for_ui_tool_response(event_id)  # type: ignore[attr-defined]
-        if timeout is not None:
-            return await asyncio.wait_for(fut, timeout=timeout)
+        # Always wait indefinitely for user/UI response; ignore provided timeout to avoid premature cancellations.
+        # Explicitly pass timeout=None to ensure no default timeout is applied in the transport layer.
+        fut = transport.wait_for_ui_tool_response(event_id, timeout=None)  # type: ignore[attr-defined]
         return await fut
-    except asyncio.TimeoutError:
-        raise UIToolError(f"UI tool response timed out for {event_id}")
     except Exception as e:  # pragma: no cover
         raise UIToolError(f"UI tool response failure for {event_id}: {e}")
 
@@ -148,7 +146,15 @@ async def use_ui_tool(
         workflow_name=workflow_name,
     )
     try:
-        resp = await _wait_for_ui_tool_response_internal(event_id, timeout=timeout)
+        # Try to log via tools logger (optional import)
+        from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
+        _tlog = _get_tool_logger(tool_name=tool_id, chat_id=chat_id, workflow_name=workflow_name, ui_event_id=event_id)
+        _log_tool_event(_tlog, action="emit_ui", status="done", event_id=event_id, display=display)
+    except Exception:
+        pass
+    try:
+        # Ignore the timeout parameter to prevent user feedback from timing out; wait until the UI responds
+        resp = await _wait_for_ui_tool_response_internal(event_id, timeout=None)
         duration_ms = (_dt.datetime.now(_dt.timezone.utc) - start).total_seconds() * 1000.0
         # Assemble log message to keep line length under linter limits
         round_trip_msg = (
@@ -158,6 +164,12 @@ async def use_ui_tool(
         wf_logger.info(round_trip_msg)
         if isinstance(resp, dict) and 'ui_event_id' not in resp:
             resp['ui_event_id'] = event_id
+        try:
+            from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
+            _tlog = _get_tool_logger(tool_name=tool_id, chat_id=chat_id, workflow_name=workflow_name, ui_event_id=event_id)
+            _log_tool_event(_tlog, action="ui_response", status=str(resp.get('status', 'unknown')), event_id=event_id)
+        except Exception:
+            pass
         return resp
     except Exception as e:
         duration_ms = (_dt.datetime.now(_dt.timezone.utc) - start).total_seconds() * 1000.0

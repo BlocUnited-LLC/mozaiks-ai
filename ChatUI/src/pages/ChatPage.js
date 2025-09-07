@@ -32,6 +32,10 @@ const ChatPage = () => {
   const { user, api, config } = useChatUI();
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
   const [forceOverlay, setForceOverlay] = useState(false);
+  // Track the most recent artifact-mode UI event id to manage auto-collapse
+  const lastArtifactEventRef = useRef(null);
+  // Prevent duplicate restores per connection
+  const artifactRestoredOnceRef = useRef(false);
   const currentEnterpriseId = enterpriseId || config?.chat?.defaultEnterpriseId || '68542c1109381de738222350';
   const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
   // Helper function to get default workflow from registry
@@ -137,7 +141,7 @@ const ChatPage = () => {
       }
       case 'tool_call': {
         if (data.is_ui_tool && data.component_type) {
-          dynamicUIHandler.processUIEvent({ type:'ui_tool_event', ui_tool_id:data.tool_name, eventId: data.tool_call_id || data.corr, workflowname: currentWorkflowName, payload:{ ...(data.payload||{}), tool_name:data.tool_name, component_type:data.component_type, workflow_name: currentWorkflowName, awaiting_response: data.awaiting_response }});
+          dynamicUIHandler.processUIEvent({ type:'ui_tool_event', ui_tool_id:data.tool_name, eventId: data.tool_call_id || data.corr, workflow_name: currentWorkflowName, payload:{ ...(data.payload||{}), tool_name:data.tool_name, component_type:data.component_type, workflow_name: currentWorkflowName, awaiting_response: data.awaiting_response }});
         } else {
           setMessagesWithLogging(prev => [...prev, { id: data.tool_call_id || `tool-call-${Date.now()}`, sender:'system', agentName:'System', content:`🔧 Tool Call: ${data.tool_name}`, isStreaming:false }]);
         }
@@ -153,7 +157,15 @@ const ChatPage = () => {
         return;
       }
       case 'select_speaker': {
-        // Speaker selection event (used for timing/metrics) – no visual message by default
+        // Speaker selection often marks a new turn/run start. If we have an open artifact
+        // from a prior sequence, collapse it now.
+        if (lastArtifactEventRef.current && isSidePanelOpen) {
+          try {
+            console.log('🧹 [UI] New sequence detected; collapsing ArtifactPanel (event:', lastArtifactEventRef.current, ')');
+          } catch {}
+          setIsSidePanelOpen(false);
+          lastArtifactEventRef.current = null;
+        }
         return;
       }
       case 'tool_progress': {
@@ -396,6 +408,70 @@ const ChatPage = () => {
     }, 1000);
   }, [currentChatId, workflowConfigLoaded]);
 
+  // Subscribe to DynamicUIHandler updates and insert UI tool events into chat messages
+  useEffect(() => {
+    // Bridge dynamic UI events into the chat message stream
+    const unsubscribe = dynamicUIHandler.onUIUpdate((update) => {
+      try {
+        if (!update || !update.type) return;
+        // Only handle ui_tool_event here; other updates (status/component updates) are ignored for now
+  if (update.type === 'ui_tool_event') {
+    const { ui_tool_id, payload = {}, eventId, workflow_name, onResponse, display } = update;
+          console.log('🧩 [UI] ChatPage received ui_tool_event -> inserting into messages', { ui_tool_id, eventId, workflow_name });
+          // If this UI tool requests artifact display, auto-open the ArtifactPanel like OpenAI/Claude canvases
+    const displayMode = (display || payload.display || payload.mode);
+    if (displayMode === 'artifact') {
+            console.log('🖼️ [UI] Auto-opening ArtifactPanel for artifact-mode event');
+            setIsSidePanelOpen(true);
+            // Remember this artifact to collapse on next sequence
+            lastArtifactEventRef.current = eventId || ui_tool_id || 'artifact';
+            // Persist minimal artifact session state for graceful refresh restore
+            try {
+              if (currentChatId) {
+                const key = `mozaiks.last_artifact.${currentChatId}`;
+                const cache = {
+                  ui_tool_id,
+                  eventId: eventId || null,
+                  workflow_name,
+                  payload,
+      display: displayMode || 'artifact',
+                  ts: Date.now(),
+                };
+                localStorage.setItem(key, JSON.stringify(cache));
+              }
+            } catch {}
+      // Don't inject artifact UIs into the chat feed; they'll render in ArtifactPanel only
+      return;
+          }
+          setMessagesWithLogging((prev) => [
+            ...prev,
+            {
+              id: `ui-${eventId || Date.now()}`,
+              sender: 'agent',
+              agentName: payload.agentName || 'Agent',
+              content: '', // UI tool renders its own visuals
+              isStreaming: false,
+              uiToolEvent: {
+                ui_tool_id,
+                payload,
+                eventId,
+                workflow_name,
+                onResponse,
+                // Surface display mode for inline Completed chip logic
+    display: displayMode || 'inline',
+              },
+            },
+          ]);
+        }
+      } catch (err) {
+        console.error('❌ Failed to handle DynamicUIHandler update in ChatPage:', err);
+      }
+    });
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, [setMessagesWithLogging]);
+
   const sendMessage = async (messageContent) => {
     console.log('🚀 [SEND] Sending message:', messageContent);
     console.log('🚀 [SEND] Current chat ID:', currentChatId);
@@ -462,26 +538,43 @@ const ChatPage = () => {
       // Handle UI tool responses for the dynamic UI system
       if (action.type === 'ui_tool_response') {
         console.log('🎯 Processing UI tool response:', action);
-        
+
+        // If this response corresponds to the most recent artifact event, close the panel immediately
+        if (lastArtifactEventRef.current && (!action.eventId || action.eventId === lastArtifactEventRef.current)) {
+          try { console.log('🧹 [UI] Artifact response received; collapsing ArtifactPanel now'); } catch {}
+          setIsSidePanelOpen(false);
+          lastArtifactEventRef.current = null;
+          // Clear persisted artifact cache for this chat
+          try { if (currentChatId) localStorage.removeItem(`mozaiks.last_artifact.${currentChatId}`); } catch {}
+        }
+        // If we lack a real eventId (e.g., restored artifact), don't submit to backend; just close locally
+        if (!action.eventId) {
+          console.log('ℹ️ Skipping backend submission for restored or legacy UI tool response (no eventId)');
+          return;
+        }
+
         const payload = {
-          event_id: action.eventId || action.ui_tool_id, // Use eventId for tracking, fallback to ui_tool_id
+          event_id: action.eventId,
           response_data: action.response
         };
-        
+
         // Send the UI tool response to the backend
-        const response = await fetch('http://localhost:8000/api/ui-tool/submit', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload)
-        });
-        
-        if (response.ok) {
-          const result = await response.json();
-          console.log('✅ UI tool response submitted successfully:', result);
-        } else {
-          console.error('❌ Failed to submit UI tool response:', response.statusText);
+        try {
+          const response = await fetch('http://localhost:8000/api/ui-tool/submit', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload)
+          });
+          if (response.ok) {
+            const result = await response.json();
+            console.log('✅ UI tool response submitted successfully:', result);
+          } else {
+            console.error('❌ Failed to submit UI tool response:', response.statusText);
+          }
+        } catch (e) {
+          console.error('❌ Network error submitting UI tool response:', e);
         }
         
         return;
@@ -514,6 +607,42 @@ const ChatPage = () => {
   const toggleSidePanel = () => {
     setIsSidePanelOpen((open) => !open);
   };
+
+  // On reconnect/connected, if we have a cached artifact for this chat, restore it once
+  useEffect(() => {
+    if (connectionStatus !== 'connected' || !currentChatId) return;
+    if (artifactRestoredOnceRef.current) return;
+    try {
+      const key = `mozaiks.last_artifact.${currentChatId}`;
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const cached = JSON.parse(raw);
+      if (!cached || !cached.ui_tool_id) return;
+      console.log('🔁 [UI] Restoring last artifact from session cache');
+      setIsSidePanelOpen(true);
+      // Inject a synthetic message to render the artifact again (marked as restored)
+      setMessagesWithLogging((prev) => [
+        ...prev,
+        {
+          id: `ui-restored-${Date.now()}`,
+          sender: 'agent',
+          agentName: cached.payload?.agentName || 'Agent',
+          content: '',
+          isStreaming: false,
+          uiToolEvent: {
+            ui_tool_id: cached.ui_tool_id,
+            payload: cached.payload || {},
+            eventId: cached.eventId || null,
+            workflow_name: cached.workflow_name || currentWorkflowName,
+            onResponse: undefined, // handled by ChatInterface -> handleAgentAction
+            display: cached.display || 'artifact',
+            restored: true,
+          },
+        },
+      ]);
+      artifactRestoredOnceRef.current = true;
+    } catch {}
+  }, [connectionStatus, currentChatId, currentWorkflowName, setMessagesWithLogging]);
 
   // Decide when to force overlay (mobile landscape or short height)
   useEffect(() => {
@@ -563,8 +692,8 @@ const ChatPage = () => {
       {/* Main content area that fills remaining screen height - no scrolling */}
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden pt-16 sm:pt-20 md:pt-16">{/* Extra padding on mobile for cleaner spacing */}
   <div className={`flex flex-col md:flex-row flex-1 w-full min-h-0 overflow-hidden transition-all duration-300`}>
-          {/* Chat Pane - 50% width when artifact is open, 100% when closed */}
-          <div className={`flex flex-col px-4 flex-1 min-h-0 overflow-hidden transition-all duration-300 ${isSidePanelOpen ? 'md:w-1/2' : 'w-full'}`}>
+          {/* Chat Pane - lock to 50% width when artifact is open, 100% when closed */}
+          <div className={`flex flex-col px-4 min-h-0 overflow-hidden transition-all duration-300 ${isSidePanelOpen ? 'md:w-1/2 md:flex-none' : 'w-full flex-1'}`}>
             
             <ChatInterface 
               messages={messages} 
@@ -586,7 +715,7 @@ const ChatPage = () => {
           
           {/* Artifact Panel - 50% width, slides in from right (desktop only when not forcing overlay) */}
           {isSidePanelOpen && !forceOverlay && (
-            <div className="hidden md:flex md:w-1/2 min-h-0 h-full px-4">
+            <div className="hidden md:flex md:w-1/2 md:flex-none min-h-0 h-full px-4">
               <ArtifactPanel onClose={toggleSidePanel} />
             </div>
           )}

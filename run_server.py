@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import uvicorn
 
-LOG_SUBDIR = Path(__file__).parent / "logs" / "logs"  # matches agent_chat.log location
+LOG_SUBDIR = Path(__file__).parent / "logs" / "logs"
 
 def _clear_logs():
     if not LOG_SUBDIR.exists():

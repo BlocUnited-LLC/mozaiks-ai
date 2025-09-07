@@ -47,10 +47,16 @@ async def request_api_key(
         return {"status": "error", "message": "workflow_name is required for request_api_key"}
 
     wf_logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id)
-
     if not isinstance(service, str) or not service.strip():
         return {"status": "error", "message": "service is required"}
     service_norm = service.strip().lower().replace(" ", "_")
+    # Optional: tool-scoped logger
+    try:
+        from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
+        tlog = _get_tool_logger(tool_name="RequestAPIKey", chat_id=chat_id, workflow_name=workflow_name)
+        _log_tool_event(tlog, action="start", status="ok", service=service_norm)
+    except Exception:
+        tlog = None  # type: ignore
 
     agent_message_id = f"msg_{uuid.uuid4().hex[:10]}"
 
@@ -66,6 +72,13 @@ async def request_api_key(
 
     # Optimized path: use unified helper to emit + wait
     try:
+        # Emit UI tool and wait for inline response
+        if 'tlog' in locals() and tlog:
+            try:
+                from logs.tools_logs import log_tool_event as _log_tool_event  # type: ignore
+                _log_tool_event(tlog, action="emit_ui", status="start", display="inline")
+            except Exception:
+                pass
         response = await use_ui_tool(
             "AgentAPIKeyInput",
             payload,
@@ -73,6 +86,12 @@ async def request_api_key(
             workflow_name=str(workflow_name),
             display="inline",
         )
+        if 'tlog' in locals() and tlog:
+            try:
+                from logs.tools_logs import log_tool_event as _log_tool_event  # type: ignore
+                _log_tool_event(tlog, action="emit_ui", status="done", result_status=(response or {}).get("status", "unknown"))
+            except Exception:
+                pass
     except UIToolError as e:
         return {"status": "error", "message": f"UI interaction failed: {e}"}
     except Exception as e:  # pragma: no cover

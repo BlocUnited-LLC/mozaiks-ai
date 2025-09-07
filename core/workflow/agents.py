@@ -1,31 +1,34 @@
 # ==============================================================================
 # FILE: core/workflow/agents.py  
-# DESCRIPTION: Workflow-agnostic agent factory - loads from modular JSON configs
+# DESCRIPTION: Clean agent factory following AG2 ConversableAgent patterns
 # ==============================================================================
 import logging
-import importlib.util  # retained only if future local dynamic imports are needed
-import sys
-import os
-from pathlib import Path
 from typing import Dict, List, Callable, Any
 
 from core.observability.otel_helpers import timed_span
 from autogen import ConversableAgent
 from .workflow_manager import workflow_manager
 
-
 logger = logging.getLogger(__name__)
 
-async def define_agents(workflow_name: str):
+async def create_agents(workflow_name: str, context_variables=None) -> Dict[str, ConversableAgent]:
     """
-    Define agents with unified transport channel - fully workflow-agnostic.
-    Loads agent configurations from modular JSON files.
+    Create ConversableAgent instances following AG2 patterns.
+    
+    Creates agents with proper AG2 constructor parameters:
+    - name: str
+    - system_message: str | list | None  
+    - llm_config: LLMConfig | dict[str, Any] | Literal[False] | None
+    - human_input_mode: Literal["ALWAYS", "NEVER", "TERMINATE"]
+    - max_consecutive_auto_reply: int | None
+    - functions: list[Callable[..., Any]] | Callable[..., Any]
     
     Args:
         workflow_name: Name of the workflow to load agents for
+        context_variables: AG2 ContextVariables to pass to each agent
         
     Returns:
-        Dictionary of agent instances
+        Dictionary of ConversableAgent instances
     """
     
     logger.info(f"🏗️ [AGENTS] Creating agents for workflow: {workflow_name}")
@@ -113,6 +116,14 @@ async def define_agents(workflow_name: str):
                 if not callable(fn):
                     logger.error(f"🧩 [AGENTS] Tool function at index {i} for agent '{agent_name}' is not callable: {fn}")
             
+            # Ensure AG2 tool registration path is primed: llm_config must have a 'tools' list
+            try:
+                if isinstance(llm_config, dict) and 'tools' not in llm_config:
+                    llm_config['tools'] = []
+                    logger.debug(f"🧩 [AGENTS] Injected empty tools list into llm_config for {agent_name} to enable AG2 function calling")
+            except Exception as _inj_err:
+                logger.debug(f"🧩 [AGENTS] Skipped llm_config tools injection for {agent_name}: {_inj_err}")
+
             logger.debug(f"🔧 [AGENTS] Final config for {agent_name}: config_list={llm_config.get('config_list', [])} other_keys={list(k for k in llm_config.keys() if k != 'config_list')}")
             
             # Additional debug - make a deep copy to see if something is modifying the original
@@ -138,6 +149,8 @@ async def define_agents(workflow_name: str):
             logger.debug(f"🔧 [AGENTS] ABSOLUTE FINAL CONFIG CHECK for {agent_name}:")
             logger.debug(f"🔧 [AGENTS] llm_config type: {type(llm_config)}")
             logger.debug(f"🔧 [AGENTS] llm_config keys: {list(llm_config.keys()) if isinstance(llm_config, dict) else 'NOT_DICT'}")
+            if isinstance(llm_config, dict):
+                logger.debug(f"🔧 [AGENTS] llm_config.tools present: {'tools' in llm_config} length={len(llm_config.get('tools', [])) if isinstance(llm_config.get('tools', []), list) else 'n/a'}")
             
             final_config_list = llm_config.get('config_list', []) if isinstance(llm_config, dict) else []
             logger.debug(f"🔧 [AGENTS] config_list length: {len(final_config_list)}")
@@ -151,13 +164,15 @@ async def define_agents(workflow_name: str):
                     logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] model value: {entry.get('model', 'MISSING')}")
             
             try:
+                # Create agent with AG2 ConversableAgent constructor pattern
                 agent = ConversableAgent(
                     name=agent_name,
-                    system_message=agent_config.get('system_message', ''),
+                    system_message=agent_config.get('system_message', 'You are a helpful AI assistant.'),
                     llm_config=llm_config,
                     human_input_mode=agent_config.get('human_input_mode', 'NEVER'),
                     max_consecutive_auto_reply=agent_config.get('max_consecutive_auto_reply', 2),
-                    functions=agent_functions,  # AG2 accepts empty list
+                    functions=agent_functions,  # AG2 functions parameter
+                    context_variables=context_variables,  # AG2 ContextVariables for LLM access
                 )
                 # After creation, log what the agent reports back (if accessible) about attached functions
                 try:
@@ -258,7 +273,7 @@ def list_hooks_for_workflow(agents: Dict[str, Any]) -> Dict[str, Dict[str, List[
     return {name: list_agent_hooks(agent) for name, agent in agents.items()}
 
 __all__ = [
-    'define_agents',
-    'list_agent_hooks',
+    'create_agents',
+    'list_agent_hooks', 
     'list_hooks_for_workflow',
 ]

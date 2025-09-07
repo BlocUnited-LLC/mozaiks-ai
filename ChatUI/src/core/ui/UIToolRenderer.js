@@ -26,7 +26,7 @@ const UIToolRenderer = ({
 }) => {
   // Validate event structure
   if (!event || !event.ui_tool_id) {
-    console.warn('⚠️ UIToolRenderer: Invalid event structure', event);
+  console.warn('⚠️ UIToolRenderer: Invalid event structure', event);
     return (
       <div className={`ui-tool-error ${className}`}>
         <p className="text-red-400">Invalid UI tool event</p>
@@ -35,10 +35,17 @@ const UIToolRenderer = ({
   }
 
   try {
+    console.log('🧩 UIToolRenderer: Rendering', {
+      ui_tool_id: event.ui_tool_id,
+      eventId: event.eventId,
+      workflow_name: event.workflow_name,
+      payloadKeys: event.payload ? Object.keys(event.payload) : []
+    });
     // Use the event dispatcher to render the component
     const renderedComponent = handleEvent(event, onResponse, submitInputRequest);
 
     if (!renderedComponent) {
+      console.warn('⚠️ UIToolRenderer: handleEvent returned null; component may be missing');
       return (
         <div className={`ui-tool-not-found ${className}`}>
           <p className="text-yellow-400">

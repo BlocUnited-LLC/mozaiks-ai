@@ -4,6 +4,7 @@
 // ==============================================================================
 
 import React, { useState } from 'react';
+import { createToolsLogger } from '../../../core/toolsLogger';
 
 /**
  * FileDownloadCenter - Production AG2 component for file downloads
@@ -28,12 +29,14 @@ const FileDownloadCenter = ({
     description: payload.description || null
   };
   const agentMessageId = payload.agent_message_id;
+  const tlog = createToolsLogger({ tool: ui_tool_id || componentId, eventId, workflowName, agentMessageId });
   const [downloadStatus, setDownloadStatus] = useState({});
 
   const handleDownload = async (fileId, filename) => {
     setDownloadStatus(prev => ({ ...prev, [fileId]: 'downloading' }));
     
     try {
+      tlog.event('download', 'start', { fileId, filename });
       // Enhanced response with rich agent feedback information
       const response = {
         status: 'success',
@@ -58,10 +61,10 @@ const FileDownloadCenter = ({
       
       setDownloadStatus(prev => ({ ...prev, [fileId]: 'completed' }));
       
-      console.log(`✅ FileDownloadCenter: Downloaded ${filename} with agent context`);
+  tlog.event('download', 'done', { fileId, ok: true });
       
     } catch (error) {
-      console.error('❌ FileDownloadCenter: Download failed:', error);
+  tlog.error('download failed', { fileId, error: error?.message });
       setDownloadStatus(prev => ({ ...prev, [fileId]: 'error' }));
       
       // Enhanced error response with context
@@ -79,6 +82,7 @@ const FileDownloadCenter = ({
 
   const handleDownloadAll = async () => {
     try {
+      tlog.event('download_all', 'start', { count: config.files.length });
       // Enhanced bulk download response with rich agent context
       const response = {
         status: 'success',
@@ -107,10 +111,10 @@ const FileDownloadCenter = ({
       });
       setDownloadStatus(allDownloaded);
 
-      console.log(`✅ FileDownloadCenter: Downloaded all ${config.files.length} files with completion signal`);
+  tlog.event('download_all', 'done', { count: config.files.length, ok: true });
       
     } catch (error) {
-      console.error('❌ FileDownloadCenter: Download all failed:', error);
+  tlog.error('download_all failed', { count: config.files.length, error: error?.message });
       
       if (onResponse) {
         onResponse({
@@ -125,7 +129,8 @@ const FileDownloadCenter = ({
   };
 
   const handleCancel = () => {
-    if (onResponse) {
+  tlog.event('cancel', 'start');
+  if (onResponse) {
       onResponse({
         status: 'cancelled',
         action: 'cancel',
@@ -133,6 +138,7 @@ const FileDownloadCenter = ({
         agentContext: { downloaded: false, cancelled: true }
       });
     }
+  tlog.event('cancel', 'done');
   };
 
   return (

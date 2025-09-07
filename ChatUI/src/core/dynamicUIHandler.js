@@ -11,6 +11,7 @@
 
 import { enterpriseApi } from '../adapters/api';
 import { DynamicArtifactManager } from '../utils/DynamicArtifactManager';
+import { createToolsLogger } from './toolsLogger';
 
 export class DynamicUIHandler {
   constructor() {
@@ -187,6 +188,16 @@ export class DynamicUIHandler {
    */
   notifyUIUpdate(updateData) {
     console.log('📢 Notifying UI update:', updateData);
+    if (updateData?.type === 'ui_tool_event') {
+      const { ui_tool_id, eventId, workflow_name, payload } = updateData;
+      console.log('🧭 ui_tool_event routed to UI callbacks', {
+        ui_tool_id,
+        eventId,
+        workflow_name,
+        hasOnResponse: !!updateData.onResponse,
+        payloadKeys: payload ? Object.keys(payload) : []
+      });
+    }
     
     for (const callback of this.uiUpdateCallbacks) {
       try {
@@ -278,7 +289,7 @@ export class DynamicUIHandler {
     try {
       console.log('🎯 DynamicUIHandler: Processing UI tool event', eventData);
 
-      const { ui_tool_id, payload, eventId, workflow_name } = eventData;
+  const { ui_tool_id, payload, eventId, workflow_name } = eventData;
 
       if (!ui_tool_id) {
         console.error('❌ Missing ui_tool_id in UI tool event');
@@ -287,6 +298,8 @@ export class DynamicUIHandler {
 
       // Create response handler that sends data back to backend
       const onResponse = async (response) => {
+        const tlog = createToolsLogger({ tool: ui_tool_id, eventId, workflowName: workflow_name, agentMessageId: payload?.agent_message_id });
+        tlog.event('ui_response', response?.status || 'unknown');
         console.log(`📤 DynamicUIHandler: Sending UI tool response for ${ui_tool_id}`, response);
         
         if (responseCallback) {
@@ -301,18 +314,22 @@ export class DynamicUIHandler {
         }
       };
 
+  // Determine display mode ('inline' or 'artifact') with robust fallbacks
+  const display = eventData.display || eventData.display_type || (payload && (payload.display || payload.mode)) || 'inline';
+
       // SIMPLIFIED: Just notify UI callbacks - let ChatInterface handle rendering
       // This eliminates duplication with eventDispatcher
-      this.notifyUIUpdate({
+  this.notifyUIUpdate({
         type: 'ui_tool_event',
         ui_tool_id,
         payload,
         eventId,
         workflow_name,
+        display,
         onResponse
       });
 
-      console.log(`✅ DynamicUIHandler: Notified UI callbacks for ${ui_tool_id}`);
+  console.log(`✅ DynamicUIHandler: Notified UI callbacks for ${ui_tool_id} (display=${display})`);
 
       return true; // Indicate successful processing
 
