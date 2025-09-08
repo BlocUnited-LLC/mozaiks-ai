@@ -1,4 +1,5 @@
 import React from 'react';
+import UIToolRenderer from '../../core/ui/UIToolRenderer';
 
 const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
   const containerClasses = isMobile 
@@ -62,6 +63,26 @@ const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
             ) : (
               <div className="space-y-6">
                 {messages.map((m, idx) => {
+                  // If message has uiToolEvent, render the actual UI component
+                  if (m.uiToolEvent && m.uiToolEvent.ui_tool_id) {
+                    return (
+                      <div key={m.id || idx} className="bg-black/20 border border-gray-700 rounded-lg p-4">
+                        <div className="flex items-start justify-between mb-2">
+                          <div>
+                            <div className="text-xs text-cyan-300">{m.agentName || 'Agent'}</div>
+                            <div className="text-sm text-gray-200 font-semibold">Interactive Tool: {m.uiToolEvent.ui_tool_id}</div>
+                          </div>
+                        </div>
+                        <UIToolRenderer
+                          event={m.uiToolEvent}
+                          onResponse={m.uiToolEvent.onResponse}
+                          className="artifact-ui-tool"
+                        />
+                      </div>
+                    );
+                  }
+                  
+                  // Fallback: render as structured JSON (legacy behavior)
                   let parsed = null;
                   try {
                     const jsonMatch = (typeof m.content === 'string') ? m.content.match(/\{[\s\S]*\}/) : null;

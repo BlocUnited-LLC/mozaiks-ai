@@ -21,17 +21,31 @@ const ActionPlan = ({
   workflowName,
   componentId = "ActionPlan"
 }) => {
+  // Debug logging to understand what we're receiving
+  console.log('🎯 ActionPlan: Received props:', {
+    payload: payload,
+    payloadType: typeof payload,
+    payloadIsNull: payload === null,
+    onResponse: typeof onResponse,
+    ui_tool_id,
+    eventId,
+    workflowName
+  });
+
+  // Ensure payload is always an object
+  const safePayload = payload || {};
+  
   // DEV NOTE: This component receives the agent's contextual message via the
   // `payload.description` prop. This is the standardized convention for all
   // dynamic UI components in this application.
   const config = {
-    workflow_title: payload.workflow_title || "Generated Workflow",
-    workflow_description: payload.workflow_description || "Workflow generated from agent configuration.",
-    suggested_features: payload.suggested_features || [],
-  mermaid_flow: payload.mermaid_flow || "sequenceDiagram\n  User->>System: start\n  System-->>User: done",
-    third_party_integrations: payload.third_party_integrations || [],
-    constraints: payload.constraints || [],
-    description: payload.description || null
+    workflow_title: safePayload.workflow_title || "Generated Workflow",
+    workflow_description: safePayload.workflow_description || "Workflow generated from agent configuration.",
+    suggested_features: safePayload.suggested_features || [],
+  mermaid_flow: safePayload.mermaid_flow || "sequenceDiagram\n  User->>System: start\n  System-->>User: done",
+    third_party_integrations: safePayload.third_party_integrations || [],
+    constraints: safePayload.constraints || [],
+    description: safePayload.description || null
   };
   
   const agentMessageId = payload.agent_message_id;

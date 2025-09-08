@@ -58,8 +58,9 @@ export class DynamicUIHandler {
   /**
    * Process incoming UI event from transport layer
    * @param {Object} eventData - Event data from backend
+   * @param {Function} sendResponse - Optional response callback (for WebSocket)
    */
-  async processUIEvent(eventData) {
+  async processUIEvent(eventData, sendResponse = null) {
     const { type, data } = eventData;
     
     console.log(`🎯 Processing UI event: ${type}`, data);
@@ -67,7 +68,12 @@ export class DynamicUIHandler {
     const handler = this.eventHandlers.get(type);
     if (handler) {
       try {
-        await handler(data, eventData);
+        // For ui_tool_event, pass the data part as first param and sendResponse as second
+        if (type === 'ui_tool_event') {
+          await handler(data, sendResponse);
+        } else {
+          await handler(data, eventData);
+        }
       } catch (error) {
         console.error(`❌ Error processing UI event ${type}:`, error);
       }
@@ -288,8 +294,9 @@ export class DynamicUIHandler {
   async handleUIToolEvent(eventData, responseCallback) {
     try {
       console.log('🎯 DynamicUIHandler: Processing UI tool event', eventData);
+      console.log('🎯 DynamicUIHandler: responseCallback type:', typeof responseCallback);
 
-  const { ui_tool_id, payload, eventId, workflow_name } = eventData;
+      const { ui_tool_id, payload, eventId, workflow_name } = eventData;
 
       if (!ui_tool_id) {
         console.error('❌ Missing ui_tool_id in UI tool event');
@@ -302,7 +309,7 @@ export class DynamicUIHandler {
         tlog.event('ui_response', response?.status || 'unknown');
         console.log(`📤 DynamicUIHandler: Sending UI tool response for ${ui_tool_id}`, response);
         
-        if (responseCallback) {
+        if (responseCallback && typeof responseCallback === 'function') {
           await responseCallback({
             type: 'ui_tool_response',
             ui_tool_id,
@@ -311,6 +318,8 @@ export class DynamicUIHandler {
             payload,
             response
           });
+        } else {
+          console.warn('⚠️ No response callback available for UI tool response');
         }
       };
 

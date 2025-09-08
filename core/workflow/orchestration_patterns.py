@@ -17,6 +17,7 @@ Sections (skim map)
 """
 
 from typing import Dict, List, Optional, Any, Callable, Tuple
+import os
 from pathlib import Path
 from datetime import datetime
 import logging
@@ -354,6 +355,7 @@ async def _create_ag2_pattern(
     wf_logger,
     chat_id: str,
     enterprise_id: str,
+    user_id: Optional[str],
 ):
     """Create AG2 Pattern with proper context variables integration."""
     # Convert agents dict to list for AG2 pattern (exclude user proxy if handled separately)
@@ -389,6 +391,24 @@ async def _create_ag2_pattern(
         ag2_context.set("enterprise_id", enterprise_id)
     if not ag2_context.get("chat_id"):
         ag2_context.set("chat_id", chat_id)
+    # Optionally attach user_id if provided
+    if user_id and not ag2_context.get("user_id"):
+        ag2_context.set("user_id", user_id)
+
+    # Expose ContextVariables directly on each agent for easy access in hooks/templates
+    try:
+        for _name, _agent in agents.items():
+            try:
+                setattr(_agent, "context_variables", ag2_context)
+            except Exception:
+                pass
+        if user_proxy_agent is not None:
+            try:
+                setattr(user_proxy_agent, "context_variables", ag2_context)
+            except Exception:
+                pass
+    except Exception as _attach_err:
+        wf_logger.debug(f"[CONTEXT] Failed attaching context to agents: {_attach_err}")
     
     # Log final context state with emphasis on auto-injected parameters
     context_keys = list(ag2_context.data.keys())
@@ -460,14 +480,8 @@ async def _stream_events(
         clear_current_execution_context,
     )
     
-    # Get context variables from pattern if available
-    ag2_context = None
-    try:
-        gm = getattr(pattern, "group_manager", None)
-        if gm and hasattr(gm, "context_variables"):
-            ag2_context = getattr(gm, "context_variables")
-    except Exception:
-        pass
+    # Get context variables directly from the pattern (set at construction time)
+    ag2_context = getattr(pattern, "context_variables", None)
     
     # Set thread-local context for tool injection
     set_current_execution_context(chat_id, enterprise_id, workflow_name, ag2_context)
@@ -1145,8 +1159,7 @@ async def run_workflow_orchestration(
     # Log orchestration start with session summary instead of verbose details
     logger.info(f"🚀 [ORCHESTRATION] Starting {workflow_name} workflow")
     
-    # Use existing workflow logger as session logger
-    session_logger = wf_logger
+
 
     # Persistence / transport / termination handler 
     persistence_manager = AG2PersistenceManager()
@@ -1424,6 +1437,7 @@ async def run_workflow_orchestration(
                 wf_logger=wf_logger,
                 chat_id=chat_id,
                 enterprise_id=enterprise_id,
+                user_id=user_id,
             )
             # 10.5) Hook registration removed (was duplicate)
             # Hooks are now registered once inside define_agents() via workflow_manager.register_hooks.

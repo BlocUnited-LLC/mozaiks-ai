@@ -49,14 +49,18 @@ def _ensure_tools_file_handler() -> None:
     if _TOOLS_HANDLER_SETUP:
         return
     try:
-        # Derive logs directory relative to this file: ../logs/tools.log
-        base_dir = Path(__file__).resolve().parent / "logs"
-        # If project uses logs/logs/, maintain that structure
-        if base_dir.name != "logs":
-            base_dir = Path(__file__).resolve().parent
-        # Prefer nested logs/logs folder if it exists; else create it
-        nested_dir = base_dir / "logs"
-        target_dir = nested_dir if nested_dir.exists() or True else base_dir
+        # Prefer the centralized LOGS_DIR from logging_config when available so
+        # tools.log appears alongside the main mozaiks.log. Fall back to a
+        # sane default adjacent to this module if LOGS_DIR is not importable.
+        try:
+            from logs.logging_config import LOGS_DIR  # type: ignore
+            target_dir = Path(LOGS_DIR)
+        except Exception:
+            # Fallback: use a 'logs' sibling directory next to this file
+            candidate = Path(__file__).resolve().parent / "logs"
+            # If that doesn't exist, use this file's parent (logs/)
+            target_dir = candidate if candidate.exists() else Path(__file__).resolve().parent
+
         target_dir.mkdir(parents=True, exist_ok=True)
         file_path = target_dir / "tools.log"
 

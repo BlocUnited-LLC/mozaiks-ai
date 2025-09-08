@@ -154,6 +154,13 @@ const WorkflowUIRouter = ({
   }
 
   // Success state - render the dynamically loaded component
+  console.log('🛰️ WorkflowUIRouter: Rendering state:', {
+    Component: Component ? 'loaded' : 'null',
+    ComponentType: typeof Component,
+    payload: payload ? 'present' : 'null',
+    payloadType: typeof payload
+  });
+
   return (
     <div className="workflow-ui-container">
       {/* Debug info (development only) */}
@@ -164,16 +171,18 @@ const WorkflowUIRouter = ({
       )}
       
       {/* Render the dynamically loaded workflow component */}
-      <Component
-        payload={payload}
-        onResponse={onResponse}
-        onCancel={onCancel}
-        submitInputRequest={submitInputRequest}
-        ui_tool_id={ui_tool_id}
-        eventId={eventId}
-        workflowName={workflowName}
-        componentId={componentType}
-      />
+      {Component && typeof Component === 'function' && (
+        <Component
+          payload={payload || {}}
+          onResponse={onResponse}
+          onCancel={onCancel}
+          submitInputRequest={submitInputRequest}
+          ui_tool_id={ui_tool_id}
+          eventId={eventId}
+          workflowName={workflowName}
+          componentId={componentType}
+        />
+      )}
     </div>
   );
 };

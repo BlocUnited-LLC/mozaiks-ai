@@ -32,6 +32,8 @@ const ChatPage = () => {
   const { user, api, config } = useChatUI();
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
   const [forceOverlay, setForceOverlay] = useState(false);
+  // Current artifact messages rendered inside ArtifactPanel (not in chat messages)
+  const [currentArtifactMessages, setCurrentArtifactMessages] = useState([]);
   // Track the most recent artifact-mode UI event id to manage auto-collapse
   const lastArtifactEventRef = useRef(null);
   // Prevent duplicate restores per connection
@@ -87,7 +89,19 @@ const ChatPage = () => {
     if (!data?.type) return;
     // Minimal legacy passthrough for still-emitted dynamic UI events until backend fully migrated
     if (data.type === 'ui_tool_event' || data.type === 'UI_TOOL_EVENT') {
-      dynamicUIHandler.processUIEvent(data);
+      // Create a response callback that uses the WebSocket connection
+      const sendResponse = (responseData) => {
+        console.log('🔌 ChatPage: Sending WebSocket response:', responseData);
+        if (ws && ws.send) {
+          return ws.send(responseData);
+        } else {
+          console.warn('⚠️ No WebSocket connection available for UI tool response');
+          return false;
+        }
+      };
+      
+      console.log('🔌 ChatPage: Passing sendResponse callback type:', typeof sendResponse);
+      dynamicUIHandler.processUIEvent(data, sendResponse);
       return;
     }
     if (!data.type.startsWith('chat.')) return; // ignore legacy
@@ -158,13 +172,21 @@ const ChatPage = () => {
       }
       case 'select_speaker': {
         // Speaker selection often marks a new turn/run start. If we have an open artifact
-        // from a prior sequence, collapse it now.
+        // from a prior sequence, collapse it now and clear the cache.
         if (lastArtifactEventRef.current && isSidePanelOpen) {
           try {
             console.log('🧹 [UI] New sequence detected; collapsing ArtifactPanel (event:', lastArtifactEventRef.current, ')');
           } catch {}
           setIsSidePanelOpen(false);
           lastArtifactEventRef.current = null;
+          setCurrentArtifactMessages([]);
+          // Clear artifact cache on new conversation turn
+          try {
+            if (currentChatId) {
+              localStorage.removeItem(`mozaiks.current_artifact.${currentChatId}`);
+              localStorage.removeItem(`mozaiks.last_artifact.${currentChatId}`);
+            }
+          } catch {}
         }
         return;
       }
@@ -421,8 +443,38 @@ const ChatPage = () => {
           // If this UI tool requests artifact display, auto-open the ArtifactPanel like OpenAI/Claude canvases
     const displayMode = (display || payload.display || payload.mode);
     if (displayMode === 'artifact') {
-            console.log('🖼️ [UI] Auto-opening ArtifactPanel for artifact-mode event');
-            setIsSidePanelOpen(true);
+      console.log('🖼️ [UI] Auto-opening ArtifactPanel for artifact-mode event');
+      setIsSidePanelOpen(true);
+      // Create artifact payload for ArtifactPanel to render
+      try {
+        const artifactMsg = {
+          id: `ui-artifact-${eventId || Date.now()}`,
+          sender: 'agent',
+          agentName: payload.agentName || 'Agent',
+          content: payload.structured_output || payload.content || payload || {},
+          isStreaming: false,
+          uiToolEvent: { ui_tool_id, payload, eventId, workflow_name, onResponse, display: displayMode }
+        };
+        console.log('🖼️ [UI] Setting currentArtifactMessages', artifactMsg.id);
+        setCurrentArtifactMessages([artifactMsg]);
+        
+        // Also cache to localStorage for persistence across panel open/close
+        try {
+          if (currentChatId) {
+            const cacheKey = `mozaiks.current_artifact.${currentChatId}`;
+            // Create a serializable version without the function
+            const serializableArtifact = {
+              ...artifactMsg,
+              uiToolEvent: {
+                ...artifactMsg.uiToolEvent,
+                onResponse: null // Functions can't be serialized, will be reconstructed on restore
+              }
+            };
+            localStorage.setItem(cacheKey, JSON.stringify(serializableArtifact));
+            console.log('🖼️ [UI] Cached artifact to localStorage');
+          }
+        } catch (e) { console.warn('Failed to cache artifact', e); }
+      } catch (e) { console.warn('Failed to set artifact message', e); }
             // Remember this artifact to collapse on next sequence
             lastArtifactEventRef.current = eventId || ui_tool_id || 'artifact';
             // Persist minimal artifact session state for graceful refresh restore
@@ -440,8 +492,8 @@ const ChatPage = () => {
                 localStorage.setItem(key, JSON.stringify(cache));
               }
             } catch {}
-      // Don't inject artifact UIs into the chat feed; they'll render in ArtifactPanel only
-      return;
+  // Don't inject artifact UIs into the chat feed; they'll render in ArtifactPanel only
+  return;
           }
           setMessagesWithLogging((prev) => [
             ...prev,
@@ -543,7 +595,9 @@ const ChatPage = () => {
         if (lastArtifactEventRef.current && (!action.eventId || action.eventId === lastArtifactEventRef.current)) {
           try { console.log('🧹 [UI] Artifact response received; collapsing ArtifactPanel now'); } catch {}
           setIsSidePanelOpen(false);
-          lastArtifactEventRef.current = null;
+            lastArtifactEventRef.current = null;
+          console.log('🖼️ [UI] Clearing currentArtifactMessages due to response');
+          setCurrentArtifactMessages([]);
           // Clear persisted artifact cache for this chat
           try { if (currentChatId) localStorage.removeItem(`mozaiks.last_artifact.${currentChatId}`); } catch {}
         }
@@ -605,7 +659,35 @@ const ChatPage = () => {
   };
 
   const toggleSidePanel = () => {
-    setIsSidePanelOpen((open) => !open);
+    setIsSidePanelOpen((open) => {
+      const next = !open;
+      
+      if (next && currentArtifactMessages.length === 0) {
+        // Panel opening and no current artifact - try to restore from cache
+        try {
+          const cacheKey = `mozaiks.current_artifact.${currentChatId}`;
+          const cached = localStorage.getItem(cacheKey);
+          if (cached) {
+            const artifactMsg = JSON.parse(cached);
+            
+            // Reconstruct the onResponse function since it can't be serialized
+            if (artifactMsg.uiToolEvent && !artifactMsg.uiToolEvent.onResponse) {
+              artifactMsg.uiToolEvent.onResponse = (response) => {
+                console.log('🔌 [UI] Cached artifact response (no longer functional):', response);
+                console.warn('⚠️ This is a restored artifact - responses may not work until next interaction');
+              };
+            }
+            
+            console.log('🖼️ [UI] Restored artifact from cache on panel open');
+            setCurrentArtifactMessages([artifactMsg]);
+            lastArtifactEventRef.current = artifactMsg.uiToolEvent?.eventId || 'cached';
+          }
+        } catch (e) { console.warn('Failed to restore artifact from cache', e); }
+      }
+      
+      console.log(`🖼️ [UI] Panel ${next ? 'opening' : 'closing'} - keeping artifact cached`);
+      return next;
+    });
   };
 
   // On reconnect/connected, if we have a cached artifact for this chat, restore it once
@@ -621,25 +703,26 @@ const ChatPage = () => {
       console.log('🔁 [UI] Restoring last artifact from session cache');
       setIsSidePanelOpen(true);
       // Inject a synthetic message to render the artifact again (marked as restored)
-      setMessagesWithLogging((prev) => [
-        ...prev,
-        {
+      // Restore artifact into the ArtifactPanel (do not inject into chat messages)
+      try {
+        const restoredMsg = {
           id: `ui-restored-${Date.now()}`,
           sender: 'agent',
           agentName: cached.payload?.agentName || 'Agent',
-          content: '',
+          content: cached.payload?.structured_output || cached.payload || {},
           isStreaming: false,
           uiToolEvent: {
             ui_tool_id: cached.ui_tool_id,
             payload: cached.payload || {},
             eventId: cached.eventId || null,
             workflow_name: cached.workflow_name || currentWorkflowName,
-            onResponse: undefined, // handled by ChatInterface -> handleAgentAction
+            onResponse: undefined,
             display: cached.display || 'artifact',
             restored: true,
           },
-        },
-      ]);
+        };
+        setCurrentArtifactMessages([restoredMsg]);
+      } catch (e) { console.warn('Failed to restore artifact to panel', e); }
       artifactRestoredOnceRef.current = true;
     } catch {}
   }, [connectionStatus, currentChatId, currentWorkflowName, setMessagesWithLogging]);
@@ -693,7 +776,7 @@ const ChatPage = () => {
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden pt-16 sm:pt-20 md:pt-16">{/* Extra padding on mobile for cleaner spacing */}
   <div className={`flex flex-col md:flex-row flex-1 w-full min-h-0 overflow-hidden transition-all duration-300`}>
           {/* Chat Pane - lock to 50% width when artifact is open, 100% when closed */}
-          <div className={`flex flex-col px-4 min-h-0 overflow-hidden transition-all duration-300 ${isSidePanelOpen ? 'md:w-1/2 md:flex-none' : 'w-full flex-1'}`}>
+          <div className={`flex flex-col px-4 min-h-0 overflow-hidden transition-all duration-300 ${isSidePanelOpen ? 'md:w-2/5 md:flex-none' : 'w-full flex-1'}`}>
             
             <ChatInterface 
               messages={messages} 
@@ -715,17 +798,17 @@ const ChatPage = () => {
           
           {/* Artifact Panel - 50% width, slides in from right (desktop only when not forcing overlay) */}
           {isSidePanelOpen && !forceOverlay && (
-            <div className="hidden md:flex md:w-1/2 md:flex-none min-h-0 h-full px-4">
-              <ArtifactPanel onClose={toggleSidePanel} />
+            <div className="hidden md:flex md:w-3/5 md:flex-none min-h-0 h-full px-4">
+              <ArtifactPanel onClose={toggleSidePanel} messages={currentArtifactMessages} />
             </div>
           )}
         </div>
       </div>
 
       {/* Mobile full-screen Artifact modal (md:hidden handled inside component) */}
-      {isSidePanelOpen && forceOverlay && (
-  <ArtifactPanel onClose={toggleSidePanel} isMobile={true} />
-      )}
+        {isSidePanelOpen && forceOverlay && (
+      <ArtifactPanel onClose={toggleSidePanel} isMobile={true} messages={currentArtifactMessages} />
+        )}
 
       {/* Footer - positioned at bottom without affecting flex layout */}
       <div className="flex-shrink-0">
