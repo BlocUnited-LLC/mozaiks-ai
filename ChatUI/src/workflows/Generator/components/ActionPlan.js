@@ -42,7 +42,7 @@ const ActionPlan = ({
     workflow_title: safePayload.workflow_title || "Generated Workflow",
     workflow_description: safePayload.workflow_description || "Workflow generated from agent configuration.",
     suggested_features: safePayload.suggested_features || [],
-  mermaid_flow: safePayload.mermaid_flow || "sequenceDiagram\n  User->>System: start\n  System-->>User: done",
+    mermaid_flow: safePayload.mermaid_flow || "sequenceDiagram\n  User->>System: start\n  System-->>User: done",
     third_party_integrations: safePayload.third_party_integrations || [],
     constraints: safePayload.constraints || [],
     description: safePayload.description || null
@@ -129,7 +129,11 @@ const ActionPlan = ({
   // Mermaid diagram component
   const MermaidDiagram = ({ chart }) => {
     const mermaidRef = useRef(null);
+  const scrollWrapperRef = useRef(null);
     const [isLoaded, setIsLoaded] = useState(false);
+  const [needsScroll, setNeedsScroll] = useState(false);
+  const [showHint, setShowHint] = useState(false);
+  // Removed renderKey force-rerender logic (kept lean per best-practice request)
 
     useEffect(() => {
       if (!window.mermaid) {
@@ -188,25 +192,100 @@ const ActionPlan = ({
 
             const { svg } = await window.mermaid.render('mermaid-diagram', normalized);
             mermaidRef.current.innerHTML = svg;
+            // Post-process SVG to prevent auto shrinking (Mermaid sets max-width:100%)
+            const svgEl = mermaidRef.current.querySelector('svg');
+            if (svgEl) {
+              // Preserve intrinsic width for scroll; remove responsive shrink
+              svgEl.style.maxWidth = 'none';
+              // If width attr exists, apply as explicit CSS width to retain size
+              const wAttr = svgEl.getAttribute('width');
+              if (wAttr && !svgEl.style.width) {
+                // Ensure numeric values get px suffix
+                svgEl.style.width = /px$|%/.test(wAttr) ? wAttr : `${wAttr}px`;
+              }
+              // Provide a min-height so container stays stable
+              svgEl.style.minHeight = '160px';
+            }
+            // After render, determine if horizontal scroll is needed (mobile especially)
+            requestAnimationFrame(() => {
+              try {
+                const wrapper = scrollWrapperRef.current;
+                if (svgEl && wrapper) {
+                  const intrinsicWidth = svgEl.scrollWidth; // after removing max-width constraint
+                  const needs = intrinsicWidth > wrapper.clientWidth + 8; // small buffer
+                  setNeedsScroll(needs);
+                  setShowHint(needs && window.innerWidth < 768);
+                }
+              } catch (_) {}
+            });
           } catch (error) {
             mermaidRef.current.innerHTML = `<div class="text-red-400 p-4 border border-red-600 rounded bg-red-900/20">Error rendering diagram: ${error.message}</div>`;
           }
         };
         renderDiagram();
       }
-    }, [isLoaded, chart]);
+  }, [isLoaded, chart]);
+
+    // Re-evaluate on window resize (mobile orientation changes) — lightweight refresh
+    useEffect(() => {
+      const onResize = () => {
+        if (!mermaidRef.current || !scrollWrapperRef.current) return;
+        const svgEl = mermaidRef.current.querySelector('svg');
+        if (svgEl) {
+          const needs = svgEl.scrollWidth > scrollWrapperRef.current.clientWidth + 8;
+          setNeedsScroll(needs);
+          setShowHint(needs && window.innerWidth < 768);
+        }
+      };
+      window.addEventListener('resize', onResize);
+      return () => window.removeEventListener('resize', onResize);
+    }, []);
 
     return (
       <div className="bg-gray-800 border border-cyan-500/30 rounded-lg p-4">
-        <h3 className="text-lg font-semibold mb-4 flex items-center text-cyan-400">
+        <h3 className="text-lg font-semibold mb-2 flex items-center text-cyan-400">
           <FileText className="mr-2 h-5 w-5" />
           Workflow Diagram
         </h3>
-        <div ref={mermaidRef} className="flex justify-center min-h-[200px] items-center">
-          {!isLoaded && (
-            <div className="text-gray-400 p-8">Loading diagram...</div>
+        {showHint && (
+          <div className="text-xs text-cyan-300 mb-2 opacity-80 select-none">
+            Swipe / drag horizontally to view full diagram
+          </div>
+        )}
+        <div className="relative">
+          {needsScroll && (
+            <div className="pointer-events-none absolute top-0 left-0 h-full w-6 bg-gradient-to-r from-gray-800 to-transparent" />
           )}
+          {needsScroll && (
+            <div className="pointer-events-none absolute top-0 right-0 h-full w-6 bg-gradient-to-l from-gray-800 to-transparent" />
+          )}
+          <div
+            ref={scrollWrapperRef}
+            className={
+              "relative w-full overflow-x-auto overflow-y-hidden" +
+              " touch-pan-x" +
+              (needsScroll ? " border border-cyan-600/30 rounded-md" : "")
+            }
+            style={{ WebkitOverflowScrolling: 'touch' }}
+          >
+            <div
+              className="inline-block min-h-[200px] px-1 align-top"
+              style={{ maxWidth: 'none' }}
+            >
+              <div ref={mermaidRef} className="inline-block">
+                {!isLoaded && (
+                  <div className="text-gray-400 p-8">Loading diagram...</div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
+        {needsScroll && (
+          <div className="mt-2 text-[10px] tracking-wide text-gray-400 flex items-center gap-1">
+            <span className="inline-block bg-cyan-700/30 px-2 py-0.5 rounded">Scrollable</span>
+            Diagram exceeds mobile width
+          </div>
+        )}
       </div>
     );
   };
@@ -359,13 +438,6 @@ const ActionPlan = ({
         </div>
       )}
 
-      {/* Debug info (only in development) */}
-      {process.env.NODE_ENV === 'development' && (
-        <div className="debug-info mt-4 p-2 bg-gray-800 rounded text-xs text-gray-400">
-          <div>Tool: {ui_tool_id} | Event: {eventId} | Workflow: {workflowName}</div>
-          <div>Features: {config.suggested_features.length} | Integrations: {config.third_party_integrations.length} | Component: {componentId}</div>
-        </div>
-      )}
     </div>
   );
 };

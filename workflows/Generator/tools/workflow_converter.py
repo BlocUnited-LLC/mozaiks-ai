@@ -50,17 +50,9 @@ def _split_config_into_sections(config: Dict[str, Any]) -> Dict[str, Dict[str, A
     sections['handoffs'] = config.get('handoffs', {})
     sections['context_variables'] = config.get('context_variables', {})
     sections['structured_outputs'] = config.get('structured_outputs', {})
-    sections['hooks'] = config.get('hooks', {})  # Hook metadata
-
-    # Tools section: Only honor canonical flat list form
-    if isinstance(config.get('tools'), list):
-        sections['tools'] = {'tools': config['tools']}
-    else:
-        sections['tools'] = {}
-
-    # UI config section (includes visual_agents and other UI settings)
-    ui_keys = ['visual_agents', 'ui_capable_agents']
-    sections['ui_config'] = {k: v for k, v in config.items() if k in ui_keys}
+    sections['hooks'] = config.get('hooks', {})
+    sections['tools'] = config.get('tools', {})
+    sections['ui_config'] = {k: v for k, v in config.items() if k in ['visual_agents', 'ui_capable_agents']}
 
     return sections
 
@@ -70,15 +62,7 @@ def _split_config_into_sections(config: Dict[str, Any]) -> Dict[str, Dict[str, A
 # -----------------------------
 
 def _normalize_model_library(models: Any) -> Dict[str, Any]:
-    """
-    Normalize a model library into dict form:
-      { "<ModelName>": { "type": "model", "fields": { ... } }, ... }
-
-    Accepts either:
-      - dict library (already normalized) OR
-      - list of StructuredModelDefinition entries:
-          [{"model_name": "...", "fields": [{"name": "...", "type": "...", "description": "..."}, ...]}, ...]
-    """
+    """Normalize model library into dict form."""
     if isinstance(models, dict):
         return dict(models)
 
@@ -102,22 +86,12 @@ def _normalize_model_library(models: Any) -> Dict[str, Any]:
                     fields_dict[fname] = {"type": ftype}
                     if fdesc is not None:
                         fields_dict[fname]["description"] = fdesc
-            lib[name] = {
-                "type": "model",
-                "fields": fields_dict
-            }
+            lib[name] = {"type": "model", "fields": fields_dict}
     return lib
 
 
 def _normalize_registry_map(registry: Any) -> Dict[str, Any]:
-    """
-    Normalize registry to dict form:
-      { "<AgentName>": "<ModelName or None>", ... }
-
-    Accepts either:
-      - dict (already normalized) OR
-      - list of entries: [{"agent": "...", "agent_definition": "<ModelName or None>"}]
-    """
+    """Normalize registry to dict form."""
     if isinstance(registry, dict):
         return dict(registry)
 
@@ -151,244 +125,110 @@ def _merge_structured_outputs(
     agent_names: List[str],
     wf_logger
 ) -> Dict[str, Any]:
-    """
-    Merge static structured outputs (model library + default registry)
-    with dynamic outputs (list-style models + list-style registry),
-    and ensure every agent is listed in registry (defaulting to null).
-
-    Priority:
-      - Models: union; dynamic models added to library (do not overwrite unless same name – dynamic wins).
-      - Registry: start with static map, overlay dynamic entries, then ensure all agent_names exist (null by default).
-    """
+    """Merge static and dynamic structured outputs."""
     static_models = _normalize_model_library(static_so.get('models', {}))
     static_registry = _normalize_registry_map(static_so.get('registry', {}))
 
     dynamic_models = _normalize_model_library(dynamic_so.get('models', []))
     dynamic_registry = _normalize_registry_map(dynamic_so.get('registry', []))
 
-    # Merge models: dynamic overrides static on name conflicts
     merged_models = dict(static_models)
     for mname, mdef in dynamic_models.items():
         merged_models[mname] = mdef
 
-    # Merge registry: overlay dynamic onto static
     merged_registry = dict(static_registry)
     for agent, model in dynamic_registry.items():
         merged_registry[agent] = model
 
-    # Ensure every defined agent is present
     for agent in agent_names:
         if agent not in merged_registry:
             merged_registry[agent] = None
 
-    # Log helpful stats
     wf_logger.info(
-        f"🧩 [STRUCTURED_OUTPUTS] models: static={len(static_models)} + dynamic={len(dynamic_models)} => merged={len(merged_models)}"
-    )
-    wf_logger.info(
-        f"🧩 [STRUCTURED_OUTPUTS] registry: static={len(static_registry)} + dynamic={len(dynamic_registry)} + fill_missing={len([a for a in agent_names if a not in static_registry and a not in dynamic_registry])} => merged={len(merged_registry)}"
+        f"🧩 [STRUCTURED_OUTPUTS] models={len(merged_models)} registry={len(merged_registry)}"
     )
 
-    return {
-        "models": merged_models,
-        "registry": merged_registry
-    }
+    return {"models": merged_models, "registry": merged_registry}
 
 
 def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
     """Save a workflow config as modular JSON files"""
     try:
         wf_logger = get_workflow_logger(workflow_name=workflow_name)
-        # Determine workflows directory (relative to this file)
         workflows_base_dir = Path(__file__).parent.parent.parent
         workflow_dir = workflows_base_dir / workflow_name
         workflow_dir.mkdir(parents=True, exist_ok=True)
 
-        # Split config into sections
         sections = _split_config_into_sections(config)
-
-        # Save each section to its JSON file
         saved_files = []
+
         for section_name, section_data in sections.items():
-            if section_name == 'structured_outputs':
-                # Always save structured_outputs if the key exists (even if empty dict),
-                # but try to keep it in a meaningful shape (has 'models' and 'registry').
-                if isinstance(section_data, dict) and ('models' in section_data or 'registry' in section_data):
-                    filename = WORKFLOW_FILE_MAPPINGS.get(section_name)
-                    if filename:
-                        file_path = workflow_dir / filename
-                        _save_json_file(file_path, section_data)
-                        saved_files.append(filename)
-                        wf_logger.info(f"📄 [SAVE_WORKFLOW] Saved {section_name} to {filename}")
+            filename = WORKFLOW_FILE_MAPPINGS.get(section_name)
+            if not filename:
                 continue
 
-            if section_data:  # Only save non-empty sections
-                filename = WORKFLOW_FILE_MAPPINGS.get(section_name)
-                if filename:
+            # structured_outputs
+            if section_name == "structured_outputs":
+                if isinstance(section_data, dict):
+                    section_data.setdefault("models", {})
+                    section_data.setdefault("registry", {})
                     file_path = workflow_dir / filename
                     _save_json_file(file_path, section_data)
                     saved_files.append(filename)
-                    wf_logger.info(f"📄 [SAVE_WORKFLOW] Saved {section_name} to {filename}")
+                    wf_logger.info(f"📄 [SAVE] structured_outputs saved → {filename}")
+                continue
 
-        # Save any extra files content if provided in config['extra_files'] (with dedup + optional global hooks copy)
-        try:
-            extra_files = config.get('extra_files')
-            if isinstance(extra_files, list):
-                # Deduplicate by normalized filename (first occurrence kept)
-                deduped: Dict[str, Dict[str, Any]] = {}
-                for item in extra_files:
-                    if not isinstance(item, dict):
-                        continue
-                    name = item.get('filename')
-                    if not name:
-                        continue
-                    safe_name = str(name).strip().lstrip('/').lstrip('\\')
-                    if safe_name in deduped:
-                        # If content differs, log a warning
-                        prev_content = deduped[safe_name].get('filecontent')
-                        new_content = item.get('filecontent')
-                        if prev_content != new_content:
-                            wf_logger.warning(f"⚠️ [SAVE_WORKFLOW] Duplicate file '{safe_name}' with differing content encountered. Keeping first instance.")
-                        continue
-                    deduped[safe_name] = item
+            # context_variables (unwrap wrapper)
+            if section_name == "context_variables":
+                if isinstance(section_data, dict):
+                    plan = section_data.get("ContextVariablesPlan") or section_data
+                    if "defined_variables" in plan or "runtime_variables" in plan:
+                        file_path = workflow_dir / filename
+                        _save_json_file(file_path, plan)
+                        saved_files.append(filename)
+                        wf_logger.info(
+                            f"📄 [SAVE] context_variables saved → {filename} "
+                            f"(defined={len(plan.get('defined_variables', []))}, "
+                            f"runtime={len(plan.get('runtime_variables', []))})"
+                        )
+                continue
 
-                extra_files = list(deduped.values())
+            if section_data:
+                file_path = workflow_dir / filename
+                _save_json_file(file_path, section_data)
+                saved_files.append(filename)
+                wf_logger.info(f"📄 [SAVE] {section_name} saved → {filename}")
 
-                inferred_py_deps = set()
-                inferred_js_deps = set()
-                global_hooks_dir = os.environ.get('GLOBAL_HOOKS_DIR')
-                global_hooks_dir_path: Optional[Path] = None
-                if global_hooks_dir:
-                    try:
-                        global_hooks_dir_path = Path(global_hooks_dir).expanduser().resolve()
-                        global_hooks_dir_path.mkdir(parents=True, exist_ok=True)
-                    except Exception as ghe:
-                        wf_logger.warning(f"⚠️ [SAVE_WORKFLOW] Could not create GLOBAL_HOOKS_DIR '{global_hooks_dir}': {ghe}")
-                        global_hooks_dir_path = None
-
-                for item in extra_files:
-                    name = item.get('filename')
-                    content = item.get('filecontent', '')
-                    safe_name = str(name).strip().lstrip('/').lstrip('\\')
-
-                    # Write into workflow-specific area
-                    extra_path = workflow_dir / safe_name
-                    extra_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(extra_path, 'w', encoding='utf-8') as ef:
-                        ef.write(content if isinstance(content, str) else str(content))
-                    saved_files.append(safe_name)
-                    wf_logger.info(f"🧩 [SAVE_WORKFLOW] Saved extra file: {safe_name}")
-
-                    # Optional global hooks copy (only for tools/<hook>.py style)
-                    if global_hooks_dir_path and safe_name.startswith('tools/') and safe_name.endswith('.py'):
-                        try:
-                            global_copy_path = global_hooks_dir_path / Path(safe_name).name
-                            if not global_copy_path.exists():
-                                global_copy_path.write_text(content if isinstance(content, str) else str(content), encoding='utf-8')
-                                wf_logger.info(f"🌐 [SAVE_WORKFLOW] Wrote global hook file: {global_copy_path}")
-                        except Exception as gc_err:
-                            wf_logger.warning(f"⚠️ [SAVE_WORKFLOW] Failed writing global hook copy for {safe_name}: {gc_err}")
-
-                    # Light dependency inference for code files
-                    try:
-                        lower = safe_name.lower()
-                        if lower.endswith('.py') and isinstance(content, str):
-                            import re
-                            for m in re.finditer(r'^(?:from|import)\s+([\w\.]+)', content, re.MULTILINE):
-                                mod = m.group(1).split('.')[0]
-                                if mod and mod not in {'os', 'sys', 're', 'json', 'typing', 'pathlib', 'asyncio', 'logging', 'time'}:
-                                    inferred_py_deps.add(mod)
-                        if lower.endswith('.js') and isinstance(content, str):
-                            import re
-                            for m in re.finditer(r'^\s*import\s+(?:.+?\s+from\s+)?["\"]([^"\"]+)["\"]', content, re.MULTILINE):
-                                dep = m.group(1)
-                                if dep and not dep.startswith('.') and '/' not in dep:
-                                    inferred_js_deps.add(dep)
-                            for m in re.finditer(r'require\(\s*["\"]([^"\"]+)["\"]\s*\)', content):
-                                dep = m.group(1)
-                                if dep and not dep.startswith('.') and '/' not in dep:
-                                    inferred_js_deps.add(dep)
-                    except Exception:
-                        pass
-
-                # Optionally write minimal dependency manifests if we inferred any
-                try:
-                    if inferred_py_deps:
-                        req = workflow_dir / 'requirements.txt'
-                        if not req.exists():
-                            req.write_text('\n'.join(sorted(inferred_py_deps)), encoding='utf-8')
-                            saved_files.append('requirements.txt')
-                            wf_logger.info(f"📦 [SAVE_WORKFLOW] Generated requirements.txt with {len(inferred_py_deps)} deps")
-                    if inferred_js_deps:
-                        pkg = workflow_dir / 'package.json'
-                        if not pkg.exists():
-                            pkg_obj = {
-                                "name": workflow_name.replace(' ', '-').lower(),
-                                "private": True,
-                                "version": "0.1.0",
-                                "type": "module",
-                                "dependencies": {dep: "*" for dep in sorted(inferred_js_deps)}
-                            }
-                            import json as _json
-                            pkg.write_text(_json.dumps(pkg_obj, indent=2), encoding='utf-8')
-                            saved_files.append('package.json')
-                            wf_logger.info(f"📦 [SAVE_WORKFLOW] Generated package.json with {len(inferred_js_deps)} deps")
-                except Exception:
-                    pass
-        except Exception as ef_err:
-            wf_logger.warning(f"⚠️ [SAVE_WORKFLOW] Failed to save extra files: {ef_err}")
-
-        wf_logger.info(f"✅ [SAVE_WORKFLOW] Successfully saved {len(saved_files)} JSON files for workflow: {workflow_name}")
+        wf_logger.info(f"✅ [SAVE] Saved {len(saved_files)} sections for workflow={workflow_name}")
         return True
 
     except Exception as e:
-        get_workflow_logger(workflow_name=workflow_name).error(f"❌ [SAVE_WORKFLOW] Failed to save workflow {workflow_name}: {e}")
+        get_workflow_logger(workflow_name=workflow_name).error(
+            f"❌ [SAVE] Failed to save workflow {workflow_name}: {e}"
+        )
         return False
 
 
 async def convert_workflow_to_modular(data: Dict[str, Any], context_variables: Optional[Any] = None) -> Dict[str, Any]:
-    """
-    Save a workflow configuration as modular JSON files
-
-    Args:
-        data: Contains workflow_name and the config to save
-        context_variables: AG2 ContextVariables for sharing state between agents
-
-    Returns:
-        Response dictionary with save status
-    """
+    """Save a workflow configuration as modular JSON files"""
     try:
         workflow_name = data.get('workflow_name', 'Generated_Workflow')
         config_to_save = data.get('config')
         wf_logger = get_workflow_logger(workflow_name=workflow_name)
 
         if not config_to_save:
-            return {
-                "status": "error",
-                "message": "No config provided to save"
-            }
+            return {"status": "error", "message": "No config provided to save"}
 
-        wf_logger.info(f"💾 [SAVE_WORKFLOW] Saving modular config for: {workflow_name}")
-
-        # Save provided config as modular files using self-contained function
+        wf_logger.info(f"💾 [CONVERT] Saving modular config for {workflow_name}")
         success = _save_modular_workflow(workflow_name, config_to_save)
 
         if success:
-            wf_logger.info(f"✅ [SAVE_WORKFLOW] Successfully saved modular config for: {workflow_name}")
-            return {
-                "status": "success",
-                "message": f"Successfully saved {workflow_name} as modular JSON files",
-                "workflow_name": workflow_name,
-                "action": "saved_modular"
-            }
+            return {"status": "success", "workflow_name": workflow_name, "action": "saved_modular"}
         else:
-            return {
-                "status": "error",
-                "message": f"Failed to save modular config for {workflow_name}"
-            }
+            return {"status": "error", "message": f"Failed to save {workflow_name}"}
 
     except Exception as e:
-        get_workflow_logger(workflow_name=data.get('workflow_name', 'Generated_Workflow')).error(f"❌ [SAVE_WORKFLOW] Error: {e}")
+        get_workflow_logger(workflow_name=data.get('workflow_name', 'Generated_Workflow')).error(f"❌ [CONVERT] Error: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -512,27 +352,27 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
 
         # Add tools configuration from ToolsManagerAgent (authoritative)
         tools_manager_output = data.get('tools_manager_output', {})
-        if tools_manager_output and 'tools_config' in tools_manager_output:
-            tools_config_str = tools_manager_output['tools_config']
-            parsed = None
-            if isinstance(tools_config_str, str):
-                try:
-                    parsed = json.loads(tools_config_str)
-                except json.JSONDecodeError as e:
-                    wf_logger.error(f"❌ [CREATE_WORKFLOW_FILES] Invalid tools_config JSON: {e}")
-            elif isinstance(tools_config_str, dict):
-                parsed = tools_config_str
-            if isinstance(parsed, dict) and isinstance(parsed.get('tools'), list):
-                config['tools'] = parsed['tools']
-                wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration (tools_list={len(parsed['tools'])})")
-            else:
-                wf_logger.warning("⚠️ [CREATE_WORKFLOW_FILES] tools_config missing 'tools' list; no tools saved")
-        # Optional direct tools_config (only supports new format)
-        elif 'tools_config' in data:
-            direct_tc = data.get('tools_config')
-            if isinstance(direct_tc, dict) and isinstance(direct_tc.get('tools'), list):
-                config['tools'] = direct_tc['tools']
-                wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added direct tools configuration (tools_list={len(direct_tc['tools'])})")
+        if isinstance(tools_manager_output, dict):
+            # Directly structured output case
+            if "tools" in tools_manager_output and isinstance(tools_manager_output["tools"], list):
+                config["tools"] = {"tools": tools_manager_output["tools"]}
+                wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration (tools_list={len(tools_manager_output['tools'])})")
+            # tools_config string case
+            elif "tools_config" in tools_manager_output:
+                tools_config_str = tools_manager_output["tools_config"]
+                parsed = None
+                if isinstance(tools_config_str, str):
+                    try:
+                        parsed = json.loads(tools_config_str)
+                    except json.JSONDecodeError as e:
+                        wf_logger.error(f"❌ [CREATE_WORKFLOW_FILES] Invalid tools_config JSON: {e}")
+                elif isinstance(tools_config_str, dict):
+                    parsed = tools_config_str
+                if isinstance(parsed, dict) and isinstance(parsed.get("tools"), list):
+                    config["tools"] = {"tools": parsed["tools"]}
+                    wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration (tools_list={len(parsed['tools'])})")
+                else:
+                    wf_logger.warning("⚠️ [CREATE_WORKFLOW_FILES] tools_config missing 'tools' list; no tools saved")
 
         # Add UI configuration
         ui_config = data.get('ui_config', {})

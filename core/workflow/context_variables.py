@@ -8,6 +8,7 @@
 
 import asyncio
 import os
+import re
 from typing import Dict, Any, Optional, List
 from autogen.agentchat.group import ContextVariables
 
@@ -17,6 +18,75 @@ from logs.logging_config import get_workflow_logger
 
 # Get logger
 business_logger = get_workflow_logger("context_variables")
+
+# ---------------------------------------------------------------------------
+# ENV FLAGS (minimal – only what we actively use during testing)
+# ---------------------------------------------------------------------------
+# CONTEXT_INCLUDE_SCHEMA  -> when true: include schema_overview + collections_first_docs_full
+# CONTEXT_SCHEMA_DB       -> explicit database name to introspect (takes precedence)
+# ---------------------------------------------------------------------------
+
+TRUNCATE_CHARS = int(os.getenv("CONTEXT_SCHEMA_TRUNCATE_CHARS", "4000") or 4000)
+ 
+# # Sensitive field name patterns (lowercased match)
+# SENSITIVE_PATTERNS = re.compile(r"(password|secret|api[_-]?key|token|credential|private|auth|session)")
+
+# # ---------------------------------------------------------------------------
+# # Helper: scrub / summarize values for safe context injection
+# # ---------------------------------------------------------------------------
+# def _scrub_value(v: Any) -> Any:
+#     try:
+#         if v is None:
+#             return None
+#         if isinstance(v, (int, float, bool)):
+#             return v
+#         if isinstance(v, str):
+#             if len(v) > 256:
+#                 return v[:128] + "... [truncated]"
+#             return v
+#         if isinstance(v, list):
+#             return f"list(len={len(v)})"
+#         if isinstance(v, dict):
+#             return f"dict(keys={list(v.keys())[:6]})"
+#         return type(v).__name__
+#     except Exception:
+#         return "<unserializable>"
+
+
+## Removed: previous AUTO_DISCOVERY minimal introspection helper (kept code lean for testing)
+
+async def _get_all_collections_first_docs(database_name: str) -> Dict[str, Any]:
+    """Return a mapping of every collection name -> first document (raw except _id removed).
+
+    This is a direct, unfiltered snapshot (single document per collection) intended
+    for generation-time inspection. Uses no caps; if the database has a very large
+    number of collections this could expand context size, so it's only invoked
+    when CONTEXT_INCLUDE_SCHEMA is explicitly enabled by the user.
+    """
+    from core.core_config import get_mongo_client  # local import
+    result: Dict[str, Any] = {}
+    try:
+        client = get_mongo_client()
+        db = client[database_name]
+        try:
+            names = await db.list_collection_names()
+        except Exception as e:  # pragma: no cover
+            business_logger.error(f"❌ list_collection_names failed for {database_name}: {e}")
+            return result
+        for cname in names:
+            try:
+                doc = await db[cname].find_one()
+                if not doc:
+                    result[cname] = {"_note": "empty_collection"}
+                else:
+                    # remove raw ObjectId for portability but keep other fields untouched
+                    cleaned = {k: v for k, v in doc.items() if k != '_id'}
+                    result[cname] = cleaned
+            except Exception as ce:
+                result[cname] = {"_error": str(ce)}
+    except Exception as outer:
+        business_logger.error(f"❌ Failed collecting first docs for {database_name}: {outer}")
+    return result
 
 
 def _format_for_log(value: Any) -> str:
@@ -55,63 +125,33 @@ def get_context(workflow_name: str, enterprise_id: Optional[str] = None) -> Cont
         
     Returns:
         ContextVariables populated with schema info and specific data
+        
+    Note: This function is legacy and only used for backwards compatibility.
+    The orchestrator now calls _load_context_async directly.
     """
     try:
-        # Handle event loop issues
+        # Handle event loop issues - simplified approach
         try:
-            # Running loop detected; call the sync-safe loader which will schedule async work
+            # Running loop detected; return minimal context and log warning
             asyncio.get_running_loop()
-            return _load_context_sync(workflow_name, enterprise_id)
+            business_logger.warning(f"⚠️ get_context called from async context - consider using _load_context_async directly")
+            return _create_minimal_context(workflow_name, enterprise_id)
         except RuntimeError:
+            # No running loop; safe to run async
             return asyncio.run(_load_context_async(workflow_name, enterprise_id))
     except Exception as e:
         business_logger.error(f"❌ Context loading failed: {e}")
-        # Return basic fallback
-        context = ContextVariables()
-        if enterprise_id:
-            context.set("enterprise_id", enterprise_id)
-        return context
+        return _create_minimal_context(workflow_name, enterprise_id)
 
-def _load_context_sync(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
-    """Synchronous context loading - handles existing event loop properly."""
-    business_logger.info(f"🔧 Loading context for {workflow_name} (sync)")
-    # If this function is reached, we're running inside an event loop (get_context checked).
-    # Schedule the async loader in the background so it can populate richer context when ready.
-    try:
-        business_logger.debug("Detected running event loop; scheduling async context load in background")
-        # Schedule without awaiting — background population will happen when task completes
-        asyncio.create_task(_load_context_async(workflow_name, enterprise_id))
-    except Exception:
-        # If scheduling failed, fall back to returning minimal context synchronously
-        business_logger.debug("Could not schedule background context loader; returning minimal context")
-
-    # Load basic context synchronously (no DB operations) so callers get immediate context
-    try:
-        context = ContextVariables()
-        if enterprise_id:
-            context.set("enterprise_id", enterprise_id)
-
-        # Load configuration but skip blocking DB operations
-        config = _load_workflow_config(workflow_name)
-        if config:
-            context.set("config_loaded", True)
-
-            schema_config = config.get('schema_overview', {})
-            if isinstance(schema_config, dict) and 'database_name' in schema_config:
-                context.set("database_name", schema_config['database_name'])
-
-            variables = config.get('variables', [])
-            if variables:
-                context.set("configured_variables", [v.get('name') for v in variables])
-
-        business_logger.info(f"✅ Sync context loaded (basic): {len(context.data)} variables")
-        return context
-    except Exception as e:
-        business_logger.error(f"❌ Sync context loading failed: {e}")
-        context = ContextVariables()
-        if enterprise_id:
-            context.set("enterprise_id", enterprise_id)
-        return context
+def _create_minimal_context(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
+    """Create minimal fallback context with basic parameters only."""
+    context = ContextVariables()
+    if enterprise_id:
+        context.set("enterprise_id", enterprise_id)
+    if workflow_name:
+        context.set("workflow_name", workflow_name)
+    business_logger.info(f"✅ Created minimal context: enterprise_id={enterprise_id}, workflow_name={workflow_name}")
+    return context
 
 async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
     """Async context loading - properly handles async MongoDB operations."""
@@ -137,7 +177,7 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
             if not db_name and isinstance(schema_config, dict):
                 db_name = schema_config.get('database_name')
             if not db_name:
-                # Fallback: infer from variables if exactly one database is referenced
+                # Infer from unique variable database reference
                 var_dbs = set()
                 for v in config.get('variables', []) or []:
                     dbn = ((v or {}).get('database') or {}).get('database_name')
@@ -146,15 +186,20 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
                 if len(var_dbs) == 1:
                     db_name = next(iter(var_dbs))
             if db_name:
-                overview_info = await _get_database_schema_async(db_name, internal_enterprise_id or "")
+                overview_info = await _get_database_schema_async(db_name)
                 overview_text = overview_info.get("schema_overview")
                 if overview_text:
-                    # Fixed safety cap to avoid pathological token usage (no env required)
-                    MAX_SCHEMA_CHARS = 4000
-                    if len(overview_text) > MAX_SCHEMA_CHARS:
-                        overview_text = f"{overview_text[:MAX_SCHEMA_CHARS]}... [truncated {len(overview_text)-MAX_SCHEMA_CHARS} chars]"
+                    if len(overview_text) > TRUNCATE_CHARS:
+                        overview_text = f"{overview_text[:TRUNCATE_CHARS]}... [truncated {len(overview_text)-TRUNCATE_CHARS} chars]"
                     context.set("schema_overview", overview_text)
                     business_logger.info(f"📘 Attached schema_overview to context (db={db_name}, len={len(overview_text)})")
+                # Always attach full collection first-doc map when schema flag true
+                try:
+                    first_docs_full = await _get_all_collections_first_docs(db_name)
+                    context.set("collections_first_docs_full", first_docs_full)
+                    business_logger.info(f"📗 Attached collections_first_docs_full (collections={len(first_docs_full)})")
+                except Exception as fd_err:
+                    business_logger.debug(f"collections_first_docs_full attachment failed: {fd_err}")
             else:
                 business_logger.debug("Schema overview requested but no database_name could be determined; skipping")
     except Exception as _sch_err:
@@ -171,23 +216,28 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
         if not default_db:
             business_logger.warning("⚠️ No default database_name configured for context variables; each variable must specify database.database_name explicitly.")
 
-        loaded_data = await _load_specific_data_async(variables, default_db, internal_enterprise_id)
-        for key, value in loaded_data.items():
-            context.set(key, value)
-            business_logger.info(f"🧩 ContextVar {key} = {_format_for_log(value)}")
+        try:
+            loaded_data = await _load_specific_data_async(variables, default_db, internal_enterprise_id)
+            for key, value in loaded_data.items():
+                context.set(key, value)
+                business_logger.info(f"🧩 ContextVar {key} = {_format_for_log(value)}")
+        except Exception as load_err:
+            business_logger.error(f"❌ Failed loading specific context variables: {load_err}")
     
-    # Log the final context summary - only user-facing variables
+    # Log the final context summary - workflow-specific variables only
+    # Note: Core WebSocket parameters (workflow_name, enterprise_id, chat_id, user_id) 
+    # are auto-injected by the orchestrator, so we focus on workflow-specific data here
     variable_names = list(context.data.keys())
-    user_variables = [name for name in variable_names if name not in ['enterprise_id', 'database_name']]
-    business_logger.info(f"✅ Context loaded: {len(user_variables)} user context variables: {user_variables}")
-    # Print each user-visible variable with a safe value preview
-    for _var in user_variables:
+    workflow_variables = [name for name in variable_names if name not in ['enterprise_id']]
+    business_logger.info(f"✅ Context loaded: {len(workflow_variables)} workflow context variables: {workflow_variables}")
+    # Print each workflow-specific variable with a safe value preview
+    for _var in workflow_variables:
         try:
             business_logger.debug(f"   • {_var} => {_format_for_log(context.data.get(_var))}")
         except Exception:
             pass
     
-    # Add enterprise_id for internal use but don't count it in summary
+    # Keep enterprise_id for database queries (orchestrator will handle user_id, chat_id, workflow_name)
     if internal_enterprise_id:
         context.set("enterprise_id", internal_enterprise_id)
     
@@ -223,7 +273,7 @@ def _load_workflow_config(workflow_name: str) -> Dict[str, Any]:
         business_logger.warning(f"⚠️ Could not load config for {workflow_name}: {e}")
         return {}
 
-async def _get_database_schema_async(database_name: str, enterprise_id: str) -> Dict[str, Any]:
+async def _get_database_schema_async(database_name: str) -> Dict[str, Any]:
     """
     FEATURE 1: Provide database schema as context
     Returns clean, field-focused schema info for LLMs.

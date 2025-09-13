@@ -28,25 +28,51 @@ const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRe
     }
   };
 
+  // Extract agent message from payload
+  const agentMessage = uiToolEvent.payload?.agent_message || uiToolEvent.payload?.description;
+
   return (
-    <div className="my-4 p-4 border border-cyan-400/20 rounded-lg bg-gradient-to-r from-cyan-500/5 to-purple-500/5">
-      {/* Inline-only completion chip */}
-      {completed && ((uiToolEvent.display || uiToolEvent.payload?.display || uiToolEvent.payload?.mode || 'inline') === 'inline') && (
-        <div className="mb-2">
-          <span
-            aria-label="Completed"
-            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 select-none"
-          >
-            ✓ Completed
-          </span>
+    <div>
+      {/* Agent message displayed above UI tool */}
+      {agentMessage && (
+        <div className="flex justify-start px-0 message-container mb-2">
+          <div className="mt-1 agent-message message">
+            <div className="flex flex-col">
+              <div className="message-header">
+                <span className="name-pill agent">
+                  <span className="pill-avatar" aria-hidden>🤖</span> Agent
+                </span>
+              </div>
+              <div className="message-body w-full flex">
+                <div className="w-full">
+                  {agentMessage}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
-      <UIToolRenderer
-        event={uiToolEvent}
-        onResponse={handleResponse}
-        submitInputRequest={submitInputRequest}
-        className="ui-tool-in-chat"
-      />
+
+      {/* UI Tool Component */}
+      <div className="my-4 p-4 border border-cyan-400/20 rounded-lg bg-gradient-to-r from-cyan-500/5 to-purple-500/5">
+        {/* Inline-only completion chip */}
+        {completed && ((uiToolEvent.display || uiToolEvent.payload?.display || uiToolEvent.payload?.mode || 'inline') === 'inline') && (
+          <div className="mb-2">
+            <span
+              aria-label="Completed"
+              className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 select-none"
+            >
+              ✓ Completed
+            </span>
+          </div>
+        )}
+        <UIToolRenderer
+          event={uiToolEvent}
+          onResponse={handleResponse}
+          submitInputRequest={submitInputRequest}
+          className="ui-tool-in-chat"
+        />
+      </div>
     </div>
   );
 });

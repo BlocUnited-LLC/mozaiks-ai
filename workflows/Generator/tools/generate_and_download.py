@@ -22,10 +22,12 @@ except Exception:
     _log_tool_event = None  # type: ignore
 
 async def generate_and_download(
+    agent_message: Annotated[Optional[str], "Mandatory short sentence displayed in the chat along with the artifact for context."] = None,
     description: Optional[str] = None,
     storage_backend: Annotated[str, "Persistence mode: 'local' copies files to user selectedPath; 'none' skips. Future: gridfs, github."] = "local",
     files: Annotated[Optional[Union[str, List[Dict[str, Any]]]], "Advanced override: custom file metadata list for UI. Provide list[{'name','size','path'}] or single path string. Generally omit."] = None,
-    **runtime: Any,
+    # AG2-native context injection
+    context_variables: Annotated[Optional[Any], "Context variables provided by AG2"] = None,
 ) -> Dict[str, Any]:
     """AGENT CONTRACT: Generate workflow artifact files and present a download UI.
 
@@ -60,11 +62,15 @@ NON-GOALS / DECLINED BEHAVIORS:
     - Do not introduce side-channel storage beyond optional local copy when requested.
     - Do not expand archive bundles (zipping not implemented here).
     """
-    chat_id: Optional[str] = runtime.get("chat_id")
-    enterprise_id: Optional[str] = runtime.get("enterprise_id")
-    # Capture provided workflow name without default; missing should surface as error later.
-    workflow_name: Optional[str] = runtime.get("workflow_name") or runtime.get("workflow")
-    context_variables: Optional[Any] = runtime.get("context_variables")
+    # Extract parameters from AG2 ContextVariables
+    chat_id: Optional[str] = None
+    enterprise_id: Optional[str] = None
+    workflow_name: Optional[str] = None
+    
+    if context_variables and hasattr(context_variables, 'get'):
+        chat_id = context_variables.get('chat_id')
+        enterprise_id = context_variables.get('enterprise_id')
+        workflow_name = context_variables.get('workflow_name')
 
     wf_logger = get_workflow_logger(workflow_name=(workflow_name or "missing"), chat_id=chat_id, enterprise_id=enterprise_id)
     tlog = None
@@ -77,16 +83,10 @@ NON-GOALS / DECLINED BEHAVIORS:
             tlog = None
     wf_logger.info(f"🏗️ Starting workflow generation for chat: {chat_id}")
 
-    agent_message = description or "I'm creating your workflow files. Please use the download center below when ready."
+    agent_message_text = agent_message or description or "I'm creating your workflow files. Please use the download center below when ready."
     agent_message_id = f"msg_{uuid.uuid4().hex[:10]}"
-    print(agent_message)
+    print(agent_message_text)
 
-    if (not chat_id or not enterprise_id) and context_variables is not None:
-        try:
-            chat_id = chat_id or context_variables.get("chat_id")
-            enterprise_id = enterprise_id or context_variables.get("enterprise_id")
-        except Exception:
-            pass
     if not chat_id or not enterprise_id:
         return {"status": "error", "message": "chat_id and enterprise_id are required"}
 
@@ -249,7 +249,8 @@ NON-GOALS / DECLINED BEHAVIORS:
     payload = {
         "downloadType": "bulk" if len(ui_files) > 1 else "single",
         "files": ui_files,
-        "description": description or "Your generated workflow files are ready for download.",
+        "agent_message": agent_message_text,
+        "description": agent_message_text,
         "title": "Generated Workflow Files",
         "workflow_name": wf_name,
         "agent_message_id": agent_message_id,

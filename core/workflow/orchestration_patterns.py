@@ -18,14 +18,15 @@ Sections (skim map)
 
 from typing import Dict, List, Optional, Any, Callable, Tuple
 import os
+import uuid
 from pathlib import Path
 from datetime import datetime
 import logging
 import time
 from time import perf_counter
 import asyncio
-import os
 import inspect
+import re
 from opentelemetry import trace
 from core.observability.otel_helpers import timed_span
 
@@ -395,26 +396,14 @@ async def _create_ag2_pattern(
     if user_id and not ag2_context.get("user_id"):
         ag2_context.set("user_id", user_id)
 
-    # Expose ContextVariables directly on each agent for easy access in hooks/templates
-    try:
-        for _name, _agent in agents.items():
-            try:
-                setattr(_agent, "context_variables", ag2_context)
-            except Exception:
-                pass
-        if user_proxy_agent is not None:
-            try:
-                setattr(user_proxy_agent, "context_variables", ag2_context)
-            except Exception:
-                pass
-    except Exception as _attach_err:
-        wf_logger.debug(f"[CONTEXT] Failed attaching context to agents: {_attach_err}")
-    
-    # Log final context state with emphasis on auto-injected parameters
+    # Log final context state with emphasis on routing keys
     context_keys = list(ag2_context.data.keys())
-    websocket_params = [k for k in context_keys if k in ["workflow_name", "enterprise_id", "chat_id", "user_id"]]
     wf_logger.info(
-        f"🧠 [CONTEXT] AG2 ContextVariables ready | total_keys={len(context_keys)} | websocket_params={websocket_params}"
+        f"[CONTEXT] AG2 ContextVariables ready | total_keys={len(context_keys)} | "
+        f"workflow_name={ag2_context.get('workflow_name')} | "
+        f"enterprise_id={ag2_context.get('enterprise_id')} | "
+        f"chat_id={ag2_context.get('chat_id')} | "
+        f"user_id={ag2_context.get('user_id')}"
     )
 
     # Create AG2 Pattern following proper constructor signature
@@ -474,18 +463,13 @@ async def _stream_events(
     except Exception:  # pragma: no cover
         PrintEvent = object  # type: ignore
 
-    # CRITICAL: Set execution context for tool injection
-    from core.workflow.agent_tools import (
-        set_current_execution_context,
-        clear_current_execution_context,
-    )
+    # AG2-native: Context is automatically available to tools through dependency injection
+    # No manual context setting needed - AG2 handles ContextVariables natively
     
     # Get context variables directly from the pattern (set at construction time)
     ag2_context = getattr(pattern, "context_variables", None)
     
-    # Set thread-local context for tool injection
-    set_current_execution_context(chat_id, enterprise_id, workflow_name, ag2_context)
-    wf_logger.info(f"🔧 [CONTEXT] Set execution context for tools: chat_id={chat_id}, enterprise_id={enterprise_id}")
+    wf_logger.info(f"🔧 [AG2-NATIVE] Context available through AG2 dependency injection: chat_id={chat_id}, enterprise_id={enterprise_id}")
 
     resumed_mode = bool(resumed_messages)
     # Log which context keys are present at stream start for diagnostics
@@ -540,41 +524,25 @@ async def _stream_events(
         for i, msg in enumerate(initial_messages):
             wf_logger.debug(f"🚀 [AG2_RUN] Message[{i}]: {msg.get('role', 'unknown')} from {msg.get('name', 'unknown')} - {str(msg.get('content', ''))[:100]}")
             
-        # ⚡ CRITICAL FIX: Setup context variables before a_run_group_chat
-        # AG2's a_run_group_chat doesn't automatically call setup_context_variables,
-        # so we need to do it manually to ensure context variables reach all agents
+        # ⚡ AG2 handles context variables setup internally via prepare_group_chat
+        # No manual setup needed - AG2 calls setup_context_variables automatically
+        
+        # Sanity check: routing keys should still be present before run
         try:
-            if hasattr(pattern, 'context_variables') and pattern.context_variables:
-                wf_logger.info(f"🧩 [AG2_RUN] Setting up context variables for all agents...")
-                
-                # Call prepare_group_chat to get group manager and tool executor
-                prep_result = pattern.prepare_group_chat(max_rounds=max_turns, messages=initial_messages)
-                if asyncio.iscoroutine(prep_result):
-                    prep_result = await prep_result
-                
-                # Extract components from prepare_group_chat result tuple
-                # Format: (agents_list, agents_exclude_list, user_proxy, context_vars, initial_agent, group_after_work, tool_executor, group_chat, group_manager)
-                if isinstance(prep_result, tuple) and len(prep_result) >= 9:
-                    tool_executor = prep_result[6]
-                    group_manager = prep_result[8]
-                    
-                    # Import and call setup_context_variables from AG2
-                    from autogen.agentchat.group.group_utils import setup_context_variables
-                    setup_context_variables(
-                        tool_execution=tool_executor,
-                        agents=pattern.agents,
-                        manager=group_manager, 
-                        user_agent=pattern.user_agent,
-                        context_variables=pattern.context_variables
-                    )
-                    
-                    wf_logger.info(f"✅ [AG2_RUN] Context variables connected to all agents and group manager")
-                else:
-                    wf_logger.warning(f"⚠️ [AG2_RUN] Unexpected prepare_group_chat result format")
+            gm = getattr(pattern, "group_manager", None)
+            cv = getattr(gm, "context_variables", None) if gm else None
+            if cv:
+                wf_logger.info(
+                    f"[CONTEXT] Routing keys present before run | "
+                    f"workflow_name={cv.get('workflow_name')} | "
+                    f"enterprise_id={cv.get('enterprise_id')} | "
+                    f"chat_id={cv.get('chat_id')} | "
+                    f"user_id={cv.get('user_id')}"
+                )
             else:
-                wf_logger.debug(f"🧩 [AG2_RUN] No context variables to set up")
-        except Exception as context_setup_err:
-            wf_logger.warning(f"⚠️ [AG2_RUN] Failed to setup context variables: {context_setup_err}")
+                wf_logger.warning("[CONTEXT] Context variables not accessible at pattern level before run")
+        except Exception as ctx_err:
+            wf_logger.warning(f"[CONTEXT] Failed to access context variables before run: {ctx_err}")
         
         wf_logger.info(f"🔥 [AG2_RUN] Calling a_run_group_chat() NOW...")
         
@@ -1124,8 +1092,8 @@ async def _stream_events(
     except Exception as loop_err:
         wf_logger.error(f"Event loop failure: {loop_err}")
     finally:
-        # Always clear execution context after workflow completion
-        clear_current_execution_context()
+        # AG2-native: No manual context cleanup needed - AG2 handles lifecycle automatically
+        pass
 
     return {
         "response": response,

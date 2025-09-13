@@ -14,10 +14,12 @@ from core.workflow.ui_tools import use_ui_tool, UIToolError
 
 async def request_api_key(
     service: Annotated[str, "Lowercase service identifier (e.g. 'openai', 'anthropic', 'huggingface')"],
+    agent_message: Annotated[Optional[str], "Mandatory short sentence displayed in the chat along with the artifact for context."] = None,
     description: Optional[str] = None,
     required: Annotated[bool, "Whether key is required to proceed."] = True,
     mask_input: Annotated[bool, "Whether to mask characters in UI input field."] = True,
-    **runtime: Any,
+    # AG2-native context injection
+    context_variables: Annotated[Optional[Any], "Context variables provided by AG2"] = None,
 ) -> Dict[str, Any]:
     """Emit a UI interaction prompting the user to input an API key.
 
@@ -40,8 +42,13 @@ async def request_api_key(
       - Database/collection names are configured in the tool code directly
       - Automatically adds enterprise_id, timestamps, and chat context
     """
-    chat_id: Optional[str] = runtime.get("chat_id")
-    workflow_name: Optional[str] = runtime.get("workflow_name") or runtime.get("workflow")
+    # Extract parameters from AG2 ContextVariables
+    chat_id: Optional[str] = None
+    workflow_name: Optional[str] = None
+    
+    if context_variables and hasattr(context_variables, 'get'):
+        chat_id = context_variables.get('chat_id')
+        workflow_name = context_variables.get('workflow_name')
 
     if not workflow_name:
         return {"status": "error", "message": "workflow_name is required for request_api_key"}
@@ -63,6 +70,7 @@ async def request_api_key(
     payload: Dict[str, Any] = {
         "service": service_norm,
         "label": f"{service_norm.replace('_', ' ').title()} API Key",
+        "agent_message": agent_message or f"Please provide your {service_norm} API key to continue.",
         "description": description or f"Enter your {service_norm} API key to continue",
         "placeholder": f"Enter your {service_norm.upper()} API key...",
         "required": required,
@@ -167,14 +175,14 @@ async def request_api_key(
                     "source": "ui_interaction",
                     "agent_message_id": agent_message_id,
                     "ui_event_id": (response or {}).get("event_id"),
-                    "chat_id": runtime.get("chat_id"),
+                    "chat_id": context_variables.get("chat_id") if context_variables else None,
                     "workflow_name": workflow_name,
                     "created_at": datetime.now(timezone.utc),
                     "updated_at": datetime.now(timezone.utc)
                 }
                 
                 # Add enterprise_id context
-                enterprise_id = runtime.get("enterprise_id")
+                enterprise_id = context_variables.get("enterprise_id") if context_variables else None
                 if enterprise_id:
                     try:
                         metadata["enterprise_id"] = ObjectId(enterprise_id)

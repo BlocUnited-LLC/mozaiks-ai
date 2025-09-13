@@ -10,6 +10,7 @@
 from typing import Any, Dict, List, Optional, Annotated  # Dict retained for internal helper signatures; runtime annotations use built-ins
 import uuid
 import re
+import logging
 
 from logs.logging_config import get_workflow_logger
 from core.workflow.ui_tools import use_ui_tool, UIToolError
@@ -139,10 +140,9 @@ def _normalize_action_plan(ap: Dict[str, Any]) -> Dict[str, Any]:
 async def action_plan(
     *,
     action_plan: Annotated[Optional[dict[str, Any]], "Action Plan object with workflow details. Must include keys: workflow_title, workflow_description, suggested_features (list of {feature_title, description}), mermaid_flow (sequenceDiagram), third_party_integrations (list of {technology_title, description}), constraints (list[str])."] = None,
-    agent_message: Annotated[Optional[str], "Optional short sentence displayed above the artifact for context."] = None,
-    # AG2 context injection - these will be automatically provided
+    agent_message: Annotated[Optional[str], "Mandatory short sentence displayed in teh chat along with the artifact for context."] = None,
+    # AG2-native context injection
     context_variables: Annotated[Optional[Any], "Context variables provided by AG2"] = None,
-    **runtime: Any,
 ) -> dict[str, Any]:
     """
     PURPOSE:
@@ -179,22 +179,37 @@ async def action_plan(
     SIDE EFFECTS:
         Emits a UI tool event (artifact) and waits for a single user response.
     """
-    chat_id: Optional[str] = runtime.get("chat_id")
-    enterprise_id: Optional[str] = runtime.get("enterprise_id")
-    workflow_name: Optional[str] = runtime.get("workflow_name") or runtime.get("workflow")
-    context_variables = context_variables or runtime.get("context_variables")
-
-    # Resolve IDs from context if needed
-    if (not chat_id or not enterprise_id or not workflow_name) and context_variables is not None:
+    # Extract parameters from AG2 ContextVariables
+    chat_id: Optional[str] = None
+    enterprise_id: Optional[str] = None
+    workflow_name: Optional[str] = None
+    # Lightweight tool-local logger to verify tool invocation even when workflow-level
+    # logger (get_workflow_logger) may not be initialised due to missing context.
+    _tlog = logging.getLogger("tools.action_plan")
+    try:
+        _tlog.info(
+            f"action_plan invoked: action_plan_type={type(action_plan).__name__} "
+            f"agent_message_present={bool(agent_message)} context_variables_present={context_variables is not None}"
+        )
+        if isinstance(action_plan, dict):
+            # Avoid logging large payloads; only keys
+            _tlog.debug(f"action_plan keys: {list(action_plan.keys())}")
+        else:
+            _tlog.debug("action_plan not a dict or is None")
+    except Exception:
         try:
-            chat_id = chat_id or context_variables.get("chat_id")
-            enterprise_id = enterprise_id or context_variables.get("enterprise_id")
-            workflow_name = workflow_name or context_variables.get("workflow_name")
+            _tlog.exception("Failed to write initial action_plan logs")
         except Exception:
             pass
+    
+    if context_variables and hasattr(context_variables, 'get'):
+        chat_id = context_variables.get('chat_id')
+        enterprise_id = context_variables.get('enterprise_id')
+        workflow_name = context_variables.get('workflow_name')
 
     if not chat_id or not enterprise_id:
         # We need chat_id + enterprise_id to route the UI event back properly.
+        _tlog.warning("Missing routing keys: chat_id or enterprise_id not present on context_variables")
         return {"status": "error", "message": "chat_id and enterprise_id are required"}
 
     wf_name = workflow_name or "Generated_Workflow"
@@ -209,14 +224,18 @@ async def action_plan(
 
     # Normalize/validate the provided Action Plan (do NOT invent new logic)
     if not isinstance(action_plan, dict):
+        _tlog.warning("Invalid action_plan payload - not a dict")
         return {"status": "error", "message": "Invalid action_plan payload (expected object)"}
 
     ap_norm = _normalize_action_plan(action_plan)
+    _tlog.info("action_plan normalized and ready to emit UI artifact")
 
     # Compose UI payload
     agent_message_id = f"ap_{uuid.uuid4().hex[:10]}"
     ui_payload = {
         **ap_norm,
+        # Agent message for display in chat
+        "agent_message": agent_message or "Please review this proposed Action Plan.",
         # Optional contextual line for the UI component to show above the artifact
         "description": agent_message or "Please review this proposed Action Plan.",
         "agent_message_id": agent_message_id,
@@ -225,6 +244,7 @@ async def action_plan(
 
     # Emit UI artifact and wait for a response
     try:
+        _tlog.info("Emitting ActionPlan UI artifact via use_ui_tool()")
         if tlog:
             from logs.tools_logs import log_tool_event as _log_tool_event  # type: ignore
             _log_tool_event(tlog, action="emit_ui", status="start", display="artifact", agent_message_id=agent_message_id)
@@ -235,6 +255,7 @@ async def action_plan(
             workflow_name=wf_name,
             display="artifact",
         )
+        _tlog.info("use_ui_tool() returned")
         # The UI layer adds 'ui_event_id' to its response in ui_tools.py
         ui_event_id = resp.get("ui_event_id") if isinstance(resp, dict) else None
         wf_logger.info("🧭 ActionPlan UI completed")
