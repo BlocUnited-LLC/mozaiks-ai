@@ -22,7 +22,7 @@ WORKFLOW_FILE_MAPPINGS = {
     'handoffs': 'handoffs.json',
     'context_variables': 'context_variables.json',
     'structured_outputs': 'structured_outputs.json',
-    'hooks': 'hooks.json',  # store hook metadata ONLY (no filecontents)
+    'hooks': 'hooks.json', 
     'tools': 'tools.json',
     'ui_config': 'ui_config.json'
 }
