@@ -54,14 +54,16 @@ async def demo_realtime_billing():
     await persistence.update_session_metrics(
         chat_id1, enterprise_id, user_id, workflow_name,
         prompt_tokens=271605, completion_tokens=160549, cost_usd=12.96,
-        agent_name="planner"
+        agent_name="planner",
+        duration_sec=120.0
     )
     print("      ✅ Tokens debited from wallet immediately")
     
     await persistence.update_session_metrics(
         chat_id1, enterprise_id, user_id, workflow_name, 
         prompt_tokens=271605, completion_tokens=160549, cost_usd=12.95,
-        agent_name="planner"
+        agent_name="planner",
+        duration_sec=95.0
     )
     print("      ✅ More tokens debited in real-time")
     
@@ -70,7 +72,8 @@ async def demo_realtime_billing():
     await persistence.update_session_metrics(
         chat_id2, enterprise_id, user_id, workflow_name,
         prompt_tokens=120000, completion_tokens=80000, cost_usd=6.0,
-        agent_name="researcher"
+        agent_name="researcher",
+        duration_sec=60.0
     )
     print("      ✅ Tokens debited for different agent")
     

@@ -7,9 +7,10 @@
 #             and returns the response along with the (normalized) action_plan
 # ==============================================================================
 
-from typing import Any, Dict, List, Optional, Annotated  # Dict retained for internal helper signatures; runtime annotations use built-ins
+from typing import Any, Dict, List, Optional, Annotated, Tuple, Set  # Dict retained for internal helper signatures; runtime annotations use built-ins
 import uuid
 import re
+import json
 import logging
 
 from logs.logging_config import get_workflow_logger
@@ -54,6 +55,131 @@ def _coerce_str_list(v: Any) -> List[str]:
                 if s:
                     out.append(s)
     return out
+
+
+def _features_from_modules(modules: Any) -> Tuple[List[Dict[str, str]], List[str]]:
+    """Translate module definitions into the legacy suggested_features structure."""
+    features: List[Dict[str, str]] = []
+    titles: List[str] = []
+    if not isinstance(modules, list):
+        return features, titles
+
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+
+        title = _coerce_str(module.get("module_title"))
+        description = _coerce_str(module.get("module_description"))
+        human_in_loop = module.get("human_in_the_loop")
+        if title:
+            titles.append(title)
+
+        desc_parts: List[str] = []
+        if description:
+            desc_parts.append(description)
+
+        if human_in_loop is True:
+            desc_parts.append("Requires human approval or input.")
+        elif human_in_loop is False:
+            desc_parts.append("Runs automatically without human approval.")
+
+        agents_summary: List[str] = []
+        agents = module.get("agents")
+        if isinstance(agents, list):
+            for agent in agents:
+                if not isinstance(agent, dict):
+                    continue
+
+                agent_title = _coerce_str(agent.get("agent_title"))
+                agent_type = _coerce_str(agent.get("agent_type"))
+                agent_description = _coerce_str(agent.get("agent_description"))
+                services = _coerce_str_list(agent.get("services"))
+
+                summary_parts: List[str] = []
+                if agent_title:
+                    summary_parts.append(agent_title)
+                if agent_type:
+                    summary_parts.append(f"[{agent_type}]")
+
+                agent_parts: List[str] = []
+                summary = " ".join(summary_parts).strip()
+                if summary:
+                    agent_parts.append(summary)
+                if agent_description:
+                    agent_parts.append(agent_description)
+                if services:
+                    agent_parts.append(f"Services: {', '.join(services)}")
+
+                if agent_parts:
+                    agents_summary.append(" ".join(agent_parts))
+
+        if agents_summary:
+            desc_parts.append("Agents: " + "; ".join(agents_summary))
+
+        if title or desc_parts:
+            features.append({
+                "feature_title": title or "Module",
+                "description": " ".join(desc_parts).strip()
+            })
+
+    return features, titles
+
+
+def _integrations_from_modules(modules: Any) -> List[Dict[str, str]]:
+    """Derive third-party integration descriptors from module agent services."""
+    integrations: List[Dict[str, str]] = []
+    if not isinstance(modules, list):
+        return integrations
+
+    seen: Set[str] = set()
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+
+        module_title = _coerce_str(module.get("module_title"))
+        agents = module.get("agents")
+        if not isinstance(agents, list):
+            continue
+
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+
+            agent_title = _coerce_str(agent.get("agent_title"))
+            agent_description = _coerce_str(agent.get("agent_description"))
+            services = agent.get("services")
+            if not isinstance(services, list):
+                continue
+
+            for service in services:
+                if not isinstance(service, str):
+                    continue
+
+                service_name = service.strip()
+                if not service_name:
+                    continue
+
+                key = service_name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                detail_parts: List[str] = []
+                if agent_title:
+                    detail_parts.append(f"Used by {agent_title}")
+                if module_title:
+                    detail_parts.append(f"in {module_title}")
+
+                detail = " ".join(detail_parts).strip()
+                if agent_description:
+                    detail = f"{detail}: {agent_description}" if detail else agent_description
+
+                integrations.append({
+                    "technology_title": service_name,
+                    "description": detail or "Required service for this workflow."
+                })
+
+    return integrations
 
 # --- Enforce Mermaid sequenceDiagram style (linear) ---
 
@@ -117,10 +243,48 @@ def _normalize_action_plan(ap: Dict[str, Any]) -> Dict[str, Any]:
     third_party_integrations = _coerce_integration_list(ap.get("third_party_integrations"))
     constraints = _coerce_str_list(ap.get("constraints"))
 
+    modules = ap.get("modules")
+    module_features, module_titles = _features_from_modules(modules)
+    if module_features:
+        if not suggested_features:
+            suggested_features = module_features
+        else:
+            existing_titles = {
+                f.get("feature_title")
+                for f in suggested_features
+                if isinstance(f, dict)
+            }
+            for feature in module_features:
+                if feature.get("feature_title") not in existing_titles:
+                    suggested_features.append(feature)
+
+    module_integrations = _integrations_from_modules(modules)
+    if module_integrations:
+        if not third_party_integrations:
+            third_party_integrations = module_integrations
+        else:
+            existing = {
+                entry.get("technology_title", "").lower(): idx
+                for idx, entry in enumerate(third_party_integrations)
+                if isinstance(entry, dict) and entry.get("technology_title")
+            }
+            for integration in module_integrations:
+                key = integration.get("technology_title", "").lower()
+                if key and key not in existing:
+                    third_party_integrations.append(integration)
+
+    fallback_titles = [
+        f.get("feature_title", "")
+        for f in suggested_features
+        if isinstance(f, dict)
+    ]
+    if not fallback_titles:
+        fallback_titles = module_titles
+
     # Prefer author-provided mermaid but enforce sequenceDiagram linear style
     mermaid_flow = _ensure_sequence_diagram(
         _coerce_str(ap.get("mermaid_flow")),
-        [f.get("feature_title", "") for f in suggested_features]
+        fallback_titles or ["User", "System", "Result"]
     )
 
     return {
@@ -140,6 +304,7 @@ def _normalize_action_plan(ap: Dict[str, Any]) -> Dict[str, Any]:
 async def action_plan(
     *,
     action_plan: Annotated[Optional[dict[str, Any]], "Action Plan object with workflow details. Must include keys: workflow_title, workflow_description, suggested_features (list of {feature_title, description}), mermaid_flow (sequenceDiagram), third_party_integrations (list of {technology_title, description}), constraints (list[str])."] = None,
+    brief: Annotated[Optional[Any], "Alias used by newer Generator outputs; mirrors action_plan payload."] = None,
     agent_message: Annotated[Optional[str], "Mandatory short sentence displayed in teh chat along with the artifact for context."] = None,
     # AG2-native context injection
     context_variables: Annotated[Optional[Any], "Context variables provided by AG2"] = None,
@@ -157,6 +322,9 @@ async def action_plan(
               - mermaid_flow: str (must start with 'sequenceDiagram')
               - third_party_integrations: list[{ technology_title: str, description: str }]
               - constraints: list[str]
+        brief (Annotated[Any, ...], optional):
+            Alias accepted for backward/forward compatibility with Generator outputs.
+            If provided, it is coerced into the Action Plan schema described above.
         agent_message (Annotated[Optional[str], ...], optional):
             Short sentence shown above the artifact (context for the user).
         runtime (**kwargs):
@@ -189,13 +357,18 @@ async def action_plan(
     try:
         _tlog.info(
             f"action_plan invoked: action_plan_type={type(action_plan).__name__} "
-            f"agent_message_present={bool(agent_message)} context_variables_present={context_variables is not None}"
+            f"brief_type={type(brief).__name__} agent_message_present={bool(agent_message)} "
+            f"context_variables_present={context_variables is not None}"
         )
         if isinstance(action_plan, dict):
             # Avoid logging large payloads; only keys
             _tlog.debug(f"action_plan keys: {list(action_plan.keys())}")
         else:
             _tlog.debug("action_plan not a dict or is None")
+        if isinstance(brief, dict):
+            _tlog.debug(f"brief keys: {list(brief.keys())}")
+        elif brief is not None:
+            _tlog.debug("brief provided but not a dict (will attempt coercion)")
     except Exception:
         try:
             _tlog.exception("Failed to write initial action_plan logs")
@@ -223,11 +396,47 @@ async def action_plan(
         tlog = None
 
     # Normalize/validate the provided Action Plan (do NOT invent new logic)
-    if not isinstance(action_plan, dict):
+    plan_payload: Any = action_plan
+    alias_used: Optional[str] = None
+
+    if plan_payload is None and brief is not None:
+        plan_payload = brief
+        alias_used = "brief"
+
+    # Some Generator outputs may wrap the plan in additional keys
+    if isinstance(plan_payload, dict):
+        if "brief" in plan_payload and isinstance(plan_payload["brief"], dict):
+            plan_payload = plan_payload["brief"]
+            alias_used = alias_used or "brief"
+        elif "ActionPlan" in plan_payload and isinstance(plan_payload["ActionPlan"], dict):
+            plan_payload = plan_payload["ActionPlan"]
+            alias_used = alias_used or "ActionPlan"
+
+    if isinstance(plan_payload, str):
+        candidate = plan_payload.strip()
+        if candidate:
+            try:
+                decoded = json.loads(candidate)
+                if isinstance(decoded, dict):
+                    plan_payload = decoded
+                    alias_used = alias_used or "json_string"
+                    _tlog.info("Parsed string payload into dict for action_plan")
+                else:
+                    _tlog.warning("Decoded string payload for action_plan but result was not a dict")
+            except json.JSONDecodeError:
+                _tlog.warning("Failed to decode string payload for action_plan")
+
+    if isinstance(plan_payload, dict):
+        if alias_used:
+            _tlog.info(f"Using '{alias_used}' payload as action_plan source")
+        _tlog.debug(f"normalized payload keys: {list(plan_payload.keys())}")
+    else:
         _tlog.warning("Invalid action_plan payload - not a dict")
         return {"status": "error", "message": "Invalid action_plan payload (expected object)"}
 
-    ap_norm = _normalize_action_plan(action_plan)
+    ap_norm = _normalize_action_plan(plan_payload)
+    if not agent_message and isinstance(plan_payload, dict):
+        agent_message = _coerce_str(plan_payload.get("agent_message")) or agent_message
     _tlog.info("action_plan normalized and ready to emit UI artifact")
 
     # Compose UI payload

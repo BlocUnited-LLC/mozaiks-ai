@@ -17,6 +17,16 @@ _SECRET_PATTERNS: Iterable[tuple[re.Pattern[str], str]] = (
         re.compile(r"sk-[A-Za-z0-9]{10,}"),
         "sk-***REDACTED***",
     ),
+    # openai_api_key variations
+    (
+        re.compile(r"(openai[_-]?api[_-]?key\"?\s*[:=]\s*\")[^\"\s]+(\")", re.IGNORECASE),
+        r"\1***REDACTED***\2",
+    ),
+    # generic api_key with equals (api_key=...)
+    (
+        re.compile(r"(api[_-]?key\s*=\s*)[^\s;]+", re.IGNORECASE),
+        r"\1***REDACTED***",
+    ),
     # Generic api_key fields in JSON-like blobs: api_key":"..."
     (
         re.compile(r"(api_key\"?\s*:\s*\")[^\"]+(\")", re.IGNORECASE),

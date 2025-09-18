@@ -3,15 +3,14 @@
 # DESCRIPTION: Clean agent factory following AG2 ConversableAgent patterns
 # ==============================================================================
 import logging
-from typing import Dict, List, Callable, Any
+from typing import Dict, List, Callable, Any, Optional
 
-from core.observability.otel_helpers import timed_span
 from autogen import ConversableAgent
 from .workflow_manager import workflow_manager
 
 logger = logging.getLogger(__name__)
 
-async def create_agents(workflow_name: str, context_variables=None) -> Dict[str, ConversableAgent]:
+async def create_agents(workflow_name: str, context_variables=None, cache_seed: Optional[int] = None) -> Dict[str, ConversableAgent]:
     """
     Create ConversableAgent instances following AG2 patterns.
     
@@ -26,6 +25,7 @@ async def create_agents(workflow_name: str, context_variables=None) -> Dict[str,
     Args:
         workflow_name: Name of the workflow to load agents for
         context_variables: AG2 ContextVariables to pass to each agent
+        cache_seed: Optional[int] = None - deterministic seed forwarded to llm_config helpers
         
     Returns:
         Dictionary of ConversableAgent instances
@@ -56,7 +56,8 @@ async def create_agents(workflow_name: str, context_variables=None) -> Dict[str,
     try:
         # Centralized llm_config (caching + provider aggregation)
         from .llm_config import get_llm_config as _get_base_llm_config
-        _, base_llm_config = await _get_base_llm_config(stream=True)
+        extra = {"cache_seed": cache_seed} if cache_seed is not None else None
+        _, base_llm_config = await _get_base_llm_config(stream=True, extra_config=extra)
     except Exception as e:
         logger.error(f"❌ [AGENTS] Failed to load base LLM config: {e}")
         return {}
@@ -77,123 +78,122 @@ async def create_agents(workflow_name: str, context_variables=None) -> Dict[str,
     
     # Create agents dynamically from JSON configuration
     for agent_name, agent_config in agent_configs.items():
-        # Use centralized timed_span helper (adds mozaiks.* prefix and duration attr)
-        with timed_span("agents.create", attributes={
-            "workflow_name": workflow_name,
-            "agent_name": agent_name,
-        }):
-            logger.debug(f"🔧 [AGENTS] Creating agent '{agent_name}' dynamically from JSON config...")
+        logger.debug(f"🔧 [AGENTS] Creating agent '{agent_name}' dynamically from JSON config...")
 
-            # Try to get structured model for this specific agent via registry
-            try:
-                from .structured_outputs import get_llm_for_workflow as _get_structured_llm
-                _, llm_config = await _get_structured_llm(workflow_name, 'base', agent_name=agent_name)
-                logger.debug(f"🔧 [AGENTS] Got structured LLM config for {agent_name}: {llm_config}")
-            except Exception as e:
-                logger.debug(f"🔧 [AGENTS] Failed to get structured config for {agent_name}, using base: {e}")
-                llm_config = base_llm_config
-                logger.debug(f"🔧 [AGENTS] Using base LLM config for {agent_name}: {llm_config}")
+        # Try to get structured model for this specific agent via registry
+        try:
+            from .structured_outputs import get_llm_for_workflow as _get_structured_llm
+            extra = {"cache_seed": cache_seed} if cache_seed is not None else None
+            _, llm_config = await _get_structured_llm(workflow_name, 'base', agent_name=agent_name, extra_config=extra)
+            logger.debug(f"🔧 [AGENTS] Got structured LLM config for {agent_name}: {llm_config}")
+        except Exception as e:
+            logger.debug(f"🔧 [AGENTS] Failed to get structured config for {agent_name}, using base: {e}")
+            llm_config = base_llm_config
+            logger.debug(f"🔧 [AGENTS] Using base LLM config for {agent_name}: {llm_config}")
 
-            # Create the agent with configuration from JSON
-            agent_functions = agent_tool_functions.get(agent_name, [])
-            # Debug: inspect the functions we plan to attach so we can diagnose registration issues
-            if agent_functions:
-                func_details = []
-                for i, fn in enumerate(agent_functions):
-                    func_details.append({
-                        "index": i,
-                        "repr": repr(fn),
-                        "callable": callable(fn),
-                        "name": getattr(fn, "__name__", None),
-                        "module": getattr(fn, "__module__", None),
-                    })
-                logger.debug(f"🧩 [AGENTS] Attaching {len(agent_functions)} tool functions to {agent_name}: {func_details}")
-            else:
-                logger.debug(f"🧩 [AGENTS] No tool functions found for {agent_name}")
-
-            # Validate functions before passing to ConversableAgent
+        # Create the agent with configuration from JSON
+        agent_functions = agent_tool_functions.get(agent_name, [])
+        # Debug: inspect the functions we plan to attach so we can diagnose registration issues
+        if agent_functions:
+            func_details = []
             for i, fn in enumerate(agent_functions):
-                if not callable(fn):
-                    logger.error(f"🧩 [AGENTS] Tool function at index {i} for agent '{agent_name}' is not callable: {fn}")
-            
-            # Ensure AG2 tool registration path is primed: llm_config must have a 'tools' list
+                func_details.append({
+                    "index": i,
+                    "repr": repr(fn),
+                    "callable": callable(fn),
+                    "name": getattr(fn, "__name__", None),
+                    "module": getattr(fn, "__module__", None),
+                })
+            logger.debug(f"🧩 [AGENTS] Attaching {len(agent_functions)} tool functions to {agent_name}: {func_details}")
+        else:
+            logger.debug(f"🧩 [AGENTS] No tool functions found for {agent_name}")
+
+        # Validate functions before passing to ConversableAgent
+        for i, fn in enumerate(agent_functions):
+            if not callable(fn):
+                logger.error(f"🧩 [AGENTS] Tool function at index {i} for agent '{agent_name}' is not callable: {fn}")
+        
+        # Ensure AG2 tool registration path is primed: llm_config must have a 'tools' list
+        try:
+            if isinstance(llm_config, dict) and 'tools' not in llm_config:
+                llm_config['tools'] = []
+                logger.debug(f"🧩 [AGENTS] Injected empty tools list into llm_config for {agent_name} to enable AG2 function calling")
+        except Exception as _inj_err:
+            logger.debug(f"🧩 [AGENTS] Skipped llm_config tools injection for {agent_name}: {_inj_err}")
+
+        logger.debug(f"🔧 [AGENTS] Final config for {agent_name}: config_list={llm_config.get('config_list', [])} other_keys={list(k for k in llm_config.keys() if k != 'config_list')}")
+        
+        # Additional debug - make a deep copy to see if something is modifying the original
+        import copy
+        config_copy = copy.deepcopy(llm_config)
+        logger.debug(f"🔧 [AGENTS] Config copy for {agent_name}: {config_copy}")
+        
+        # Check if config_list entries are valid IMMEDIATELY before creating agent
+        config_list = llm_config.get('config_list', [])
+        logger.debug(f"🔧 [AGENTS] About to create agent {agent_name} with config_list length: {len(config_list)}")
+        for i, entry in enumerate(config_list):
+            logger.debug(f"🔧 [AGENTS] FINAL CHECK Config entry [{i}] for {agent_name}: {entry}")
+            if not isinstance(entry, dict):
+                logger.error(f"❌ [AGENTS] FATAL ERROR: Config entry [{i}] is not a dict: {type(entry)} {entry}")
+                raise ValueError(f"Config entry [{i}] is not a dict for agent {agent_name}")
+            if not entry.get('model'):
+                logger.error(f"❌ [AGENTS] FATAL ERROR: Config entry [{i}] missing model field: {entry}")
+                raise ValueError(f"Config entry [{i}] missing model field for agent {agent_name}")
+
+        logger.debug(f"🔧 [AGENTS] Creating ConversableAgent {agent_name} with validated config...")
+
+        # LAST CHANCE DEBUG - inspect the actual llm_config right before AG2 gets it
+        logger.debug(f"🔧 [AGENTS] ABSOLUTE FINAL CONFIG CHECK for {agent_name}:")
+        logger.debug(f"🔧 [AGENTS] llm_config type: {type(llm_config)}")
+        logger.debug(f"🔧 [AGENTS] llm_config keys: {list(llm_config.keys()) if isinstance(llm_config, dict) else 'NOT_DICT'}")
+        if isinstance(llm_config, dict):
+            logger.debug(f"🔧 [AGENTS] llm_config.tools present: {'tools' in llm_config} length={len(llm_config.get('tools', [])) if isinstance(llm_config.get('tools', []), list) else 'n/a'}")
+
+        final_config_list = llm_config.get('config_list', []) if isinstance(llm_config, dict) else []
+        logger.debug(f"🔧 [AGENTS] config_list length: {len(final_config_list)}")
+
+        for idx, entry in enumerate(final_config_list):
+            logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}]: {entry}")
+            logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] type: {type(entry)}")
+            if isinstance(entry, dict):
+                logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] keys: {list(entry.keys())}")
+                logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] has model: {'model' in entry}")
+                logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] model value: {entry.get('model', 'MISSING')}")
+
+        try:
+            raw_human_mode = agent_config.get('human_input_mode')
+            if raw_human_mode and str(raw_human_mode).upper() not in ('', 'NEVER', 'NONE'):
+                logger.debug(f"[AGENTS] Ignoring configured human_input_mode {raw_human_mode} for {agent_name}; enforcing NEVER")
+            human_input_mode = 'NEVER'
+            agent = ConversableAgent(
+                name=agent_name,
+                system_message=agent_config.get('system_message', 'You are a helpful AI assistant.'),
+                llm_config=llm_config,
+                human_input_mode=human_input_mode,
+                max_consecutive_auto_reply=agent_config.get('max_consecutive_auto_reply', 2),
+                functions=agent_functions,  # AG2 functions parameter
+                context_variables=context_variables,  # AG2 ContextVariables for LLM access
+            )
+            # After creation, log what the agent reports back (if accessible) about attached functions
             try:
-                if isinstance(llm_config, dict) and 'tools' not in llm_config:
-                    llm_config['tools'] = []
-                    logger.debug(f"🧩 [AGENTS] Injected empty tools list into llm_config for {agent_name} to enable AG2 function calling")
-            except Exception as _inj_err:
-                logger.debug(f"🧩 [AGENTS] Skipped llm_config tools injection for {agent_name}: {_inj_err}")
+                attached = getattr(agent, 'functions', None)
+                if attached is None:
+                    logger.debug(f"✅ [AGENTS] ConversableAgent {agent_name} created (no 'functions' attribute exposed)")
+                else:
+                    attached_summary = [{"name": getattr(f, '__name__', None), "callable": callable(f)} for f in attached]
+                    logger.debug(f"✅ [AGENTS] ConversableAgent {agent_name} created with functions: {attached_summary}")
+            except Exception as _ex:
+                logger.debug(f"✅ [AGENTS] ConversableAgent {agent_name} created but could not introspect 'functions': {_ex}")
 
-            logger.debug(f"🔧 [AGENTS] Final config for {agent_name}: config_list={llm_config.get('config_list', [])} other_keys={list(k for k in llm_config.keys() if k != 'config_list')}")
-            
-            # Additional debug - make a deep copy to see if something is modifying the original
-            import copy
-            config_copy = copy.deepcopy(llm_config)
-            logger.debug(f"🔧 [AGENTS] Config copy for {agent_name}: {config_copy}")
-            
-            # Check if config_list entries are valid IMMEDIATELY before creating agent
-            config_list = llm_config.get('config_list', [])
-            logger.debug(f"🔧 [AGENTS] About to create agent {agent_name} with config_list length: {len(config_list)}")
-            for i, entry in enumerate(config_list):
-                logger.debug(f"🔧 [AGENTS] FINAL CHECK Config entry [{i}] for {agent_name}: {entry}")
-                if not isinstance(entry, dict):
-                    logger.error(f"❌ [AGENTS] FATAL ERROR: Config entry [{i}] is not a dict: {type(entry)} {entry}")
-                    raise ValueError(f"Config entry [{i}] is not a dict for agent {agent_name}")
-                if not entry.get('model'):
-                    logger.error(f"❌ [AGENTS] FATAL ERROR: Config entry [{i}] missing model field: {entry}")
-                    raise ValueError(f"Config entry [{i}] missing model field for agent {agent_name}")
-            
-            logger.debug(f"🔧 [AGENTS] Creating ConversableAgent {agent_name} with validated config...")
-            
-            # LAST CHANCE DEBUG - inspect the actual llm_config right before AG2 gets it
-            logger.debug(f"🔧 [AGENTS] ABSOLUTE FINAL CONFIG CHECK for {agent_name}:")
-            logger.debug(f"🔧 [AGENTS] llm_config type: {type(llm_config)}")
-            logger.debug(f"🔧 [AGENTS] llm_config keys: {list(llm_config.keys()) if isinstance(llm_config, dict) else 'NOT_DICT'}")
-            if isinstance(llm_config, dict):
-                logger.debug(f"🔧 [AGENTS] llm_config.tools present: {'tools' in llm_config} length={len(llm_config.get('tools', [])) if isinstance(llm_config.get('tools', []), list) else 'n/a'}")
-            
-            final_config_list = llm_config.get('config_list', []) if isinstance(llm_config, dict) else []
-            logger.debug(f"🔧 [AGENTS] config_list length: {len(final_config_list)}")
-            
-            for idx, entry in enumerate(final_config_list):
-                logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}]: {entry}")
-                logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] type: {type(entry)}")
-                if isinstance(entry, dict):
-                    logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] keys: {list(entry.keys())}")
-                    logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] has model: {'model' in entry}")
-                    logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] model value: {entry.get('model', 'MISSING')}")
-            
-            try:
-                # Create agent with AG2 ConversableAgent constructor pattern
-                agent = ConversableAgent(
-                    name=agent_name,
-                    system_message=agent_config.get('system_message', 'You are a helpful AI assistant.'),
-                    llm_config=llm_config,
-                    human_input_mode=agent_config.get('human_input_mode', 'NEVER'),
-                    max_consecutive_auto_reply=agent_config.get('max_consecutive_auto_reply', 2),
-                    functions=agent_functions,  # AG2 functions parameter
-                    context_variables=context_variables,  # AG2 ContextVariables for LLM access
-                )
-                # After creation, log what the agent reports back (if accessible) about attached functions
-                try:
-                    attached = getattr(agent, 'functions', None)
-                    if attached is None:
-                        logger.debug(f"✅ [AGENTS] ConversableAgent {agent_name} created (no 'functions' attribute exposed)")
-                    else:
-                        attached_summary = [{"name": getattr(f, '__name__', None), "callable": callable(f)} for f in attached]
-                        logger.debug(f"✅ [AGENTS] ConversableAgent {agent_name} created with functions: {attached_summary}")
-                except Exception as _ex:
-                    logger.debug(f"✅ [AGENTS] ConversableAgent {agent_name} created but could not introspect 'functions': {_ex}")
-            
-            except Exception as e:
-                logger.error(f"❌ [AGENTS] CRITICAL ERROR creating ConversableAgent {agent_name}: {e}")
-                logger.error(f"❌ [AGENTS] FINAL CONFIG DUMP: {llm_config}")
-                raise
+        except Exception as e:
+            logger.error(f"❌ [AGENTS] CRITICAL ERROR creating ConversableAgent {agent_name}: {e}")
+            logger.error(f"❌ [AGENTS] FINAL CONFIG DUMP: {llm_config}")
+            raise
 
-            agents[agent_name] = agent
+        agents[agent_name] = agent
 
-            # Minimal agent creation confirmation
-            logger.debug(f"✅ [AGENTS] Created '{agent_name}' with {len(agent_tool_functions.get(agent_name, []))} tools")
+        # Minimal agent creation confirmation
+        logger.debug(f"✅ [AGENTS] Created '{agent_name}' with {len(agent_tool_functions.get(agent_name, []))} tools")
 
     # Completion log remains generic
     agent_count = len(agents)

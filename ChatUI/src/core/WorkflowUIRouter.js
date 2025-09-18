@@ -48,8 +48,14 @@ const WorkflowUIRouter = ({
       setIsLoading(true);
       setError(null);
       console.log('🛰️ WorkflowUIRouter: Loading component', { workflow, component });
-      
-      const cacheKey = `${workflow}:${component}`;
+      // Derive chat-specific cache key (include cache_seed if present in localStorage)
+      let chatId = null;
+      try { chatId = localStorage.getItem('mozaiks.current_chat_id'); } catch {}
+      let cacheSeed = null;
+      if (chatId) {
+        try { const storedSeed = localStorage.getItem(`mozaiks.current_chat_id.cache_seed.${chatId}`); if (storedSeed) cacheSeed = storedSeed; } catch {}
+      }
+      const cacheKey = `${chatId || 'nochat'}:${cacheSeed || 'noseed'}:${workflow}:${component}`;
       
       // Check cache first
       if (componentCache.has(cacheKey)) {
@@ -70,7 +76,7 @@ const WorkflowUIRouter = ({
       }
       
       // Cache the component
-      componentCache.set(cacheKey, WorkflowComponent);
+  componentCache.set(cacheKey, WorkflowComponent);
       setComponent(() => WorkflowComponent);
       
       console.log(`✅ WorkflowUIRouter: Loaded ${workflow}:${component}`);

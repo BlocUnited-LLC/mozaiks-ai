@@ -1,10 +1,10 @@
 {
-  "workflow_name": "Generator",
-  "max_turns": 25,
-  "human_in_the_loop": true,
-  "startup_mode": "AgentDriven",
-  "orchestration_pattern": "DefaultPattern",
-  "initial_message_to_user": null,
-  "initial_message": "You are part of a collaborative effort to generate a multi-agent workflow per AG2 (formerly autogen). ContextAgent, start immediately by analyzing the 'concept_overview' provided in the context variables.",
-  "initial_agent": "ContextAgent"
+    "workflow_name":  "Generator",
+    "max_turns":  25,
+    "human_in_the_loop":  true,
+    "startup_mode":  "AgentDriven",
+    "orchestration_pattern":  "DefaultPattern",
+    "initial_message_to_user":  null,
+    "initial_message":  "You are part of a collaborative effort to generate a multi-agent workflow per AG2 (formerly autogen). InterviewAgent, greet the user and ask your first clarifying question.",
+    "initial_agent":  "InterviewAgent"
 }

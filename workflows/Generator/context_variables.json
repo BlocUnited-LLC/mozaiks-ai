@@ -11,6 +11,22 @@
           "field": "ConceptOverview"
         }
       }
+    ],
+    "derived_variables": [
+      {
+        "name": "interview_complete",
+        "description": "True once InterviewAgent terminates the discovery conversation.",
+        "default": false,
+        "triggers": [
+          {
+            "type": "agent_text",
+            "agent": "InterviewAgent",
+            "match": {
+              "equals": "TERMINATE"
+            }
+          }
+        ]
+      }
     ]
   }
 }

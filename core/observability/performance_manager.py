@@ -9,17 +9,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Union
 
-from opentelemetry import trace
-from core.observability.otel_helpers import timed_span, ensure_telemetry_initialized, get_duration_hist
 from logs.logging_config import get_workflow_logger
 from core.data.persistence_manager import AG2PersistenceManager
 from core.data.models import WorkflowStatus
 
 logger = get_workflow_logger("performance_manager")
 perf_logger = get_workflow_logger("performance")
-tracer = trace.get_tracer(__name__)
 
-# Removed unused InsufficientTokensError
 
 @dataclass
 class PerformanceConfig:
@@ -38,7 +34,6 @@ class ChatPerfState:
     tool_calls: int = 0
     errors: int = 0
     last_turn_duration_sec: Optional[float] = None
-    # Removed unused detailed latency/token speed metrics for simplification
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     total_cost: float = 0.0
@@ -165,25 +160,10 @@ class PerformanceManager:
             return
         
         logger.info("🔧 PERF_INIT: Starting performance manager initialization")
-        
-        # Let environment / defaults determine OTLP endpoint; users can set MOZAIKS_OTEL_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT.
-        telemetry_result = ensure_telemetry_initialized(
-            service_name="mozaiks-ai",
-            environment="dev",
-            service_version="1.0.0",
-            auto_disable_on_failure=True,
-            connection_test_timeout_sec=0.3,
-            enabled=self.config.enabled,
-        )
-        
-        if telemetry_result:
-            logger.info("✅ PERF_INIT: Telemetry initialization successful")
-        else:
-            logger.warning("❌ PERF_INIT: Telemetry initialization failed or disabled")
-        
-        self._agent_turn_duration = get_duration_hist("agent_turn", "Agent turn duration")
-        self._workflow_duration = get_duration_hist("workflow_duration", "Workflow duration")
-        
+
+        self._agent_turn_duration = None
+        self._workflow_duration = None
+
         if self.config.flush_interval_sec > 0:
             logger.info(f"🔧 PERF_INIT: Starting periodic flush task (interval={self.config.flush_interval_sec}s)")
             self._flush_task = asyncio.create_task(self._periodic_flush())
@@ -244,42 +224,70 @@ class PerformanceManager:
 
     async def record_agent_turn(self, chat_id: str, agent_name: str, duration_sec: float, model: Optional[str], prompt_tokens: int = 0, completion_tokens: int = 0, cost: float = 0.0):
         st_ref = self._states.get(chat_id)
-        with timed_span(
+        async with self._lock:
+            st = self._states.get(chat_id)
+            if not st:
+                return
+            st.agent_turns += 1
+            st.last_turn_duration_sec = duration_sec
+        perf_logger.info(
             "agent_turn",
-            attributes={
-                "chat_id": chat_id,
-                # Add workflow + enterprise for performance_store aggregation parity with WorkflowStats
-                "workflow": st_ref.workflow_name if st_ref else None,
-                "enterprise_id": st_ref.enterprise_id if st_ref else None,
-                "agent": agent_name,
-                "model": model or "unknown",
-                "prompt_tokens": int(prompt_tokens),
-                "completion_tokens": int(completion_tokens),
-                "total_tokens": int(prompt_tokens + completion_tokens),
-                "cost_usd": float(cost),
-            },
-        ):
-            async with self._lock:
-                st = self._states.get(chat_id)
-                if not st:
-                    return
-                st.agent_turns += 1
-                st.last_turn_duration_sec = duration_sec
-                if prompt_tokens:
-                    st.total_prompt_tokens += int(prompt_tokens)
-                if completion_tokens:
-                    st.total_completion_tokens += int(completion_tokens)
-                if cost:
-                    st.total_cost += float(cost)
-            if self._agent_turn_duration:
-                self._agent_turn_duration.record(duration_sec, {"chat_id": chat_id})
+            chat_id=chat_id,
+            workflow=(st_ref.workflow_name if st_ref else None),
+            enterprise_id=(st_ref.enterprise_id if st_ref else None),
+            agent=agent_name,
+            model=(model or "unknown"),
+            prompt_tokens=int(prompt_tokens),
+            completion_tokens=int(completion_tokens),
+            total_tokens=int(prompt_tokens + completion_tokens),
+            cost_usd=float(cost),
+            duration_sec=float(duration_sec),
+        )
 
-            # Update real-time metrics instead of ChatSession
-            if prompt_tokens > 0 or completion_tokens > 0 or cost > 0:
-                await self._persistence.update_session_metrics(
-                    chat_id, st.enterprise_id, st.user_id, st.workflow_name,
-                    prompt_tokens, completion_tokens, cost, agent_name
-                )
+        if prompt_tokens > 0 or completion_tokens > 0 or cost > 0:
+            await self.record_usage_delta(
+                chat_id=chat_id,
+                agent_name=agent_name,
+                model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost=cost,
+                duration_sec=duration_sec,
+            )
+
+    async def record_usage_delta(
+        self,
+        *,
+        chat_id: str,
+        agent_name: str,
+        model: Optional[str],
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost: float,
+        duration_sec: float = 0.0,
+    ) -> None:
+        st_ref = self._states.get(chat_id)
+        if not st_ref:
+            return
+        async with self._lock:
+            st = self._states.get(chat_id)
+            if not st:
+                return
+            if prompt_tokens:
+                st.total_prompt_tokens += int(prompt_tokens)
+            if completion_tokens:
+                st.total_completion_tokens += int(completion_tokens)
+            if cost:
+                st.total_cost += float(cost)
+        perf_logger.debug(
+            "usage_delta_recorded",
+            chat_id=chat_id,
+            agent=agent_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost=cost,
+            duration_sec=float(duration_sec),
+        )
 
     async def record_tool_call(self, chat_id: str, tool_name: str, success: bool):
         """Increment tool call counters.
@@ -306,7 +314,7 @@ class PerformanceManager:
         # record duration metric
         if self._workflow_duration:
             duration = (st.ended_at - st.started_at).total_seconds()  # type: ignore[arg-type]
-            # store status as string in telemetry attributes to avoid serializer issues
+            # store status as string in prframnce attributes to avoid serializer issues
             self._workflow_duration.record(duration, {"workflow_name": st.workflow_name, "status": str(status)})
 
         # Persist final status / end time prior to duration flush
@@ -345,7 +353,6 @@ class PerformanceManager:
         if status_enum == WorkflowStatus.COMPLETED:
             try:  # pragma: no cover
                 from core.data.models import refresh_workflow_rollup_by_id
-
                 summary_id = f"mon_{st.enterprise_id}_{st.workflow_name}"
                 asyncio.create_task(refresh_workflow_rollup_by_id(summary_id))
             except Exception:

@@ -10,12 +10,10 @@
  */
 
 import { enterpriseApi } from '../adapters/api';
-import { DynamicArtifactManager } from '../utils/DynamicArtifactManager';
 import { createToolsLogger } from './toolsLogger';
 
 export class DynamicUIHandler {
   constructor() {
-    this.artifactManager = new DynamicArtifactManager();
     this.eventHandlers = new Map();
     this.uiUpdateCallbacks = new Set();
     this.workflowCache = new Map();
@@ -26,24 +24,13 @@ export class DynamicUIHandler {
    * Setup default event handlers for backend UI events
    */
   setupDefaultHandlers() {
-    // UI tool events (normalized + legacy)
+    // Register only canonical lowercase event types
     this.registerHandler('ui_tool_event', this.handleUIToolEvent.bind(this));
-    
-    
-    
-  // User input requests (bridge to UI tool rendering)
-  this.registerHandler('user_input_request', this.handleUserInputRequest.bind(this));
-  this.registerHandler('USER_INPUT_REQUEST', this.handleUserInputRequest.bind(this));
-    
-    // Component update events
+    this.registerHandler('user_input_request', this.handleUserInputRequest.bind(this));
     this.registerHandler('component_update', this.handleComponentUpdate.bind(this));
-    this.registerHandler('COMPONENT_UPDATE', this.handleComponentUpdate.bind(this));
-    
-    // Status update events
     this.registerHandler('status', this.handleStatusUpdate.bind(this));
-    this.registerHandler('STATUS', this.handleStatusUpdate.bind(this));
-    
-    console.log('✅ Dynamic UI Handler initialized with workflow-agnostic event handlers');
+
+    console.log('✅ Dynamic UI Handler initialized');
   }
 
   /**
@@ -61,24 +48,40 @@ export class DynamicUIHandler {
    * @param {Function} sendResponse - Optional response callback (for WebSocket)
    */
   async processUIEvent(eventData, sendResponse = null) {
-    const { type, data } = eventData;
-    
-    console.log(`🎯 Processing UI event: ${type}`, data);
-    
+    if (!eventData) return;
+    let { type, data } = eventData;
+
+    // Normalize legacy / uppercase event types to canonical lowercase
+    const originalType = type;
+    if (typeof type === 'string') {
+      type = type.toLowerCase();
+    }
+
+    // Map any deprecated aliases
+    const aliasMap = {
+      'component_update': 'component_update',
+      'status': 'status',
+      'user_input_request': 'user_input_request'
+      // Additional legacy keys can map here if reintroduced
+    };
+    type = aliasMap[type] || type;
+
+    console.log(`🎯 Processing UI event: ${originalType} -> ${type}`, data);
+
     const handler = this.eventHandlers.get(type);
-    if (handler) {
-      try {
-        // For ui_tool_event, pass the data part as first param and sendResponse as second
-        if (type === 'ui_tool_event') {
-          await handler(data, sendResponse);
-        } else {
-          await handler(data, eventData);
-        }
-      } catch (error) {
-        console.error(`❌ Error processing UI event ${type}:`, error);
-      }
-    } else {
+    if (!handler) {
       console.warn(`⚠️ No handler found for UI event type: ${type}`);
+      return;
+    }
+
+    try {
+      if (type === 'ui_tool_event') {
+        await handler(data, sendResponse);
+      } else {
+        await handler(data, eventData);
+      }
+    } catch (error) {
+      console.error(`❌ Error processing UI event ${type}:`, error);
     }
   }
 
@@ -86,66 +89,12 @@ export class DynamicUIHandler {
    * Handle artifact routing events
    * @param {Object} data - Artifact event data
    */
-  async handleArtifactRoute(data) {
-    console.log('📦 Handling artifact route:', data);
-    
-    if (data.artifact_id) {
-      // Load artifact component if specified
-      if (data.component_type) {
-        const component = await this.artifactManager.getArtifactComponent(data.component_type);
-        if (component) {
-          this.notifyUIUpdate({
-            type: 'artifact_component_loaded',
-            artifactId: data.artifact_id,
-            componentType: data.component_type,
-            component
-          });
-        }
-      }
-      
-      // Trigger artifact panel if needed
-      if (data.action === 'open_panel') {
-        this.notifyUIUpdate({
-          type: 'open_artifact_panel',
-          artifactId: data.artifact_id,
-          data: data
-        });
-      }
-    }
-  }
 
   /**
    * Handle UI tool action events
    * @param {Object} data - Tool action data
    */
-  async handleUIToolAction(data) {
-    console.log('🔧 Handling UI tool action:', data);
-    
-    switch (data.action) {
-      case 'update_component':
-        await this.handleComponentUpdate(data);
-        break;
-        
-      case 'show_notification':
-        this.notifyUIUpdate({
-          type: 'show_notification',
-          message: data.message,
-          severity: data.severity || 'info'
-        });
-        break;
-        
-      case 'toggle_panel':
-        this.notifyUIUpdate({
-          type: 'toggle_panel',
-          panel: data.panel,
-          state: data.state
-        });
-        break;
-        
-      default:
-        console.warn(`⚠️ Unknown UI tool action: ${data.action}`);
-    }
-  }
+  // Removed legacy handleUIToolAction – superseded by direct event types
 
   /**
    * Handle component update events

@@ -1,4 +1,4 @@
-# ==============================================================================
+﻿# ==============================================================================
 # FILE: core/workflow/context_variables.py  
 # DESCRIPTION: Simple context variables system for workflow agents
 # REQUIREMENTS:
@@ -20,7 +20,7 @@ from logs.logging_config import get_workflow_logger
 business_logger = get_workflow_logger("context_variables")
 
 # ---------------------------------------------------------------------------
-# ENV FLAGS (minimal – only what we actively use during testing)
+# ENV FLAGS (minimal â€“ only what we actively use during testing)
 # ---------------------------------------------------------------------------
 # CONTEXT_INCLUDE_SCHEMA  -> when true: include schema_overview + collections_first_docs_full
 # CONTEXT_SCHEMA_DB       -> explicit database name to introspect (takes precedence)
@@ -71,7 +71,7 @@ async def _get_all_collections_first_docs(database_name: str) -> Dict[str, Any]:
         try:
             names = await db.list_collection_names()
         except Exception as e:  # pragma: no cover
-            business_logger.error(f"❌ list_collection_names failed for {database_name}: {e}")
+            business_logger.error(f"âŒ list_collection_names failed for {database_name}: {e}")
             return result
         for cname in names:
             try:
@@ -85,7 +85,7 @@ async def _get_all_collections_first_docs(database_name: str) -> Dict[str, Any]:
             except Exception as ce:
                 result[cname] = {"_error": str(ce)}
     except Exception as outer:
-        business_logger.error(f"❌ Failed collecting first docs for {database_name}: {outer}")
+        business_logger.error(f"âŒ Failed collecting first docs for {database_name}: {outer}")
     return result
 
 
@@ -134,13 +134,13 @@ def get_context(workflow_name: str, enterprise_id: Optional[str] = None) -> Cont
         try:
             # Running loop detected; return minimal context and log warning
             asyncio.get_running_loop()
-            business_logger.warning(f"⚠️ get_context called from async context - consider using _load_context_async directly")
+            business_logger.warning(f"âš ï¸ get_context called from async context - consider using _load_context_async directly")
             return _create_minimal_context(workflow_name, enterprise_id)
         except RuntimeError:
             # No running loop; safe to run async
             return asyncio.run(_load_context_async(workflow_name, enterprise_id))
     except Exception as e:
-        business_logger.error(f"❌ Context loading failed: {e}")
+        business_logger.error(f"âŒ Context loading failed: {e}")
         return _create_minimal_context(workflow_name, enterprise_id)
 
 def _create_minimal_context(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
@@ -150,12 +150,12 @@ def _create_minimal_context(workflow_name: str, enterprise_id: Optional[str]) ->
         context.set("enterprise_id", enterprise_id)
     if workflow_name:
         context.set("workflow_name", workflow_name)
-    business_logger.info(f"✅ Created minimal context: enterprise_id={enterprise_id}, workflow_name={workflow_name}")
+    business_logger.info(f"âœ… Created minimal context: enterprise_id={enterprise_id}, workflow_name={workflow_name}")
     return context
 
 async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
     """Async context loading - properly handles async MongoDB operations."""
-    business_logger.info(f"🔧 Loading context for {workflow_name} (async)")
+    business_logger.info(f"ðŸ”§ Loading context for {workflow_name} (async)")
     
     context = ContextVariables()
     
@@ -192,12 +192,12 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
                     if len(overview_text) > TRUNCATE_CHARS:
                         overview_text = f"{overview_text[:TRUNCATE_CHARS]}... [truncated {len(overview_text)-TRUNCATE_CHARS} chars]"
                     context.set("schema_overview", overview_text)
-                    business_logger.info(f"📘 Attached schema_overview to context (db={db_name}, len={len(overview_text)})")
+                    business_logger.info(f"ðŸ“˜ Attached schema_overview to context (db={db_name}, len={len(overview_text)})")
                 # Always attach full collection first-doc map when schema flag true
                 try:
                     first_docs_full = await _get_all_collections_first_docs(db_name)
                     context.set("collections_first_docs_full", first_docs_full)
-                    business_logger.info(f"📗 Attached collections_first_docs_full (collections={len(first_docs_full)})")
+                    business_logger.info(f"ðŸ“— Attached collections_first_docs_full (collections={len(first_docs_full)})")
                 except Exception as fd_err:
                     business_logger.debug(f"collections_first_docs_full attachment failed: {fd_err}")
             else:
@@ -214,26 +214,27 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
             default_db = schema_config.get('database_name')
 
         if not default_db:
-            business_logger.warning("⚠️ No default database_name configured for context variables; each variable must specify database.database_name explicitly.")
+            business_logger.warning("No default database_name configured for context variables; each variable must specify database.database_name explicitly.")
+
 
         try:
             loaded_data = await _load_specific_data_async(variables, default_db, internal_enterprise_id)
             for key, value in loaded_data.items():
                 context.set(key, value)
-                business_logger.info(f"🧩 ContextVar {key} = {_format_for_log(value)}")
+                business_logger.info(f"ðŸ§© ContextVar {key} = {_format_for_log(value)}")
         except Exception as load_err:
-            business_logger.error(f"❌ Failed loading specific context variables: {load_err}")
+            business_logger.error(f"âŒ Failed loading specific context variables: {load_err}")
     
     # Log the final context summary - workflow-specific variables only
     # Note: Core WebSocket parameters (workflow_name, enterprise_id, chat_id, user_id) 
     # are auto-injected by the orchestrator, so we focus on workflow-specific data here
     variable_names = list(context.data.keys())
     workflow_variables = [name for name in variable_names if name not in ['enterprise_id']]
-    business_logger.info(f"✅ Context loaded: {len(workflow_variables)} workflow context variables: {workflow_variables}")
+    business_logger.info(f"âœ… Context loaded: {len(workflow_variables)} workflow context variables: {workflow_variables}")
     # Print each workflow-specific variable with a safe value preview
     for _var in workflow_variables:
         try:
-            business_logger.debug(f"   • {_var} => {_format_for_log(context.data.get(_var))}")
+            business_logger.debug(f"   â€¢ {_var} => {_format_for_log(context.data.get(_var))}")
         except Exception:
             pass
     
@@ -262,15 +263,15 @@ def _load_workflow_config(workflow_name: str) -> Dict[str, Any]:
             if wf_info and hasattr(wf_info, 'path'):
                 ext_file = Path(wf_info.path) / 'context_variables.json'
                 if ext_file.exists():
-                    business_logger.info(f"🔍 Loading external context_variables.json for {workflow_name}")
+                    business_logger.info(f"ðŸ” Loading external context_variables.json for {workflow_name}")
                     raw = ext_file.read_text(encoding='utf-8')
                     data = json.loads(raw)
                     return data.get('context_variables', {}) or {}
         except Exception as ext_err:  # pragma: no cover
-            business_logger.debug(f"⚠️ External context_variables.json load failed: {ext_err}")
+            business_logger.debug(f"âš ï¸ External context_variables.json load failed: {ext_err}")
         return {}
     except Exception as e:  # pragma: no cover
-        business_logger.warning(f"⚠️ Could not load config for {workflow_name}: {e}")
+        business_logger.warning(f"âš ï¸ Could not load config for {workflow_name}: {e}")
         return {}
 
 async def _get_database_schema_async(database_name: str) -> Dict[str, Any]:
@@ -341,22 +342,22 @@ async def _get_database_schema_async(database_name: str) -> Dict[str, Any]:
         for collection_name, fields in collection_schemas.items():
             if isinstance(fields, dict) and "note" not in fields and "error" not in fields:
                 is_enterprise = " [Enterprise-specific]" if collection_name in enterprise_collections else ""
-                schema_lines.append(f"🔍 {collection_name.upper()}{is_enterprise}:")
+                schema_lines.append(f"ðŸ” {collection_name.upper()}{is_enterprise}:")
                 schema_lines.append("  Fields:")
                 
                 # List each field with its type
                 for field_name, field_type in fields.items():
-                    schema_lines.append(f"    • {field_name}: {field_type}")
+                    schema_lines.append(f"    â€¢ {field_name}: {field_type}")
                 
                 schema_lines.append("")  # Add spacing between collections
         
         # Store only the clean schema overview - no redundant data
         schema_info["schema_overview"] = "\n".join(schema_lines)
         
-        business_logger.info(f"📊 Schema loaded: {len(collection_names)} collections, {len(enterprise_collections)} enterprise-specific")
+        business_logger.info(f"ðŸ“Š Schema loaded: {len(collection_names)} collections, {len(enterprise_collections)} enterprise-specific")
         
     except Exception as e:
-        business_logger.error(f"❌ Database schema loading failed: {e}")
+        business_logger.error(f"âŒ Database schema loading failed: {e}")
         schema_info["error"] = f"Could not load schema: {e}"
     
     return schema_info
@@ -390,16 +391,16 @@ async def _load_specific_data_async(variables: List[Dict[str, Any]], default_dat
                 # Use variable-specific database name if provided, otherwise use default
                 variable_database_name = db_config.get('database_name', default_database_name)
                 if not variable_database_name:
-                    business_logger.warning(f"⚠️ Skipping '{var_name}' - no database_name provided and no default configured")
+                    business_logger.warning(f"âš ï¸ Skipping '{var_name}' - no database_name provided and no default configured")
                     continue
                 
                 if not collection_name:
-                    business_logger.warning(f"⚠️ No collection specified for {var_name}")
+                    business_logger.warning(f"âš ï¸ No collection specified for {var_name}")
                     continue
                 
                 # Connect to the specific database for this variable
                 db = client[variable_database_name]
-                business_logger.info(f"🔍 Loading {var_name} from database: {variable_database_name}")
+                business_logger.info(f"ðŸ” Loading {var_name} from database: {variable_database_name}")
                 
                 # Build query
                 if search_by == 'enterprise_id':
@@ -417,18 +418,18 @@ async def _load_specific_data_async(variables: List[Dict[str, Any]], default_dat
                 if document:
                     if field and field in document:
                         loaded_data[var_name] = document[field]
-                        business_logger.info(f"✅ Loaded {var_name} from {variable_database_name}.{collection_name}.{field}")
+                        business_logger.info(f"âœ… Loaded {var_name} from {variable_database_name}.{collection_name}.{field}")
                     else:
                         loaded_data[var_name] = document
-                        business_logger.info(f"✅ Loaded {var_name} document from {variable_database_name}.{collection_name}")
+                        business_logger.info(f"âœ… Loaded {var_name} document from {variable_database_name}.{collection_name}")
                 else:
-                    business_logger.info(f"📝 No data found for {var_name} in {variable_database_name}.{collection_name}")
+                    business_logger.info(f"ðŸ“ No data found for {var_name} in {variable_database_name}.{collection_name}")
                     
             except Exception as e:
-                business_logger.error(f"❌ Error loading {var_name}: {e}")
+                business_logger.error(f"âŒ Error loading {var_name}: {e}")
                 continue
         
     except Exception as e:
-        business_logger.error(f"❌ Specific data loading failed: {e}")
+        business_logger.error(f"âŒ Specific data loading failed: {e}")
     
     return loaded_data

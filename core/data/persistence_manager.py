@@ -12,6 +12,7 @@ import asyncio
 import traceback
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Union, cast
+import hashlib
 from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo import ReturnDocument
@@ -21,12 +22,9 @@ from core.core_config import get_mongo_client, get_free_trial_config
 from core.data.models import WorkflowStatus
 from autogen.events.base_event import BaseEvent
 from autogen.events.agent_events import TextEvent
-from opentelemetry import trace
-from core.observability.otel_helpers import timed_span
 from core.workflow.structured_outputs import agent_has_structured_output, get_structured_output_model_fields
 
 logger = get_workflow_logger("persistence")
-tracer = trace.get_tracer(__name__)
 
 
 class InvalidEnterpriseIdError(Exception):
@@ -171,6 +169,56 @@ class AG2PersistenceManager:
         assert self.persistence.client is not None, "Mongo client not initialized"
         return self.persistence.client["MozaiksAI"]["WorkflowStats"]
 
+    async def get_or_assign_cache_seed(self, chat_id: str, enterprise_id: Optional[str] = None) -> int:
+        """Return a stable per-chat cache seed, assigning one if missing.
+
+        Seed is deterministic by default (derived from chat_id and enterprise_id if provided),
+        and persisted to the ChatSessions document under "cache_seed" for visibility and reuse.
+        """
+        coll = await self._coll()
+        doc = await coll.find_one({"_id": chat_id}, {"cache_seed": 1})
+        if doc and isinstance(doc.get("cache_seed"), (int, float)):
+            try:
+                reused_seed = int(doc["cache_seed"])
+                logger.debug(
+                    "[CACHE_SEED] Reusing existing per-chat seed",
+                    extra={
+                        "chat_id": chat_id,
+                        "enterprise_id": enterprise_id,
+                        "seed": reused_seed,
+                        "source": "persisted",
+                    },
+                )
+                return reused_seed  # normalize to int
+            except Exception:
+                logger.debug(
+                    f"[CACHE_SEED] Persisted seed could not be coerced to int (value={doc.get('cache_seed')!r}); will recompute",
+                    extra={"chat_id": chat_id, "enterprise_id": enterprise_id},
+                )
+        # Derive a deterministic 32-bit seed from chat_id (+ enterprise_id if provided)
+        basis = chat_id if enterprise_id is None else f"{enterprise_id}:{chat_id}"
+        seed_bytes = hashlib.sha256(basis.encode("utf-8")).digest()[:4]
+        seed = int.from_bytes(seed_bytes, "big", signed=False)
+        try:
+            await coll.update_one({"_id": chat_id}, {"$set": {"cache_seed": seed}})
+            logger.debug(
+                "[CACHE_SEED] Assigned new deterministic per-chat seed",
+                extra={
+                    "chat_id": chat_id,
+                    "enterprise_id": enterprise_id,
+                    "seed": seed,
+                    "basis": basis,
+                    "basis_hash_prefix": hashlib.sha256(basis.encode('utf-8')).hexdigest()[:10],
+                },
+            )
+        except Exception as e:
+            logger.debug(f"Failed to persist cache_seed for chat {chat_id}: {e}")
+            logger.debug(
+                "[CACHE_SEED] Proceeding with in-memory seed only (persistence failure)",
+                extra={"chat_id": chat_id, "enterprise_id": enterprise_id, "seed": seed},
+            )
+        return seed
+
     # Wallet delegation -------------------------------------------------
     async def get_wallet_balance(self, user_id: str, enterprise_id: str) -> int:
         return await self.persistence.get_wallet_balance(user_id, enterprise_id)
@@ -188,68 +236,63 @@ class AG2PersistenceManager:
                 await self.persistence._validate_enterprise_exists(enterprise_id)
             except Exception as e:
                 logger.error(f"Enterprise validation failed for {enterprise_id}: {e}")
-            with timed_span("db.create_chat_session", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id}):
-                coll = await self._coll()
-                if await coll.find_one({"_id": chat_id}):
-                    return
-                now = datetime.utcnow()
-                await coll.insert_one({
-                        "_id": chat_id,
-                        "enterprise_id": enterprise_id,
-                        "workflow_name": workflow_name,
-                        "user_id": user_id,
-                        "status": int(WorkflowStatus.IN_PROGRESS),
-                        "created_at": now,
-                        "last_updated_at": now,
-                        # per-session atomic sequence counter for message diffs
-                        "last_sequence": 0,
-                        "messages": [],
-                    })
-            # Create performance aggregation document early (if enabled)
-            try:  # best-effort, no failure propagation
-                from core.observability.performance_store import ensure_chat_perf_doc
-                await ensure_chat_perf_doc(chat_id, enterprise_id, workflow_name)
-            except Exception as perf_e:  # pragma: no cover
-                logger.debug(f"perf doc init skipped chat_id={chat_id}: {perf_e}")
+            coll = await self._coll()
+            if await coll.find_one({"_id": chat_id}):
+                return
+            now = datetime.utcnow()
+            await coll.insert_one({
+                "_id": chat_id,
+                "chat_id": chat_id,
+                "enterprise_id": enterprise_id,
+                "workflow_name": workflow_name,
+                "user_id": user_id,
+                "status": int(WorkflowStatus.IN_PROGRESS),
+                "created_at": now,
+                "last_updated_at": now,
+                # per-session atomic sequence counter for message diffs
+                "last_sequence": 0,
+                # persisted UI context for multi-user resume of active artifact/tool panel
+                # null until first artifact/tool emission is persisted via update_last_artifact()
+                "last_artifact": None,
+                "messages": [],
+            })
             # Initialize / upsert unified real-time rollup doc (mon_{enterprise_id}_{workflow_name})
             # We maintain a single rollup document that is updated live instead of
             # a per-chat metrics_{chat_id} document plus a completion rollup.
             stats_coll = await self._workflow_stats_coll()
             summary_id = f"mon_{enterprise_id}_{workflow_name}"
             # Use $setOnInsert so we don't clobber existing real-time aggregates if concurrent chats start.
-            with timed_span("db.ensure_rollup_doc", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id}):
-                await stats_coll.update_one(
-                    {"_id": summary_id},
-                    {"$setOnInsert": {
-                        "_id": summary_id,
-                        "enterprise_id": enterprise_id,
-                        "workflow_name": workflow_name,
-                        "last_updated_at": now,
-                        # overall_avg block mirrors models.WorkflowSummaryDoc schema
-                        "overall_avg": {
-                            "avg_duration_sec": 0.0,
-                            "avg_prompt_tokens": 0,
-                            "avg_completion_tokens": 0,
-                            "avg_total_tokens": 0,
-                            "avg_cost_total_usd": 0.0,
-                        },
-                        "chat_sessions": {},
-                        "agents": {}
-                    }},
-                    upsert=True
-                )
+            await stats_coll.update_one(
+                {"_id": summary_id},
+                {"$setOnInsert": {
+                    "_id": summary_id,
+                    "enterprise_id": enterprise_id,
+                    "workflow_name": workflow_name,
+                    "last_updated_at": now,
+                    # overall_avg block mirrors models.WorkflowSummaryDoc schema
+                    "overall_avg": {
+                        "avg_duration_sec": 0.0,
+                        "avg_prompt_tokens": 0,
+                        "avg_completion_tokens": 0,
+                        "avg_total_tokens": 0,
+                        "avg_cost_total_usd": 0.0,
+                    },
+                    "chat_sessions": {},
+                    "agents": {}
+                }},
+                upsert=True
+            )
             # Seed empty per-chat metrics container if not present
-            with timed_span("db.seed_chat_metrics", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id}):
-                await stats_coll.update_one(
-                    {"_id": summary_id, f"chat_sessions.{chat_id}": {"$exists": False}},
-                    {"$set": {f"chat_sessions.{chat_id}": {
-                        "duration_sec": 0.0,
-                        "prompt_tokens": 0,
-                        "completion_tokens": 0,
-                        "total_tokens": 0,
-                        "cost_total_usd": 0.0
-                    }, "last_updated_at": now}}
-                )
+            await stats_coll.update_one(
+                {"_id": summary_id, f"chat_sessions.{chat_id}": {"$exists": False}},
+                {"$set": {f"chat_sessions.{chat_id}": {
+                    "duration_sec": 0.0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cost_total_usd": 0.0
+                }, "last_updated_at": now}}
+            )
         except Exception as e:  # pragma: no cover
             logger.error(f"Failed to create chat session {chat_id}: {e}")
 
@@ -258,17 +301,15 @@ class AG2PersistenceManager:
             coll = await self._coll()
             now = datetime.utcnow()
             # Fetch created_at & usage to compute duration for rollup averages
-            with timed_span("db.fetch_chat_for_completion", attributes={"enterprise_id": enterprise_id}):
-                base_doc = await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"created_at": 1})
+            base_doc = await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"created_at": 1})
             created_at = base_doc.get("created_at") if base_doc else None
             dur = float((now - created_at).total_seconds()) if created_at else 0.0
-            with timed_span("db.update_chat_completed", attributes={"enterprise_id": enterprise_id}):
-                res = await coll.update_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"$set": {
-                    "status": int(WorkflowStatus.COMPLETED),
-                    "completed_at": now,
-                    "last_updated_at": now,
-                    "duration_sec": dur,
-                }})
+            res = await coll.update_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"$set": {
+                "status": int(WorkflowStatus.COMPLETED),
+                "completed_at": now,
+                "last_updated_at": now,
+                "duration_sec": dur,
+            }})
             # Fire & forget rollup refresh (no await block on success path)
             if res.modified_count > 0:
                 try:  # pragma: no cover
@@ -285,6 +326,110 @@ class AG2PersistenceManager:
             logger.error(f"Failed to mark chat {chat_id} as completed: {e}")
             return False
 
+    async def update_last_artifact(self, *, chat_id: str, enterprise_id: str, artifact: Dict[str, Any]) -> None:
+        """Persist latest artifact/tool panel context for multi-user resume.
+
+        Expected artifact dict keys (best-effort, flexible):
+            ui_tool_id: str
+            event_id: str | None
+            display: str (e.g., 'artifact')
+            workflow_name: str
+            payload: arbitrary JSON-safe structure
+        
+            Semantics / lifecycle:
+                - Only the most recent artifact-mode UI tool event is stored (overwrite strategy).
+                - Cleared implicitly when a new chat session is created; we do NOT keep historical artifacts here.
+                - Frontend uses /api/chats/meta and websocket chat_meta (last_artifact field) to restore the panel
+                  when a second user joins or a browser refresh occurs without local cache.
+                - Large payloads: currently stored verbatim. If future payloads exceed practical limits, introduce
+                  truncation or a separate GridFS storage; shape kept minimal to ease migration.
+        """
+        try:
+            coll = await self._coll()
+            now = datetime.utcnow()
+            doc = {
+                "ui_tool_id": artifact.get("ui_tool_id"),
+                "event_id": artifact.get("event_id"),
+                "display": artifact.get("display"),
+                "workflow_name": artifact.get("workflow_name"),
+                # Keep payload shallow (avoid huge memory copies); truncate strings if massive in future enhancement
+                "payload": artifact.get("payload"),
+                "updated_at": now,
+            }
+            await coll.update_one(
+                {"_id": chat_id, "enterprise_id": enterprise_id},
+                {"$set": {"last_artifact": doc, "last_updated_at": now}},
+            )
+            logger.debug(
+                "[LAST_ARTIFACT] Updated",
+                extra={"chat_id": chat_id, "enterprise_id": enterprise_id, "ui_tool_id": doc.get("ui_tool_id")},
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug(f"[LAST_ARTIFACT] Update failed chat_id={chat_id}: {e}")
+
+    async def persist_initial_messages(self, *, chat_id: str, enterprise_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Persist initial seed / user messages that AG2 does NOT emit as TextEvents.
+
+        Rationale:
+            a_run_group_chat() consumes the provided initial message list as starting
+            context but does not re-emit those messages as TextEvent instances. Our
+            persistence layer previously only stored AG2 TextEvents, leaving brand-new
+            ChatSessions with an empty messages[] array until the first agent reply.
+
+        Behavior:
+            - Each provided message gets an auto-assigned sequence (incrementing last_sequence).
+            - event_id is generated with 'init_' prefix for traceability.
+            - Skips if list empty or chat session missing.
+            - Safe to call multiple times: we perform a basic duplicate guard by checking
+              if an identical (role, content) pair already exists as the latest message to
+              avoid accidental double insertion on rare retries.
+        """
+        if not messages:
+            return
+        try:
+            coll = await self._coll()
+            base_doc = await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"messages": {"$slice": -5}})
+            recent: List[Dict[str, Any]] = []
+            if base_doc and isinstance(base_doc.get("messages"), list):
+                recent = [m for m in base_doc["messages"] if isinstance(m, dict)]
+            for m in messages:
+                role = m.get("role") or "user"
+                content = m.get("content")
+                if content is None:
+                    continue
+                # Duplicate guard: if last message matches role+content, skip
+                if recent and isinstance(recent[-1], dict):
+                    last = recent[-1]
+                    if last.get("role") == role and last.get("content") == content:
+                        continue
+                # Increment sequence counter atomically & fetch new value
+                bump = await coll.find_one_and_update(
+                    {"_id": chat_id, "enterprise_id": enterprise_id},
+                    {"$inc": {"last_sequence": 1}, "$set": {"last_updated_at": datetime.utcnow()}},
+                    return_document=ReturnDocument.AFTER,
+                )
+                seq = int(bump.get("last_sequence", 1)) if bump else 1
+                msg_doc = {
+                    "role": role,
+                    "content": str(content),
+                    "timestamp": datetime.utcnow(),
+                    "event_type": "message.created",
+                    "event_id": f"init_{uuid4()}",
+                    "sequence": seq,
+                    "agent_name": m.get("name") or ("user" if role == "user" else "assistant"),
+                }
+                await coll.update_one(
+                    {"_id": chat_id, "enterprise_id": enterprise_id},
+                    {"$push": {"messages": msg_doc}, "$set": {"last_updated_at": datetime.utcnow()}},
+                )
+                recent.append(msg_doc)
+                logger.debug(
+                    "[INIT_MSG_PERSIST] Inserted initial message",
+                    extra={"chat_id": chat_id, "enterprise_id": enterprise_id, "seq": seq, "role": role},
+                )
+        except Exception as e:  # pragma: no cover
+            logger.debug(f"[INIT_MSG_PERSIST] Failed chat_id={chat_id}: {e}")
+
     async def resume_chat(self, chat_id: str, enterprise_id: str) -> Optional[List[Dict[str, Any]]]:
         """Return full message list for an in-progress chat.
 
@@ -299,7 +444,7 @@ class AG2PersistenceManager:
                 return None
             return doc.get("messages", [])
         except Exception as e:  # pragma: no cover
-            logger.error(f"Failed to resume chat {chat_id}: {e}")
+            logger.warning(f"Failed to resume chat {chat_id}: {e}")
             return None
 
     async def fetch_event_diff(self, *, chat_id: str, enterprise_id: str, last_sequence: int) -> List[Dict[str, Any]]:
@@ -322,300 +467,313 @@ class AG2PersistenceManager:
 
     # Events ------------------------------------------------------------
     async def save_event(self, event: BaseEvent, chat_id: str, enterprise_id: str) -> None:
-        with tracer.start_as_current_span("save_event") as span:
-            span.set_attributes({"chat_id": chat_id, "enterprise_id": enterprise_id})
+        try:
+            # Only persist TextEvent messages; ignore all other AG2 event types
+            if not isinstance(event, TextEvent):
+                return
+            # After the isinstance guard, we can safely treat event as TextEvent for type checkers
+            text_event = cast(TextEvent, event)
+            coll = await self._coll()
+            # Atomically bump per-session sequence counter and read new value
             try:
-                # Only persist TextEvent messages; ignore all other AG2 event types
-                if not isinstance(event, TextEvent):
-                    return
-                # After the isinstance guard, we can safely treat event as TextEvent for type checkers
-                text_event = cast(TextEvent, event)
-                coll = await self._coll()
-                # Atomically bump per-session sequence counter and read new value
-                try:
-                    bump = await coll.find_one_and_update(
-                        {"_id": chat_id, "enterprise_id": enterprise_id},
-                        {"$inc": {"last_sequence": 1}, "$set": {"last_updated_at": datetime.utcnow()}},
-                        return_document=ReturnDocument.AFTER,
-                    )
-                    seq = int(bump.get("last_sequence", 1)) if bump else 1
-                    wf_name = bump.get("workflow_name") if bump else None
-                except Exception as e:
-                    logger.warning(f"Failed to update sequence counter for {chat_id}: {e}")
-                    seq = 1
-                    wf_name = None
-                event_id = getattr(text_event, "id", None) or getattr(text_event, "event_id", None) or getattr(text_event, "event_uuid", None) or str(uuid4())
-                sender_obj = getattr(text_event, "sender", None)
-                raw_name = getattr(sender_obj, "name", None) if sender_obj else None
-                raw_content = getattr(text_event, "content", "")
+                bump = await coll.find_one_and_update(
+                    {"_id": chat_id, "enterprise_id": enterprise_id},
+                    {"$inc": {"last_sequence": 1}, "$set": {"last_updated_at": datetime.utcnow()}},
+                    return_document=ReturnDocument.AFTER,
+                )
+                seq = int(bump.get("last_sequence", 1)) if bump else 1
+                wf_name = bump.get("workflow_name") if bump else None
+            except Exception as e:
+                logger.warning(f"Failed to update sequence counter for {chat_id}: {e}")
+                seq = 1
+                wf_name = None
+            event_id = getattr(text_event, "id", None) or getattr(text_event, "event_id", None) or getattr(text_event, "event_uuid", None) or str(uuid4())
+            sender_obj = getattr(text_event, "sender", None)
+            raw_name = getattr(sender_obj, "name", None) if sender_obj else None
+            raw_content = getattr(text_event, "content", "")
 
-                # Helper: attempt extraction from dict-like content
-                def _extract_name_from_content(rc: Any) -> Optional[str]:
-                    try:
-                        if isinstance(rc, dict):
-                            for k in ("sender", "agent", "agent_name", "name"):
-                                v = rc.get(k)
-                                if isinstance(v, str) and v.strip():
-                                    return v.strip()
-                        return None
-                    except Exception:  # pragma: no cover
-                        return None
-
-                if not raw_name:
-                    # If the raw content is a pydantic / dataclass / object with dict method, attempt that
-                    if hasattr(raw_content, "model_dump"):
-                        try:
-                            raw_name = _extract_name_from_content(raw_content.model_dump())  # type: ignore
-                        except Exception:
-                            pass
-                    if not raw_name and hasattr(raw_content, "dict"):
-                        try:
-                            raw_name = _extract_name_from_content(raw_content.dict())  # type: ignore
-                        except Exception:
-                            pass
-                    if not raw_name:
-                        raw_name = _extract_name_from_content(raw_content)
-                # Fallback: parse from string representation if still missing
-                if not raw_name:
-                    try:
-                        txt_for_parse = None
-                        if isinstance(raw_content, str):
-                            txt_for_parse = raw_content
-                        else:
-                            # Convert to str only if small to avoid huge dumps
-                            dumped = str(raw_content)
-                            if len(dumped) < 5000:
-                                txt_for_parse = dumped
-                        if txt_for_parse:
-                            import re
-                            # Try both sender='Name' and "sender": "Name" JSON style
-                            m = re.search(r"sender(?:=|\"\s*:)['\"](?P<sender>[^'\"\\]+)['\"]", txt_for_parse)
-                            if m:
-                                raw_name = m.group("sender").strip()
-                    except Exception as e:
-                        logger.debug(f"Failed to parse sender from string content: {e}")
-                if not raw_name:
-                    raw_name = "assistant"  # final fallback
-                name_lower = raw_name.lower()
-                role = "user" if name_lower in ("user", "userproxy", "userproxyagent") else "assistant"
-                # Preserve structured content when possible
-                if isinstance(raw_content, (dict, list)):
-                    try:
-                        content_str = json.dumps(raw_content)[:10000]
-                    except (TypeError, ValueError) as e:
-                        logger.debug(f"Failed to serialize content as JSON: {e}")
-                        content_str = str(raw_content)
-                else:
-                    content_str = str(raw_content)
-                # --------------------------------------------------
-                # Post-process: extract inner message content to avoid storing the
-                # verbose debug string: "uuid=UUID('...') content='...' sender='Agent' ..."
-                # We keep only the 'content' portion; if that portion looks like JSON
-                # we attempt to parse & re-dump for clean storage.
-                # --------------------------------------------------
+            # Helper: attempt extraction from dict-like content
+            def _extract_name_from_content(rc: Any) -> Optional[str]:
                 try:
-                    # Fast check to avoid regex cost when pattern absent
-                    if "content=" in content_str and " sender=" in content_str:
-                        import re, json as _json
-                        # Non-greedy capture between content=quote and the next quote before sender=
-                        m = re.search(r"content=(?:'|\")(?P<inner>.*?)(?:'|\")\s+sender=", content_str, re.DOTALL)
+                    if isinstance(rc, dict):
+                        for k in ("sender", "agent", "agent_name", "name"):
+                            v = rc.get(k)
+                            if isinstance(v, str) and v.strip():
+                                return v.strip()
+                    return None
+                except Exception:  # pragma: no cover
+                    return None
+
+            if not raw_name:
+                # If the raw content is a pydantic / dataclass / object with dict method, attempt that
+                if hasattr(raw_content, "model_dump"):
+                    try:
+                        raw_name = _extract_name_from_content(raw_content.model_dump())  # type: ignore
+                    except Exception:
+                        pass
+                if not raw_name and hasattr(raw_content, "dict"):
+                    try:
+                        raw_name = _extract_name_from_content(raw_content.dict())  # type: ignore
+                    except Exception:
+                        pass
+                if not raw_name:
+                    raw_name = _extract_name_from_content(raw_content)
+            # Fallback: parse from string representation if still missing
+            if not raw_name:
+                try:
+                    txt_for_parse = None
+                    if isinstance(raw_content, str):
+                        txt_for_parse = raw_content
+                    else:
+                        # Convert to str only if small to avoid huge dumps
+                        dumped = str(raw_content)
+                        if len(dumped) < 5000:
+                            txt_for_parse = dumped
+                    if txt_for_parse:
+                        import re
+                        # Try both sender='Name' and "sender": "Name" JSON style
+                        m = re.search(r"sender(?:=|\"\s*:)['\"](?P<sender>[^'\"\\]+)['\"]", txt_for_parse)
                         if m:
-                            inner = m.group("inner").strip()
-                            cleaned: Any = inner
-                            if inner.startswith("{") or inner.startswith("["):
-                                try:
-                                    parsed = _json.loads(inner)
-                                    # Re-dump to normalized string with no escaping issues
-                                    cleaned = _json.dumps(parsed, ensure_ascii=False)
-                                except Exception:
-                                    # leave as raw string if JSON parse fails
-                                    pass
-                            content_str = cleaned if isinstance(cleaned, str) else _json.dumps(cleaned, ensure_ascii=False)
-                except Exception as _ce:  # pragma: no cover
-                    logger.debug(f"Content clean failed: {_ce}")
-                ts = getattr(event, "timestamp", None)
-                evt_ts = datetime.fromtimestamp(ts) if isinstance(ts, (int, float)) else datetime.utcnow()
-                msg = {
-                    "role": role,
-                    "content": content_str,
-                    "timestamp": evt_ts,
-                    "event_type": "message.created",
-                    "event_id": event_id,
-                    # Single authoritative sequence field (legacy 'seq' alias removed)
-                    "sequence": seq,
-                }
-                if role == "assistant":
-                    msg["agent_name"] = raw_name
-                else:
-                    msg["agent_name"] = "user"
-                # Structured output attachment (if agent registered for structured outputs in workflow)
+                            raw_name = m.group("sender").strip()
+                except Exception as e:
+                    logger.debug(f"Failed to parse sender from string content: {e}")
+            if not raw_name:
+                raw_name = "assistant"  # final fallback
+            name_lower = raw_name.lower()
+            role = "user" if name_lower in ("user", "userproxy", "userproxyagent") else "assistant"
+            # Preserve structured content when possible
+            if isinstance(raw_content, (dict, list)):
                 try:
-                    if role == "assistant" and wf_name and raw_name and agent_has_structured_output(wf_name, raw_name):
-                        # Attempt to parse JSON from cleaned content
-                        parsed = self._extract_json_from_text(content_str)
-                        if parsed:
-                            msg["structured_output"] = parsed
-                            schema_fields = get_structured_output_model_fields(wf_name, raw_name) or {}
-                            if schema_fields:
-                                msg["structured_schema"] = schema_fields
-                except Exception as so_err:  # pragma: no cover
-                    logger.debug(f"Structured output parse skipped agent={raw_name}: {so_err}")
-                with timed_span("db.append_message", attributes={"enterprise_id": enterprise_id}):
-                    await coll.update_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"$push": {"messages": msg}, "$set": {"last_updated_at": datetime.utcnow()}})
-                span.add_event("message_saved")
-            except Exception as e:  # pragma: no cover
-                span.record_exception(e)
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                logger.error(f"Failed to save event for {chat_id}: {e}")
+                    content_str = json.dumps(raw_content)[:10000]
+                except (TypeError, ValueError) as e:
+                    logger.debug(f"Failed to serialize content as JSON: {e}")
+                    content_str = str(raw_content)
+            else:
+                content_str = str(raw_content)
+            # --------------------------------------------------
+            # Post-process: extract inner message content to avoid storing the
+            # verbose debug string: "uuid=UUID('...') content='...' sender='Agent' ..."
+            # We keep only the 'content' portion; if that portion looks like JSON
+            # we attempt to parse & re-dump for clean storage.
+            # --------------------------------------------------
+            try:
+                # Fast check to avoid regex cost when pattern absent
+                if "content=" in content_str and " sender=" in content_str:
+                    import re, json as _json
+                    # Non-greedy capture between content=quote and the next quote before sender=
+                    m = re.search(r"content=(?:'|\")(?P<inner>.*?)(?:'|\")\s+sender=", content_str, re.DOTALL)
+                    if m:
+                        inner = m.group("inner").strip()
+                        cleaned: Any = inner
+                        if inner.startswith("{") or inner.startswith("["):
+                            try:
+                                parsed = _json.loads(inner)
+                                # Re-dump to normalized string with no escaping issues
+                                cleaned = _json.dumps(parsed, ensure_ascii=False)
+                            except Exception:
+                                # leave as raw string if JSON parse fails
+                                pass
+                        content_str = cleaned if isinstance(cleaned, str) else _json.dumps(cleaned, ensure_ascii=False)
+            except Exception as _ce:  # pragma: no cover
+                logger.debug(f"Content clean failed: {_ce}")
+            ts = getattr(event, "timestamp", None)
+            evt_ts = datetime.fromtimestamp(ts) if isinstance(ts, (int, float)) else datetime.utcnow()
+            msg = {
+                "role": role,
+                "content": content_str,
+                "timestamp": evt_ts,
+                "event_type": "message.created",
+                "event_id": event_id,
+                # Single authoritative sequence field (legacy 'seq' alias removed)
+                "sequence": seq,
+            }
+            if role == "assistant":
+                msg["agent_name"] = raw_name
+            else:
+                msg["agent_name"] = "user"
+            # Structured output attachment (if agent registered for structured outputs in workflow)
+            try:
+                if role == "assistant" and wf_name and raw_name and agent_has_structured_output(wf_name, raw_name):
+                    # Attempt to parse JSON from cleaned content
+                    parsed = self._extract_json_from_text(content_str)
+                    if parsed:
+                        msg["structured_output"] = parsed
+                        schema_fields = get_structured_output_model_fields(wf_name, raw_name) or {}
+                        if schema_fields:
+                            msg["structured_schema"] = schema_fields
+            except Exception as so_err:  # pragma: no cover
+                logger.debug(f"Structured output parse skipped agent={raw_name}: {so_err}")
+            await coll.update_one(
+                {"_id": chat_id, "enterprise_id": enterprise_id},
+                {"$push": {"messages": msg}, "$set": {"last_updated_at": datetime.utcnow()}},
+            )
+        except Exception as e:  # pragma: no cover
+            logger.error(f"Failed to save event for {chat_id}: {e}")
 
     async def save_usage_summary_event(self, *, envelope: Dict[str, Any], chat_id: str, enterprise_id: str, workflow_name: str, user_id: str) -> None:
         """Process AG2 UsageSummaryEvent for metrics updates.
         
         Called directly from orchestration when UsageSummaryEvent is encountered.
         """
-        with tracer.start_as_current_span("save_usage_summary_event") as span:
-            span.set_attributes({"chat_id": chat_id, "enterprise_id": enterprise_id})
+        try:
+            if not envelope or envelope.get("event_type") != "UsageSummaryEvent":
+                logger.warning(f"Invalid UsageSummaryEvent envelope for {chat_id}")
+                return
+                
+            meta = envelope.get("meta", {})
+            # Extract an event timestamp (seconds since epoch) if provided, else now()
+            raw_ts = meta.get("timestamp") or meta.get("ts") or envelope.get("timestamp")
+            evt_dt: Optional[datetime] = None
             try:
-                if not envelope or envelope.get("event_type") != "UsageSummaryEvent":
-                    logger.warning(f"Invalid UsageSummaryEvent envelope for {chat_id}")
-                    return
-                    
-                meta = envelope.get("meta", {})
-                # Extract an event timestamp (seconds since epoch) if provided, else now()
-                raw_ts = meta.get("timestamp") or meta.get("ts") or envelope.get("timestamp")
-                evt_dt: Optional[datetime] = None
-                try:
-                    if isinstance(raw_ts, (int, float)):
-                        evt_dt = datetime.utcfromtimestamp(float(raw_ts))
-                except Exception:
-                    evt_dt = None
-                await self.update_session_metrics(
-                    chat_id=chat_id,
-                    enterprise_id=enterprise_id,
-                    user_id=user_id,
-                    workflow_name=workflow_name,
-                    prompt_tokens=int(meta.get("prompt_tokens", 0)),
-                    completion_tokens=int(meta.get("completion_tokens", 0)),
-                    cost_usd=float(meta.get("cost_usd", 0.0)),
-                    agent_name=meta.get("agent") or envelope.get("name"),
-                    event_ts=evt_dt,
-                )
-                span.add_event("usage_summary_processed")
-            except Exception as e:  # pragma: no cover
-                span.record_exception(e)
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                logger.error(f"Failed to process UsageSummaryEvent for {chat_id}: {e}")
+                if isinstance(raw_ts, (int, float)):
+                    evt_dt = datetime.utcfromtimestamp(float(raw_ts))
+            except Exception:
+                evt_dt = None
+            await self.update_session_metrics(
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
+                user_id=user_id,
+                workflow_name=workflow_name,
+                prompt_tokens=int(meta.get("prompt_tokens", 0)),
+                completion_tokens=int(meta.get("completion_tokens", 0)),
+                cost_usd=float(meta.get("cost_usd", 0.0)),
+                agent_name=meta.get("agent") or envelope.get("name"),
+                event_ts=evt_dt,
+            )
+        except Exception as e:  # pragma: no cover
+            logger.error(f"Failed to process UsageSummaryEvent for {chat_id}: {e}")
 
     # Usage summary ----------------------------------------------------
-    async def update_session_metrics(self, chat_id: str, enterprise_id: str, user_id: str, workflow_name: str,
-                                     prompt_tokens: int, completion_tokens: int, cost_usd: float,
-                                     agent_name: Optional[str] = None, event_ts: Optional[datetime] = None) -> None:
+    async def update_session_metrics(
+        self,
+        chat_id: str,
+        enterprise_id: str,
+        user_id: str,
+        workflow_name: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_usd: float,
+        agent_name: Optional[str] = None,
+        event_ts: Optional[datetime] = None,
+        duration_sec: float = 0.0,
+    ) -> None:
         """Update live unified rollup document with per-chat + per-agent metrics and handle billing.
 
         Replaces per-chat metrics document updates. We directly mutate the
         rollup doc (mon_{enterprise_id}_{workflow_name}) so UI / analytics can read
         a single authoritative structure during execution.
         """
-        with tracer.start_as_current_span("update_session_metrics") as span:
-            span.set_attributes({"chat_id": chat_id, "enterprise_id": enterprise_id})
-            try:
-                stats_coll = await self._workflow_stats_coll()
-                summary_id = f"mon_{enterprise_id}_{workflow_name}"
-                total_tokens = prompt_tokens + completion_tokens
-                now = datetime.utcnow()
-                if event_ts is None:
-                    event_ts = now
-                # Ensure base summary & chat session containers exist
-                with timed_span("db.ensure_summary_and_chat", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id}):
-                    await stats_coll.update_one(
-                    {"_id": summary_id},
-                    {"$setOnInsert": {
-                        "_id": summary_id,
-                        "enterprise_id": enterprise_id,
-                        "workflow_name": workflow_name,
-                        "last_updated_at": now,
-                        "overall_avg": {
+        try:
+            stats_coll = await self._workflow_stats_coll()
+            summary_id = f"mon_{enterprise_id}_{workflow_name}"
+            total_tokens = prompt_tokens + completion_tokens
+            now = datetime.utcnow()
+            if event_ts is None:
+                event_ts = now
+            # Ensure base summary & chat session containers exist
+            await stats_coll.update_one(
+                {"_id": summary_id},
+                {"$setOnInsert": {
+                    "_id": summary_id,
+                    "enterprise_id": enterprise_id,
+                    "workflow_name": workflow_name,
+                    "last_updated_at": now,
+                    "overall_avg": {
+                        "avg_duration_sec": 0.0,
+                        "avg_prompt_tokens": 0,
+                        "avg_completion_tokens": 0,
+                        "avg_total_tokens": 0,
+                        "avg_cost_total_usd": 0.0,
+                    },
+                    "chat_sessions": {},
+                    "agents": {}
+                }}, upsert=True
+            )
+            # Seed chat session metrics if absent
+            await stats_coll.update_one(
+                {"_id": summary_id, f"chat_sessions.{chat_id}": {"$exists": False}},
+                {"$set": {f"chat_sessions.{chat_id}": {
+                    "duration_sec": 0.0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cost_total_usd": 0.0,
+                    # Track per-chat last event time to accumulate duration between usage deltas
+                    "last_event_ts": event_ts
+                }}, "$setOnInsert": {"last_updated_at": now}}
+            )
+            # Increment per-chat metrics
+            inc_ops = {
+                f"chat_sessions.{chat_id}.prompt_tokens": prompt_tokens,
+                f"chat_sessions.{chat_id}.completion_tokens": completion_tokens,
+                f"chat_sessions.{chat_id}.total_tokens": total_tokens,
+                f"chat_sessions.{chat_id}.cost_total_usd": cost_usd,
+            }
+            # Compute chat-level duration delta, prefer provided duration_sec
+            chat_duration_delta = max(0.0, duration_sec)
+            if chat_duration_delta <= 0:
+                try:
+                    prev_ts_doc = await stats_coll.find_one({"_id": summary_id}, {f"chat_sessions.{chat_id}.last_event_ts": 1})
+                    prev_session = None
+                    if prev_ts_doc:
+                        prev_cs_map = prev_ts_doc.get("chat_sessions") or {}
+                        prev_session = prev_cs_map.get(chat_id) or {}
+                    prev_ts_val = prev_session.get("last_event_ts") if prev_session else None  # type: ignore
+                    if isinstance(prev_ts_val, datetime):
+                        chat_duration_delta = max(0.0, (event_ts - prev_ts_val).total_seconds())  # type: ignore
+                except Exception:
+                    chat_duration_delta = 0.0
+            if chat_duration_delta > 0:
+                inc_ops[f"chat_sessions.{chat_id}.duration_sec"] = chat_duration_delta
+            await stats_coll.update_one({"_id": summary_id}, {"$inc": inc_ops, "$set": {"last_updated_at": now, f"chat_sessions.{chat_id}.last_event_ts": event_ts}})
+
+            # Also reflect usage counters directly inside ChatSessions doc so rollup recompute stays consistent
+            chat_coll = await self._coll()
+            await chat_coll.update_one(
+                {"_id": chat_id, "enterprise_id": enterprise_id},
+                {"$inc": {
+                    "usage_prompt_tokens_final": prompt_tokens,
+                    "usage_completion_tokens_final": completion_tokens,
+                    "usage_total_tokens_final": total_tokens,
+                    "usage_total_cost_final": cost_usd,
+                }, "$set": {"last_updated_at": now}}
+            )
+
+            # Per-agent session metrics (with duration accumulation based on event timestamp)
+            if agent_name:
+                # Seed agent container & agent.session container if absent
+                await stats_coll.update_one(
+                    {"_id": summary_id, f"agents.{agent_name}": {"$exists": False}},
+                    {"$set": {f"agents.{agent_name}": {
+                        "avg": {
                             "avg_duration_sec": 0.0,
                             "avg_prompt_tokens": 0,
                             "avg_completion_tokens": 0,
                             "avg_total_tokens": 0,
                             "avg_cost_total_usd": 0.0,
                         },
-                        "chat_sessions": {},
-                        "agents": {}
-                    }}, upsert=True
+                        "sessions": {}
+                    }}}
                 )
-                # Seed chat session metrics if absent
-                with timed_span("db.seed_chat_metrics_if_absent", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id}):
-                    await stats_coll.update_one(
-                        {"_id": summary_id, f"chat_sessions.{chat_id}": {"$exists": False}},
-                        {"$set": {f"chat_sessions.{chat_id}": {
-                            "duration_sec": 0.0,
-                            "prompt_tokens": 0,
-                            "completion_tokens": 0,
-                            "total_tokens": 0,
-                            "cost_total_usd": 0.0
-                        }}}
-                    )
-                # Increment per-chat metrics
-                inc_ops = {
-                    f"chat_sessions.{chat_id}.prompt_tokens": prompt_tokens,
-                    f"chat_sessions.{chat_id}.completion_tokens": completion_tokens,
-                    f"chat_sessions.{chat_id}.total_tokens": total_tokens,
-                    f"chat_sessions.{chat_id}.cost_total_usd": cost_usd,
+                await stats_coll.update_one(
+                    {"_id": summary_id, f"agents.{agent_name}.sessions.{chat_id}": {"$exists": False}},
+                    {"$set": {f"agents.{agent_name}.sessions.{chat_id}": {
+                        "duration_sec": 0.0,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "cost_total_usd": 0.0
+                    }}}
+                )
+                agent_inc = {
+                    f"agents.{agent_name}.sessions.{chat_id}.prompt_tokens": prompt_tokens,
+                    f"agents.{agent_name}.sessions.{chat_id}.completion_tokens": completion_tokens,
+                    f"agents.{agent_name}.sessions.{chat_id}.total_tokens": total_tokens,
+                    f"agents.{agent_name}.sessions.{chat_id}.cost_total_usd": cost_usd,
                 }
-                with timed_span("db.inc_chat_metrics", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id}):
-                    await stats_coll.update_one({"_id": summary_id}, {"$inc": inc_ops, "$set": {"last_updated_at": now}})
-
-                # Also reflect usage counters directly inside ChatSessions doc so rollup recompute stays consistent
-                chat_coll = await self._coll()
-                with timed_span("db.inc_chat_session_usage", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id}):
-                    await chat_coll.update_one(
-                        {"_id": chat_id, "enterprise_id": enterprise_id},
-                        {"$inc": {
-                            "usage_prompt_tokens_final": prompt_tokens,
-                            "usage_completion_tokens_final": completion_tokens,
-                            "usage_total_tokens_final": total_tokens,
-                            "usage_total_cost_final": cost_usd,
-                        }, "$set": {"last_updated_at": now}}
-                    )
-
-                # Per-agent session metrics (with duration accumulation based on event timestamp)
-                if agent_name:
-                    # Seed agent container & agent.session container if absent
-                    with timed_span("db.ensure_agent_container", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id, "agent": agent_name}):
-                        await stats_coll.update_one(
-                            {"_id": summary_id, f"agents.{agent_name}": {"$exists": False}},
-                            {"$set": {f"agents.{agent_name}": {
-                                "avg": {
-                                    "avg_duration_sec": 0.0,
-                                    "avg_prompt_tokens": 0,
-                                    "avg_completion_tokens": 0,
-                                    "avg_total_tokens": 0,
-                                    "avg_cost_total_usd": 0.0,
-                                },
-                                "sessions": {}
-                            }}}
-                        )
-                    with timed_span("db.ensure_agent_session_container", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id, "agent": agent_name}):
-                        await stats_coll.update_one(
-                            {"_id": summary_id, f"agents.{agent_name}.sessions.{chat_id}": {"$exists": False}},
-                            {"$set": {f"agents.{agent_name}.sessions.{chat_id}": {
-                                "duration_sec": 0.0,
-                                "prompt_tokens": 0,
-                                "completion_tokens": 0,
-                                "total_tokens": 0,
-                                "cost_total_usd": 0.0
-                            }}}
-                        )
-                    agent_inc = {
-                        f"agents.{agent_name}.sessions.{chat_id}.prompt_tokens": prompt_tokens,
-                        f"agents.{agent_name}.sessions.{chat_id}.completion_tokens": completion_tokens,
-                        f"agents.{agent_name}.sessions.{chat_id}.total_tokens": total_tokens,
-                        f"agents.{agent_name}.sessions.{chat_id}.cost_total_usd": cost_usd,
-                    }
-                    # Compute duration delta using last_event_ts (stored per agent session)
-                    duration_delta = 0.0
+                # Compute duration delta using last_event_ts (stored per agent session)
+                duration_delta = max(0.0, duration_sec)
+                if duration_delta <= 0:
                     try:
                         prev_ts_doc = await stats_coll.find_one({"_id": summary_id}, {f"agents.{agent_name}.sessions.{chat_id}.last_event_ts": 1})
                         prev_session = None
@@ -631,53 +789,51 @@ class AG2PersistenceManager:
                             duration_delta = 0.0
                     except Exception:
                         duration_delta = 0.0
-                    if duration_delta > 0:
-                        agent_inc[f"agents.{agent_name}.sessions.{chat_id}.duration_sec"] = duration_delta
-                    # Apply increments and set last_event_ts
-                    with timed_span("db.inc_agent_session_metrics", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id, "agent": agent_name}):
-                        await stats_coll.update_one({"_id": summary_id}, {"$inc": agent_inc, "$set": {f"agents.{agent_name}.sessions.{chat_id}.last_event_ts": event_ts}})
+                if duration_delta > 0:
+                    agent_inc[f"agents.{agent_name}.sessions.{chat_id}.duration_sec"] = duration_delta
+                # Apply increments and set last_event_ts
+                await stats_coll.update_one({"_id": summary_id}, {"$inc": agent_inc, "$set": {f"agents.{agent_name}.sessions.{chat_id}.last_event_ts": event_ts}})
 
-                # Recompute averages (simple read & aggregate) -- small doc so acceptable.
-                with timed_span("db.read_for_overall_avg", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id}):
-                    doc = await stats_coll.find_one({"_id": summary_id}, {"chat_sessions": 1, "agents": 1})
-                if doc and isinstance(doc.get("chat_sessions"), dict):
-                    cs = doc["chat_sessions"]
-                    n = len(cs) if cs else 0
-                    if n:
-                        total_prompt = sum(int(v.get("prompt_tokens", 0)) for v in cs.values())
-                        total_completion = sum(int(v.get("completion_tokens", 0)) for v in cs.values())
-                        total_total = sum(int(v.get("total_tokens", 0)) for v in cs.values())
-                        total_cost = sum(float(v.get("cost_total_usd", 0.0)) for v in cs.values())
-                        await stats_coll.update_one(
-                            {"_id": summary_id},
-                            {"$set": {
-                                "overall_avg.avg_prompt_tokens": int(total_prompt / n),
-                                "overall_avg.avg_completion_tokens": int(total_completion / n),
-                                "overall_avg.avg_total_tokens": int(total_total / n),
-                                "overall_avg.avg_cost_total_usd": (total_cost / n),
-                                # duration_avg left at 0 until completion updates
-                            }}
-                        )
-                if agent_name:
-                    with timed_span("db.read_for_agent_avg", attributes={"workflow": workflow_name, "enterprise_id": enterprise_id, "agent": agent_name}):
-                        doc = await stats_coll.find_one({"_id": summary_id}, {f"agents.{agent_name}": 1})
-                    ag = doc.get("agents", {}).get(agent_name) if doc else None
-                    if ag and isinstance(ag.get("sessions"), dict):
-                        sess_map = ag["sessions"]
-                        an = len(sess_map)
-                        if an:
-                            ap = sum(int(v.get("prompt_tokens", 0)) for v in sess_map.values())
-                            ac = sum(int(v.get("completion_tokens", 0)) for v in sess_map.values())
-                            at = sum(int(v.get("total_tokens", 0)) for v in sess_map.values())
-                            acost = sum(float(v.get("cost_total_usd", 0.0)) for v in sess_map.values())
-                            adur = sum(float(v.get("duration_sec", 0.0)) for v in sess_map.values())
-                            await stats_coll.update_one({"_id": summary_id}, {"$set": {
-                                f"agents.{agent_name}.avg.avg_prompt_tokens": int(ap / an),
-                                f"agents.{agent_name}.avg.avg_completion_tokens": int(ac / an),
-                                f"agents.{agent_name}.avg.avg_total_tokens": int(at / an),
-                                f"agents.{agent_name}.avg.avg_cost_total_usd": (acost / an),
-                                f"agents.{agent_name}.avg.avg_duration_sec": (adur / an),
-                            }})
+            # Recompute averages (simple read & aggregate) -- small doc so acceptable.
+            doc = await stats_coll.find_one({"_id": summary_id}, {"chat_sessions": 1, "agents": 1})
+            if doc and isinstance(doc.get("chat_sessions"), dict):
+                cs = doc["chat_sessions"]
+                n = len(cs) if cs else 0
+                if n:
+                    total_prompt = sum(int(v.get("prompt_tokens", 0)) for v in cs.values())
+                    total_completion = sum(int(v.get("completion_tokens", 0)) for v in cs.values())
+                    total_total = sum(int(v.get("total_tokens", 0)) for v in cs.values())
+                    total_cost = sum(float(v.get("cost_total_usd", 0.0)) for v in cs.values())
+                    total_duration = sum(float(v.get("duration_sec", 0.0)) for v in cs.values())
+                    await stats_coll.update_one(
+                        {"_id": summary_id},
+                        {"$set": {
+                            "overall_avg.avg_prompt_tokens": int(total_prompt / n),
+                            "overall_avg.avg_completion_tokens": int(total_completion / n),
+                            "overall_avg.avg_total_tokens": int(total_total / n),
+                            "overall_avg.avg_cost_total_usd": (total_cost / n),
+                            "overall_avg.avg_duration_sec": (total_duration / n),
+                        }}
+                    )
+            if agent_name:
+                doc = await stats_coll.find_one({"_id": summary_id}, {f"agents.{agent_name}": 1})
+                ag = doc.get("agents", {}).get(agent_name) if doc else None
+                if ag and isinstance(ag.get("sessions"), dict):
+                    sess_map = ag["sessions"]
+                    an = len(sess_map)
+                    if an:
+                        ap = sum(int(v.get("prompt_tokens", 0)) for v in sess_map.values())
+                        ac = sum(int(v.get("completion_tokens", 0)) for v in sess_map.values())
+                        at = sum(int(v.get("total_tokens", 0)) for v in sess_map.values())
+                        acost = sum(float(v.get("cost_total_usd", 0.0)) for v in sess_map.values())
+                        adur = sum(float(v.get("duration_sec", 0.0)) for v in sess_map.values())
+                        await stats_coll.update_one({"_id": summary_id}, {"$set": {
+                            f"agents.{agent_name}.avg.avg_prompt_tokens": int(ap / an),
+                            f"agents.{agent_name}.avg.avg_completion_tokens": int(ac / an),
+                            f"agents.{agent_name}.avg.avg_total_tokens": int(at / an),
+                            f"agents.{agent_name}.avg.avg_cost_total_usd": (acost / an),
+                            f"agents.{agent_name}.avg.avg_duration_sec": (adur / an),
+                        }})
                 
                 # Real-time billing - debit tokens immediately if not free trial
                 if total_tokens > 0:
@@ -700,11 +856,8 @@ class AG2PersistenceManager:
                                 enterprise_id=enterprise_id
                             ))
                 
-                span.add_event("metrics_updated")
-            except Exception as e:  # pragma: no cover
-                span.record_exception(e)
-                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                logger.error(f"Failed to update session metrics for {chat_id}: {e}")
+        except Exception as e:  # pragma: no cover
+            logger.error(f"Failed to update session metrics for {chat_id}: {e}")
 
 
 

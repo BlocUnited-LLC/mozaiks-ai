@@ -25,7 +25,11 @@
       "Bash(docker system prune:*)",
       "Bash(.start-app.ps1)",
       "Bash(powershell:*)",
-      "Bash(docker compose:*)"
+      "Bash(docker compose:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.ag2.ai)",
+      "WebFetch(domain:microsoft.github.io)",
+      "Bash(sqlite3:*)"
     ],
     "deny": [],
     "ask": []

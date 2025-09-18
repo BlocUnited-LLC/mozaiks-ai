@@ -104,7 +104,7 @@ Production Extensions
 ✅ **Core Backend Implementation**: Complete AG2 `a_run_group_chat` integration with event-driven architecture  
 ✅ **Frontend Integration**: Full chat.* namespace protocol with UI component integration  
 ✅ **Testing Suite**: Comprehensive unit and integration tests covering all core functionality  
-✅ **Performance Instrumentation**: Complete observability with metrics, telemetry, and performance tracking  
+✅ **Performance Instrumentation**: Complete observability with metrics and performance tracking  
 ✅ **Hardening Features**: Backpressure control, heartbeat monitoring, and error handling  
 ✅ **Production Extensions**: Tool progress events and complete protocol implementation  
 

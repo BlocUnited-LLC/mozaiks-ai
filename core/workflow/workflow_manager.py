@@ -317,7 +317,22 @@ class UnifiedWorkflowManager:
     def has_human_in_the_loop(self, workflow_name: str) -> bool:
         """Check if workflow requires human interaction"""
         config = self.get_config(workflow_name)
-        return config.get("human_in_the_loop", False)
+        val = config.get("human_in_the_loop", False)
+        # Normalize common representations to boolean
+        if isinstance(val, bool):
+            return val
+        try:
+            if isinstance(val, (int, float)):
+                return bool(int(val))
+        except Exception:
+            pass
+        if isinstance(val, str):
+            v = val.strip().lower()
+            if v in {"true", "yes", "1", "on", "always"}:
+                return True
+            if v in {"false", "no", "0", "off", "never"}:
+                return False
+        return False
     
     def get_inline_agents(self, workflow_name: str) -> List[str]:
         """Get list of agents that should appear in chat pane"""

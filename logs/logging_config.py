@@ -25,6 +25,20 @@ else:
     LOGS_DIR = Path(__file__).parent / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def get_ag2_runtime_log_path() -> Path:
+    """Resolve the AG2 runtime log file path, honoring overrides."""
+    custom = os.getenv("AG2_RUNTIME_LOG_FILE")
+    if custom:
+        path = Path(custom).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+    path = LOGS_DIR / "ag2_runtime.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
 # Toggle file format via env: when true, file contents are JSON lines; otherwise, human-readable text.
 LOGS_AS_JSON = os.getenv("LOGS_AS_JSON", "").lower() in ("1", "true", "yes", "on")
 
@@ -276,15 +290,32 @@ def setup_logging(
     # Optional clearing of existing log files
     cleared_files: list[str] = []
     clear_flag = os.getenv("CLEAR_LOGS_ON_START", "0").lower() in ("1","true","yes","on")
-    if clear_flag and MAIN_LOG_FILE.exists():
-        try:
-            MAIN_LOG_FILE.unlink()
-            cleared_files.append(str(MAIN_LOG_FILE))
-        except Exception:
-            # Fallback: truncate if unlink fails
-            with open(MAIN_LOG_FILE, 'w', encoding='utf-8') as fp:
-                fp.truncate(0)
-            cleared_files.append(str(MAIN_LOG_FILE))
+    if clear_flag:
+        # Build a list of known log artifacts to clear on startup in development
+        to_clear: list[Path] = []
+        # 1) Main app log
+        to_clear.append(MAIN_LOG_FILE)
+        # 2) AG2 runtime artifacts
+        # If a custom file path is configured, include it
+        ag2_env_path = os.getenv("AG2_RUNTIME_LOG_FILE")
+        if ag2_env_path:
+            p = Path(ag2_env_path).expanduser()
+            if not p.is_absolute():
+                p = (LOGS_DIR / Path(ag2_env_path).name)
+            to_clear.append(p)
+        # Include common defaults for both file and sqlite modes
+        to_clear.append(LOGS_DIR / "ag2_runtime.log")
+        to_clear.append(LOGS_DIR / "ag2_runtime.db")
+
+        # Attempt removal of each target, ignore failures
+        for path in to_clear:
+            try:
+                if path.exists() and path.is_file():
+                    path.unlink()
+                    cleared_files.append(str(path))
+            except Exception:
+                # Non-fatal; continue clearing others
+                pass
 
     root = logging.getLogger(); root.handlers.clear(); root.setLevel(logging.DEBUG)
     # Choose file formatter based on env; console remains pretty
@@ -302,7 +333,7 @@ def setup_logging(
     )
     root.addHandler(file_handler)
     ch = logging.StreamHandler(); ch.setLevel(getattr(logging, console_level.upper())); ch.setFormatter(console_fmt); root.addHandler(ch)
-    for noisy in ("openai","httpx","urllib3","azure","motor","pymongo","uvicorn.access","openlit","msal","autogen","autogen.logger.file_logger"):
+    for noisy in ("openai","httpx","urllib3","azure","motor","pymongo","uvicorn.access","msal","autogen","autogen.logger.file_logger"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.getLogger(__name__).info(
         "Logging initialized",
@@ -345,7 +376,7 @@ def get_core_logger(module_name: str) -> logging.Logger:
             logger_name = f"core.data.{module_name}"
         elif module_name in ['unified_event_dispatcher']:
             logger_name = f"core.events.{module_name}"
-        elif module_name in ['otel_helpers', 'performance_manager', 'performance_store', 'realtime_token_logger']:
+        elif module_name in ['performance_manager', 'realtime_token_logger']:
             logger_name = f"core.observability.{module_name}"
         elif module_name in ['simple_transport']:
             logger_name = f"core.transport.{module_name}"
@@ -500,13 +531,13 @@ def summarize_autogen_runtime_file(  # pragma: no cover - utility
     Parameters
     ----------
     logging_session_id: optional session id (string) to isolate per-session totals.
-    filename: path to runtime log file (defaults to AUTOGEN_RUNTIME_LOG_FILE or runtime.log).
+    filename: path to runtime log file (defaults to AG2_RUNTIME_LOG_FILE or runtime.log).
     limit: stop after processing N lines (for quick checks).
     emit_log: if True, writes a one-line summary via provided logger (or root).
     logger: optional logger (defaults to root if None).
     """
     import json, os
-    path = filename or os.getenv("AUTOGEN_RUNTIME_LOG_FILE", "runtime.log")
+    path = filename or os.getenv("AG2_RUNTIME_LOG_FILE", "runtime.log")
     stats = {
         "file": path,
         "records": 0,

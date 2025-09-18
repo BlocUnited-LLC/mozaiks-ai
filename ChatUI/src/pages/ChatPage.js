@@ -27,7 +27,11 @@ const ChatPage = () => {
   const LOCAL_STORAGE_KEY = 'mozaiks.current_chat_id';
   const [connectionInitialized, setConnectionInitialized] = useState(false);
   const [workflowConfigLoaded, setWorkflowConfigLoaded] = useState(false); // becomes true once workflow config resolved
+  const [cacheSeed, setCacheSeed] = useState(null); // per-chat cache seed for unified backend/frontend caching
+  const [chatExists, setChatExists] = useState(null); // tri-state: null=unknown, true=exists, false=new
   const connectionInProgressRef = useRef(false);
+  // Guard to prevent overlapping start logic (used by preflight existence effect)
+  const pendingStartRef = useRef(false);
   const { enterpriseId, workflowName: urlWorkflowName } = useParams();
   const { user, api, config } = useChatUI();
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
@@ -150,7 +154,21 @@ const ChatPage = () => {
         return;
       }
       case 'input_request': {
-        dynamicUIHandler.processUIEvent({ type:'user_input_request', data:{ input_request_id: data.request_id, chat_id: currentChatId, payload:{ prompt:data.prompt, ui_tool_id: data.component_type||'user_input', workflow_name: currentWorkflowName }}});
+        const componentType = data.component_type || data.ui_tool_id || null;
+        if (componentType) {
+          dynamicUIHandler.processUIEvent({
+            type: 'user_input_request',
+            data: {
+              input_request_id: data.request_id,
+              chat_id: currentChatId,
+              payload: {
+                prompt: data.prompt,
+                ui_tool_id: componentType,
+                workflow_name: currentWorkflowName
+              }
+            }
+          });
+        }
         return;
       }
       case 'tool_call': {
@@ -237,47 +255,191 @@ const ChatPage = () => {
   // Replay boundary marker: insert a divider system note
   setMessagesWithLogging(prev => [...prev, { id:`resume-${Date.now()}`, sender:'system', agentName:'System', content:`🔄 Session replay complete. Live events resumed.`, isStreaming:false }]);
         return;
+      case 'chat_meta': {
+        // Initial metadata handshake from backend
+        console.log('🧬 [META] Received chat_meta event:', data);
+        if (data.cache_seed !== undefined && data.cache_seed !== null) {
+          setCacheSeed(data.cache_seed);
+          if (currentChatId) {
+            try { localStorage.setItem(`${LOCAL_STORAGE_KEY}.cache_seed.${currentChatId}`, String(data.cache_seed)); } catch {}
+          }
+          console.log('🧬 [META] Received cache_seed', data.cache_seed, 'for chat', currentChatId);
+        }
+        if (data.chat_exists === false) {
+          // Backend indicates this chat_id had no persisted session (fresh after client-side reuse)
+          setChatExists(false);
+          console.log('🧬 [META] Backend reports chat did NOT previously exist. Suppressing artifact restore. chat_id=', currentChatId);
+          try {
+            // Purge any stale local artifacts for this chat to avoid ghost UI
+            localStorage.removeItem(`mozaiks.last_artifact.${currentChatId}`);
+            localStorage.removeItem(`mozaiks.current_artifact.${currentChatId}`);
+            console.log('🧼 [META] Purged stale artifacts for non-existent chat');
+          } catch {}
+          // Reset any prior artifact state
+          setCurrentArtifactMessages([]);
+          lastArtifactEventRef.current = null;
+          artifactRestoredOnceRef.current = true; // prevent later restore effect
+        } else if (data.chat_exists === true) {
+          setChatExists(true);
+          console.log('🧬 [META] Backend confirms chat exists. Artifact restore allowed.');
+          // If backend already sent last_artifact and we have not restored yet, cache it for restore effect
+          if (!artifactRestoredOnceRef.current && data.last_artifact && data.last_artifact.ui_tool_id) {
+            try {
+              const key = `mozaiks.last_artifact.${currentChatId}`;
+              localStorage.setItem(key, JSON.stringify({
+                ui_tool_id: data.last_artifact.ui_tool_id,
+                eventId: data.last_artifact.event_id || null,
+                workflow_name: data.last_artifact.workflow_name || currentWorkflowName,
+                payload: data.last_artifact.payload || {},
+                display: data.last_artifact.display || 'artifact',
+                ts: Date.now(),
+              }));
+              console.log('🧬 [META] Cached last_artifact from server meta event');
+            } catch (e) { console.warn('Failed to cache server last_artifact', e); }
+          }
+        }
+        return;
+      }
       default:
         return;
     }
-  }, [currentChatId, currentWorkflowName, setMessagesWithLogging, extractAgentName]);
+  }, [currentChatId, currentWorkflowName, setMessagesWithLogging, extractAgentName, ws, isSidePanelOpen]);
 
-  // Workflow configuration & chat start / resume bootstrap
+  // Workflow configuration & resume bootstrap (no direct startChat here; handled by preflight existence effect)
   useEffect(() => {
     if (!api) return;
-    // Load workflow config (synchronous lookup from imported module)
-    // const wf = workflowConfig.getWorkflowConfig(currentWorkflowName) || {}; // fallback empty - unused for now
-    setWorkflowConfigLoaded(true); // mark loaded so connection effect can proceed
-
-    // Try resume from localStorage
+    setWorkflowConfigLoaded(true);
     if (!currentChatId) {
       let stored = null;
       try { stored = localStorage.getItem(LOCAL_STORAGE_KEY); } catch {}
       if (stored) {
         setCurrentChatId(stored);
-        return; // allow connection effect to handle socket
+        try {
+          const seedStored = localStorage.getItem(`${LOCAL_STORAGE_KEY}.cache_seed.${stored}`);
+          if (seedStored) {
+            setCacheSeed(Number(seedStored));
+            console.log('🧬 [RESUME] Loaded cached cache_seed for resumed chat', stored, seedStored);
+          }
+        } catch {}
       }
     }
+  }, [api, currentChatId]);
 
-    // Start new chat if none
-    if (!currentChatId) {
-      let cancelled = false;
-      (async () => {
+  // NEW: Preflight chat existence + cache clearing logic
+useEffect(() => {
+  if (!api) return;
+  if (!workflowConfigLoaded) return; // wait until registry is ready
+  if (currentChatId) return; // existing logic handles resume or already started
+  if (pendingStartRef.current) return;
+
+  pendingStartRef.current = true;
+  (async () => {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const chatIdParam = urlParams.get('chat_id');
+      let reuseChatId = chatIdParam;
+
+      if (reuseChatId) {
+        console.log('[EXISTS] Checking existence of chat', reuseChatId);
         try {
-          const result = await api.startChat(currentEnterpriseId, currentWorkflowName, currentUserId);
-          if (!cancelled && result && (result.chat_id || result.id)) {
-            const newId = result.chat_id || result.id;
-            setCurrentChatId(newId);
-            try { localStorage.setItem(LOCAL_STORAGE_KEY, newId); } catch {}
+          const wfName = currentWorkflowName;
+          const resp = await fetch(`http://localhost:8000/api/chats/exists/${currentEnterpriseId}/${wfName}/${reuseChatId}`);
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data.exists) {
+              console.log('[EXISTS] Chat exists; adopting chat_id and skipping startChat');
+              setCurrentChatId(reuseChatId);
+              setChatExists(true);
+              pendingStartRef.current = false;
+              return;
+            } else {
+              console.log('[EXISTS] Chat does NOT exist; clearing any cached artifacts for that id');
+              try {
+                localStorage.removeItem(`mozaiks.last_artifact.${reuseChatId}`);
+                localStorage.removeItem(`mozaiks.current_artifact.${reuseChatId}`);
+              } catch {}
+            }
           }
         } catch (e) {
-          console.error('Failed to start chat session:', e);
+          console.warn('[EXISTS] Existence check failed:', e);
         }
-      })();
-      return () => { cancelled = true; };
+      }
+
+      console.log('[INIT] Creating new chat via startChat');
+      const result = await api.startChat(currentEnterpriseId, currentWorkflowName, currentUserId);
+      if (result && (result.chat_id || result.id)) {
+        const newId = result.chat_id || result.id;
+        const reused = !!result.reused;
+        setCurrentChatId(newId);
+        setChatExists(reused);
+        try { localStorage.setItem(LOCAL_STORAGE_KEY, newId); } catch {}
+        if (!reused) {
+          try {
+            localStorage.removeItem(`mozaiks.last_artifact.${newId}`);
+            localStorage.removeItem(`mozaiks.current_artifact.${newId}`);
+          } catch {}
+        }
+        console.log('[INIT] startChat complete', { newId, reused });
+      }
+    } catch (e) {
+      console.error('[INIT] Failed to initialize chat:', e);
+    } finally {
+      pendingStartRef.current = false;
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, currentWorkflowName, currentEnterpriseId, currentUserId]);
+  })();
+}, [api, workflowConfigLoaded, currentChatId, currentWorkflowName, currentEnterpriseId, currentUserId]);
+
+  // Expose a helper to force-reset the current chat client-side (can be wired to a debug button later)
+  const forceResetChat = useCallback(() => {
+    try {
+      const current = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (current) {
+        [
+          `mozaiks.last_artifact.${current}`,
+          `mozaiks.current_artifact.${current}`,
+          `${LOCAL_STORAGE_KEY}.cache_seed.${current}`,
+        ].forEach(k => { try { localStorage.removeItem(k); } catch {} });
+      }
+      console.log('🧼 [CACHE] Manual force reset invoked; clearing in-memory state');
+    } catch {}
+    setCurrentArtifactMessages([]);
+    lastArtifactEventRef.current = null;
+    artifactRestoredOnceRef.current = false;
+    setCurrentChatId(null);
+  }, []);
+
+  // Dev: expose reset helper & read cacheSeed to avoid unused warnings
+  useEffect(() => {
+    // Use cacheSeed in a benign way (log only when it changes)
+    if (cacheSeed !== null) {
+      // Minimal, low-noise log – toggle off by removing line if undesired
+      console.debug('🧬 Active cacheSeed now', cacheSeed);
+    }
+    // Expose forceResetChat for manual debugging in console
+    try { window.__mozaiksForceResetChat = forceResetChat; } catch {}
+    
+    // Expose artifact inspection helper
+    try {
+      window.__mozaiksInspectArtifacts = () => {
+        const keys = [];
+        const chatId = currentChatId || localStorage.getItem(LOCAL_STORAGE_KEY);
+        console.log('🔍 [DEBUG] Inspecting artifact localStorage for chat:', chatId);
+        
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (!key) continue;
+          
+          if (key.includes('artifact') || key.includes('cache_seed') || key.includes('current_chat_id')) {
+            const value = localStorage.getItem(key);
+            keys.push({ key, value: value?.slice(0, 200) + (value?.length > 200 ? '...' : '') });
+          }
+        }
+        
+        console.table(keys);
+        return keys;
+      };
+    } catch {}
+  }, [cacheSeed, forceResetChat, currentChatId]);
 
   // Connect to streaming when API becomes available and chat ID exists
   useEffect(() => {
@@ -522,7 +684,7 @@ const ChatPage = () => {
     return () => {
       if (typeof unsubscribe === 'function') unsubscribe();
     };
-  }, [setMessagesWithLogging]);
+  }, [setMessagesWithLogging, currentChatId]);
 
   const sendMessage = async (messageContent) => {
     console.log('🚀 [SEND] Sending message:', messageContent);
@@ -690,42 +852,49 @@ const ChatPage = () => {
     });
   };
 
-  // On reconnect/connected, if we have a cached artifact for this chat, restore it once
+  // Simplified artifact restore effect: only restore when chatExists === true and connection is open
+  // last_artifact semantics:
+  //   - Cached locally on each artifact-mode ui_tool_event
+  //   - Server persists ONLY the most recent artifact (overwrite strategy)
+  //   - On refresh / second user: websocket chat_meta may include last_artifact; if not, we fetch /api/chats/meta
+  //   - We avoid speculative restores for brand new chats (chat_exists === false)
   useEffect(() => {
-    if (connectionStatus !== 'connected' || !currentChatId) return;
+    if (connectionStatus !== 'connected') return;
+    if (!currentChatId) return;
+    if (!chatExists) return; // only restore for persisted chats
     if (artifactRestoredOnceRef.current) return;
+
     try {
       const key = `mozaiks.last_artifact.${currentChatId}`;
       const raw = localStorage.getItem(key);
       if (!raw) return;
       const cached = JSON.parse(raw);
       if (!cached || !cached.ui_tool_id) return;
-      console.log('🔁 [UI] Restoring last artifact from session cache');
+
+      console.log('[RESTORE] Restoring cached artifact for chat', currentChatId, cached.ui_tool_id);
       setIsSidePanelOpen(true);
-      // Inject a synthetic message to render the artifact again (marked as restored)
-      // Restore artifact into the ArtifactPanel (do not inject into chat messages)
-      try {
-        const restoredMsg = {
-          id: `ui-restored-${Date.now()}`,
-          sender: 'agent',
-          agentName: cached.payload?.agentName || 'Agent',
-          content: cached.payload?.structured_output || cached.payload || {},
-          isStreaming: false,
-          uiToolEvent: {
-            ui_tool_id: cached.ui_tool_id,
-            payload: cached.payload || {},
-            eventId: cached.eventId || null,
-            workflow_name: cached.workflow_name || currentWorkflowName,
-            onResponse: undefined,
-            display: cached.display || 'artifact',
-            restored: true,
-          },
-        };
-        setCurrentArtifactMessages([restoredMsg]);
-      } catch (e) { console.warn('Failed to restore artifact to panel', e); }
+      const restoredMsg = {
+        id: `ui-restored-${Date.now()}`,
+        sender: 'agent',
+        agentName: cached.payload?.agentName || 'Agent',
+        content: cached.payload?.structured_output || cached.payload || {},
+        isStreaming: false,
+        uiToolEvent: {
+          ui_tool_id: cached.ui_tool_id,
+          payload: cached.payload || {},
+          eventId: cached.eventId || null,
+          workflow_name: cached.workflow_name || currentWorkflowName,
+          onResponse: undefined,
+          display: cached.display || 'artifact',
+          restored: true,
+        },
+      };
+      setCurrentArtifactMessages([restoredMsg]);
       artifactRestoredOnceRef.current = true;
-    } catch {}
-  }, [connectionStatus, currentChatId, currentWorkflowName, setMessagesWithLogging]);
+    } catch (e) {
+      console.warn('[RESTORE] Failed to restore artifact:', e);
+    }
+  }, [connectionStatus, currentChatId, chatExists, currentWorkflowName]);
 
   // Decide when to force overlay (mobile landscape or short height)
   useEffect(() => {

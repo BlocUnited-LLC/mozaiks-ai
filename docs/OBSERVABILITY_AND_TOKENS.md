@@ -2,7 +2,7 @@
 
 Note: Token accounting now follows the AG2 lifecycle: incremental visibility via `print_usage_summary` and authoritative reconciliation via `gather_usage_summary`. We no longer parse individual `UsageSummaryEvent` objects for delta billing.
 
-This repo is set up to run “production-like” locally: Azure Key Vault for secrets, AG2 for token accounting, and optional OpenTelemetry (OTEL) via OpenLIT for telemetry.
+This repo is set up to run production-like locally: Azure Key Vault for secrets, AG2 runtime logging for token accounting, and Mongo-backed WorkflowStats for rollups.
 
 ## What does what
 

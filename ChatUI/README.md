@@ -137,8 +137,7 @@ ChatUI/
 │   ├── hooks/                          # 🔗 React Hooks
 │   │   └── useDynamicComponents.js     # Dynamic loading hooks
 │   │
-│   ├── utils/                          # 🛠️ Utilities
-│   │   └── DynamicArtifactManager.js   # Artifact handling
+│   ├── utils/                          # 🛠️ Utilities (general helpers; artifact manager removed as unused)
 │   │
 │   ├── pages/                          # 📄 Page Components
 │   ├── services/                       # 🌐 API Services

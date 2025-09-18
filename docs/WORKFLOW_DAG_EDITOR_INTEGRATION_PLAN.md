@@ -295,7 +295,7 @@ Add logs (`perf_logger` or new `graph_logger`):
 - validation_failed(errors_count)
 - rollback_performed(target_version)
 
-Metrics (OpenTelemetry histograms / counters):
+Metrics (runtime logging + WorkflowStats counters):
 - diff_apply_latency
 - graph_validation_failures
 - concurrent_edit_conflicts

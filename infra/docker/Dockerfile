@@ -25,10 +25,8 @@ COPY . .
 # Expose port
 EXPOSE 8000
 
-# OTEL/OpenLIT envs can be set at runtime; default no-op
-ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 \
-    OPENLIT_ENABLED=true \
-    LOGS_BASE_DIR=/app/logs/logs
+# Default log directory (overridable at runtime)
+ENV LOGS_BASE_DIR=/app/logs/logs
 
 # Run the app
 CMD ["python", "run_server.py"]

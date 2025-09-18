@@ -6,13 +6,15 @@ import { useNavigate, useParams } from "react-router-dom";
 import UIToolRenderer from "../../core/ui/UIToolRenderer";
 
 // UI Tool Renderer - handles workflow-agnostic UI tool events
+// NOTE: Hooks must run unconditionally; define state first, then early-return.
 const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRequest }) => {
+  // Local completion indicator for inline components only
+  const [completed, setCompleted] = React.useState(false);
+
+  // Early return AFTER hook so hook order is stable
   if (!uiToolEvent || !uiToolEvent.ui_tool_id) {
     return null;
   }
-
-  // Local completion indicator for inline components only
-  const [completed, setCompleted] = React.useState(false);
 
   const handleResponse = async (resp) => {
     try {

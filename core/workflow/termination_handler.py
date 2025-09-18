@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from logs.logging_config import get_workflow_logger
 from core.data.persistence_manager import AG2PersistenceManager
 from core.events import get_event_dispatcher
-from core.observability.otel_helpers import timed_span
 # Avoid circular import: only import for typing
 if TYPE_CHECKING:
     from core.transport.simple_transport import SimpleTransport
@@ -78,38 +77,33 @@ class AG2TerminationHandler:
     
     async def on_conversation_start(self, user_id: str):
         """Called when AG2 conversation begins"""
-        with timed_span("termination.start", attributes={
-            "workflow_name": self.workflow_name,
-            "chat_id": self.chat_id,
-            "enterprise_id": self.enterprise_id
-        }, record_metric=False):
-            self.conversation_active = True
-            self.start_time = perf_counter()
+        self.conversation_active = True
+        self.start_time = perf_counter()
 
-            # Create the chat session document in the database
-            await self.persistence_manager.create_chat_session(
-                chat_id=self.chat_id,
-                enterprise_id=self.enterprise_id,
-                workflow_name=self.workflow_name,
-                user_id=user_id
+        # Create the chat session document in the database
+        await self.persistence_manager.create_chat_session(
+            chat_id=self.chat_id,
+            enterprise_id=self.enterprise_id,
+            workflow_name=self.workflow_name,
+            user_id=user_id
+        )
+
+        # Emit business event via unified dispatcher
+        try:
+            dispatcher = get_event_dispatcher()
+            await dispatcher.emit_business_event(
+                log_event_type="CONVERSATION_STARTED",
+                description=f"AG2 conversation started for {self.workflow_name}",
+                context={
+                    "chat_id": self.chat_id,
+                    "enterprise_id": self.enterprise_id,
+                    "workflow_name": self.workflow_name,
+                },
             )
+        except Exception:
+            pass
 
-            # Emit business event via unified dispatcher
-            try:
-                dispatcher = get_event_dispatcher()
-                await dispatcher.emit_business_event(
-                    log_event_type="CONVERSATION_STARTED",
-                    description=f"AG2 conversation started for {self.workflow_name}",
-                    context={
-                        "chat_id": self.chat_id,
-                        "enterprise_id": self.enterprise_id,
-                        "workflow_name": self.workflow_name,
-                    },
-                )
-            except Exception:
-                pass
-
-            wf_logger.info(f"🚀 AG2 conversation started for {self.workflow_name}")
+        wf_logger.info(f"🚀 AG2 conversation started for {self.workflow_name}")
     
     async def on_conversation_end(self,
                                   *,
@@ -140,12 +134,7 @@ class AG2TerminationHandler:
             self.conversation_active = False
             conversation_duration = perf_counter() - self.start_time if self.start_time else 0
 
-            with timed_span("termination.end", attributes={
-                "workflow_name": self.workflow_name,
-                "chat_id": self.chat_id,
-                "enterprise_id": self.enterprise_id
-            }, record_metric=False) as span:
-                try:
+            try:
                     # Mark the chat as completed in the database (reason removed)
                     status_updated = await self.persistence_manager.mark_chat_completed(
                         self.chat_id, self.enterprise_id
@@ -207,32 +196,24 @@ class AG2TerminationHandler:
                         except Exception as e:
                             wf_logger.error(f"❌ Termination callback failed: {e}")
 
-                    # Attach overall conversation duration (start→end, not just span duration)
-                    try:
-                        span.set_attribute("conversation.duration_sec", conversation_duration)
-                        # Reason removed – only record max_turns flag
-                        span.set_attribute("termination.max_turns_reached", bool(max_turns_reached))
-                    except Exception:
-                        pass
-
                     wf_logger.info(f"✅ AG2 conversation terminated successfully (status={result.status})")
                     # Mark ended & cache result (outside lock minimal risk; attributes immutable)
                     self._ended = True
                     self._last_result = result
                     return result
 
-                except Exception as e:
-                    wf_logger.error(f"❌ Failed to handle conversation termination: {e}")
+            except Exception as e:
+                wf_logger.error(f"❌ Failed to handle conversation termination: {e}")
 
-                    # Return failure result
-                    failure_result = TerminationResult(
-                        terminated=False,
-                        status=1,  # Conservatively mark completed; DB was updated above
-                        workflow_complete=False
-                    )
-                    self._ended = True
-                    self._last_result = failure_result
-                    return failure_result
+                # Return failure result
+                failure_result = TerminationResult(
+                    terminated=False,
+                    status=1,  # Conservatively mark completed; DB was updated above
+                    workflow_complete=False
+                )
+                self._ended = True
+                self._last_result = failure_result
+                return failure_result
     
     async def detect_terminate_target(self, conversation_messages) -> bool:
         """

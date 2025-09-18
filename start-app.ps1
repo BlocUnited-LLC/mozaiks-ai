@@ -1,5 +1,7 @@
 param(
-  [switch]$NoBuild = $false
+  [switch]$NoBuild = $false,
+  [switch]$CleanBuild = $false,
+  [switch]$PullBase = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,7 +32,6 @@ $cross = [char]0x274C                              # ❌
 $check = [char]0x2705                              # ✅
 $skip = [char]0x23ED                               # ⏭
 $globe = "$( [char]0xD83C )$( [char]0xDF10 )"     # 🌐
-$chart = "$( [char]0xD83D )$( [char]0xDCCA )"     # 📊
 $clip = "$( [char]0xD83D )$( [char]0xDCCB )"      # 📋
 
 # Azure credential validation (avoid literal emojis for PS 5.1 safety)
@@ -51,6 +52,11 @@ if ($env:AZURE_CLIENT_ID -and $env:AZURE_TENANT_ID -and $env:AZURE_CLIENT_SECRET
 Write-Host ("$rocket Starting MozaiksAI...") -ForegroundColor Green
 
 if (-not $NoBuild) {
+  if ($CleanBuild) {
+    Write-Host "Clean build requested: pruning Docker build cache..." -ForegroundColor Yellow
+    docker builder prune -af
+    if ($LASTEXITCODE -ne 0) { Write-Host ("$cross Failed to prune build cache") -ForegroundColor Red; Set-Location $PreviousLocation; exit 1 }
+  }
   Write-Host "Building app image..." -ForegroundColor Yellow
   $dockerfile = Join-Path $ScriptRoot "infra/docker/Dockerfile"
   if (-not (Test-Path $dockerfile)) {
@@ -58,7 +64,9 @@ if (-not $NoBuild) {
     Set-Location $PreviousLocation
     exit 1
   }
-  docker build -f $dockerfile -t mozaiksai-app:latest $ScriptRoot
+  $pullArg = if ($PullBase) { "--pull" } else { "" }
+  if ($PullBase) { Write-Host "Refreshing base images (--pull) for docker build" -ForegroundColor Yellow }
+  docker build $pullArg -f $dockerfile -t mozaiksai-app:latest $ScriptRoot
   if ($LASTEXITCODE -ne 0) { Write-Host ("$cross Failed to build image") -ForegroundColor Red; exit 1 }
   Write-Host ("$check Image built successfully") -ForegroundColor Green
 } else {

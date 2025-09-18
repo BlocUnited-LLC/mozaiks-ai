@@ -74,16 +74,79 @@ wf_logger.info(f"🔍 autogen version: {getattr(autogen, '__version__', 'unknown
 # Emit an explicit startup log line so file logging can be verified quickly
 wf_logger.info(f"SERVER_STARTUP_INIT: Starting MozaiksAI in {env} mode")
 
+# ---------------------------------------------------------------------------
+# Patch Autogen file logger to tolerate non-serializable objects
+# ---------------------------------------------------------------------------
+def _patch_autogen_file_logger() -> None:
+    try:
+        from autogen.logger import file_logger as _file_logger
+        from autogen.logger.logger_utils import get_current_ts as _logger_ts
+    except Exception as patch_err:  # pragma: no cover - defensive safeguard
+        wf_logger.debug(f"Skipped Autogen file_logger patch: {patch_err}")
+        return
+
+    # Use an Any-typed alias to avoid static type errors on dynamic attributes
+    FL: Any = _file_logger.FileLogger
+
+    if getattr(FL, "_mozaiks_safe_json", False):
+        return
+
+    import json as _json
+    import threading as _threading
+
+    safe_serialize = _file_logger.safe_serialize
+
+    def _serialize_wrapper_payload(wrapper, session_id, thread_id, init_args):
+        return _json.dumps({
+            "wrapper_id": id(wrapper),
+            "session_id": session_id,
+            "json_state": safe_serialize(init_args or {}),
+            "timestamp": _logger_ts(),
+            "thread_id": thread_id,
+        })
+
+    def _serialize_client_payload(client, wrapper, session_id, thread_id, init_args):
+        return _json.dumps({
+            "client_id": id(client),
+            "wrapper_id": id(wrapper),
+            "session_id": session_id,
+            "class": type(client).__name__,
+            "json_state": safe_serialize(init_args or {}),
+            "timestamp": _logger_ts(),
+            "thread_id": thread_id,
+        })
+
+    def _patched_log_new_wrapper(self, wrapper, init_args=None):
+        thread_id = _threading.get_ident()
+        try:
+            payload = _serialize_wrapper_payload(wrapper, self.session_id, thread_id, init_args)
+            self.logger.info(payload)
+        except Exception as exc:  # pragma: no cover - logging fallback
+            self.logger.error(f"[file_logger] Failed to log event {exc}")
+
+    def _patched_log_new_client(self, client, wrapper, init_args):
+        thread_id = _threading.get_ident()
+        try:
+            payload = _serialize_client_payload(client, wrapper, self.session_id, thread_id, init_args)
+            self.logger.info(payload)
+        except Exception as exc:  # pragma: no cover - logging fallback
+            self.logger.error(f"[file_logger] Failed to log event {exc}")
+
+    # Monkey patch methods and set a marker attribute
+    FL.log_new_wrapper = _patched_log_new_wrapper  # type: ignore[attr-defined]
+    FL.log_new_client = _patched_log_new_client  # type: ignore[attr-defined]
+    setattr(FL, "_mozaiks_safe_json", True)
+    wf_logger.info("Patched Autogen FileLogger for safe JSON serialization")
+
+
+_patch_autogen_file_logger()
+
 # Initialize unified event dispatcher
 from core.events import get_event_dispatcher
 event_dispatcher = get_event_dispatcher()
 wf_logger.info("🎯 Unified Event Dispatcher initialized")
 
 from core.observability.performance_manager import get_performance_manager
-from opentelemetry import trace
-tracer = trace.get_tracer("mozaiks.app")
-from core.observability.otel_helpers import timed_span
-from core.observability.otel_helpers import telemetry_status
 from core.workflow.orchestration_patterns import get_run_registry_summary
 
 # FastAPI app
@@ -145,10 +208,6 @@ async def metrics_perf_chat(chat_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to collect chat metric: {e}")
 
-@app.get("/metrics/telemetry/status")
-async def metrics_telemetry_status():
-    return telemetry_status()
-
 @app.get("/metrics/prometheus")
 async def metrics_prometheus():
     """Prometheus exposition format (subset) for quick scraping.
@@ -161,6 +220,9 @@ async def metrics_prometheus():
         return Response(content=text, media_type="text/plain; version=0.0.4")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate prometheus metrics: {e}")
+
+
+
 
 
 # # ------------------------------------------------------------------------------
@@ -182,7 +244,7 @@ async def metrics_prometheus():
 
 @app.on_event("startup")
 async def startup():
-    """Initialize application on startup (with lean OTel span)."""
+    """Initialize application on startup."""
     global simple_transport
     startup_start = datetime.utcnow()
     
@@ -225,117 +287,105 @@ async def startup():
     except Exception as e:
         wf_logger.error("LLM_CACHE_CLEAR_FAILED: Failed LLM cache management on startup", error=str(e))
     
-    # Use helper (mozaiks.app.startup span name becomes mozaiks.app.startup via prefix logic? timed_span adds mozaiks.<key>)
-    # We'll pass key 'app.startup' so final span is mozaiks.app.startup for consistency.
-    with timed_span("app.startup", attributes={"environment": env}) as span:
+    try:
+        # Initialize performance / observability
+        wf_logger.info("🔧 APP_STARTUP: Initializing performance manager...")
+        perf_mgr = await get_performance_manager()
+        await perf_mgr.initialize()
+        wf_logger.info("✅ APP_STARTUP: Performance manager initialized")
+
+        # Initialize simple transport
+        streaming_start = datetime.utcnow()
+        simple_transport = await SimpleTransport.get_instance()
+        streaming_time = (datetime.utcnow() - streaming_start).total_seconds() * 1000
+        performance_logger.info(
+            "streaming_config_init_duration",
+            metric_name="streaming_config_init_duration",
+            value=float(streaming_time),
+            config_keys=[],
+            streaming_enabled=True,
+        )
+
+        # Build Mongo client now (after logging configured)
+        global mongo_client
+        if mongo_client is None:
+            mongo_client = get_mongo_client()
+
+        # Test MongoDB connection
+        mongo_start = datetime.utcnow()
         try:
-            # Initialize performance / observability
-            wf_logger.info("🔧 APP_STARTUP: Initializing performance manager...")
-            perf_mgr = await get_performance_manager()
-            await perf_mgr.initialize()
-            wf_logger.info("✅ APP_STARTUP: Performance manager initialized")
-
-            # Initialize simple transport
-            streaming_start = datetime.utcnow()
-            simple_transport = await SimpleTransport.get_instance()
-            streaming_time = (datetime.utcnow() - streaming_start).total_seconds() * 1000
+            await mongo_client.admin.command("ping")
+            mongo_time = (datetime.utcnow() - mongo_start).total_seconds() * 1000
             performance_logger.info(
-                "streaming_config_init_duration",
-                metric_name="streaming_config_init_duration",
-                value=float(streaming_time),
-                config_keys=[],
-                streaming_enabled=True,
-            )
-
-            # Build Mongo client now (after logging configured)
-            global mongo_client
-            if mongo_client is None:
-                mongo_client = get_mongo_client()
-
-            # Test MongoDB connection
-            mongo_start = datetime.utcnow()
-            try:
-                await mongo_client.admin.command("ping")
-                mongo_time = (datetime.utcnow() - mongo_start).total_seconds() * 1000
-                performance_logger.info(
-                    "mongodb_ping_duration",
-                    metric_name="mongodb_ping_duration",
-                    value=float(mongo_time),
-                    unit="ms",
-                )
-                span.set_attribute("mongodb.ping_ms", float(mongo_time))
-            except Exception as e:
-                get_workflow_logger("shared_app").error(
-                    "MONGODB_CONNECTION_FAILED: Failed to connect to MongoDB",
-                    error=str(e)
-                )
-                span.record_exception(e)
-                span.set_attribute("startup.error", True)
-                raise
-
-            # Import workflow modules
-            import_start = datetime.utcnow()
-            await _import_workflow_modules()
-            import_time = (datetime.utcnow() - import_start).total_seconds() * 1000
-            performance_logger.info(
-                "workflow_import_duration",
-                metric_name="workflow_import_duration",
-                value=float(import_time),
+                "mongodb_ping_duration",
+                metric_name="mongodb_ping_duration",
+                value=float(mongo_time),
                 unit="ms",
             )
-            span.set_attribute("workflows.import_ms", float(import_time))
-
-            # Component system is event-driven, no upfront initialization needed.
-            registry_start = datetime.utcnow()
-            registry_time = (datetime.utcnow() - registry_start).total_seconds() * 1000
-            performance_logger.info(
-                "unified_registry_init_duration",
-                metric_name="unified_registry_init_duration",
-                value=float(registry_time),
-                unit="ms",
-            )
-
-            # Log workflow and tool summary
-            status = workflow_status_summary()
-            span.set_attribute("workflows.count", status.get("total_workflows", 0))
-            span.set_attribute("tools.count", status.get("total_tools", 0))
-
-            # Total startup time
-            total_startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
-            performance_logger.info(
-                "total_startup_duration",
-                metric_name="total_startup_duration",
-                value=float(total_startup_time),
-                unit="ms",
-                workflows_count=status.get("total_workflows", 0),
-                tools_count=status.get("total_tools", 0),
-            )
-            span.set_attribute("startup.total_ms", float(total_startup_time))
-
-            # Business event
-            await event_dispatcher.emit_business_event(
-                log_event_type="SERVER_STARTUP_COMPLETED",
-                description="Server startup completed successfully with unified event dispatcher",
-                context={
-                    "environment": env,
-                    "startup_time_ms": total_startup_time,
-                    "workflows_registered": status.get("total_workflows", 0),
-                    "tools_available": status.get("total_tools", 0),
-                    "summary": status.get("summary", "Unknown")
-                }
-            )
-            wf_logger.info(f"✅ Server ready - {status['summary']} (Startup: {total_startup_time:.1f}ms)")
         except Exception as e:
-            startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
             get_workflow_logger("shared_app").error(
-                "SERVER_STARTUP_FAILED: Server startup failed",
-                environment=env,
-                error=str(e),
-                startup_time_ms=startup_time
+                "MONGODB_CONNECTION_FAILED: Failed to connect to MongoDB",
+                error=str(e)
             )
-            span.record_exception(e)
-            span.set_attribute("startup.failed", True)
             raise
+
+        # Import workflow modules
+        import_start = datetime.utcnow()
+        await _import_workflow_modules()
+        import_time = (datetime.utcnow() - import_start).total_seconds() * 1000
+        performance_logger.info(
+            "workflow_import_duration",
+            metric_name="workflow_import_duration",
+            value=float(import_time),
+            unit="ms",
+        )
+
+        # Component system is event-driven, no upfront initialization needed.
+        registry_start = datetime.utcnow()
+        registry_time = (datetime.utcnow() - registry_start).total_seconds() * 1000
+        performance_logger.info(
+            "unified_registry_init_duration",
+            metric_name="unified_registry_init_duration",
+            value=float(registry_time),
+            unit="ms",
+        )
+
+        # Log workflow and tool summary
+        status = workflow_status_summary()
+
+        # Total startup time
+        total_startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
+        performance_logger.info(
+            "total_startup_duration",
+            metric_name="total_startup_duration",
+            value=float(total_startup_time),
+            unit="ms",
+            workflows_count=status.get("total_workflows", 0),
+            tools_count=status.get("total_tools", 0),
+        )
+
+        # Business event
+        await event_dispatcher.emit_business_event(
+            log_event_type="SERVER_STARTUP_COMPLETED",
+            description="Server startup completed successfully with unified event dispatcher",
+            context={
+                "environment": env,
+                "startup_time_ms": total_startup_time,
+                "workflows_registered": status.get("total_workflows", 0),
+                "tools_available": status.get("total_tools", 0),
+                "summary": status.get("summary", "Unknown")
+            }
+        )
+        wf_logger.info(f"✅ Server ready - {status['summary']} (Startup: {total_startup_time:.1f}ms)")
+    except Exception as e:
+        startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
+        get_workflow_logger("shared_app").error(
+            "SERVER_STARTUP_FAILED: Server startup failed",
+            environment=env,
+            error=str(e),
+            startup_time_ms=startup_time
+        )
+        raise
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -488,54 +538,48 @@ async def get_event_metrics():
 
 @app.get("/api/health")
 async def health_check():
-    """Health check endpoint (adds OTel span)."""
+    """Health check endpoint."""
     health_start = datetime.utcnow()
-    with timed_span("app.health_check") as span:
-        try:
-            mongo_ping_start = datetime.utcnow()
-            if mongo_client is None:
-                raise HTTPException(status_code=503, detail="MongoDB client not initialized")
-            await mongo_client.admin.command("ping")
-            mongo_ping_time = (datetime.utcnow() - mongo_ping_start).total_seconds() * 1000
-            span.set_attribute("mongodb.ping_ms", float(mongo_ping_time))
-            status = workflow_status_summary()
-            connection_info = {
-                "websocket_connections": len(simple_transport.connections) if simple_transport else 0,
-                "total_connections": len(simple_transport.connections) if simple_transport else 0
-            }
-            health_time = (datetime.utcnow() - health_start).total_seconds() * 1000
-            performance_logger.info(
-                "health_check_duration",
-                extra={
-                    "metric_name": "health_check_duration",
-                    "value": float(health_time),
-                    "unit": "ms",
-                    "mongodb_ping_ms": float(mongo_ping_time),
-                    "active_connections": connection_info["total_connections"],
-                    "workflows_count": len(status["registered_workflows"]),
-                },
-            )
-            span.set_attribute("health.duration_ms", float(health_time))
-            span.set_attribute("health.workflows_count", len(status["registered_workflows"]))
-            health_data = {
-                "status": "healthy",
-                "mongodb": "connected",
-                "mongodb_ping_ms": round(mongo_ping_time, 2),
-                "simple_transport": "initialized" if simple_transport else "not_initialized",
-                "active_connections": connection_info,
-                "workflows": status["registered_workflows"],
-                "transport_groups": status.get("transport_groups", {}),
-                "tools_available": status["total_tools"] > 0,
-                "total_tools": status["total_tools"],
-                "health_check_time_ms": round(health_time, 2)
-            }
-            wf_logger.debug(f"✅ Health check passed - Response time: {health_time:.1f}ms")
-            return health_data
-        except Exception as e:
-            span.record_exception(e)
-            span.set_attribute("health.failed", True)
-            logger.error(f"? Health check failed: {e}")
-            raise HTTPException(status_code=500, detail=f"Health check failed: {e}")
+    try:
+        mongo_ping_start = datetime.utcnow()
+        if mongo_client is None:
+            raise HTTPException(status_code=503, detail="MongoDB client not initialized")
+        await mongo_client.admin.command("ping")
+        mongo_ping_time = (datetime.utcnow() - mongo_ping_start).total_seconds() * 1000
+        status = workflow_status_summary()
+        connection_info = {
+            "websocket_connections": len(simple_transport.connections) if simple_transport else 0,
+            "total_connections": len(simple_transport.connections) if simple_transport else 0
+        }
+        health_time = (datetime.utcnow() - health_start).total_seconds() * 1000
+        performance_logger.info(
+            "health_check_duration",
+            extra={
+                "metric_name": "health_check_duration",
+                "value": float(health_time),
+                "unit": "ms",
+                "mongodb_ping_ms": float(mongo_ping_time),
+                "active_connections": connection_info["total_connections"],
+                "workflows_count": len(status["registered_workflows"]),
+            },
+        )
+        health_data = {
+            "status": "healthy",
+            "mongodb": "connected",
+            "mongodb_ping_ms": round(mongo_ping_time, 2),
+            "simple_transport": "initialized" if simple_transport else "not_initialized",
+            "active_connections": connection_info,
+            "workflows": status["registered_workflows"],
+            "transport_groups": status.get("transport_groups", {}),
+            "tools_available": status["total_tools"] > 0,
+            "total_tools": status["total_tools"],
+            "health_check_time_ms": round(health_time, 2)
+        }
+        wf_logger.debug(f"✅ Health check passed - Response time: {health_time:.1f}ms")
+        return health_data
+    except Exception as e:
+        logger.error(f"❌ Health check failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Health check failed: {e}")
 
 # ============================================================================
 # Chat Management Endpoints
@@ -555,8 +599,7 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
     IDEMPOTENCY_WINDOW_SEC = int(os.getenv("CHAT_START_IDEMPOTENCY_SEC", "15"))
     now = datetime.utcnow()
     reuse_cutoff = now - timedelta(seconds=IDEMPOTENCY_WINDOW_SEC)
-    with timed_span("chat.start_session", attributes={"workflow_name": workflow_name, "enterprise_id": enterprise_id}):
-        try:
+    try:
             data = await request.json()
             user_id = data.get("user_id")
             required_min_tokens = int(data.get("required_min_tokens", 0))
@@ -599,6 +642,12 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
                     chat_id=chat_id,
                     reuse_window_sec=IDEMPOTENCY_WINDOW_SEC,
                 )
+                # Ensure a cache_seed exists for this chat (persist if newly assigned)
+                try:
+                    cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, enterprise_id)
+                except Exception as se:
+                    cache_seed = None
+                    logger.debug(f"cache_seed assignment failed (reused chat {chat_id}): {se}")
                 # Return existing without touching performance manager again
                 return {
                     "success": True,
@@ -610,6 +659,7 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
                     "websocket_url": f"/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}",
                     "message": "Existing recent chat reused.",
                     "reused": True,
+                    "cache_seed": cache_seed,
                 }
 
             # Generate a new chat ID
@@ -641,6 +691,13 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
                 idempotency_window_sec=IDEMPOTENCY_WINDOW_SEC,
             )
 
+            # Assign per-chat cache seed (deterministic) and include in response
+            try:
+                cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, enterprise_id)
+            except Exception as se:
+                cache_seed = None
+                logger.debug(f"cache_seed assignment failed (new chat {chat_id}): {se}")
+
             return {
                 "success": True,
                 "chat_id": chat_id,
@@ -651,12 +708,13 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
                 "websocket_url": f"/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}",
                 "message": "Chat session initialized; connect to websocket to start.",
                 "reused": False,
+                "cache_seed": cache_seed,
             }
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"❌ Failed to start chat session: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to start chat: {e}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to start chat session: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start chat: {e}")
 
 @app.get("/api/chats/{enterprise_id}/{workflow_name}")
 async def list_chats(enterprise_id: str, workflow_name: str):
@@ -676,6 +734,54 @@ async def list_chats(enterprise_id: str, workflow_name: str):
     except Exception as e:
         logger.error(f"❌ Failed to list chats for enterprise {enterprise_id}, workflow {workflow_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list chats")
+
+@app.get("/api/chats/exists/{enterprise_id}/{workflow_name}/{chat_id}")
+async def chat_exists(enterprise_id: str, workflow_name: str, chat_id: str):
+    """Lightweight existence check for a chat session.
+
+    Frontend uses this to decide whether to clear any cached artifact UI state
+    before attempting restoration. We do NOT load the full transcript; only a
+    projection on _id to keep this fast.
+    """
+    try:
+        # Accept either raw string or 24-char hex as enterprise id (we store as provided)
+        try:
+            eid = ObjectId(enterprise_id)
+        except Exception:
+            eid = enterprise_id
+
+        coll = await _chat_coll()
+        doc = await coll.find_one({"_id": chat_id, "enterprise_id": eid, "workflow_name": workflow_name}, {"_id": 1})
+        return {"exists": doc is not None}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check chat existence: {e}")
+
+@app.get("/api/chats/meta/{enterprise_id}/{workflow_name}/{chat_id}")
+async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
+    """Return lightweight chat metadata including cache_seed and last_artifact.
+
+    This allows a second user/browser to restore artifact UI state even if local
+    storage is empty. Does not return full transcript.
+    """
+    try:
+        try:
+            eid = ObjectId(enterprise_id)
+        except Exception:
+            eid = enterprise_id
+        coll = await _chat_coll()
+        projection = {"cache_seed": 1, "last_artifact": 1, "_id": 1, "workflow_name": 1}
+        doc = await coll.find_one({"_id": chat_id, "enterprise_id": eid, "workflow_name": workflow_name}, projection)
+        if not doc:
+            return {"exists": False}
+        return {
+            "exists": True,
+            "chat_id": chat_id,
+            "workflow_name": workflow_name,
+            "cache_seed": doc.get("cache_seed"),
+            "last_artifact": doc.get("last_artifact"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load chat meta: {e}")
     
 
 @app.websocket("/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}")
@@ -752,6 +858,79 @@ async def websocket_endpoint(
             logger.error(f"Auto-start failed for {workflow_name}/{active_chat_id}: {e}")
 
     asyncio.create_task(_auto_start_if_needed())
+
+    # Emit an initial metadata event (chat_meta) with cache_seed for frontend cache alignment
+    try:
+        chat_exists = False
+        coll = None
+        try:
+            coll = await _chat_coll()
+            existing_doc = await coll.find_one({"_id": active_chat_id, "enterprise_id": enterprise_id}, {"_id": 1})
+            chat_exists = existing_doc is not None
+        except Exception as ce:
+            wf_logger.debug(f"chat existence check failed for {active_chat_id}: {ce}")
+
+        # If chat does not exist, create a minimal session doc BEFORE assigning seed
+        if not chat_exists:
+            try:
+                await persistence_manager.create_chat_session(active_chat_id, enterprise_id, workflow_name, user_id)
+                chat_exists = True
+                wf_logger.info("WS_BACKFILL_SESSION_CREATED", extra={"chat_id": active_chat_id})
+            except Exception as ce:
+                wf_logger.debug(f"Failed to backfill chat session for {active_chat_id}: {ce}")
+
+        try:
+            cache_seed = await persistence_manager.get_or_assign_cache_seed(active_chat_id, enterprise_id)
+        except Exception as ce:
+            cache_seed = None
+            wf_logger.debug(f"cache_seed retrieval failed for WS {active_chat_id}: {ce}")
+
+        if simple_transport:
+            # Attempt to include last_artifact for immediate restore (avoid separate HTTP roundtrip)
+            last_artifact = None
+            created_at_iso = None
+            try:
+                if coll is not None:
+                    doc = await coll.find_one(
+                        {"_id": active_chat_id, "enterprise_id": enterprise_id},
+                        {"last_artifact": 1, "created_at": 1}
+                    )
+                    if doc:
+                        last_artifact = doc.get("last_artifact")
+                        ca = doc.get("created_at")
+                        if ca:
+                            try:
+                                created_at_iso = ca.isoformat()
+                            except Exception:
+                                created_at_iso = str(ca)
+            except Exception as la_err:
+                wf_logger.debug(f"last_artifact fetch failed for chat_meta {active_chat_id}: {la_err}")
+
+            await simple_transport.send_event_to_ui({
+                'kind': 'chat_meta',
+                'chat_id': active_chat_id,
+                'workflow_name': workflow_name,
+                'enterprise_id': enterprise_id,
+                'user_id': user_id,
+                'cache_seed': cache_seed,
+                'chat_exists': chat_exists,
+                'last_artifact': last_artifact,
+                'created_at': created_at_iso,
+            }, active_chat_id)
+            wf_logger.info(
+                "CHAT_META_EMITTED",
+                extra={
+                    "chat_id": active_chat_id,
+                    "workflow_name": workflow_name,
+                    "enterprise_id": enterprise_id,
+                    "cache_seed": cache_seed,
+                    "chat_exists": chat_exists,
+                    "has_last_artifact": bool(last_artifact),
+                    "created_at": created_at_iso,
+                },
+            )
+    except Exception as meta_e:
+        wf_logger.debug(f"Failed to emit chat_meta for {active_chat_id}: {meta_e}")
     
     await simple_transport.handle_websocket(
         websocket=websocket,

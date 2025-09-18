@@ -86,6 +86,14 @@ export class WebSocketApiAdapter extends ApiAdapter {
   createWebSocketConnection(enterpriseId, userId, callbacks = {}, workflowname = null, chatId = null) {
     const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     
+    console.log('🛠️ [WS-CONN] WebSocket workflow resolution:', {
+      provided: workflowname,
+      fallback: workflowConfig.getDefaultWorkflow(), 
+      actual: actualworkflowname,
+      availableConfigs: workflowConfig.getAvailableWorkflows(),
+      configs: workflowConfig.configs ? Array.from(workflowConfig.configs.entries()) : 'not available'
+    });
+    
     if (!chatId) {
       console.error('Chat ID is required for WebSocket connection');
       return null;
@@ -239,6 +247,14 @@ export class WebSocketApiAdapter extends ApiAdapter {
   async startChat(enterpriseId, workflowname, userId, fetchOpts = {}) {
     const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     const clientRequestId = crypto?.randomUUID ? crypto.randomUUID() : (Date.now()+"-"+Math.random().toString(36).slice(2));
+    
+    console.log('🛠️ [WS-API] startChat workflow resolution:', {
+      provided: workflowname,
+      fallback: workflowConfig.getDefaultWorkflow(), 
+      actual: actualworkflowname,
+      availableConfigs: workflowConfig.getAvailableWorkflows(),
+      configs: workflowConfig.configs ? Array.from(workflowConfig.configs.entries()) : 'not available'
+    });
     
     try {
       if (this._startingChat) {

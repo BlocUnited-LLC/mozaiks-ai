@@ -12,7 +12,6 @@ from autogen.agentchat.group import (
     TerminateTarget,
 )
 from .workflow_manager import workflow_manager
-from core.observability.otel_helpers import timed_span
 from logs.logging_config import get_workflow_logger
 
 log = get_workflow_logger("handoffs")
@@ -37,9 +36,15 @@ Rules:
 
 class HandoffManager:
     def __init__(self) -> None:
+        # Canonical special target names
         self._special = {
             "user": lambda: RevertToUserTarget(),
             "terminate": lambda: TerminateTarget(),
+        }
+        # Accept common variants for robustness
+        self._special_aliases = {
+            "user": {"user", "User", "USER", "user_proxy", "userproxy", "UserProxy", "user-agent", "UserAgent"},
+            "terminate": {"terminate", "Terminate", "TERMINATE", "end", "End", "END", "stop", "Stop", "STOP"},
         }
 
     def apply_handoffs_from_config(self, workflow_name: str, agents: Dict[str, Any]) -> Dict[str, Any]:
@@ -54,17 +59,16 @@ class HandoffManager:
             "missing_target_agents": [],
             "errors": []
         }
-        with timed_span("handoffs.load", attributes={"workflow_name": workflow_name}, record_metric=False):
-            config = workflow_manager.get_config(workflow_name) or {}
-            handoffs_block = config.get("handoffs", {})
-            if "handoffs" in handoffs_block:  # tolerate nested key structure
-                handoffs_block = handoffs_block["handoffs"]
-            rules: List[Dict[str, Any]] = handoffs_block.get("handoff_rules", []) or []
-            summary["rules_total"] = len(rules)
-            if not rules:
-                log.warning(f"⚠️ [HANDOFFS] No handoff_rules found for workflow {workflow_name}")
-                summary["agents_with_rules"] = []
-                return summary
+        config = workflow_manager.get_config(workflow_name) or {}
+        handoffs_block = config.get("handoffs", {})
+        if "handoffs" in handoffs_block:  # tolerate nested key structure
+            handoffs_block = handoffs_block["handoffs"]
+        rules: List[Dict[str, Any]] = handoffs_block.get("handoff_rules", []) or []
+        summary["rules_total"] = len(rules)
+        if not rules:
+            log.warning(f"⚠️ [HANDOFFS] No handoff_rules found for workflow {workflow_name}")
+            summary["agents_with_rules"] = []
+            return summary
 
             grouped: Dict[str, List[Dict[str, Any]]] = {}
             for r in rules:
@@ -180,10 +184,20 @@ class HandoffManager:
     def _build_target(self, target_name: Optional[str], agents: Dict[str, Any], summary: Dict[str, Any]):
         if not target_name:
             return None
+        # Normalize special aliases first
+        for canonical, aliases in self._special_aliases.items():
+            if target_name in aliases:
+                return self._special[canonical]()
+        # Case-insensitive agent name match fallback
         if target_name in self._special:
             return self._special[target_name]()
         if target_name in agents:
             return AgentTarget(agents[target_name])
+        # Try case-insensitive match for agent keys
+        lower_map = {k.lower(): k for k in agents.keys()}
+        tgt_key = lower_map.get(target_name.lower()) if isinstance(target_name, str) else None
+        if tgt_key and tgt_key in agents:
+            return AgentTarget(agents[tgt_key])
         summary["missing_target_agents"].append(target_name)
         log.warning(f"⚠️ [HANDOFFS] Target agent '{target_name}' not found; skipping")
         return None

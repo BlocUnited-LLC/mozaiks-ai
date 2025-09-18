@@ -4,82 +4,180 @@
       "AgentSpec": {
         "type": "model",
         "fields": {
-          "agent_title": { "type": "str", "description": "Short name of the agent" },
-          "agent_type": { "type": "str", "enum": ["ContextualAgent", "FunctionalAgent", "ThirdPartyAgent", "InterviewAgent", "UIToolsAgent"], "description": "Defines whether the agent is contextual only, requires tools, external APIs, interviewer, or UI stubs." },
-          "agent_description": { "type": "str", "description": "Explicit role and behavior of the agent. Must explain how listed services are used (or clarify none are needed)." },
-          "services": { "type": "list", "items": "str", "description": "List of external services required. Leave empty if none. Services must be proper case (e.g., 'Slack', 'Google Sheets'). Do NOT include payments or alternative LLMs/frameworks." }
+          "agent_title": {
+            "type": "str",
+            "description": "Short name of the agent"
+          },
+          "agent_type": {
+            "type": "str",
+            "enum": [
+              "ContextualAgent",
+              "FunctionalAgent",
+              "ThirdPartyAgent",
+              "InterviewAgent",
+              "UIToolsAgent"
+            ],
+            "description": "Defines whether the agent is contextual only, requires tools, external APIs, interviewer, or UI stubs."
+          },
+          "agent_description": {
+            "type": "str",
+            "description": "Explicit role and behavior of the agent. Must explain how listed services are used (or clarify none are needed)."
+          },
+          "services": {
+            "type": "list",
+            "items": "str",
+            "description": "List of external services required. Leave empty if none. Services must be proper case (e.g., 'Slack', 'Google Sheets'). Do NOT include payments or alternative LLMs/frameworks."
+          }
         }
       },
       "ModuleSpec": {
         "type": "model",
         "fields": {
-          "module_title": { "type": "str", "description": "Concise name of the module" },
-          "module_description": { "type": "str", "description": "Plain-language purpose of the module" },
-          "human_in_the_loop": { "type": "bool", "description": "Whether this module requires human input or approval (true/false)." },
-          "agents": { "type": "list", "items": "AgentSpec", "description": "Agents contained in this module." }
+          "module_title": {
+            "type": "str",
+            "description": "Concise name of the module"
+          },
+          "module_description": {
+            "type": "str",
+            "description": "Plain-language purpose of the module"
+          },
+          "human_in_the_loop": {
+            "type": "bool",
+            "description": "Whether this module requires human input or approval (true/false)."
+          },
+          "agents": {
+            "type": "list",
+            "items": "AgentSpec",
+            "description": "Agents contained in this module."
+          }
         }
       },
       "ActionPlan": {
         "type": "model",
         "fields": {
-          "workflow_title": { "type": "str", "description": "Concise workflow title" },
-          "workflow_description": { "type": "str", "description": "Short description of purpose and value" },
-          "mermaid_flow": { "type": "str", "description": "Mermaid flowchart diagram; MUST start with 'flowchart LR' and map modules → agents → services." },
-          "modules": { "type": "list", "items": "ModuleSpec", "description": "List of modules, each containing agents, services, and human-in-the-loop indicator." },
-          "constraints": { "type": "list", "items": "str", "description": "Explicit rules, preferences, or limitations for the automation process. Can be empty." }
+          "workflow_title": {
+            "type": "str",
+            "description": "Concise workflow title"
+          },
+          "workflow_description": {
+            "type": "str",
+            "description": "Short description of purpose and value"
+          },
+          "mermaid_flow": {
+            "type": "str",
+            "description": "Mermaid flowchart diagram; MUST start with 'flowchart LR' and map modules \u00e2\u2020\u2019 agents \u00e2\u2020\u2019 services."
+          },
+          "modules": {
+            "type": "list",
+            "items": "ModuleSpec",
+            "description": "List of modules, each containing agents, services, and human-in-the-loop indicator."
+          },
+          "constraints": {
+            "type": "list",
+            "items": "str",
+            "description": "Explicit rules, preferences, or limitations for the automation process. Can be empty."
+          }
         }
       },
       "ContextAgentOutput": {
         "type": "model",
         "fields": {
-          "ActionPlan": { "type": "ActionPlan", "description": "The Action Plan object (required)." },
-          "agent_message": { "type": "str", "description": "Message prompting the user to review the Action Plan." }
+          "ActionPlan": {
+            "type": "ActionPlan",
+            "description": "The Action Plan object (required)."
+          },
+          "agent_message": {
+            "type": "str",
+            "description": "Message prompting the user to review the Action Plan."
+          }
         }
       },
-
-
       "APIKeyRequest": {
         "type": "model",
         "fields": {
-          "service": { "type": "str", "description": "Lowercase identifier of the service requiring an API key (e.g., 'slack', 'google_sheets')." },
-          "description": { "type": "str", "description": "Purpose of this API key, derived from the agent_description in the Action Plan." },
-          "mask_input": { "type": "bool", "description": "Always true to hide sensitive input." },
-          "agent_message": { "type": "str", "description": "Message prompting the user to provide API Key." }
+          "service": {
+            "type": "str",
+            "description": "Lowercase identifier of the service requiring an API key (e.g., 'slack', 'google_sheets')."
+          },
+          "description": {
+            "type": "str",
+            "description": "Purpose of this API key, derived from the agent_description in the Action Plan."
+          },
+          "mask_input": {
+            "type": "bool",
+            "description": "Always true to hide sensitive input."
+          },
+          "agent_message": {
+            "type": "str",
+            "description": "Message prompting the user to provide API Key."
+          }
         }
       },
-
       "DatabaseRef": {
         "type": "model",
         "fields": {
-          "database_name": { "type": "str", "description": "Name of the target database" },
-          "collection": { "type": "str", "description": "Collection name where the variable resides" },
-          "search_by": { "type": "str", "description": "Field used as the query key when accessing this variable" },
-          "field": { "type": "str", "description": "Specific field in the collection that stores the variable" }
+          "database_name": {
+            "type": "str",
+            "description": "Name of the target database"
+          },
+          "collection": {
+            "type": "str",
+            "description": "Collection name where the variable resides"
+          },
+          "search_by": {
+            "type": "str",
+            "description": "Field used as the query key when accessing this variable"
+          },
+          "field": {
+            "type": "str",
+            "description": "Specific field in the collection that stores the variable"
+          }
         }
       },
       "DefinedVariable": {
         "type": "model",
         "fields": {
-          "name": { "type": "str", "description": "Variable name" },
+          "name": {
+            "type": "str",
+            "description": "Variable name"
+          },
           "variable_status": {
             "type": "literal",
-            "values": ["existing", "new"],
+            "values": [
+              "existing",
+              "new"
+            ],
             "description": "Marks whether the variable already exists or must be created"
           },
           "new_doc_fields": {
             "type": "union",
-            "variants": ["null", "dict"],
-            "description": "If variable_status = existing → must be null. If new → schema of new document with keys and value types."
+            "variants": [
+              "null",
+              "dict"
+            ],
+            "description": "If variable_status = existing \u00e2\u2020\u2019 must be null. If new \u00e2\u2020\u2019 schema of new document with keys and value types."
           },
-          "description": { "type": "str", "description": "What this variable represents in the workflow" },
-          "database": { "type": "DatabaseRef", "description": "Database reference information" }
+          "description": {
+            "type": "str",
+            "description": "What this variable represents in the workflow"
+          },
+          "database": {
+            "type": "DatabaseRef",
+            "description": "Database reference information"
+          }
         }
       },
       "RuntimeVariable": {
         "type": "model",
         "fields": {
-          "name": { "type": "str", "description": "Runtime variable name" },
-          "description": { "type": "str", "description": "Purpose of the runtime variable; no database linkage" }
+          "name": {
+            "type": "str",
+            "description": "Runtime variable name"
+          },
+          "description": {
+            "type": "str",
+            "description": "Purpose of the runtime variable; no database linkage"
+          }
         }
       },
       "ContextVariablesPlan": {
@@ -106,7 +204,6 @@
           }
         }
       },
-
       "UIConfig": {
         "type": "model",
         "fields": {
@@ -137,7 +234,10 @@
           },
           "tool_type": {
             "type": "literal",
-            "values": ["UI_Tool", "Agent_Tool"],
+            "values": [
+              "UI_Tool",
+              "Agent_Tool"
+            ],
             "description": "Tool type"
           },
           "ui": {
@@ -156,7 +256,6 @@
           }
         }
       },
-
       "UIFile": {
         "type": "model",
         "fields": {
@@ -184,8 +283,6 @@
           }
         }
       },
-
-
       "AgentTool": {
         "type": "model",
         "fields": {
@@ -209,7 +306,6 @@
           }
         }
       },
-
       "Hook": {
         "type": "model",
         "fields": {
@@ -251,44 +347,72 @@
           }
         }
       },
-
       "AgentDefinition": {
         "type": "model",
         "fields": {
-          "name": { "type": "str", "description": "Agent variable name" },
-          "display_name": { "type": "str", "description": "Agent display name" },
-          "system_message": { "type": "str", "description": "Complete system message for the agent" },
-          "human_input_mode": {
-            "type": "literal",
-            "values": ["ALWAYS", "NEVER", "TERMINATE"]
+          "name": {
+            "type": "str",
+            "description": "Agent variable name"
           },
-          "max_consecutive_auto_reply": { "type": "int", "default": 10 },
+          "display_name": {
+            "type": "str",
+            "description": "Agent display name"
+          },
+          "system_message": {
+            "type": "str",
+            "description": "Complete system message for the agent"
+          },
+          "max_consecutive_auto_reply": {
+            "type": "int",
+            "default": 10
+          },
           "structured_outputs": {
             "type": "bool",
             "default": false,
             "description": "Whether this agent produces structured outputs"
+          },
+          "structured_outputs_required": {
+            "type": "bool",
+            "description": "True when the agent must produce structured outputs (Pydantic model enforced); false otherwise."
           }
         }
       },
       "AgentsAgentOutput": {
         "type": "model",
         "fields": {
-          "agents": { "type": "list", "items": "AgentDefinition" }
+          "agents": {
+            "type": "list",
+            "items": "AgentDefinition"
+          }
         }
       },
-
-      
       "OrchestratorAgentOutput": {
         "type": "model",
         "fields": {
-          "workflow_name": { "type": "str", "description": "Workflow identifier" },
-          "max_turns": { "type": "int", "description": "Maximum conversation turns" },
-          "human_in_the_loop": { "type": "bool", "description": "Whether human interaction is required" },
+          "workflow_name": {
+            "type": "str",
+            "description": "Workflow identifier"
+          },
+          "max_turns": {
+            "type": "int",
+            "description": "Maximum conversation turns"
+          },
+          "human_in_the_loop": {
+            "type": "bool",
+            "description": "Whether human interaction is required"
+          },
           "startup_mode": {
             "type": "literal",
-            "values": ["AgentDriven", "UserDriven", "BackendOnly"]
+            "values": [
+              "AgentDriven",
+              "UserDriven",
+              "BackendOnly"
+            ]
           },
-          "orchestration_pattern": { "type": "str", "default": "DefaultPattern" },
+          "orchestration_pattern": {
+            "type": "str",
+            "default": "DefaultPattern"
+          },
           "initial_message_to_user": {
             "type": "optional_str",
             "description": "Message shown to user (UserDriven only)"
@@ -297,25 +421,52 @@
             "type": "optional_str",
             "description": "Initial workflow message (AgentDriven/BackendOnly)"
           },
-          "recipient": { "type": "str", "description": "First agent to receive message" },
-          "visual_agents": { "type": "list", "items": "str", "description": "Agents whose messages are visible in UI" },
-          "ui_capable_agents": { "type": "list", "items": "str", "description": "Agents that can emit UI tool events" }
+          "recipient": {
+            "type": "str",
+            "description": "First agent to receive message"
+          },
+          "visual_agents": {
+            "type": "list",
+            "items": "str",
+            "description": "Agents whose messages are visible in UI"
+          },
+          "ui_capable_agents": {
+            "type": "list",
+            "items": "str",
+            "description": "Agents that can emit UI tool events"
+          }
         }
       },
       "HandoffRule": {
         "type": "model",
         "fields": {
-          "source_agent": { "type": "str", "description": "Source agent name" },
-          "target_agent": { "type": "str", "description": "Target agent name or 'user' or 'terminate'" },
+          "source_agent": {
+            "type": "str",
+            "description": "Source agent name"
+          },
+          "target_agent": {
+            "type": "str",
+            "description": "Target agent name or 'user' or 'terminate'"
+          },
           "handoff_type": {
             "type": "literal",
-            "values": ["condition", "after_work"],
+            "values": [
+              "condition",
+              "after_work"
+            ],
             "description": "Type of handoff"
           },
-          "condition": { "type": "optional_str", "description": "Condition for conditional handoffs" },
+          "condition": {
+            "type": "optional_str",
+            "description": "Condition for conditional handoffs"
+          },
           "transition_target": {
             "type": "literal",
-            "values": ["AgentTarget", "RevertToUserTarget", "TerminateTarget"],
+            "values": [
+              "AgentTarget",
+              "RevertToUserTarget",
+              "TerminateTarget"
+            ],
             "description": "Type of transition"
           }
         }
@@ -323,30 +474,51 @@
       "HandoffsAgentOutput": {
         "type": "model",
         "fields": {
-          "handoff_rules": { "type": "list", "items": "HandoffRule" }
+          "handoff_rules": {
+            "type": "list",
+            "items": "HandoffRule"
+          }
         }
       },
       "StructuredModelField": {
         "type": "model",
         "fields": {
-          "name": { "type": "str", "description": "Field name" },
-          "type": { "type": "str", "description": "Field type (str|int|bool|list|optional_str)" },
-          "description": { "type": "str", "description": "What this field represents" }
+          "name": {
+            "type": "str",
+            "description": "Field name"
+          },
+          "type": {
+            "type": "str",
+            "description": "Field type (str|int|bool|list|optional_str)"
+          },
+          "description": {
+            "type": "str",
+            "description": "What this field represents"
+          }
         }
       },
       "StructuredModelDefinition": {
         "type": "model",
         "fields": {
-          "model_name": { "type": "str", "description": "Name of the model" },
-          "fields": { "type": "list", "items": "StructuredModelField" }
+          "model_name": {
+            "type": "str",
+            "description": "Name of the model"
+          },
+          "fields": {
+            "type": "list",
+            "items": "StructuredModelField"
+          }
         }
       },
       "AgentRegistryEntry": {
         "type": "model",
         "fields": {
-          "agent": { "type": "str", "description": "Agent name" },
-          "agent_definition": { 
-            "type": "optional_str", 
+          "agent": {
+            "type": "str",
+            "description": "Agent name"
+          },
+          "agent_definition": {
+            "type": "optional_str",
             "description": "Model name for this agent, or null if no structured output applies"
           }
         }
@@ -367,7 +539,6 @@
       }
     }
   },
-
   "registry": {
     "InterviewAgent": null,
     "ContextAgent": "ContextAgentOutput",

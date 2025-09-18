@@ -10,14 +10,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      OPENLIT_ENABLED: "true"
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      # Route logs into mounted folder inside container
+      AG2_RUNTIME_LOGGING: "sqlite"
       LOGS_BASE_DIR: /app/logs/logs
       DOCKERIZED: "true"
-      # Note: AZURE_* and MONGO_URI come from env_file: ../../.env above
-    depends_on:
-      - otel-collector
+      # AZURE_* and MONGO_URI still supplied via env_file
     volumes:
       - ../../logs/logs:/app/logs/logs
     restart: unless-stopped
@@ -27,15 +23,3 @@ services:
       timeout: 3s
       retries: 10
 
-  otel-collector:
-    image: otel/opentelemetry-collector:0.98.0
-    container_name: otel-collector
-    command: ["--config=/etc/otelcol/config.yaml"]
-    volumes:
-      - ../otel/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
-    ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-    restart: unless-stopped
-
-# Local mongo removed: this deployment relies on MONGO_URI being provided via Key Vault or .env

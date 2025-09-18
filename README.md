@@ -64,7 +64,7 @@ Our architecture is designed around a "strategically lean" philosophy, ensuring 
 
 ### Run with Docker (optional)
 
-You can run the backend and an OpenTelemetry Collector via Docker Compose:
+You can run the backend with Docker Compose:
 
 ```powershell
 # From repo root (Windows PowerShell)
@@ -73,45 +73,33 @@ docker compose -f infra/compose/docker-compose.yml up --build
 
 Notes:
 - Dockerfile is at `infra/docker/Dockerfile`.
-- Collector config is at `infra/otel/otel-collector-config.yaml` and exports to console logs by default.
-- Set `OPENLIT_ENABLED=true` to emit OTEL telemetry; otherwise the app runs without telemetry.
-- File logs map to `logs/logs` on the host by default. You can override the directory with `LOGS_BASE_DIR`. Combine with `LOGS_AS_JSON` to switch file format inside containers.
+- Compose file only starts the FastAPI app and mounts `logs/logs` so you can tail runtime output.
+- AG2 runtime logging (sqlite/file) is enabled by default.
 
-### Telemetry & Metrics Quick Reference
+### Metrics & Usage Tracking Quick Reference
 
-Runtime provides two layers:
+Runtime surfaces two data paths:
 
-1. OpenTelemetry (traces + histograms) exported to the in-cluster collector (OTLP HTTP at `otel-collector:4318` via compose). If the collector is down, initialization degrades silently.
-2. Lightweight in-memory performance counters + token usage exposed directly via HTTP.
+1. **AG2 runtime logger (sqlite/file)** ? provides per-request start/end timestamps and token usage.
+2. **WorkflowStats rollups** ? real-time MongoDB documents with per-chat and per-agent totals (tokens, cost, duration).
 
-HTTP Endpoints (no auth in dev):
+HTTP endpoints (no auth in dev):
 
 | Endpoint | Purpose |
 |----------|---------|
 | `/metrics/perf/aggregate` | JSON aggregate (turns, tool calls, tokens, cost) |
-| `/metrics/perf/chats` | JSON array of per‑chat snapshots |
+| `/metrics/perf/chats` | JSON array of per-chat snapshots |
 | `/metrics/perf/chats/{chat_id}` | Single chat snapshot |
-| `/metrics/telemetry/status` | Current OTEL env + init status |
-| `/metrics/prometheus` | Prometheus exposition (scraped by collector) |
+| `/metrics/prometheus` | Minimal Prometheus exposition for quick scrapes |
 
-Prometheus Scrape: Collector config now includes a `prometheus` receiver scraping `/metrics/prometheus` every 10s; metrics forwarded to the `logging` exporter. Replace or extend exporters (e.g. Prometheus remote write, Grafana Cloud) as needed.
-
-Disable Telemetry Completely:
-```
-set OTEL_TRACES_EXPORTER=none (Windows) or export OTEL_TRACES_EXPORTER=none (bash)
-```
-or unset `OTEL_EXPORTER_OTLP_ENDPOINT` before startup. The perf endpoints continue working because they are in-memory only.
-
-Cost & Token Fields: Accumulated per chat (prompt_tokens, completion_tokens, cost) and surfaced in all snapshot endpoints and Prometheus counters.
-
-Minimal Local Verification (PowerShell):
+Minimal local verification (PowerShell):
 ```powershell
 Invoke-RestMethod http://localhost:8000/metrics/perf/aggregate | ConvertTo-Json -Depth 4
 Invoke-WebRequest http://localhost:8000/metrics/prometheus | Select -Expand Content
-Invoke-RestMethod http://localhost:8000/metrics/telemetry/status
 ```
 
-If you don't want the collector, remove the `otel-collector` service from compose and the related env vars; the app will still run and expose the raw endpoints.
+Cost, token, and duration fields are accumulated live in the WorkflowStats document (`mon_<enterprise>_<workflow>`).
+Duration per agent/chat is derived from the AG2 runtime logger start/end timestamps captured by the realtime logger shim.
 
 ### Viewing Logs
 
@@ -158,6 +146,32 @@ services:
     app:
         environment:
             - LOGS_AS_JSON=true
+```
+
+### Frontend/Backend Cache Seed Alignment
+
+The backend assigns a deterministic per-chat `cache_seed` (stored in the `ChatSessions` doc and derived from the first 32 bits of SHA-256 of `enterprise_id:chat_id`). This value:
+
+1. Is returned in the `/api/chats/{enterprise}/{workflow}/start` response under `cache_seed`.
+2. Is emitted immediately after WebSocket connection as a `chat_meta` event (kind `chat_meta`).
+3. Is persisted client-side in `localStorage` under `mozaiks.current_chat_id.cache_seed.<chatId>`.
+4. Is included in dynamic UI component cache keys: `<chatId>:<cache_seed>:<workflow>:<component>` to prevent cross-chat component state bleed.
+
+Process-wide defaults:
+- `LLM_DEFAULT_CACHE_SEED` → hard override for the default (used only if per-chat seed not provided).
+- `RANDOMIZE_DEFAULT_CACHE_SEED=1` → randomizes the process default seed (does not affect per-chat seeds).
+
+Why this matters:
+- Ensures reproducibility when resuming a chat (same seed regenerates identical deterministic behaviors beneath AG2 caching layers).
+- Prevents UI component instances from leaking across chats that share workflow/component names.
+- Provides a single seed you can thread through future caching or memoization layers (LLM adapters, vector lookups, layout decisions) for consistent variance control.
+
+Implementation notes:
+- Backend emits via `send_event_to_ui` with `kind: 'chat_meta'`.
+- Frontend listens in `ChatPage.js` and stores/applies the seed before loading workflow components.
+- `WorkflowUIRouter` incorporates the seed into its internal `componentCache` key.
+
+If you add additional caches, prefer reusing the existing `cache_seed` rather than introducing new entropy variables.
             # Optional: redirect logs inside the container
             # - LOGS_BASE_DIR=/data/logs
         volumes:

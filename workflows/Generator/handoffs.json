@@ -1,24 +1,153 @@
 {
-  "handoffs": {
-    "handoff_rules": [
-  { "source_agent": "ContextAgent", "target_agent": "user", "handoff_type": "after_work", "condition": null, "transition_target": "RevertToUserTarget" },
-  { "source_agent": "user", "target_agent": "ContextAgent", "handoff_type": "condition", "condition": "When the user does not agree with the workflow concept and wants revisions.", "transition_target": "AgentTarget" },
-  { "source_agent": "ContextAgent", "target_agent": "APIKeyAgent", "handoff_type": "condition", "condition": "When the user agree with the workflow.", "transition_target": "AgentTarget" },
-  { "source_agent": "APIKeyAgent", "target_agent": "user", "handoff_type": "condition", "condition": "When third-party API keys are required and must be provided by the user.", "transition_target": "RevertToUserTarget" },
-  { "source_agent": "user", "target_agent": "APIKeyAgent", "handoff_type": "condition", "condition": "When the user supplies required API keys or indicates they are available.", "transition_target": "AgentTarget" },
-  { "source_agent": "APIKeyAgent", "target_agent": "ContextVariablesAgent", "handoff_type": "condition", "condition": "When external API keys are not needed or already satisfied.", "transition_target": "AgentTarget" },
-  { "source_agent": "ContextVariablesAgent", "target_agent": "ToolsManagerAgent", "handoff_type": "after_work", "condition": null, "transition_target": "AgentTarget" },
-  { "source_agent": "ToolsManagerAgent", "target_agent": "UIFileGenerator", "handoff_type": "after_work", "condition": null, "transition_target": "AgentTarget" },
-  { "source_agent": "UIFileGenerator", "target_agent": "AgentToolsFileGenerator", "handoff_type": "after_work", "condition": null, "transition_target": "AgentTarget" },
-  { "source_agent": "AgentToolsFileGenerator", "target_agent": "AgentsAgent", "handoff_type": "after_work", "condition": null, "transition_target": "AgentTarget" },
-  { "source_agent": "AgentsAgent", "target_agent": "StructuredOutputsAgent", "handoff_type": "after_work", "condition": null, "transition_target": "AgentTarget" },
-  { "source_agent": "StructuredOutputsAgent", "target_agent": "HookAgent", "handoff_type": "after_work", "condition": null, "transition_target": "AgentTarget" },
-  { "source_agent": "HookAgent", "target_agent": "HandoffsAgent", "handoff_type": "after_work", "condition": null, "transition_target": "AgentTarget" },
-  { "source_agent": "HandoffsAgent", "target_agent": "OrchestratorAgent", "handoff_type": "after_work", "condition": null, "transition_target": "AgentTarget" },
-  { "source_agent": "OrchestratorAgent", "target_agent": "UserFeedbackAgent", "handoff_type": "after_work", "condition": null, "transition_target": "AgentTarget" },
-  { "source_agent": "UserFeedbackAgent", "target_agent": "user", "handoff_type": "after_work", "condition": null, "transition_target": "RevertToUserTarget" },
-  { "source_agent": "user", "target_agent": "ContextAgent", "handoff_type": "condition", "condition": "When the user requests further changes after reviewing feedback outputs.", "transition_target": "AgentTarget" },
-  { "source_agent": "user", "target_agent": "terminate", "handoff_type": "condition", "condition": "When the user agrees with UserFeedbackAgent outputs and confirms completion.", "transition_target": "TerminateTarget" }
-    ]
-  }
+    "handoffs":  {
+                     "handoff_rules":  [
+                                           {
+                                               "source_agent":  "user",
+                                               "target_agent":  "InterviewAgent",
+                                               "handoff_type":  "condition",
+                                               "condition":  "When the user responds to InterviewAgent inital questions.",
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                              "source_agent": "InterviewAgent",
+                                              "target_agent": "user",
+                                              "handoff_type": "after_work",
+                                              "condition": null,
+                                              "transition_target": "RevertToUserTarget"
+                                           },
+                                           {
+                                               "source_agent":  "InterviewAgent",
+                                               "target_agent":  "ContextAgent",
+                                               "handoff_type":  "condition",
+                                               "condition":  "${interview_complete}",
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "ContextAgent",
+                                               "target_agent":  "user",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "RevertToUserTarget"
+                                           },
+                                           {
+                                               "source_agent":  "user",
+                                               "target_agent":  "ContextAgent",
+                                               "handoff_type":  "condition",
+                                               "condition":  "When the user does not agree with the workflow concept and wants revisions.",
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "ContextAgent",
+                                               "target_agent":  "APIKeyAgent",
+                                               "handoff_type":  "condition",
+                                               "condition":  "When the user agree with the workflow.",
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "APIKeyAgent",
+                                               "target_agent":  "user",
+                                               "handoff_type":  "condition",
+                                               "condition":  "When third-party API keys are required and must be provided by the user.",
+                                               "transition_target":  "RevertToUserTarget"
+                                           },
+                                           {
+                                               "source_agent":  "user",
+                                               "target_agent":  "APIKeyAgent",
+                                               "handoff_type":  "condition",
+                                               "condition":  "When the user supplies required API keys or indicates they are available.",
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "APIKeyAgent",
+                                               "target_agent":  "ContextVariablesAgent",
+                                               "handoff_type":  "condition",
+                                               "condition":  "When external API keys are not needed or already satisfied.",
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "ContextVariablesAgent",
+                                               "target_agent":  "ToolsManagerAgent",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "ToolsManagerAgent",
+                                               "target_agent":  "UIFileGenerator",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "UIFileGenerator",
+                                               "target_agent":  "AgentToolsFileGenerator",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "AgentToolsFileGenerator",
+                                               "target_agent":  "AgentsAgent",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "AgentsAgent",
+                                               "target_agent":  "StructuredOutputsAgent",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "StructuredOutputsAgent",
+                                               "target_agent":  "HookAgent",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "HookAgent",
+                                               "target_agent":  "HandoffsAgent",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "HandoffsAgent",
+                                               "target_agent":  "OrchestratorAgent",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "OrchestratorAgent",
+                                               "target_agent":  "UserFeedbackAgent",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "UserFeedbackAgent",
+                                               "target_agent":  "user",
+                                               "handoff_type":  "after_work",
+                                               "condition":  null,
+                                               "transition_target":  "RevertToUserTarget"
+                                           },
+                                           {
+                                               "source_agent":  "user",
+                                               "target_agent":  "InterviewAgent",
+                                               "handoff_type":  "condition",
+                                               "condition":  "When the user requests further changes after reviewing feedback outputs.",
+                                               "transition_target":  "AgentTarget"
+                                           },
+                                           {
+                                               "source_agent":  "user",
+                                               "target_agent":  "terminate",
+                                               "handoff_type":  "condition",
+                                               "condition":  "When the user agrees with UserFeedbackAgent outputs and confirms completion.",
+                                               "transition_target":  "TerminateTarget"
+                                           }
+                                       ]
+                 }
 }

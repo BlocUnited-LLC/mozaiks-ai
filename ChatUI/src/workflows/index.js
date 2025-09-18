@@ -23,12 +23,81 @@ class WorkflowRegistry {
     this.loadedWorkflows = new Map();
     this.initialized = false;
     this.apiBaseUrl = 'http://localhost:8000/api'; // Direct backend API base URL (bypass proxy)
+    this.ready = false; // only true after at least one workflow loaded (or cached)
+    this.lastError = null;
+    this.maxRetries = 5;
+    this.retryDelays = [250, 750, 2000, 4000, 8000]; // ms
+    this.cacheKey = 'mozaiks_workflows_cache_v1';
+  }
+
+  // Load from localStorage cache (best-effort)
+  _loadFromCache() {
+    try {
+      const raw = localStorage.getItem(this.cacheKey);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return false;
+      if (!Array.isArray(parsed.workflows)) return false;
+      parsed.workflows.forEach(w => {
+        if (w && w.name) this.loadedWorkflows.set(w.name, w);
+      });
+      if (this.loadedWorkflows.size > 0) {
+        console.warn('🗃️ WorkflowRegistry: Loaded workflows from cache (offline fallback)');
+        this.initialized = true;
+        this.ready = true;
+        return true;
+      }
+    } catch (e) {
+      console.debug('Cache load failed', e);
+    }
+    return false;
+  }
+
+  _saveToCache() {
+    try {
+      const payload = { ts: Date.now(), workflows: this.getLoadedWorkflows() };
+      localStorage.setItem(this.cacheKey, JSON.stringify(payload));
+    } catch (e) {
+      console.debug('Cache save skipped', e);
+    }
+  }
+
+  async _fetchWorkflowsOnce(signal) {
+    const response = await fetch(`${this.apiBaseUrl}/workflows`, { signal });
+    if (!response.ok) {
+      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    }
+    return await response.json();
+  }
+
+  async _fetchWithRetries() {
+    let attempt = 0;
+    let controller;
+    while (attempt < this.maxRetries) {
+      controller = new AbortController();
+      const signal = controller.signal;
+      try {
+        if (attempt > 0) {
+          console.log(`🔁 WorkflowRegistry: Retry attempt ${attempt + 1}/${this.maxRetries}`);
+        }
+        const json = await this._fetchWorkflowsOnce(signal);
+        return json;
+      } catch (err) {
+        this.lastError = err;
+        if (attempt === this.maxRetries - 1) break;
+        const delay = this.retryDelays[Math.min(attempt, this.retryDelays.length - 1)];
+        await new Promise(res => setTimeout(res, delay));
+        attempt += 1;
+        continue;
+      }
+    }
+    throw this.lastError || new Error('Unknown workflow fetch failure');
   }
 
   /**
    * Initialize all workflows by fetching from backend API
    */
-  async initializeWorkflows() {
+  async initializeWorkflows({ allowCacheFallback = true } = {}) {
     if (this.initialized) {
       console.log('⏭️ WorkflowRegistry: Already initialized');
       return this.getWorkflowSummary();
@@ -36,17 +105,9 @@ class WorkflowRegistry {
 
     console.log('🚀 WorkflowRegistry: Fetching workflows from backend API...');
 
+    // Try live fetch with retries
     try {
-      // Fetch all workflow configurations from backend API
-      // This reads the json files from the backend (single source of truth)
-      const response = await fetch(`${this.apiBaseUrl}/workflows`);
-      
-      if (!response.ok) {
-        throw new Error(`API request failed: ${response.status} ${response.statusText}`);
-      }
-      
-      const workflowConfigs = await response.json();
-      
+      const workflowConfigs = await this._fetchWithRetries();
       // Process each workflow configuration
       for (const [workflowName, config] of Object.entries(workflowConfigs)) {
         const workflowInfo = {
@@ -88,12 +149,24 @@ class WorkflowRegistry {
       }
 
       this.initialized = true;
+      this.ready = this.loadedWorkflows.size > 0;
+      if (this.ready) this._saveToCache();
       console.log(`✅ WorkflowRegistry: Loaded ${this.loadedWorkflows.size} workflows from backend`);
       
       return this.getWorkflowSummary();
 
     } catch (error) {
-      console.error('❌ WorkflowRegistry: Failed to fetch workflows from API:', error);
+      console.error('❌ WorkflowRegistry: Failed to fetch workflows from API after retries:', error);
+      if (allowCacheFallback) {
+        const cached = this._loadFromCache();
+        if (cached) {
+          console.warn('⚠️ Using cached workflows; backend unavailable');
+          return this.getWorkflowSummary();
+        }
+      }
+      // Still failed: mark initialized=false but ready=false and rethrow for UI layer to display banner
+      this.initialized = false;
+      this.ready = false;
       throw error;
     }
   }
@@ -122,6 +195,7 @@ class WorkflowRegistry {
   getWorkflowSummary() {
     return {
       initialized: this.initialized,
+      ready: this.ready,
       workflowCount: this.loadedWorkflows.size,
       workflows: this.getLoadedWorkflows().map(w => ({
         name: w.name,
@@ -149,6 +223,7 @@ class WorkflowRegistry {
     const count = this.loadedWorkflows.size;
     this.loadedWorkflows.clear();
     this.initialized = false;
+    this.ready = false;
     console.log(`🧹 WorkflowRegistry: Cleared ${count} workflows`);
   }
 
@@ -159,6 +234,7 @@ class WorkflowRegistry {
   getStats() {
     return {
       initialized: this.initialized,
+      ready: this.ready,
       loadedWorkflows: this.loadedWorkflows.size,
       workflowNames: Array.from(this.loadedWorkflows.keys()),
       apiEndpoint: `${this.apiBaseUrl}/workflows`
@@ -172,7 +248,7 @@ const workflowRegistry = new WorkflowRegistry();
 // Export both the instance and convenience methods
 export default workflowRegistry;
 
-export const initializeWorkflows = () => workflowRegistry.initializeWorkflows();
+export const initializeWorkflows = (opts) => workflowRegistry.initializeWorkflows(opts);
 export const getLoadedWorkflows = () => workflowRegistry.getLoadedWorkflows();
 export const getWorkflow = (name) => workflowRegistry.getWorkflow(name);
 export const getWorkflowSummary = () => workflowRegistry.getWorkflowSummary();

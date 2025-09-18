@@ -62,6 +62,35 @@ def resolve_field_type(field_def: Dict[str, Any], available_models: Dict[str, ty
     # dict primitive support (already mapped in TYPE_MAP earlier, but handle explicit 'dict' path if missed)
     if field_type_str == 'dict':
         return Dict[str, Any], Field(**field_kwargs)  # type: ignore
+    if field_type_str == 'union':
+        variants = field_def.get('variants') or []
+        if not isinstance(variants, list) or not variants:
+            raise ValueError("Union type requires 'variants'")
+        resolved_types = []
+        optional_variant = False
+        for variant in variants:
+            if isinstance(variant, str):
+                variant_key = variant.strip()
+                if variant_key.lower() in ('null', 'none'):
+                    optional_variant = True
+                    continue
+                if variant_key in TYPE_MAP:
+                    resolved_types.append(TYPE_MAP[variant_key])
+                    continue
+                if variant_key in available_models:
+                    resolved_types.append(available_models[variant_key])
+                    continue
+            raise ValueError(f"Unknown union variant: {variant}")
+        if not resolved_types:
+            raise ValueError("Union type must include at least one non-null variant")
+        unique_types = []
+        for rtype in resolved_types:
+            if rtype not in unique_types:
+                unique_types.append(rtype)
+        base_type = unique_types[0] if len(unique_types) == 1 else Union[tuple(unique_types)]  # type: ignore[misc]
+        if optional_variant:
+            base_type = Optional[base_type]  # type: ignore[arg-type]
+        return base_type, Field(**field_kwargs)
     # direct model ref
     if field_type_str in available_models:
         return available_models[field_type_str], Field(**field_kwargs)
@@ -261,6 +290,8 @@ async def get_llm_for_workflow(
     workflow_name: str,
     flow: str = "base",
     agent_name: Optional[str] = None,
+    *,
+    extra_config: Optional[dict] = None,
 ) -> tuple:
     """Create LLM config for an agent with optional structured response model."""
     should_stream = (flow == "base")
@@ -271,10 +302,10 @@ async def get_llm_for_workflow(
         
         if lookup_key in structured_registry:
             model_cls = structured_registry[lookup_key]
-            return await get_llm_config(response_format=model_cls, stream=should_stream)
+            return await get_llm_config(response_format=model_cls, stream=should_stream, extra_config=extra_config)
     except (ValueError, FileNotFoundError):
         pass
     
     # Fallback to plain LLM config
-    return await get_llm_config(stream=should_stream)
+    return await get_llm_config(stream=should_stream, extra_config=extra_config)
 

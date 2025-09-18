@@ -6,6 +6,7 @@ import logging
 import asyncio
 import re
 import json
+import uuid
 import traceback
 from typing import Dict, Any, Optional, Union, Tuple, List
 from fastapi import WebSocket
@@ -176,11 +177,16 @@ class SimpleTransport:
     def register_orchestration_input_registry(self, chat_id: str, registry: Dict[str, Any]) -> None:
         self._input_request_registries[chat_id] = registry
 
-    def register_input_request(self, chat_id: str, request_id: str, respond_cb: Any) -> None:
+    def register_input_request(self, chat_id: str, request_id: str, respond_cb: Any) -> str:
+        normalized_id = str(request_id) if request_id is not None else ""
+        if not normalized_id or normalized_id.lower() == "none":
+            normalized_id = uuid.uuid4().hex
+            logger.debug(f"Generated fallback input request id {normalized_id} for chat {chat_id}")
         if chat_id not in self._input_request_registries:
             self._input_request_registries[chat_id] = {}
-        self._input_request_registries[chat_id][request_id] = respond_cb
-        logger.debug(f"Registered input request {request_id} for chat {chat_id}")
+        self._input_request_registries[chat_id][normalized_id] = respond_cb
+        logger.debug(f"Registered input request {normalized_id} for chat {chat_id}")
+        return normalized_id
     
     
     @classmethod
@@ -206,6 +212,9 @@ class SimpleTransport:
                 
                 # If visual_agents is defined, only show messages from those agents
                 if isinstance(visual_agents, list):
+                    if not visual_agents:
+                        logger.debug(f"🔍 visual_agents empty for {workflow_name}; allowing message from {agent_name}")
+                        return True
                     # Normalize both the agent name and visual_agents list for comparison
                     # This matches the frontend normalization logic in ChatPage.js
                     def normalize_agent(name):
@@ -387,7 +396,7 @@ class SimpleTransport:
                     'timestamp': timestamp,
                 }, chat_id)
                 return
-            # Best-effort telemetry for tool/function calls
+            # Best-effort perfrmance for tool/function calls
             try:
                 et_name = type(event).__name__
                 looks_like_tool = ("Tool" in et_name) or ("Function" in et_name) or ("Call" in et_name)
@@ -1066,6 +1075,53 @@ class SimpleTransport:
         }
         await self._broadcast_to_websockets(event_data, chat_id)
         logger.info(f"📤 Sent UI tool event {event_id} ({component_name}) to chat {chat_id}")
+        # Persist as last_artifact if this is an artifact display (multi-user resume support)
+        try:
+            if display_type == "artifact" and chat_id:
+                # Lazy import to avoid circular dependency at import time
+                from core.data.persistence_manager import AG2PersistenceManager
+                if not hasattr(self, "_persistence_manager"):
+                    self._persistence_manager = AG2PersistenceManager()
+                enterprise_id = None
+                # Attempt to infer enterprise_id from connection metadata
+                try:
+                    if chat_id in self.connections:
+                        conn_obj = self.connections[chat_id]
+                        # Support both dict style or attribute style storage
+                        if isinstance(conn_obj, dict):
+                            enterprise_id = (conn_obj.get("metadata") or {}).get("enterprise_id") or conn_obj.get("enterprise_id")
+                        else:  # generic object
+                            meta = getattr(conn_obj, "metadata", {}) or {}
+                            enterprise_id = meta.get("enterprise_id") or getattr(conn_obj, "enterprise_id", None)
+                except Exception:
+                    enterprise_id = None
+                # Fallback: query DB for enterprise_id if still missing
+                if not enterprise_id:
+                    try:
+                        coll = await self._get_chat_coll()
+                        if coll:
+                            doc = await coll.find_one({"_id": chat_id}, {"enterprise_id": 1})
+                            if doc:
+                                enterprise_id = doc.get("enterprise_id")
+                                logger.debug(f"[LAST_ARTIFACT] Fallback enterprise_id lookup succeeded chat_id={chat_id}")
+                    except Exception as fe:
+                        logger.debug(f"[LAST_ARTIFACT] Fallback enterprise lookup failed chat_id={chat_id} err={fe}")
+                if enterprise_id:
+                    artifact_doc = {
+                        "ui_tool_id": component_name,
+                        "event_id": event_id,
+                        "display": "artifact",
+                        "workflow_name": wf_name,
+                        "payload": payload,
+                    }
+                    await self._persistence_manager.update_last_artifact(chat_id=chat_id, enterprise_id=enterprise_id, artifact=artifact_doc)
+                else:
+                    logger.debug(f"[LAST_ARTIFACT] Skip persist (no enterprise_id) chat_id={chat_id} component={component_name}")
+            else:
+                if display_type != "artifact":
+                    logger.debug(f"[LAST_ARTIFACT] Not artifact display_type={display_type} component={component_name}")
+        except Exception as e:  # pragma: no cover
+            logger.debug(f"[LAST_ARTIFACT] Skip persist {e}")
 
     @classmethod
     async def wait_for_ui_tool_response(cls, event_id: str, timeout: Optional[float] = 300.0) -> Dict[str, Any]:

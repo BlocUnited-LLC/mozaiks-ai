@@ -30,7 +30,6 @@ import json
 from typing import Any, Dict, List, Optional, Tuple, Type, Set
 from pydantic import BaseModel
 
-from autogen import OpenAIWrapper
 
 # Reuse existing secret + Mongo helpers (keeps KeyVault logic centralized)
 try:  # pragma: no cover - defensive import
@@ -45,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Cache Structures
 # ---------------------------------------------------------------------------
 _RAW_CONFIG_CACHE: Dict[str, Any] = {"config_list": None, "loaded_at": 0}
-_LLM_CONFIG_CACHE: Dict[str, Tuple[OpenAIWrapper, Dict[str, Any]]] = {}
+_LLM_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
 _RAW_LOCK = asyncio.Lock()
 _LLM_LOCK = asyncio.Lock()
 
@@ -55,8 +54,22 @@ _LAST_API_KEYS: Set[str] = set()
 
 _CACHE_TTL = int(os.getenv("LLM_CONFIG_CACHE_TTL", "300"))
 
-# Deterministic seed for Autogen caching layer; can be overridden later.
-_DEFAULT_CACHE_SEED = 157
+# Deterministic seed for Autogen caching layer.
+# Enhancement: allow optional environment override (LLM_DEFAULT_CACHE_SEED) OR
+# randomized process seed when RANDOMIZE_DEFAULT_CACHE_SEED=1 (unless overridden per-chat).
+_env_seed = os.getenv("LLM_DEFAULT_CACHE_SEED")
+_randomize = os.getenv("RANDOMIZE_DEFAULT_CACHE_SEED", "0").lower() in ("1", "true", "yes", "on")
+try:
+    if _env_seed is not None:
+        _DEFAULT_CACHE_SEED = int(_env_seed)
+    elif _randomize:
+        import random
+        _DEFAULT_CACHE_SEED = random.randint(1, 2**31 - 1)
+    else:
+        _DEFAULT_CACHE_SEED = _env_seed 
+except Exception:
+    _DEFAULT_CACHE_SEED = _env_seed
+logger.info(f"LLM_CONFIG_DEFAULT_CACHE_SEED_SELECTED seed={_DEFAULT_CACHE_SEED} randomized={_randomize} env_override={'yes' if _env_seed else 'no'}")
 
 # Static price map (prompt, completion) USD per 1K tokens (example values)
 PRICE_MAP: Dict[str, List[float]] = {
@@ -248,26 +261,46 @@ async def get_llm_config(
     stream: bool = False,
     extra_config: Optional[Dict[str, Any]] = None,
     cache: bool = True,
-) -> Tuple[OpenAIWrapper, Dict[str, Any]]:
+) -> Tuple[Optional[Any], Dict[str, Any]]:
     """Build (or retrieve from cache) an LLM runtime config.
 
-    Returns (OpenAIWrapper instance, llm_config dict) suitable for passing to ConversableAgent.
+    Returns a tuple (wrapper_placeholder, llm_config). The first element is kept for backward
+    compatibility with earlier callers but is always None; the second is the dict passed to
+    ConversableAgent.
     """
     cache_key = _build_llm_cache_key(
         response_format=response_format, stream=stream, extra_config=extra_config
     )
     if cache and cache_key in _LLM_CONFIG_CACHE:
-        return _LLM_CONFIG_CACHE[cache_key]
+        import copy
+        return None, copy.deepcopy(_LLM_CONFIG_CACHE[cache_key])
 
     # Ensure base provider list loaded
     config_list = await _load_raw_config_list()
 
-    # Create wrapper each time; overhead is small compared to inference.
-    wrapper = OpenAIWrapper(config_list=config_list)
+    # Determine seed origin BEFORE constructing final config for clearer logging
+    seed_from_extra = None
+    if extra_config and "cache_seed" in extra_config:
+        try:
+            seed_from_extra = int(extra_config["cache_seed"])
+        except Exception:
+            logger.debug(f"[LLM_CONFIG] Provided extra_config.cache_seed not coercible to int: {extra_config.get('cache_seed')!r}; falling back to default")
+    selected_seed = seed_from_extra if seed_from_extra is not None else _DEFAULT_CACHE_SEED
+    seed_origin = "per-chat" if seed_from_extra is not None else "process-default"
+    if seed_origin == "process-default":
+        logger.debug(
+            "[LLM_CONFIG] Using process-level default cache seed",
+            extra={"seed": selected_seed, "reason": "no per-chat override", "cache_key_fragment": cache_key[:60]},
+        )
+    else:
+        logger.debug(
+            "[LLM_CONFIG] Using per-chat cache seed override",
+            extra={"seed": selected_seed, "cache_key_fragment": cache_key[:60]},
+        )
 
     llm_config: Dict[str, Any] = {
         "timeout": extra_config.get("timeout") if extra_config and "timeout" in extra_config else 600,
-        "cache_seed": extra_config.get("cache_seed") if extra_config and "cache_seed" in extra_config else _DEFAULT_CACHE_SEED,
+        "cache_seed": selected_seed,
         "config_list": config_list,
         "tools": [],  # Required by AG2 for tool registration
     }
@@ -284,8 +317,9 @@ async def get_llm_config(
                 llm_config[k] = v
 
     if cache:
+        import copy
         async with _LLM_LOCK:
-            _LLM_CONFIG_CACHE[cache_key] = (wrapper, llm_config)
+            _LLM_CONFIG_CACHE[cache_key] = copy.deepcopy(llm_config)
 
     logger.debug(
         f"[LLM_CONFIG] Built config (rf={'yes' if response_format else 'no'}, stream={stream}, extras={bool(extra_config)}, cache_key={cache_key})"
@@ -309,7 +343,7 @@ async def get_llm_config(
     
     # Final check - ensure we don't have any extra config modifications happening
     logger.debug(f"[LLM_CONFIG] About to return config with config_list length: {len(llm_config.get('config_list', []))}")
-    return wrapper, llm_config
+    return None, llm_config
 
 
 # ---------------------------------------------------------------------------
