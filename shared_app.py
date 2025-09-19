@@ -969,8 +969,8 @@ async def handle_user_input(
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
         result = await simple_transport.handle_user_input_from_api(
-            chat_id=chat_id, 
-            user_id=user_id, 
+            chat_id=chat_id,
+            user_id=user_id,
             workflow_name=workflow_name,
             message=message,
             enterprise_id=enterprise_id

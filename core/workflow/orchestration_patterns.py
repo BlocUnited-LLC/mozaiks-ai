@@ -212,9 +212,13 @@ def _extract_agent_name(obj: Any) -> Optional[str]:
         content = getattr(obj, "content", None)
         if isinstance(content, dict):
             for k in ("sender", "agent", "agent_name", "name"):
-                v = content.get(k)
-                if isinstance(v, str) and v.strip():
-                    return v.strip()
+                try:
+                    v = content.get(k) if hasattr(content, 'get') else None
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+                except (TypeError, AttributeError):
+                    # Handle cases where content doesn't support .get() or is not subscriptable
+                    continue
         # Parse from string representation if available
         if isinstance(content, str):
             import re
@@ -609,6 +613,7 @@ async def _resume_or_initialize_chat(
             meaningful_messages.append(m)
 
     resume_valid = resume_raw_count > 0 and len(meaningful_messages) > 0
+
     if resume_valid:
         wf_logger.info(
             f" [RESUME_DETECT] Resuming chat {chat_id}: total_messages={resume_raw_count} meaningful={len(meaningful_messages)}"

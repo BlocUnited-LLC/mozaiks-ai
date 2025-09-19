@@ -126,7 +126,7 @@ class SimpleTransport:
         self._message_queues: Dict[str, List[Dict[str, Any]]] = {}  # H1
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}         # H2
         self._max_queue_size = 100
-        self._heartbeat_interval = 30
+        self._heartbeat_interval = 120
 
         # H4: Pre-connection buffering (delivery reliability)
         self._pre_connection_buffers: Dict[str, List[Dict[str, Any]]] = {}
@@ -823,6 +823,9 @@ class SimpleTransport:
                 for msg in buffered:
                     await self._queue_message_with_backpressure(chat_id, msg)
                 await self._flush_message_queue(chat_id)
+
+        # H5: Auto-resume for IN_PROGRESS chats (check status and restore chat history)
+        await self._auto_resume_if_needed(chat_id, websocket, enterprise_id)
         
         try:
             # Inbound loop: receive JSON control messages from client
@@ -918,24 +921,55 @@ class SimpleTransport:
     # ==================================================================================
     
     async def handle_user_input_from_api(
-        self, 
-        chat_id: str, 
-        user_id: Optional[str], 
-        workflow_name: str, 
+        self,
+        chat_id: str,
+        user_id: Optional[str],
+        workflow_name: str,
         message: Optional[str],
         enterprise_id: str
     ) -> Dict[str, Any]:
         """
-        Handle user input from the POST API endpoint
-        Integrates with workflow registry and follows the documented event system
-        
-        Args:
-            message: User message or None for auto-start without user input
+        Handle user input from the POST API endpoint with smart routing
+
+        Checks if there's an active AG2 GroupChat session waiting for input.
+        If yes, passes message to existing session. If no, starts new workflow.
         """
         try:
+            # Check if there's an active AG2 session waiting for user input
+            has_active_session = bool(self._input_request_registries.get(chat_id))
+
+            # Also check if there are pending input callbacks for this chat
+            active_callbacks = False
+            if chat_id in self._input_request_registries:
+                active_callbacks = bool(self._input_request_registries[chat_id])
+
+            logger.info(f"🔀 [SMART_ROUTING] chat={chat_id} has_registry={has_active_session} has_callbacks={active_callbacks}")
+
+            if has_active_session and active_callbacks:
+                # Route to existing AG2 session via WebSocket callback mechanism
+                logger.info(f"🔄 [SMART_ROUTING] Continuing existing AG2 session for chat {chat_id}")
+
+                # Get any available request_id from the registry
+                registry = self._input_request_registries.get(chat_id, {})
+                if registry:
+                    # Get the first available request_id
+                    request_id = next(iter(registry.keys()))
+
+                    # Submit the input directly to the existing AG2 session - no UI echo needed
+                    success = await self.submit_user_input(request_id, message or "")
+
+                    if success:
+                        return {"status": "success", "chat_id": chat_id, "message": "Input passed to existing AG2 session.", "route": "existing_session"}
+                    else:
+                        logger.warning(f"⚠️ [SMART_ROUTING] Failed to submit input to existing session, falling back to new workflow")
+
+            # No active session or callback failed - start new workflow
+            logger.info(f"🚀 [SMART_ROUTING] Starting new workflow for chat {chat_id}")
+
             from core.workflow.orchestration_patterns import run_workflow_orchestration
-            
-            # Persist user message early (so UI reconnect before orchestration still sees it)
+
+            # Only persist and echo user message when starting NEW workflows
+            # For existing sessions, the message goes directly to AG2 via callback
             if message:
                 try:
                     await self.process_incoming_user_message(
@@ -955,14 +989,11 @@ class SimpleTransport:
                 user_id=user_id,
                 initial_message=None  # already persisted & sent upstream
             )
-            
-            # The result from AG2 is now a rich object, but for the API response,
-            # we can return a simple success message. The UI will get all details
-            # via WebSocket events in real-time.
-            return {"status": "success", "chat_id": chat_id, "message": "Workflow started successfully."}
-            
+
+            return {"status": "success", "chat_id": chat_id, "message": "Workflow started successfully.", "route": "new_workflow"}
+
         except Exception as e:
-            logger.error(f"❌ Workflow execution failed for chat {chat_id}: {e}\n{traceback.format_exc()}")
+            logger.error(f"❌ User input handling failed for chat {chat_id}: {e}\n{traceback.format_exc()}")
             await self.send_error(
                 error_message=f"An internal error occurred: {e}",
                 error_code="WORKFLOW_EXECUTION_FAILED",
@@ -1301,14 +1332,75 @@ class SimpleTransport:
             del self._heartbeat_tasks[chat_id]
             logger.debug(f"💔 Stopped heartbeat for {chat_id}")
 
+    async def _auto_resume_if_needed(self, chat_id: str, websocket, enterprise_id: Optional[str]) -> None:
+        """Automatically restore chat history for IN_PROGRESS chats on WebSocket connection."""
+        try:
+            if not enterprise_id:
+                logger.debug(f"[AUTO_RESUME] No enterprise_id for {chat_id}, skipping auto-resume")
+                return
+
+            from core.data.persistence_manager import AG2PersistenceManager
+            if not hasattr(self, '_persistence_manager'):
+                self._persistence_manager = AG2PersistenceManager()
+
+            # Check if chat exists and is IN_PROGRESS
+            coll = await self._persistence_manager._coll()
+            doc = await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"status": 1, "messages": 1})
+
+            if not doc:
+                logger.debug(f"[AUTO_RESUME] No existing chat found for {chat_id}, skipping auto-resume")
+                return
+
+            from core.data.models import WorkflowStatus
+            status = doc.get("status", -1)
+            if int(status) != int(WorkflowStatus.IN_PROGRESS):
+                logger.debug(f"[AUTO_RESUME] Chat {chat_id} not IN_PROGRESS (status={status}), skipping auto-resume")
+                return
+
+            messages = doc.get("messages", [])
+            if not messages:
+                logger.debug(f"[AUTO_RESUME] No messages to resume for {chat_id}")
+                return
+
+            logger.info(f"🔄 [AUTO_RESUME] Restoring {len(messages)} messages for IN_PROGRESS chat {chat_id}")
+
+            # Send all messages to restore the chat UI
+            for idx, msg in enumerate(messages):
+                # Convert message to chat.text event format
+                event_data = {
+                    "type": "chat.text",
+                    "data": {
+                        "index": idx,
+                        "content": msg.get("content", ""),
+                        "role": msg.get("role", "user"),
+                        "sender": msg.get("name", msg.get("role", "user")),
+                        "replay": True  # Mark as replay/restoration
+                    }
+                }
+                await self._queue_message_with_backpressure(chat_id, event_data)
+
+            # Send resume boundary event
+            boundary_event = {
+                "type": "chat.resume_boundary",
+                "data": {
+                    "message_count": len(messages),
+                    "chat_status": "in_progress"
+                }
+            }
+            await self._queue_message_with_backpressure(chat_id, boundary_event)
+            await self._flush_message_queue(chat_id)
+
+        except Exception as e:
+            logger.warning(f"[AUTO_RESUME] Failed to auto-resume chat {chat_id}: {e}")
+
     async def _cleanup_connection(self, chat_id: str) -> None:
         """Clean up connection resources."""
         if chat_id in self.connections:
             del self.connections[chat_id]
-        
+
         if chat_id in self._message_queues:
             del self._message_queues[chat_id]
-        
+
         await self._stop_heartbeat(chat_id)
         logger.info(f"🧹 Cleaned up connection resources for {chat_id}")
     

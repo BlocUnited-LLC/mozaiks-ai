@@ -97,9 +97,13 @@ def _extract_text_content(event: TextEvent) -> str:
             # Prefer standard content keys first
             for preferred in ("content", "message", "text", "value"):
                 if preferred in value:
-                    found = _dig(value[preferred])
-                    if found:
-                        return found
+                    try:
+                        found = _dig(value[preferred])
+                        if found:
+                            return found
+                    except (TypeError, KeyError):
+                        # Handle cases where value doesn't support subscript access
+                        continue
             for item in value.values():
                 found = _dig(item)
                 if found:
