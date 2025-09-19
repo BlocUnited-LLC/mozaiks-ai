@@ -51,22 +51,18 @@ export class DynamicUIHandler {
     if (!eventData) return;
     let { type, data } = eventData;
 
-    // Normalize legacy / uppercase event types to canonical lowercase
+    // Expect already canonical lowercase event types (runtime no longer emits legacy variants)
     const originalType = type;
-    if (typeof type === 'string') {
-      type = type.toLowerCase();
+    if (typeof type !== 'string') {
+      console.warn('⚠️ Received UI event with non-string type, ignoring:', eventData);
+      return;
     }
-
-    // Map any deprecated aliases
-    const aliasMap = {
-      'component_update': 'component_update',
-      'status': 'status',
-      'user_input_request': 'user_input_request'
-      // Additional legacy keys can map here if reintroduced
-    };
-    type = aliasMap[type] || type;
-
-    console.log(`🎯 Processing UI event: ${originalType} -> ${type}`, data);
+    if (type !== type.toLowerCase()) {
+      // Enforce strictness: reject mixed-case legacy emissions instead of silently normalizing
+      console.warn(`⚠️ Rejecting non-lowercase UI event type '${type}' (expected canonical lowercase)`);
+      return;
+    }
+    console.log(`🎯 Processing UI event: ${originalType}`, data);
 
     const handler = this.eventHandlers.get(type);
     if (!handler) {
@@ -94,7 +90,6 @@ export class DynamicUIHandler {
    * Handle UI tool action events
    * @param {Object} data - Tool action data
    */
-  // Removed legacy handleUIToolAction – superseded by direct event types
 
   /**
    * Handle component update events
@@ -199,7 +194,7 @@ export class DynamicUIHandler {
       
     } catch (error) {
       console.error(`Failed to load workflow config: ${workflowname}`, error);
-      return { ui_capable_agents: [] };
+      return { visual_agent: [] };
     }
   }
 
@@ -214,8 +209,8 @@ export class DynamicUIHandler {
     try {
       const config = await this.getWorkflowConfig(workflowname);
       
-      // Search through ui_capable_agents for the component
-      for (const agent of config.ui_capable_agents || []) {
+      // Search through visual_agent for the component
+      for (const agent of config.visual_agent || []) {
         const component = agent.components?.find(c => c.name === componentName);
         if (component) {
           return {

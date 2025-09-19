@@ -144,8 +144,8 @@ class WorkflowConfig {
    */
   hasUserProxyComponent(workflowname) {
     const config = this.configs.get(workflowname);
-    // Check if any ui_capable_agents have UserProxy-related components
-    return config?.ui_capable_agents?.some(agent => 
+    // Check if any visual_agent have UserProxy-related components
+    return config?.visual_agent?.some(agent => 
       agent.name?.toLowerCase().includes('user') ||
       agent.role?.includes('user_') ||
       agent.components?.some(comp => comp.name?.toLowerCase().includes('user'))
@@ -159,8 +159,8 @@ class WorkflowConfig {
     const config = this.configs.get(workflowname);
     const userComponents = [];
     
-    if (config?.ui_capable_agents) {
-      config.ui_capable_agents.forEach(agent => {
+    if (config?.visual_agent) {
+      config.visual_agent.forEach(agent => {
         if (agent.name?.toLowerCase().includes('user') || 
             agent.role?.includes('user_')) {
           userComponents.push(...(agent.components || []));

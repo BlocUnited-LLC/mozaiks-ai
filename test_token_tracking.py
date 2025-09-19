@@ -25,6 +25,9 @@ from typing import Dict, Any
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import pytest
+
+@pytest.mark.asyncio
 async def test_ag2_token_tracking():
     """Test the enhanced AG2 token tracking capabilities."""
     

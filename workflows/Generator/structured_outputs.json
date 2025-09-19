@@ -430,7 +430,7 @@
             "items": "str",
             "description": "Agents whose messages are visible in UI"
           },
-          "ui_capable_agents": {
+          "visual_agent": {
             "type": "list",
             "items": "str",
             "description": "Agents that can emit UI tool events"

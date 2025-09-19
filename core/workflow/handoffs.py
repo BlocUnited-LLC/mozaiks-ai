@@ -70,93 +70,93 @@ class HandoffManager:
             summary["agents_with_rules"] = []
             return summary
 
-            grouped: Dict[str, List[Dict[str, Any]]] = {}
-            for r in rules:
-                sa = r.get("source_agent")
-                ta = r.get("target_agent")
-                if not sa or not ta:
-                    summary["errors"].append(f"Rule missing source/target: {r}")
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rules:
+            sa = r.get("source_agent")
+            ta = r.get("target_agent")
+            if not sa or not ta:
+                summary["errors"].append(f"Rule missing source/target: {r}")
+                continue
+            grouped.setdefault(sa, []).append(r)
+
+        for source, src_rules in grouped.items():
+            agent_obj = agents.get(source)
+            if not agent_obj:
+                summary["missing_source_agents"].append(source)
+                log.warning(f"⚠️ [HANDOFFS] Source agent '{source}' not present; skipping its rules")
+                continue
+            if not hasattr(agent_obj, "handoffs"):
+                summary["errors"].append(f"Agent {source} lacks .handoffs attribute")
+                log.error(f"❌ [HANDOFFS] Agent {source} lacks .handoffs attribute")
+                continue
+
+            llm_list: List[OnCondition] = []
+            ctx_list: List[OnContextCondition] = []
+            after_work_target = None
+
+            for rule in src_rules:
+                t_name = rule.get("target_agent")
+                h_type = (rule.get("handoff_type") or "after_work").strip()
+                cond_text = rule.get("condition")
+                target = self._build_target(t_name, agents, summary)
+                if not target:
                     continue
-                grouped.setdefault(sa, []).append(r)
-
-            for source, src_rules in grouped.items():
-                agent_obj = agents.get(source)
-                if not agent_obj:
-                    summary["missing_source_agents"].append(source)
-                    log.warning(f"⚠️ [HANDOFFS] Source agent '{source}' not present; skipping its rules")
-                    continue
-                if not hasattr(agent_obj, "handoffs"):
-                    summary["errors"].append(f"Agent {source} lacks .handoffs attribute")
-                    log.error(f"❌ [HANDOFFS] Agent {source} lacks .handoffs attribute")
-                    continue
-
-                llm_list: List[OnCondition] = []
-                ctx_list: List[OnContextCondition] = []
-                after_work_target = None
-
-                for rule in src_rules:
-                    t_name = rule.get("target_agent")
-                    h_type = (rule.get("handoff_type") or "after_work").strip()
-                    cond_text = rule.get("condition")
-                    target = self._build_target(t_name, agents, summary)
-                    if not target:
-                        continue
-                    if h_type == "after_work":
-                        if after_work_target is not None:
-                            log.info(f"🔁 [HANDOFFS] Overriding after_work for {source} -> {t_name}")
-                        after_work_target = target
-                    elif h_type == "condition":
-                        if not cond_text:
-                            log.warning(f"⚠️ [HANDOFFS] condition rule without condition text skipped: {rule}")
-                            continue
-                        if "${" in cond_text:  # context expression
-                            try:
-                                ctx_list.append(
-                                    OnContextCondition(
-                                        target=target,
-                                        condition=ExpressionContextCondition(expression=ContextExpression(cond_text))
-                                    )
-                                )
-                                summary["context_conditions"] += 1
-                            except Exception as e:
-                                summary["errors"].append(f"Context condition build failed ({source}): {e}")
-                                log.error(f"❌ [HANDOFFS] Context condition build failed for {source}: {e}")
-                        else:
-                            try:
-                                llm_list.append(
-                                    OnCondition(
-                                        target=target,
-                                        condition=StringLLMCondition(prompt=cond_text)
-                                    )
-                                )
-                                summary["llm_conditions"] += 1
-                            except Exception as e:
-                                summary["errors"].append(f"LLM condition build failed ({source}): {e}")
-                                log.error(f"❌ [HANDOFFS] LLM condition build failed for {source}: {e}")
-                    else:
-                        log.warning(f"⚠️ [HANDOFFS] Unknown handoff_type '{h_type}' skipped (rule={rule})")
-
-                applied = False
-                try:
-                    if llm_list:
-                        agent_obj.handoffs.add_llm_conditions(llm_list)  # type: ignore[attr-defined]
-                        applied = True
-                    if ctx_list:
-                        agent_obj.handoffs.add_context_conditions(ctx_list)  # type: ignore[attr-defined]
-                        applied = True
+                if h_type == "after_work":
                     if after_work_target is not None:
-                        agent_obj.handoffs.set_after_work(after_work_target)  # type: ignore[attr-defined]
-                        summary["after_work_set"] += 1
-                        applied = True
-                except Exception as e:
-                    summary["errors"].append(f"Apply failed ({source}): {e}")
-                    log.error(f"❌ [HANDOFFS] Failed applying rules for {source}: {e}")
+                        log.info(f"🔁 [HANDOFFS] Overriding after_work for {source} -> {t_name}")
+                    after_work_target = target
+                elif h_type == "condition":
+                    if not cond_text:
+                        log.warning(f"⚠️ [HANDOFFS] condition rule without condition text skipped: {rule}")
+                        continue
+                    if "${" in cond_text:  # context expression
+                        try:
+                            ctx_list.append(
+                                OnContextCondition(
+                                    target=target,
+                                    condition=ExpressionContextCondition(expression=ContextExpression(cond_text))
+                                )
+                            )
+                            summary["context_conditions"] += 1
+                        except Exception as e:
+                            summary["errors"].append(f"Context condition build failed ({source}): {e}")
+                            log.error(f"❌ [HANDOFFS] Context condition build failed for {source}: {e}")
+                    else:
+                        try:
+                            llm_list.append(
+                                OnCondition(
+                                    target=target,
+                                    condition=StringLLMCondition(prompt=cond_text)
+                                )
+                            )
+                            summary["llm_conditions"] += 1
+                        except Exception as e:
+                            summary["errors"].append(f"LLM condition build failed ({source}): {e}")
+                            log.error(f"❌ [HANDOFFS] LLM condition build failed for {source}: {e}")
+                else:
+                    log.warning(f"⚠️ [HANDOFFS] Unknown handoff_type '{h_type}' skipped (rule={rule})")
 
-                if applied:
-                    summary["agents_with_rules"].add(source)
-                    log.info(
-                        f"✅ [HANDOFFS] {source}: llm={len(llm_list)} ctx={len(ctx_list)} after_work={'yes' if after_work_target else 'no'}"
-                    )
+            applied = False
+            try:
+                if llm_list:
+                    agent_obj.handoffs.add_llm_conditions(llm_list)  # type: ignore[attr-defined]
+                    applied = True
+                if ctx_list:
+                    agent_obj.handoffs.add_context_conditions(ctx_list)  # type: ignore[attr-defined]
+                    applied = True
+                if after_work_target is not None:
+                    agent_obj.handoffs.set_after_work(after_work_target)  # type: ignore[attr-defined]
+                    summary["after_work_set"] += 1
+                    applied = True
+            except Exception as e:
+                summary["errors"].append(f"Apply failed ({source}): {e}")
+                log.error(f"❌ [HANDOFFS] Failed applying rules for {source}: {e}")
+
+            if applied:
+                summary["agents_with_rules"].add(source)
+                log.info(
+                    f"✅ [HANDOFFS] {source}: llm={len(llm_list)} ctx={len(ctx_list)} after_work={'yes' if after_work_target else 'no'}"
+                )
 
         summary["agents_with_rules"] = list(summary["agents_with_rules"])
         if summary["errors"]:

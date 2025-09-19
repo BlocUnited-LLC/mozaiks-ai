@@ -111,38 +111,6 @@ def _format_for_log(value: Any) -> str:
     except Exception:
         return "<unloggable>"
 
-def get_context(workflow_name: str, enterprise_id: Optional[str] = None) -> ContextVariables:
-    """
-    Create context variables for any workflow.
-    
-    Features:
-    1. Database schema information for agents
-    2. Specific data extraction based on json configuration
-    
-    Args:
-        workflow_name: Name of the workflow (e.g., 'ChatWorkflow', 'AnalysisWorkflow')
-        enterprise_id: Enterprise ID for database queries
-        
-    Returns:
-        ContextVariables populated with schema info and specific data
-        
-    Note: This function is legacy and only used for backwards compatibility.
-    The orchestrator now calls _load_context_async directly.
-    """
-    try:
-        # Handle event loop issues - simplified approach
-        try:
-            # Running loop detected; return minimal context and log warning
-            asyncio.get_running_loop()
-            business_logger.warning(f"âš ï¸ get_context called from async context - consider using _load_context_async directly")
-            return _create_minimal_context(workflow_name, enterprise_id)
-        except RuntimeError:
-            # No running loop; safe to run async
-            return asyncio.run(_load_context_async(workflow_name, enterprise_id))
-    except Exception as e:
-        business_logger.error(f"âŒ Context loading failed: {e}")
-        return _create_minimal_context(workflow_name, enterprise_id)
-
 def _create_minimal_context(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
     """Create minimal fallback context with basic parameters only."""
     context = ContextVariables()
@@ -156,9 +124,8 @@ def _create_minimal_context(workflow_name: str, enterprise_id: Optional[str]) ->
 async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
     """Async context loading - properly handles async MongoDB operations."""
     business_logger.info(f"ðŸ”§ Loading context for {workflow_name} (async)")
-    
-    context = ContextVariables()
-    
+    # Start with minimal context to ensure essential metadata is present
+    context = _create_minimal_context(workflow_name, enterprise_id)
     # Store enterprise_id internally (used for queries but not exposed as context variable)
     internal_enterprise_id = enterprise_id
     
@@ -433,3 +400,6 @@ async def _load_specific_data_async(variables: List[Dict[str, Any]], default_dat
         business_logger.error(f"âŒ Specific data loading failed: {e}")
     
     return loaded_data
+
+# Add public symbols export for context utilities
+__all__ = ["_create_minimal_context", "_load_context_async"]

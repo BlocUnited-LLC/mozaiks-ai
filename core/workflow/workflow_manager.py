@@ -100,23 +100,13 @@ class UnifiedWorkflowManager:
                 if not isinstance(entry, dict):
                     continue
 
-                # --- Accept both legacy and new schema ---
-                # Legacy fields
-                legacy_path = entry.get('path')
-                legacy_name = entry.get('name')
-
-                # New schema fields (from ToolsManagerAgent)
-                file_name = entry.get('file')  # e.g., "request_api_key.py"
-                function = entry.get('function')  # e.g., "request_api_key"
-
-                # Compute tool_id
-                tool_id = None
-                if isinstance(function, str) and function.strip():
-                    tool_id = function.strip()
-                elif isinstance(legacy_name, str) and legacy_name.strip():
-                    tool_id = legacy_name.strip()
-                elif isinstance(legacy_path, str) and legacy_path.strip():
-                    tool_id = legacy_path.strip().split('.')[-1]
+                # Enforce new schema only (file + function required for tools entry)
+                file_name = entry.get('file')
+                function = entry.get('function')
+                if not (isinstance(file_name, str) and file_name.strip() and isinstance(function, str) and function.strip()):
+                    logger.warning(f"Skipping tool entry without required 'file' and 'function' fields in workflow '{workflow_name}'")
+                    continue
+                tool_id = function.strip()
 
                 if not tool_id:
                     # nothing we can do
@@ -131,11 +121,8 @@ class UnifiedWorkflowManager:
                 seen_ids.add(tool_id)
 
                 # Determine module path (best-effort)
-                module_path = legacy_path
-                if not module_path and file_name and function:
-                    # Map to "workflows.<flow>.tools.<module>:<function>"
-                    mod = file_name.replace('\\', '/').split('/')[-1].rsplit('.', 1)[0]
-                    module_path = f"workflows.{workflow_name}.tools.{mod}:{function}"
+                mod = file_name.replace('\\', '/').split('/')[-1].rsplit('.', 1)[0]
+                module_path = f"workflows.{workflow_name}.tools.{mod}:{function}"
 
                 # Agent field
                 agent = entry.get('agent') or entry.get('caller') or entry.get('executor')
@@ -349,10 +336,41 @@ class UnifiedWorkflowManager:
         config = self.get_config(workflow_name)
         return config.get("initial_message")
     
-    def get_ui_capable_agents(self, workflow_name: str) -> List[Dict[str, Any]]:
+    def get_visual_agent(self, workflow_name: str) -> List[Dict[str, Any]]:
         """Get agents with UI capabilities"""
         config = self.get_config(workflow_name)
-        return config.get("ui_capable_agents", [])
+        return config.get("visual_agent", [])
+
+    def get_visual_agents(self, workflow_name: str) -> List[str]:
+        """Return list of agents considered 'visual' for chat rendering.
+
+        Supports either a dedicated 'visual_agents' list or falls back to
+        projecting names from 'visual_agent' entries that declare
+        visual/display capabilities.
+        """
+        config = self.get_config(workflow_name)
+        
+        # First try dedicated visual_agents list
+        visual_agents = config.get("visual_agents")
+        if isinstance(visual_agents, list):
+            return [str(agent) for agent in visual_agents if isinstance(agent, str)]
+        
+        config = self.get_config(workflow_name)
+        visual = visual_agents
+        if isinstance(visual, list) and all(isinstance(a, str) for a in visual):
+            return visual
+        ui_list = self.get_visual_agent(workflow_name)
+        derived: List[str] = []
+        for entry in ui_list:
+            if not isinstance(entry, dict):
+                continue
+            agent = entry.get('agent') or entry.get('name')
+            if isinstance(agent, str):
+                # Heuristic: treat any UI-capable agent as visual unless explicitly disabled
+                if entry.get('visual') is False:
+                    continue
+                derived.append(agent)
+        return derived
 
     def get_structured_output_registry(self, workflow_name: str) -> Dict[str, Optional[str]]:
         """Return a normalized mapping: agent_name -> model_name or None.
@@ -611,7 +629,7 @@ class UnifiedWorkflowManager:
         # ui_config.json
         ui_data = self._load_json_if_exists(workflow_path / 'ui_config.json')
         if ui_data:
-            # Merge UI config keys at root (e.g., ui_capable_agents)
+            # Merge UI config keys at root (e.g., visual_agent)
             config.update(ui_data)
         return config
 

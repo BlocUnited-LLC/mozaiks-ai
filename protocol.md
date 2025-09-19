@@ -37,15 +37,15 @@ Notes:
 | user.input.submit | Provide text for an `InputRequestEvent` | {type, chat_id, request_id, text, last_client_seq} |
 | inline_component.result | Return inline UI tool interaction | {type, chat_id, corr, data} |
 | artifact_patch | Patch artifact component (optional progressive update) | {type, chat_id, corr, patch[]} |
-| client.resume | Reconnect & request replay | {type, chat_id, lastClientSeq} |
+| client.resume | Reconnect & request replay | {type, chat_id, lastClientIndex} |
 
 ## Correlation Rules
 - `request_id` (input) or tool event id (UI tool) becomes `corr` on subsequent responses.
 - Client must echo latest received `seq` in submissions for optional at-least-once replay safety.
 
 ## Replay
-1. Client sends `client.resume` with `lastClientSeq`.
-2. Server replays any persisted envelopes with sequence > lastClientSeq as their original outbound types (mark each with `replay:true`).
+1. Client sends `client.resume` with `lastClientIndex` (the 0-based index of the last fully received/persisted message; send 0 or omit if none).
+2. Server replays any persisted envelopes with sequence index > lastClientIndex as their original outbound types (mark each with `replay:true`).
 3. Server emits `chat.resume_boundary` (if applicable) then resumes live event emission.
 
 ## Error Handling

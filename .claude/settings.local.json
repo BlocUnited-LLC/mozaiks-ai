@@ -29,7 +29,10 @@
       "WebSearch",
       "WebFetch(domain:docs.ag2.ai)",
       "WebFetch(domain:microsoft.github.io)",
-      "Bash(sqlite3:*)"
+      "Bash(sqlite3:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker rm:*)",
+      "Bash(docker exec:*)"
     ],
     "deny": [],
     "ask": []

@@ -21,6 +21,46 @@ except Exception:  # pragma: no cover
 # AG2 imports for event type checking
 from autogen.events import BaseEvent
 
+# Guarded AG2 event class imports (top-level, no lazy inside hot path)
+try:  # Core frequently used
+    from autogen.events.agent_events import TextEvent as AG2TextEvent  # type: ignore
+except Exception:  # pragma: no cover
+    AG2TextEvent = None  # type: ignore
+try:
+    from autogen.events.agent_events import ToolCallEvent as AG2ToolCallEvent  # type: ignore
+except Exception:  # pragma: no cover
+    AG2ToolCallEvent = None  # type: ignore
+try:
+    from autogen.events.agent_events import ToolResponseEvent as AG2ToolResponseEvent  # type: ignore
+except Exception:  # pragma: no cover
+    AG2ToolResponseEvent = None  # type: ignore
+try:
+    from autogen.events.agent_events import InputRequestEvent as AG2InputRequestEvent  # type: ignore
+except Exception:  # pragma: no cover
+    AG2InputRequestEvent = None  # type: ignore
+try:
+    from autogen.events.agent_events import UsageSummaryEvent as AG2UsageSummaryEvent  # type: ignore
+except Exception:  # pragma: no cover
+    AG2UsageSummaryEvent = None  # type: ignore
+try:
+    from autogen.events.agent_events import ErrorEvent as AG2ErrorEvent  # type: ignore
+except Exception:  # pragma: no cover
+    AG2ErrorEvent = None  # type: ignore
+try:
+    from autogen.events.agent_events import SelectSpeakerEvent as AG2SelectSpeakerEvent  # type: ignore
+except Exception:  # pragma: no cover
+    AG2SelectSpeakerEvent = None  # type: ignore
+try:
+    from autogen.events.agent_events import RunCompletionEvent as AG2RunCompletionEvent  # type: ignore
+except Exception:  # pragma: no cover
+    AG2RunCompletionEvent = None  # type: ignore
+
+# Print / streaming output event may live in a different module in some AG2 versions
+try:  # pragma: no cover - optional
+    from autogen.events.print_event import PrintEvent as AG2PrintEvent  # type: ignore
+except Exception:  # pragma: no cover
+    AG2PrintEvent = None  # type: ignore
+
 # Import workflow configuration for agent visibility filtering
 from core.workflow.workflow_manager import workflow_manager
 
@@ -111,7 +151,6 @@ class SimpleTransport:
     ) -> None:
         """
         Send a dedicated user input request to the frontend.
-        This is decoupled from the ui_tool_event system.
         """
         event_data = {
             "type": "user_input_request",
@@ -346,61 +385,33 @@ class SimpleTransport:
         This is the primary method for forwarding AG2 native events.
         """
         try:
-            # Fast-path: already normalized dict produced by orchestration (event_to_payload)
-            if isinstance(event, dict) and 'kind' in event:
-                kind = event.get('kind')
-                # Correlation convenience: for input_request expose corr=request_id
-                if kind == 'input_request' and 'request_id' in event and 'corr' not in event:
-                    event['corr'] = event['request_id']
-                # Add structured outputs info for text/print events
-                if kind in ('text', 'print'):
-                    agent_name = event.get('agent')
-                    if agent_name and chat_id and chat_id in self.connections:
-                        workflow_name = self.connections[chat_id].get("workflow_name")
-                        if workflow_name:
-                            try:
-                                structured_outputs_config = workflow_manager.get_agent_structured_outputs_config(workflow_name)
-                                event['has_structured_outputs'] = structured_outputs_config.get(agent_name, False)
-                            except Exception:
-                                event['has_structured_outputs'] = False
-                
-                # Namespace mapping (strict mode)
-                ns_map = {
-                    'print': 'chat.print',
-                    'text': 'chat.text',
-                    'input_request': 'chat.input_request',
-                    'input_ack': 'chat.input_ack',
-                    'input_timeout': 'chat.input_timeout',
-                    'select_speaker': 'chat.select_speaker',
-                    'resume_boundary': 'chat.resume_boundary',
-                    'usage_summary': 'chat.usage_summary',
-                    'run_complete': 'chat.run_complete',
-                    'error': 'chat.error',
-                    'tool_call': 'chat.tool_call',
-                    'tool_response': 'chat.tool_response',
-                }
-                # Ensure kind is a string for dict lookup
-                kind_key = str(kind) if kind is not None else "unknown"
-                namespaced_type = ns_map.get(kind_key, kind_key)
-                # Attach monotonically increasing transport sequence for printable events
-                if namespaced_type in ("chat.print", "chat.text") and chat_id:
-                    try:
-                        event['sequence'] = self._get_next_sequence(chat_id)
-                    except Exception:
-                        pass
-                timestamp = datetime.now(timezone.utc).isoformat()
-                # Emit namespaced event only
-                await self._broadcast_to_websockets({
-                    'type': namespaced_type,
-                    'data': event,
-                    'timestamp': timestamp,
-                }, chat_id)
+            from core.events.unified_event_dispatcher import get_event_dispatcher  # local import to avoid cycle
+            dispatcher = get_event_dispatcher()
+            workflow_name = None
+            if chat_id and chat_id in self.connections:
+                workflow_name = self.connections[chat_id].get('workflow_name')
+
+            envelope = dispatcher.build_outbound_event_envelope(
+                raw_event=event,
+                chat_id=chat_id,
+                get_sequence_cb=self._get_next_sequence,
+                workflow_name=workflow_name,
+            )
+            if not envelope:
                 return
-            # Best-effort perfrmance for tool/function calls
+
+            # Additional filtering (agent visibility) only for BaseEvent path where needed
+            agent_name = None
+            if isinstance(event, BaseEvent) and hasattr(event, 'sender') and getattr(event.sender, 'name', None):  # type: ignore
+                agent_name = event.sender.name  # type: ignore
+            if agent_name and not self.should_show_to_user(agent_name, chat_id):
+                logger.debug(f"🚫 Filtered out AG2 event from agent '{agent_name}' for chat {chat_id}")
+                return
+
+            # Record performance metrics for tool calls (best-effort)
             try:
                 et_name = type(event).__name__
-                looks_like_tool = ("Tool" in et_name) or ("Function" in et_name) or ("Call" in et_name)
-                if looks_like_tool:
+                if any(token in et_name for token in ("Tool", "Function", "Call")):
                     tool_name = getattr(event, "tool_name", None)
                     if isinstance(tool_name, str) and tool_name.strip():
                         try:
@@ -412,43 +423,9 @@ class SimpleTransport:
             except Exception:
                 pass
 
-            # Filter events based on agent visibility before sending
-            agent_name = None
-            if hasattr(event, 'sender') and hasattr(event.sender, 'name'): # type: ignore
-                agent_name = event.sender.name # type: ignore
-            
-            if not self.should_show_to_user(agent_name, chat_id):
-                logger.debug(f"🚫 Filtered out AG2 event from agent '{agent_name}' for chat {chat_id}")
-                return
-
-            # Production serialization for UI consumption
-            # Use Pydantic's .dict() or custom serializer for complex event types
-            if isinstance(event, BaseEvent):
-                try:
-                    payload = event.dict()
-                except Exception:
-                    # Try pydantic v2
-                    try:
-                        payload = event.model_dump()  # type: ignore[attr-defined]
-                    except Exception:
-                        payload = {
-                            "event_type": type(event).__name__,
-                            "content": self._stringify_unknown(getattr(event, "content", None)),
-                        }
-            else:
-                # Fallback for non-pydantic objects
-                payload = {"event_type": type(event).__name__, "content": self._stringify_unknown(event)}
-
-            event_data = {
-                "type": "ag2_event",
-                "data": payload,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            await self._broadcast_to_websockets(event_data, chat_id)
-            logger.debug(f"📤 Forwarded AG2 event {type(event).__name__} to chat {chat_id}")
-
+            await self._broadcast_to_websockets(envelope, chat_id)
         except Exception as e:
-            logger.error(f"❌ Failed to serialize or send AG2 event: {e}\n{traceback.format_exc()}")
+            logger.error(f"❌ Failed to serialize or send UI event: {e}\n{traceback.format_exc()}")
 
     def _extract_clean_content(self, message: Union[str, Dict[str, Any], Any]) -> str:
         """Extract clean content from AG2 UUID-formatted messages or other formats."""
@@ -760,14 +737,10 @@ class SimpleTransport:
             # request_id optional (only when responding to InputRequestEvent)
             return True
         
-        elif msg_type in ("inline_component.result", "artifact_component.result"):
-            required = ["chat_id", "corr", "data"]
-            return all(field in message_data for field in required)
         
         elif msg_type == "client.resume":
-            # Support legacy 'lastClientSeq' and new 'lastClientIndex'
-            has_index = "lastClientIndex" in message_data or "lastClientSeq" in message_data
-            return all(field in message_data for field in ["chat_id"]) and has_index
+            # Canonical resume field: lastClientIndex (0-based index of last message the client has)
+            return all(field in message_data for field in ["chat_id", "lastClientIndex"]) and isinstance(message_data.get("lastClientIndex"), int)
         
         # Unknown message types are invalid
         return False
@@ -921,9 +894,6 @@ class SimpleTransport:
                 if mtype == "client.resume":
                     try:
                         last_client_index = data.get("lastClientIndex")
-                        if last_client_index is None:
-                            # fallback for legacy client field name
-                            last_client_index = data.get("lastClientSeq", -1)
                         if not isinstance(last_client_index, int):
                             raise ValueError("lastClientIndex must be int")
                         await self._handle_resume_request(chat_id, last_client_index, websocket)
@@ -1005,9 +975,9 @@ class SimpleTransport:
     # ==================================================================================
     
     async def send_chat_message(
-        self, 
-        message: str, 
-        agent_name: Optional[str] = None, 
+        self,
+        message: str,
+        agent_name: Optional[str] = None,
         chat_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> None:
@@ -1024,6 +994,10 @@ class SimpleTransport:
         }
         if metadata:
             event_data["data"]["metadata"] = metadata
+
+        # Enhanced logging for debugging UI rendering
+        logger.info(f"💬 Sending chat message: type={event_data['type']} agent='{agent_name}' content_len={len(message)} content_preview='{message[:50]}...'")
+
         await self.send_event_to_ui(event_data, chat_id)
     
     async def send_simple_text_message(self, content: str, chat_id: Optional[str] = None, agent_name: Optional[str] = None) -> None:
@@ -1049,79 +1023,19 @@ class SimpleTransport:
         payload: Dict[str, Any]
     ) -> None:
         """
-        Send a dedicated event to the frontend to render a specific UI component.
+        Emit a tool_call event to the frontend using the strict chat.tool_call protocol.
         """
-        # Derive workflow name if provided inside payload
-        wf_name = None
-        try:
-            wf_name = payload.get("workflow_name") if isinstance(payload, dict) else None
-        except Exception:
-            wf_name = None
-
-        event_data = {
-            "type": "ui_tool_event",
-            "data": {
-                "event_id": event_id,
-                "eventId": event_id,  # frontend expects camelCase alias
-                "chat_id": chat_id,
-                "tool_name": tool_name,
-                "component_name": component_name,
-                "ui_tool_id": component_name,  # frontend expects ui_tool_id
-                "display_type": display_type,
-                "workflow_name": wf_name,
-                "payload": payload,
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat()
+        # Build a standardized AG2 tool_call payload
+        event = {
+            "kind": "tool_call",
+            "tool_name": tool_name,
+            "component_type": component_name,
+            "awaiting_response": True,
+            "payload": payload,
+            "corr": event_id,
         }
-        await self._broadcast_to_websockets(event_data, chat_id)
-        logger.info(f"📤 Sent UI tool event {event_id} ({component_name}) to chat {chat_id}")
-        # Persist as last_artifact if this is an artifact display (multi-user resume support)
-        try:
-            if display_type == "artifact" and chat_id:
-                # Lazy import to avoid circular dependency at import time
-                from core.data.persistence_manager import AG2PersistenceManager
-                if not hasattr(self, "_persistence_manager"):
-                    self._persistence_manager = AG2PersistenceManager()
-                enterprise_id = None
-                # Attempt to infer enterprise_id from connection metadata
-                try:
-                    if chat_id in self.connections:
-                        conn_obj = self.connections[chat_id]
-                        # Support both dict style or attribute style storage
-                        if isinstance(conn_obj, dict):
-                            enterprise_id = (conn_obj.get("metadata") or {}).get("enterprise_id") or conn_obj.get("enterprise_id")
-                        else:  # generic object
-                            meta = getattr(conn_obj, "metadata", {}) or {}
-                            enterprise_id = meta.get("enterprise_id") or getattr(conn_obj, "enterprise_id", None)
-                except Exception:
-                    enterprise_id = None
-                # Fallback: query DB for enterprise_id if still missing
-                if not enterprise_id:
-                    try:
-                        coll = await self._get_chat_coll()
-                        if coll:
-                            doc = await coll.find_one({"_id": chat_id}, {"enterprise_id": 1})
-                            if doc:
-                                enterprise_id = doc.get("enterprise_id")
-                                logger.debug(f"[LAST_ARTIFACT] Fallback enterprise_id lookup succeeded chat_id={chat_id}")
-                    except Exception as fe:
-                        logger.debug(f"[LAST_ARTIFACT] Fallback enterprise lookup failed chat_id={chat_id} err={fe}")
-                if enterprise_id:
-                    artifact_doc = {
-                        "ui_tool_id": component_name,
-                        "event_id": event_id,
-                        "display": "artifact",
-                        "workflow_name": wf_name,
-                        "payload": payload,
-                    }
-                    await self._persistence_manager.update_last_artifact(chat_id=chat_id, enterprise_id=enterprise_id, artifact=artifact_doc)
-                else:
-                    logger.debug(f"[LAST_ARTIFACT] Skip persist (no enterprise_id) chat_id={chat_id} component={component_name}")
-            else:
-                if display_type != "artifact":
-                    logger.debug(f"[LAST_ARTIFACT] Not artifact display_type={display_type} component={component_name}")
-        except Exception as e:  # pragma: no cover
-            logger.debug(f"[LAST_ARTIFACT] Skip persist {e}")
+        # Delegate to core event sender for namespacing and sequence handling
+        await self.send_event_to_ui(event, chat_id)
 
     @classmethod
     async def wait_for_ui_tool_response(cls, event_id: str, timeout: Optional[float] = 300.0) -> Dict[str, Any]:
@@ -1200,43 +1114,19 @@ class SimpleTransport:
             else:
                 logger.warning(f"No callback found for input request {request_id}")
         
-        elif message_type in ("inline_component.result", "artifact_component.result"):
-            # Handle UI tool response (both inline and artifact components)
-            corr = message_data.get("corr")
-            data = message_data.get("data", {})
-            # Prefer resolving the canonical pending_ui_tool_responses future (used by wait_for_ui_tool_response)
-            if corr:
-                # If a caller is waiting via wait_for_ui_tool_response, resolve that future
-                if corr in self.pending_ui_tool_responses:
-                    future = self.pending_ui_tool_responses[corr]
-                    if not future.done():
-                        future.set_result(data)
-                    # cleanup
-                    try:
-                        del self.pending_ui_tool_responses[corr]
-                    except Exception:
-                        pass
-                # Fallback: resolve _ui_tool_futures if present
-                elif corr in self._ui_tool_futures:
-                    future = self._ui_tool_futures[corr]
-                    if not future.done():
-                        future.set_result(data)
-                    try:
-                        del self._ui_tool_futures[corr]
-                    except Exception:
-                        pass
-                else:
-                    logger.warning(f"⚠️ Received UI tool response for unknown event id: {corr}")
         
         elif message_type == "client.resume":
-            # Handle resume request
-            last_client_seq = message_data.get("lastClientSeq", 0)
-            # Validate chat_id presence to satisfy typed _handle_resume_request(str,...)
+            # Handle resume request using canonical lastClientIndex
+            last_client_index = message_data.get("lastClientIndex")
+            if not isinstance(last_client_index, int):
+                logger.warning(f"Invalid resume payload (lastClientIndex missing or non-int): {message_data}")
+                await self._send_error(websocket, "RESUME_FAILED", "Invalid lastClientIndex for resume request")
+                return
             if not chat_id:
                 logger.warning(f"Resume request missing chat_id: {message_data}")
                 await self._send_error(websocket, "RESUME_FAILED", "Missing chat_id for resume request")
                 return
-            await self._handle_resume_request(chat_id, last_client_seq, websocket)
+            await self._handle_resume_request(chat_id, last_client_index, websocket)
         
         else:
             logger.warning(f"Unknown message type: {message_type}")

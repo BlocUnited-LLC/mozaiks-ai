@@ -306,7 +306,23 @@ const ModernChatInterface = ({
             }
             
             // annotate message with workflow mapping if missing
-            const derivedHasStructured = (typeof chat.hasStructuredOutputs === 'boolean') ? chat.hasStructuredOutputs : !!(chat.agentName && structuredOutputs[chat.agentName]);
+            const isStructuredCapable = typeof chat.isStructuredCapable === 'boolean' 
+              ? chat.isStructuredCapable 
+              : !!(chat.agentName && structuredOutputs[chat.agentName]);
+
+            try {
+              if (['1','true','on','yes'].includes((localStorage.getItem('mozaiks.debug_render')||'').toLowerCase())) {
+                console.log('[RENDER] ChatMessage', {
+                  index,
+                  id: chat.id,
+                  agent: chat.agentName,
+                  visual: chat.isVisual,
+                  structured: isStructuredCapable,
+                  streaming: chat.isStreaming,
+                  preview: (chat.content||'').slice(0,80)
+                });
+              }
+            } catch {}
 
             return (
               <div key={index}>
@@ -317,7 +333,9 @@ const ModernChatInterface = ({
                   isTokenMessage={chat.isTokenMessage}
                   isWarningMessage={chat.isWarningMessage}
                   isLatest={index === lastContentIndex}
-                  hasStructuredOutputs={derivedHasStructured}
+                  isStructuredCapable={isStructuredCapable}
+                  structuredOutput={chat.structuredOutput}
+                  structuredSchema={chat.structuredSchema}
                 />
                 
                 {/* Render UI Tool Events */}

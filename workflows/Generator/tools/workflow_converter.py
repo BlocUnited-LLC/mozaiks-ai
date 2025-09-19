@@ -52,7 +52,7 @@ def _split_config_into_sections(config: Dict[str, Any]) -> Dict[str, Dict[str, A
     sections['structured_outputs'] = config.get('structured_outputs', {})
     sections['hooks'] = config.get('hooks', {})
     sections['tools'] = config.get('tools', {})
-    sections['ui_config'] = {k: v for k, v in config.items() if k in ['visual_agents', 'ui_capable_agents']}
+    sections['ui_config'] = {k: v for k, v in config.items() if k in ['visual_agents', 'visual_agent']}
 
     return sections
 
@@ -250,7 +250,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                 'structured_outputs_agent_output': {...}, # StructuredOutputsAgent (dynamic)
                 'tools_manager_output': {...},       # ToolsManagerAgent (tools_config string)
                 'tools_agent_output': {...},         # Legacy/other tools provider
-                'ui_config': {...},                  # UI config (visual_agents, ui_capable_agents)
+                'ui_config': {...},                  # UI config (visual_agents, visual_agent)
                 'extra_files': [...]                 # Additional arbitrary files
             }
         context_variables: AG2 ContextVariables for sharing state between agents
@@ -417,7 +417,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                 cfg['initial_message_to_user'] = None
             # Ensure arrays
             cfg.setdefault('visual_agents', [])
-            cfg.setdefault('ui_capable_agents', [])
+            cfg.setdefault('visual_agent', [])
             return cfg
 
         _apply_orchestrator_defaults(config)

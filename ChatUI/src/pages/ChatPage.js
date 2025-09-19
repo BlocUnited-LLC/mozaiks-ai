@@ -13,6 +13,10 @@ import { dynamicUIHandler } from '../core/dynamicUIHandler';
 const DEBUG_LOG_ALL_AGENT_OUTPUT = true;
 const shouldDebugAllAgents = () => { try { const v = localStorage.getItem('mozaiks.debug_all_agents'); if (v!=null) return v==='1'||v==='true'; } catch{} return DEBUG_LOG_ALL_AGENT_OUTPUT; };
 const logAgentOutput = (phase, agentName, content, meta={}) => { if(!shouldDebugAllAgents()) return; try { const prev = typeof content==='string'?content.slice(0,400):JSON.stringify(content); console.log(`🛰️ [${phase}]`, {agent:agentName||'Unknown', content:prev, ...meta}); } catch { console.log(`🛰️ [${phase}]`, {agent:agentName||'Unknown', content}); } };
+// Generic localStorage gated debug flag helper (used for pipeline + render tracing)
+const debugFlag = (k) => {
+  try { return ['1','true','on','yes'].includes((localStorage.getItem(k)||'').toLowerCase()); } catch { return false; }
+};
 
 const ChatPage = () => {
   // Core state
@@ -53,6 +57,8 @@ const ChatPage = () => {
   const defaultWorkflow = (urlWorkflowName || config?.chat?.defaultWorkflow || getDefaultWorkflowFromRegistry() || '');
   const [currentWorkflowName, setCurrentWorkflowName] = useState(defaultWorkflow);
   const [tokensExhausted, setTokensExhausted] = useState(false);
+  // Track whether we suppressed the synthetic first instruction message (when no initial message configured)
+  const firstAgentMessageSuppressedRef = useRef(false);
   // Removed legacy dynamic UI accumulation & dedupe refs (no longer needed with chat.* events)
 
 
@@ -91,6 +97,20 @@ const ChatPage = () => {
       try { logAgentOutput('INCOMING', extractAgentName(data), data, { type: data?.type }); } catch {}
     }
     if (!data?.type) return;
+    if (debugFlag('mozaiks.debug_pipeline')) {
+      const agentDbg = data.agent || data.agent_name;
+      console.log('[PIPELINE] raw event', {
+        type: data.type,
+        agent: agentDbg,
+        visual: data.is_visual,
+        structuredCapable: data.is_structured_capable,
+        hasStructuredOutput: !!data.structured_output,
+        contentPreview: (data.content||'').slice(0,120)
+      });
+      if ((data.type === 'chat.print' || data.type === 'chat.text') && data.is_visual === false) {
+        console.warn('[PIPELINE] Non-visual agent message received (unexpected?)', agentDbg);
+      }
+    }
     // Minimal legacy passthrough for still-emitted dynamic UI events until backend fully migrated
     if (data.type === 'ui_tool_event' || data.type === 'UI_TOOL_EVENT') {
       // Create a response callback that uses the WebSocket connection
@@ -109,9 +129,120 @@ const ChatPage = () => {
       return;
     }
     if (!data.type.startsWith('chat.')) return; // ignore legacy
+
+    // Some backends double-serialize the envelope: outer {type, content: JSON-stringified {type:"chat.text", data:{...}}}
+    // Detect and unwrap once so downstream logic always works with a flat object.
+    try {
+      if (typeof data.content === 'string' && data.content.startsWith('{') && data.content.includes('"type":"chat.')) {
+        const inner = JSON.parse(data.content);
+        if (inner && inner.type && inner.type.startsWith('chat.') && inner.data) {
+          if (debugFlag('mozaiks.debug_pipeline')) {
+            console.log('[PIPELINE] unwrapped nested envelope', { originalType: data.type, innerType: inner.type });
+          }
+          const innerData = inner.data;
+          // Force overwrite authoritative fields (outer agent placeholder 'Agent' is not useful)
+          data.type = inner.type; // chat.*
+          if (typeof innerData.content === 'string') data.content = innerData.content;
+          if (innerData.agent) data.agent = innerData.agent;
+          if (innerData.agent_name) data.agent_name = innerData.agent_name;
+          if (innerData.sender && !innerData.agent && !innerData.agent_name) data.agent = innerData.sender;
+          // Capability flags
+          data.is_structured_capable = !!innerData.is_structured_capable;
+          if (innerData.is_visual !== undefined) data.is_visual = innerData.is_visual;
+          if (innerData.is_tool_agent !== undefined) data.is_tool_agent = innerData.is_tool_agent;
+          // Preserve structured output payloads if present
+          if (innerData.structured_output !== undefined) data.structured_output = innerData.structured_output;
+          if (innerData.structured_schema !== undefined) data.structured_schema = innerData.structured_schema;
+          if (debugFlag('mozaiks.debug_pipeline')) {
+            console.log('[PIPELINE] unwrap summary', {
+              finalType: data.type,
+              agent: data.agent || data.agent_name,
+              visual: data.is_visual,
+              structuredCapable: data.is_structured_capable,
+              contentPreview: (data.content||'').slice(0,120)
+            });
+          }
+        }
+      }
+    } catch (e) {
+      if (debugFlag('mozaiks.debug_pipeline')) console.warn('[PIPELINE] failed to unwrap nested envelope', e);
+    }
+
+    // Some events may arrive already as { type:'chat.text', data:{ ...actualFields... } } (no double-serialization)
+    // or after the above unwrap we can still retain an inner data object we need to promote.
+    try {
+      if (data.data && typeof data.data === 'object') {
+        const inner = data.data;
+        // Promote only if target field missing or clearly placeholder
+        const promote = (k, aliasArr=[]) => {
+          if (inner[k] === undefined) return;
+          if (data[k] === undefined || data[k] === 'Unknown' || data[k] === null) data[k] = inner[k];
+          // Apply aliases (e.g. sender -> agent) if primary absent
+          aliasArr.forEach(alias => {
+            if (data[alias] === undefined && inner[k] !== undefined) data[alias] = inner[k];
+          });
+        };
+        promote('agent');
+        promote('agent_name');
+        // sender can act as agent fallback
+        if (!data.agent && !data.agent_name && inner.sender) data.agent = inner.sender;
+        // Core textual content (avoid overwriting if we already have a non-empty string)
+        if (inner.content && (!data.content || !String(data.content).trim())) data.content = inner.content;
+        // Capability / classification flags
+        ['is_visual','is_structured_capable','is_tool_agent'].forEach(f => { if (inner[f] !== undefined && data[f] === undefined) data[f] = inner[f]; });
+        // Structured output payload + schema
+        if (inner.structured_output !== undefined && data.structured_output === undefined) data.structured_output = inner.structured_output;
+        if (inner.structured_schema !== undefined && data.structured_schema === undefined) data.structured_schema = inner.structured_schema;
+        // UI tool / component hints (input_request etc.)
+        ['component_type','ui_tool_id','tool_name','tool_call_id','request_id','progress_percent','prompt'].forEach(f => {
+          if (inner[f] !== undefined && data[f] === undefined) data[f] = inner[f];
+        });
+      }
+    } catch (e) {
+      if (debugFlag('mozaiks.debug_pipeline')) console.warn('[PIPELINE] failed to promote data.data fields', e);
+    }
+
+    // Final resolution / fallback normalization before dispatch
+    try {
+      if (typeof data.content === 'object' && data.content !== null) {
+        // Some backends might leave content object like { content: 'text' }
+        if (data.content.content && typeof data.content.content === 'string') {
+          data.content = data.content.content;
+        } else if (data.content.text && typeof data.content.text === 'string') {
+          data.content = data.content.text;
+        } else if (data.content.message && typeof data.content.message === 'string') {
+          data.content = data.content.message;
+        }
+      }
+      if (!data.agent && !data.agent_name && data.sender) data.agent = data.sender;
+      if (debugFlag('mozaiks.debug_pipeline')) {
+        console.log('[PIPELINE] resolved event pre-dispatch', {
+          type: data.type,
+          agent: data.agent || data.agent_name,
+          visual: data.is_visual,
+          structuredCapable: data.is_structured_capable,
+          hasStructuredOutput: !!data.structured_output,
+          contentPreview: (typeof data.content === 'string' ? data.content : JSON.stringify(data.content || '')).slice(0,120)
+        });
+      }
+    } catch {}
+
     const evt = data.type.slice(5);
     switch (evt) {
   case 'print': {
+        // Suppress very first auto-generated instruction style message if workflow has no explicit initial_message_to_user
+        try {
+          if (!firstAgentMessageSuppressedRef.current) {
+            const wfCfg = workflowConfig?.getWorkflowConfig(currentWorkflowName);
+            const hasInitial = !!(wfCfg && wfCfg.initial_message_to_user && wfCfg.initial_message_to_user.trim());
+            const seq = data.sequence || data.data?.sequence;
+            if (!hasInitial && (seq === 1 || seq === '1')) {
+              if (debugFlag('mozaiks.debug_pipeline')) console.log('[PIPELINE] suppressing first agent print message (no initial_message_to_user configured)');
+              firstAgentMessageSuppressedRef.current = true; // one-time action
+              return; // skip rendering
+            }
+          }
+        } catch {}
         const agentName = extractAgentName(data);
         const chunk = data.content || '';
         if (!chunk) return;
@@ -121,17 +252,48 @@ const ChatPage = () => {
               const m = updated[i];
               if (m.__streaming && m.agentName === agentName) {
                 m.content += chunk;
+                if (debugFlag('mozaiks.debug_pipeline')) {
+                  console.log('[PIPELINE] appended chunk to existing stream', { agent: agentName, newLength: m.content.length });
+                }
                 return updated;
               }
             }
-          // Get structured outputs flag from backend event data
-          const hasStructuredOutputs = data.has_structured_outputs || false;
-          updated.push({ id:`stream-${Date.now()}`, sender:'agent', agentName, content:chunk, isStreaming:true, __streaming:true, hasStructuredOutputs });
+          // Capability flags (new schema) from backend event data
+          const isStructuredCapable = !!data.is_structured_capable;
+          const isVisual = !!data.is_visual;
+          const isToolAgent = !!data.is_tool_agent;
+          updated.push({
+            id:`stream-${Date.now()}`,
+            sender:'agent',
+            agentName,
+            content:chunk,
+            isStreaming:true,
+            __streaming:true,
+            isStructuredCapable,
+            isVisual,
+            isToolAgent
+          });
+          if (debugFlag('mozaiks.debug_pipeline')) {
+            console.log('[PIPELINE] created new streaming message', { agent: agentName, chunkLen: chunk.length, isStructuredCapable, isVisual });
+          }
           return updated;
         });
         return;
       }
       case 'text': {
+        // Suppress very first auto-generated instruction style message if workflow has no explicit initial_message_to_user
+        try {
+          if (!firstAgentMessageSuppressedRef.current) {
+            const wfCfg = workflowConfig?.getWorkflowConfig(currentWorkflowName);
+            const hasInitial = !!(wfCfg && wfCfg.initial_message_to_user && wfCfg.initial_message_to_user.trim());
+            const seq = data.sequence || data.data?.sequence;
+            if (!hasInitial && (seq === 1 || seq === '1')) {
+              if (debugFlag('mozaiks.debug_pipeline')) console.log('[PIPELINE] suppressing first agent text message (no initial_message_to_user configured)');
+              firstAgentMessageSuppressedRef.current = true; // one-time action
+              return; // skip rendering
+            }
+          }
+        } catch {}
         const content = data.content || '';
         if (!content.trim()) return;
         const agentName = extractAgentName(data);
@@ -144,11 +306,27 @@ const ChatPage = () => {
             }
           }
           
-          // Get structured outputs flag from backend event data
-          const hasStructuredOutputs = data.has_structured_outputs || !!data.structured_output;
-          const structuredOutput = data.structured_output || null;
-          const structuredSchema = data.structured_schema || null;
-          updated.push({ id:`text-${Date.now()}`, sender:'agent', agentName, content, isStreaming:false, hasStructuredOutputs, structuredOutput, structuredSchema });
+          // Capability + structured output payload (if any) from new unified dispatcher
+          const isStructuredCapable = !!data.is_structured_capable;
+          const structuredOutput = data.structured_output || null; // actual structured content (if produced)
+          const structuredSchema = data.structured_schema || null; // schema describing structuredOutput
+          const isVisual = !!data.is_visual;
+          const isToolAgent = !!data.is_tool_agent;
+          updated.push({
+            id:`text-${Date.now()}`,
+            sender:'agent',
+            agentName,
+            content,
+            isStreaming:false,
+            isStructuredCapable,
+            structuredOutput,
+            structuredSchema,
+            isVisual,
+            isToolAgent
+          });
+          if (debugFlag('mozaiks.debug_pipeline')) {
+            console.log('[PIPELINE] appended final text message', { agent: agentName, len: content.length, isStructuredCapable, hasStructuredOutput: !!structuredOutput });
+          }
           return updated;
         });
         return;

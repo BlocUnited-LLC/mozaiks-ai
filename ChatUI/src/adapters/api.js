@@ -104,19 +104,19 @@ export class WebSocketApiAdapter extends ApiAdapter {
     console.log(`🔗 Connecting to WebSocket: ${wsUrl}`);
     const socket = new WebSocket(wsUrl);
     
-    // F7/F8: Sequence tracking and resume capability
-    let lastSequence = parseInt(localStorage.getItem(`ws_seq_${chatId}`) || '0');
+    // F7/F8: Sequence tracking and resume capability (strict canonical key)
+    let lastSequence = parseInt(localStorage.getItem(`ws_idx_${chatId}`) || '0');
     let resumePending = false;
     
     // Helper to send client.resume
     const sendResume = () => {
       if (socket.readyState === WebSocket.OPEN && !resumePending) {
         resumePending = true;
-        console.log(`📡 Sending client.resume with lastClientSeq: ${lastSequence}`);
+        console.log(`📡 Sending client.resume with lastClientIndex: ${lastSequence}`);
         socket.send(JSON.stringify({
           type: 'client.resume',
           chat_id: chatId,
-          lastClientSeq: lastSequence
+          lastClientIndex: lastSequence
         }));
       }
     };
@@ -140,7 +140,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
         if (data.seq && typeof data.seq === 'number') {
           if (data.seq > lastSequence) {
             lastSequence = data.seq;
-            localStorage.setItem(`ws_seq_${chatId}`, lastSequence.toString());
+            try { localStorage.setItem(`ws_idx_${chatId}`, lastSequence.toString()); } catch (_) {}
           } else if (data.seq < lastSequence - 1 && !resumePending) {
             // Sequence gap detected - request resume
             console.warn(`⚠️ Sequence gap detected: received ${data.seq}, expected > ${lastSequence}`);

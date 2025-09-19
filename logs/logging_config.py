@@ -456,7 +456,51 @@ class WorkflowLogger:
     def __init__(self, workflow_name: str, chat_id: str | None = None):
         self.workflow_name = workflow_name
         self.chat_id = chat_id
-        self.logger = logging.getLogger()
+        # Use a namespaced logger so filters/handlers can target workflow logs specifically
+        self.logger = logging.getLogger(f"mozaiks.workflow.{workflow_name}")
+
+    # ------------------------------------------------------------------
+    # Standard logging interface (mirrors logging.Logger) so type checkers
+    # recognize attributes like .debug/.info/.warning used across codebase.
+    # Adds workflow/chat context automatically and performs redaction.
+    # ------------------------------------------------------------------
+    def _emit(self, level: int, msg: str, *args, exc_info=None, stack_info=False, extra: dict | None = None, **kw_extra):
+        if args:
+            msg = msg % args
+        base_extra = {"workflow_name": self.workflow_name}
+        if self.chat_id:
+            base_extra["chat_id"] = self.chat_id
+        if extra:
+            base_extra.update(extra)
+        if kw_extra:
+            base_extra.update(kw_extra)
+        # Redact sensitive values before emitting
+        safe_extra = _maybe_redact_mapping(base_extra)
+        self.logger.log(level, msg, exc_info=exc_info, stack_info=stack_info, extra=safe_extra)
+
+    def debug(self, msg: str, *args, **kwargs):
+        self._emit(logging.DEBUG, msg, *args, **kwargs)
+
+    def info(self, msg: str, *args, **kwargs):
+        self._emit(logging.INFO, msg, *args, **kwargs)
+
+    def warning(self, msg: str, *args, **kwargs):
+        self._emit(logging.WARNING, msg, *args, **kwargs)
+
+    def error(self, msg: str, *args, exc_info=None, **kwargs):
+        # Allow passing exc_info=True or an exception tuple
+        self._emit(logging.ERROR, msg, *args, exc_info=exc_info, **kwargs)
+
+    def critical(self, msg: str, *args, **kwargs):
+        self._emit(logging.CRITICAL, msg, *args, **kwargs)
+
+    def exception(self, msg: str, *args, **kwargs):
+        # Shortcut that forces exc_info=True
+        kwargs.setdefault("exc_info", True)
+        self.error(msg, *args, **kwargs)
+
+    def log(self, level: int, msg: str, *args, **kwargs):
+        self._emit(level, msg, *args, **kwargs)
     
     def log_agent_setup_summary(self, agents: dict, agent_tools: dict, hooks_count: int = 0):
         """Log a consolidated summary of agent setup instead of verbose individual logs."""
@@ -498,13 +542,12 @@ class WorkflowLogger:
         tools_str = f"[{', '.join(tool_names)}]" if tool_names else f"({tool_count} tools)"
         summary = f"🔧 [TOOLS] {agent_name}: {tools_str}"
         
-        extra = {"workflow_name": self.workflow_name, "agent_name": agent_name}
-        self.logger.debug(summary, extra=extra)
+        self.debug(summary, agent_name=agent_name)
     
     def log_hook_registration_summary(self, workflow_name: str, hook_count: int):
         """Log hook registration summary."""
         summary = f"🪝 [HOOKS] {workflow_name}: registered {hook_count} hooks"
-        self.logger.info(summary, extra={"workflow_name": workflow_name})
+        self.info(summary)
 
 def get_workflow_session_logger(workflow_name: str, chat_id: str | None = None) -> WorkflowLogger:
     """Factory function to create a WorkflowLogger instance."""

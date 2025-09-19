@@ -584,7 +584,6 @@ class AG2PersistenceManager:
                 "timestamp": evt_ts,
                 "event_type": "message.created",
                 "event_id": event_id,
-                # Single authoritative sequence field (legacy 'seq' alias removed)
                 "sequence": seq,
             }
             if role == "assistant":

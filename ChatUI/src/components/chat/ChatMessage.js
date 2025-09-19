@@ -2,40 +2,31 @@ import React from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
-function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarningMessage, isLatest = false, hasStructuredOutputs = false, structuredOutput = null, structuredSchema = null }) {
+// Local debug flag helper (duplicated intentionally to avoid cross-file import churn)
+const debugFlag = (k) => { try { return ['1','true','on','yes'].includes((localStorage.getItem(k)||'').toLowerCase()); } catch { return false; } };
+
+function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarningMessage, isLatest = false, isStructuredCapable = false, structuredOutput = null, structuredSchema = null }) {
   // No local state needed: always show pretty structured output
   
   // Debug (disabled by default): uncomment to trace renders
-  // console.debug('ChatMessage render:', { message: message?.substring(0, 50) + '...', message_from, agentName, hasMessage: !!message, isTokenMessage, isWarningMessage });
+  if (debugFlag('mozaiks.debug_render')) {
+    try {
+      console.log('[RENDER] ChatMessage component', {
+        from: message_from,
+        agent: agentName,
+        len: (message||'').length,
+        structured: isStructuredCapable,
+        latest: isLatest
+      });
+    } catch {}
+  }
 
-  // Structured output detection – prefer explicit structuredOutput prop; fallback to heuristic
+  // Structured output detection – strict: only use explicit structuredOutput prop
   const detectStructuredOutput = (text) => {
-    // 1. Direct structuredOutput object from backend (already parsed & schema-backed)
     if (structuredOutput && typeof structuredOutput === 'object') {
       return { type: 'json', data: structuredOutput, raw: JSON.stringify(structuredOutput), textBefore: '', textAfter: '' };
     }
-    if (!text) return null;
-    // 2. Heuristic / legacy detection only if no explicit structuredOutput
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return {
-          type: 'json',
-          data: parsed,
-          raw: jsonMatch[0],
-          textBefore: text.substring(0, jsonMatch.index).trim(),
-          textAfter: text.substring(jsonMatch.index + jsonMatch[0].length).trim()
-        };
-      }
-    } catch {/* ignore */}
-    if (hasStructuredOutputs) {
-      try {
-        const parsedFull = JSON.parse(String(text));
-        return { type: 'json', data: parsedFull, raw: String(text), textBefore: '', textAfter: '' };
-      } catch {/* ignore */}
-    }
-    return null;
+    return null; // Do not attempt heuristic parsing
   };
 
   const renderStructuredData = (structuredData) => {
