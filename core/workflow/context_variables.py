@@ -9,15 +9,33 @@
 import asyncio
 import os
 import re
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union, Sequence
 from autogen.agentchat.group import ContextVariables
 
 # Import existing infrastructure
+from .context_schema import (
+    ContextVariablesConfig,
+    DeclarativeVariableSpec,
+    DatabaseVariableSpec,
+    EnvironmentVariableSpec,
+    load_context_variables_config,
+)
 from .workflow_manager import workflow_manager
 from logs.logging_config import get_workflow_logger
 
 # Get logger
 business_logger = get_workflow_logger("context_variables")
+
+_TRUE_FLAG_VALUES = {"1", "true", "yes", "on"}
+
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    """Parse boolean environment flags safely."""
+
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in _TRUE_FLAG_VALUES
 
 # ---------------------------------------------------------------------------
 # ENV FLAGS (minimal â€“ only what we actively use during testing)
@@ -36,6 +54,9 @@ TRUNCATE_CHARS = int(os.getenv("CONTEXT_SCHEMA_TRUNCATE_CHARS", "4000") or 4000)
 # # ---------------------------------------------------------------------------
 # def _scrub_value(v: Any) -> Any:
 #     try:
+    # ------------------------------------------------------------------
+    # VARIABLE TAXONOMY (NEW ONLY)
+    # Enforce explicit separation: database_variables[], environment_variables[]
 #         if v is None:
 #             return None
 #         if isinstance(v, (int, float, bool)):
@@ -118,40 +139,31 @@ def _create_minimal_context(workflow_name: str, enterprise_id: Optional[str]) ->
         context.set("enterprise_id", enterprise_id)
     if workflow_name:
         context.set("workflow_name", workflow_name)
-    business_logger.info(f"âœ… Created minimal context: enterprise_id={enterprise_id}, workflow_name={workflow_name}")
+    env_mode = (os.getenv('ENVIRONMENT') or '').strip().lower()
+    if env_mode != 'production':
+        context.set("context_aware", _get_bool_env("CONTEXT_AWARE", False))
+        context.set("monetization_enabled", _get_bool_env("MONETIZATION_ENABLED", False))
+    else:
+        business_logger.info("Production mode: skipping seeding of environment feature flags in minimal context")
+    business_logger.info(f"âœ… Created minimal context: enterprise_id={enterprise_id}, workflow_name={workflow_name}, env_mode={env_mode}")
     return context
 
 async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) -> ContextVariables:
     """Async context loading - properly handles async MongoDB operations."""
-    business_logger.info(f"ðŸ”§ Loading context for {workflow_name} (async)")
-    # Start with minimal context to ensure essential metadata is present
+    business_logger.info(f"🔧 Loading context for {workflow_name} (async)")
     context = _create_minimal_context(workflow_name, enterprise_id)
-    # Store enterprise_id internally (used for queries but not exposed as context variable)
     internal_enterprise_id = enterprise_id
-    
-    # Load workflow configuration  
-    config = _load_workflow_config(workflow_name)
-    
-    # Optionally attach a compact schema overview based on env toggle (default off).
-    # Toggle: CONTEXT_INCLUDE_SCHEMA=true|false (default false)
-    # DB source precedence for schema: CONTEXT_SCHEMA_DB env -> JSON schema_overview.database_name -> single DB from variables
-    schema_config = config.get('schema_overview', {})
+    config_model, raw_context_section = _load_workflow_config(workflow_name)
+    config = config_model.model_dump_runtime()
+
+    # Schema overview (optional)
+    schema_config = raw_context_section.get('schema_overview', {}) if isinstance(raw_context_section, dict) else {}
     try:
         include_schema_env = os.getenv("CONTEXT_INCLUDE_SCHEMA", "false").lower() in ("1", "true", "yes", "on")
         if include_schema_env:
-            # Decide database used for schema extraction
             db_name = os.getenv("CONTEXT_SCHEMA_DB")
             if not db_name and isinstance(schema_config, dict):
                 db_name = schema_config.get('database_name')
-            if not db_name:
-                # Infer from unique variable database reference
-                var_dbs = set()
-                for v in config.get('variables', []) or []:
-                    dbn = ((v or {}).get('database') or {}).get('database_name')
-                    if dbn:
-                        var_dbs.add(dbn)
-                if len(var_dbs) == 1:
-                    db_name = next(iter(var_dbs))
             if db_name:
                 overview_info = await _get_database_schema_async(db_name)
                 overview_text = overview_info.get("schema_overview")
@@ -159,38 +171,101 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
                     if len(overview_text) > TRUNCATE_CHARS:
                         overview_text = f"{overview_text[:TRUNCATE_CHARS]}... [truncated {len(overview_text)-TRUNCATE_CHARS} chars]"
                     context.set("schema_overview", overview_text)
-                    business_logger.info(f"ðŸ“˜ Attached schema_overview to context (db={db_name}, len={len(overview_text)})")
-                # Always attach full collection first-doc map when schema flag true
+                    business_logger.info(f"📄 Attached schema_overview (db={db_name}, len={len(overview_text)})")
                 try:
                     first_docs_full = await _get_all_collections_first_docs(db_name)
                     context.set("collections_first_docs_full", first_docs_full)
-                    business_logger.info(f"ðŸ“— Attached collections_first_docs_full (collections={len(first_docs_full)})")
+                    business_logger.info(f"📘 Attached collections_first_docs_full (collections={len(first_docs_full)})")
                 except Exception as fd_err:
                     business_logger.debug(f"collections_first_docs_full attachment failed: {fd_err}")
             else:
-                business_logger.debug("Schema overview requested but no database_name could be determined; skipping")
+                business_logger.debug("Schema overview requested but no database_name; skipping")
     except Exception as _sch_err:
         business_logger.debug(f"Schema overview attachment skipped: {_sch_err}")
-    
-    # Load specific variables from database
-    variables = config.get('variables', [])
-    if variables and internal_enterprise_id:
+
+    # New taxonomy only; legacy flat 'variables' support removed intentionally.
+    db_variables: List[DatabaseVariableSpec] = list(config_model.database_variables)
+    # Optional schema/database context gating: if CONTEXT_INCLUDE_SCHEMA is falsy, suppress database_variables.
+    include_schema_flag = (os.getenv('CONTEXT_INCLUDE_SCHEMA') or '').strip().lower() in _TRUE_FLAG_VALUES
+    if not include_schema_flag and db_variables:
+        business_logger.info("CONTEXT_INCLUDE_SCHEMA disabled -> suppressing all database_variables from context plan")
+        db_variables = []
+    env_variables: List[EnvironmentVariableSpec] = list(config_model.environment_variables)
+    # Production safeguard: if ENVIRONMENT == production, suppress environment_variables entirely.
+    env_mode = (os.getenv('ENVIRONMENT') or '').strip().lower()
+    if env_mode == 'production' and env_variables:
+        business_logger.info("ENVIRONMENT=production -> suppressing all environment_variables from context plan")
+        env_variables = []
+    declarative_variables: List[DeclarativeVariableSpec] = list(config_model.declarative_variables)
+
+    # Load environment variables first (simple flags / small values)
+    for env_var in env_variables:
+        try:
+            name = env_var.name
+            env_key = env_var.source.env_var
+            if not name or not env_key:
+                continue
+            raw_val = os.getenv(env_key)
+            default_value = env_var.source.default
+            declared_type = (env_var.type or '').strip().lower() if env_var.type else ''
+            if raw_val is None:
+                if default_value is not None:
+                    context.set(name, default_value)
+                    business_logger.info(
+                        f"🧩 EnvContextVar {name} defaulted -> {default_value!r} (env={env_key} missing)"
+                    )
+                continue
+            normalized = raw_val.strip()
+            lowered = normalized.lower()
+            if declared_type == 'boolean' or lowered in _TRUE_FLAG_VALUES.union({'0', 'false', 'off', 'no'}):
+                coerced = lowered in _TRUE_FLAG_VALUES
+                context.set(name, coerced)
+            elif declared_type == 'integer':
+                try:
+                    coerced = int(normalized)
+                    context.set(name, coerced)
+                except Exception:
+                    if default_value is not None:
+                        context.set(name, default_value)
+                        business_logger.info(
+                            f"🧩 EnvContextVar {name} fallback default -> {default_value!r} (invalid int)"
+                        )
+                    continue
+            else:
+                context.set(name, raw_val)
+            stored_value = context.data.get(name) if hasattr(context, 'data') else None  # type: ignore[attr-defined]
+            business_logger.info(
+                f"🧩 EnvContextVar {name} (env={env_key}) loaded -> {_format_for_log(stored_value)}"
+            )
+        except Exception as e:  # pragma: no cover
+            business_logger.debug(f"Env variable load skipped: {e}")
+
+    for decl_var in declarative_variables:
+        try:
+            context.set(decl_var.name, decl_var.source.value)
+            business_logger.info(
+                f"🧱 DeclarativeContextVar {decl_var.name} = {_format_for_log(decl_var.source.value)}"
+            )
+        except Exception as e:  # pragma: no cover
+            business_logger.debug(f"Declarative variable load skipped: {e}")
+
+    # Load database variables (requires enterprise)
+    if db_variables and internal_enterprise_id:
         # Determine default database name strictly from config; do NOT fall back to a hardcoded default
-        default_db = config.get('database_name')
-        if isinstance(schema_config, dict) and 'database_name' in schema_config and schema_config.get('database_name'):
+        default_db = raw_context_section.get('database_name') if isinstance(raw_context_section, dict) else None
+        if isinstance(schema_config, dict) and schema_config.get('database_name'):
             default_db = schema_config.get('database_name')
 
         if not default_db:
-            business_logger.warning("No default database_name configured for context variables; each variable must specify database.database_name explicitly.")
-
+            business_logger.debug("No global database_name; each database variable must specify its own reference.")
 
         try:
-            loaded_data = await _load_specific_data_async(variables, default_db, internal_enterprise_id)
+            loaded_data = await _load_specific_data_async(db_variables, default_db, internal_enterprise_id)
             for key, value in loaded_data.items():
                 context.set(key, value)
-                business_logger.info(f"ðŸ§© ContextVar {key} = {_format_for_log(value)}")
+                business_logger.info(f"🧬 DbContextVar {key} = {_format_for_log(value)}")
         except Exception as load_err:
-            business_logger.error(f"âŒ Failed loading specific context variables: {load_err}")
+            business_logger.error(f"❌ Failed loading database context variables: {load_err}")
     
     # Log the final context summary - workflow-specific variables only
     # Note: Core WebSocket parameters (workflow_name, enterprise_id, chat_id, user_id) 
@@ -211,35 +286,39 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]) 
     
     return context
 
-def _load_workflow_config(workflow_name: str) -> Dict[str, Any]:
-    """Load json configuration for workflow."""
+def _load_workflow_config(workflow_name: str) -> tuple[ContextVariablesConfig, Dict[str, Any]]:
+    """Load context variable configuration and validate with Pydantic."""
+
+    raw_section: Dict[str, Any] = {}
     try:
-        workflow_config = workflow_manager.get_config(workflow_name)
-        if workflow_config and 'context_variables' in workflow_config:
-            context_section = workflow_config['context_variables']
-            # Handle possible nesting
-            if isinstance(context_section, dict) and 'context_variables' in context_section:
-                return context_section['context_variables']
-            return context_section
-        # If no context_variables section in main config, try loading a separate context_variables.json file
-        try:
+        workflow_config = workflow_manager.get_config(workflow_name) or {}
+        context_section = workflow_config.get('context_variables') or {}
+        if isinstance(context_section, dict):
+            raw_section = context_section
+        if not raw_section:
             from pathlib import Path
             import json
-            # workflow_manager._workflows stores WorkflowInfo with path to workflow folder
             wf_info = getattr(workflow_manager, '_workflows', {}).get(workflow_name.lower())
             if wf_info and hasattr(wf_info, 'path'):
                 ext_file = Path(wf_info.path) / 'context_variables.json'
                 if ext_file.exists():
-                    business_logger.info(f"ðŸ” Loading external context_variables.json for {workflow_name}")
                     raw = ext_file.read_text(encoding='utf-8')
                     data = json.loads(raw)
-                    return data.get('context_variables', {}) or {}
-        except Exception as ext_err:  # pragma: no cover
-            business_logger.debug(f"âš ï¸ External context_variables.json load failed: {ext_err}")
-        return {}
+                    ctx_section = data.get('context_variables') or data
+                    if isinstance(ctx_section, dict):
+                        raw_section = ctx_section
     except Exception as e:  # pragma: no cover
-        business_logger.warning(f"âš ï¸ Could not load config for {workflow_name}: {e}")
-        return {}
+        business_logger.warning(f"⚠️ Could not load config for {workflow_name}: {e}")
+
+    try:
+        model = load_context_variables_config(raw_section)
+    except ValueError as err:
+        business_logger.warning(
+            f"⚠️ Context variables config validation failed for {workflow_name}: {err}"
+        )
+        model = ContextVariablesConfig()
+        raw_section = {}
+    return model, raw_section
 
 async def _get_database_schema_async(database_name: str) -> Dict[str, Any]:
     """
@@ -329,76 +408,139 @@ async def _get_database_schema_async(database_name: str) -> Dict[str, Any]:
     
     return schema_info
 
-async def _load_specific_data_async(variables: List[Dict[str, Any]], default_database_name: Optional[str], enterprise_id: str) -> Dict[str, Any]:
-    """
-    FEATURE 2: Load specific data based on json configuration
-    Allows users to extract specific endpoints/data without full schema.
-    Now supports per-variable database_name for multi-database enterprises.
-    """
-    loaded_data = {}
-    
+async def _load_specific_data_async(
+    variables: Sequence[Union[DatabaseVariableSpec, Dict[str, Any]]],
+    default_database_name: Optional[str],
+    enterprise_id: str,
+) -> Dict[str, Any]:
+    """Load specific data based on declarative context configuration."""
+
+    loaded_data: Dict[str, Any] = {}
+
     try:
         from core.core_config import get_mongo_client
         from bson import ObjectId
-        
+
         client = get_mongo_client()
-        
+
         for var_config in variables:
-            var_name = var_config.get('name')
+            if isinstance(var_config, DatabaseVariableSpec):
+                var_name = var_config.name
+            elif isinstance(var_config, dict):
+                var_name = var_config.get('name')
+            else:
+                continue
+
             if not var_name:
                 continue
-                
+
             try:
-                # Get database configuration - support per-variable database names
-                db_config = var_config.get('database', {})
+                if isinstance(var_config, DatabaseVariableSpec):
+                    db_config: Dict[str, Any] = {
+                        'database_name': var_config.source.database_name or default_database_name,
+                        'collection': var_config.source.collection,
+                        'search_by': var_config.source.search_by or 'enterprise_id',
+                        'field': var_config.source.field,
+                    }
+                else:
+                    source_config = var_config.get('source', {}) if isinstance(var_config, dict) else {}
+                    source_type = source_config.get('type') if isinstance(source_config, dict) else None
+
+                    if source_type == 'environment':
+                        env_var = source_config.get('env_var')
+                        default_value = source_config.get('default')
+                        if env_var:
+                            env_value = os.getenv(env_var)
+                            if env_value is not None:
+                                var_type = var_config.get('type', 'string') if isinstance(var_config, dict) else 'string'
+                                if var_type == 'boolean':
+                                    loaded_data[var_name] = env_value.lower() in ('true', '1', 'yes', 'on')
+                                elif var_type == 'integer':
+                                    try:
+                                        loaded_data[var_name] = int(env_value)
+                                    except Exception:
+                                        loaded_data[var_name] = default_value
+                                else:
+                                    loaded_data[var_name] = env_value
+                            else:
+                                loaded_data[var_name] = default_value
+                            business_logger.info(
+                                f"🌍 Loaded {var_name} from environment: {env_var}={loaded_data[var_name]}"
+                            )
+                        continue
+
+                    if source_type == 'static':
+                        static_value = source_config.get('value')
+                        loaded_data[var_name] = static_value
+                        business_logger.info(f"📊 Loaded {var_name} from static value: {static_value}")
+                        continue
+
+                    if source_type == 'database':
+                        db_config = source_config
+                    elif isinstance(var_config, dict) and 'database' in var_config:
+                        db_config = var_config.get('database', {})
+                    else:
+                        business_logger.warning(
+                            f"⚠️ No valid source configuration for variable '{var_name}'"
+                        )
+                        continue
+
+                if not isinstance(db_config, dict):
+                    business_logger.warning(f"⚠️ Invalid database config for '{var_name}'")
+                    continue
+
                 collection_name = db_config.get('collection')
                 search_by = db_config.get('search_by', 'enterprise_id')
                 field = db_config.get('field')
-                
-                # Use variable-specific database name if provided, otherwise use default
+
                 variable_database_name = db_config.get('database_name', default_database_name)
                 if not variable_database_name:
-                    business_logger.warning(f"âš ï¸ Skipping '{var_name}' - no database_name provided and no default configured")
+                    business_logger.warning(
+                        f"⛔️ Skipping '{var_name}' - no database_name provided and no default configured"
+                    )
                     continue
-                
+
                 if not collection_name:
-                    business_logger.warning(f"âš ï¸ No collection specified for {var_name}")
+                    business_logger.warning(f"⛔️ No collection specified for {var_name}")
                     continue
-                
-                # Connect to the specific database for this variable
+
                 db = client[variable_database_name]
-                business_logger.info(f"ðŸ” Loading {var_name} from database: {variable_database_name}")
-                
-                # Build query
+                business_logger.info(f"🔍 Loading {var_name} from database: {variable_database_name}")
+
                 if search_by == 'enterprise_id':
                     try:
                         query = {'enterprise_id': ObjectId(enterprise_id)}
-                    except:
+                    except Exception:
                         query = {'enterprise_id': enterprise_id}
                 else:
                     query = {search_by: enterprise_id}
-                
-                # Execute query (await the async operation)
+
                 collection = db[collection_name]
                 document = await collection.find_one(query)
-                
+
                 if document:
                     if field and field in document:
                         loaded_data[var_name] = document[field]
-                        business_logger.info(f"âœ… Loaded {var_name} from {variable_database_name}.{collection_name}.{field}")
+                        business_logger.info(
+                            f"✅ Loaded {var_name} from {variable_database_name}.{collection_name}.{field}"
+                        )
                     else:
                         loaded_data[var_name] = document
-                        business_logger.info(f"âœ… Loaded {var_name} document from {variable_database_name}.{collection_name}")
+                        business_logger.info(
+                            f"✅ Loaded {var_name} document from {variable_database_name}.{collection_name}"
+                        )
                 else:
-                    business_logger.info(f"ðŸ“ No data found for {var_name} in {variable_database_name}.{collection_name}")
-                    
+                    business_logger.info(
+                        f"📝 No data found for {var_name} in {variable_database_name}.{collection_name}"
+                    )
+
             except Exception as e:
-                business_logger.error(f"âŒ Error loading {var_name}: {e}")
+                business_logger.error(f"❌ Error loading {var_name}: {e}")
                 continue
-        
+
     except Exception as e:
-        business_logger.error(f"âŒ Specific data loading failed: {e}")
-    
+        business_logger.error(f"❌ Specific data loading failed: {e}")
+
     return loaded_data
 
 # Add public symbols export for context utilities

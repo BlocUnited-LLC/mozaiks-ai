@@ -8,6 +8,7 @@ import { useChatUI } from "../context/ChatUIContext";
 import workflowConfig from '../config/workflowConfig';
 import { getLoadedWorkflows, getWorkflow } from '../workflows/index';
 import { dynamicUIHandler } from '../core/dynamicUIHandler';
+import LoadingSpinner from '../utils/AgentChatLoadingSpinner';
 
 // Debug utilities
 const DEBUG_LOG_ALL_AGENT_OUTPUT = true;
@@ -21,9 +22,11 @@ const debugFlag = (k) => {
 const ChatPage = () => {
   // Core state
   const [messages, setMessages] = useState([]);
+  // Ref mirror to access latest messages inside callbacks without stale closure
+  const messagesRef = useRef([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
   const [ws, setWs] = useState(null);
   const [loading, setLoading] = useState(true);
-  // Removed legacy agentsInitialized state (was unused after protocol refactor)
   const setMessagesWithLogging = useCallback(updater => setMessages(prev => typeof updater==='function'?updater(prev):updater), []);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [transportType, setTransportType] = useState(null);
@@ -57,6 +60,11 @@ const ChatPage = () => {
   const defaultWorkflow = (urlWorkflowName || config?.chat?.defaultWorkflow || getDefaultWorkflowFromRegistry() || '');
   const [currentWorkflowName, setCurrentWorkflowName] = useState(defaultWorkflow);
   const [tokensExhausted, setTokensExhausted] = useState(false);
+  // One-time initial spinner: show after websocket connects, hide after first agent chat.text message
+  const [showInitSpinner, setShowInitSpinner] = useState(false);
+  // Refs for race-free spinner control
+  const initSpinnerShownRef = useRef(false);
+  const initSpinnerHiddenOnceRef = useRef(false);
   // Track whether we suppressed the synthetic first instruction message (when no initial message configured)
   const firstAgentMessageSuppressedRef = useRef(false);
   // Removed legacy dynamic UI accumulation & dedupe refs (no longer needed with chat.* events)
@@ -97,6 +105,19 @@ const ChatPage = () => {
       try { logAgentOutput('INCOMING', extractAgentName(data), data, { type: data?.type }); } catch {}
     }
     if (!data?.type) return;
+    // Robust spinner hide: only once
+    try {
+      if (initSpinnerShownRef.current && !initSpinnerHiddenOnceRef.current) {
+        const outerType = data.type || '';
+        const isText = outerType === 'chat.text';
+        const serializedText = !isText && typeof data.content === 'string' && data.content.includes('"type":"chat.text"');
+        if (isText || serializedText) {
+          initSpinnerHiddenOnceRef.current = true;
+          if (showInitSpinner) console.log('🧹 [SPINNER] Hiding spinner (text event). direct?', isText, 'serialized?', serializedText);
+          setShowInitSpinner(false);
+        }
+      }
+    } catch {}
     if (debugFlag('mozaiks.debug_pipeline')) {
       const agentDbg = data.agent || data.agent_name;
       console.log('[PIPELINE] raw event', {
@@ -229,7 +250,7 @@ const ChatPage = () => {
 
     const evt = data.type.slice(5);
     switch (evt) {
-  case 'print': {
+      case 'print': {
         // Suppress very first auto-generated instruction style message if workflow has no explicit initial_message_to_user
         try {
           if (!firstAgentMessageSuppressedRef.current) {
@@ -239,6 +260,7 @@ const ChatPage = () => {
             if (!hasInitial && (seq === 1 || seq === '1')) {
               if (debugFlag('mozaiks.debug_pipeline')) console.log('[PIPELINE] suppressing first agent print message (no initial_message_to_user configured)');
               firstAgentMessageSuppressedRef.current = true; // one-time action
+              if (showInitSpinner) setShowInitSpinner(false); // still hide spinner even if we suppress message
               return; // skip rendering
             }
           }
@@ -290,11 +312,43 @@ const ChatPage = () => {
             if (!hasInitial && (seq === 1 || seq === '1')) {
               if (debugFlag('mozaiks.debug_pipeline')) console.log('[PIPELINE] suppressing first agent text message (no initial_message_to_user configured)');
               firstAgentMessageSuppressedRef.current = true; // one-time action
+              if (showInitSpinner) {
+                console.log('🧹 [SPINNER] Hiding spinner due to suppressed first message');
+                setShowInitSpinner(false); // hide spinner even if message suppressed
+              }
               return; // skip rendering
             }
           }
         } catch {}
         const content = data.content || '';
+        // Enhanced suppression for assistant parroting user input (including minor variation)
+        try {
+          if (content) {
+            const msgs = messagesRef.current;
+            if (msgs.length) {
+              const lastUserIdx = [...msgs].reverse().findIndex(m => m && m.sender === 'user');
+              if (lastUserIdx !== -1) {
+                const actualIndex = msgs.length - 1 - lastUserIdx;
+                const lastUser = msgs[actualIndex];
+                if (lastUser) {
+                  const normUser = String(lastUser.content||'').trim();
+                  const normContent = String(content).trim();
+                  // Simple fuzzy: treat as echo if one contains the other and length difference small
+                  const shorter = normUser.length <= normContent.length ? normUser : normContent;
+                  const longer = normUser.length > normContent.length ? normUser : normContent;
+                  const lengthDiff = Math.abs(normUser.length - normContent.length);
+                  const containsRel = longer.includes(shorter);
+                  const smallDiff = lengthDiff <= 3; // allow small typos / spacing differences
+                  const identical = normUser === normContent;
+                  if (normUser && (identical || (containsRel && smallDiff))) {
+                    if (debugFlag('mozaiks.debug_pipeline')) console.log('[PIPELINE] suppressing assistant echo/fuzzy repeat of user content');
+                    return; // skip echo-like repetition
+                  }
+                }
+              }
+            }
+          }
+        } catch {}
         if (!content.trim()) return;
         const agentName = extractAgentName(data);
         setMessagesWithLogging(prev => {
@@ -329,6 +383,10 @@ const ChatPage = () => {
           }
           return updated;
         });
+        // Hide the one-time initialization spinner after the first successfully rendered chat.text
+        if (showInitSpinner) {
+          setShowInitSpinner(false);
+        }
         return;
       }
       case 'input_request': {
@@ -481,7 +539,12 @@ const ChatPage = () => {
       default:
         return;
     }
-  }, [currentChatId, currentWorkflowName, setMessagesWithLogging, extractAgentName, ws, isSidePanelOpen]);
+  }, [currentChatId, currentWorkflowName, setMessagesWithLogging, extractAgentName, ws, isSidePanelOpen, showInitSpinner]);
+
+  // Debug: Log spinner state changes
+  useEffect(() => {
+    console.log('🧹 [SPINNER] State changed to:', showInitSpinner);
+  }, [showInitSpinner]);
 
   // Workflow configuration & resume bootstrap (no direct startChat here; handled by preflight existence effect)
   useEffect(() => {
@@ -672,6 +735,18 @@ useEffect(() => {
             // console.debug('WebSocket connection established');
             setConnectionStatus('connected');
             setLoading(false);
+            // Show one-time spinner ONLY if it has never been shown and never been hidden
+            if (!initSpinnerHiddenOnceRef.current && !initSpinnerShownRef.current) {
+              console.log('🧹 [SPINNER] Showing initial spinner on WebSocket connect');
+              setShowInitSpinner(true);
+              initSpinnerShownRef.current = true;
+            } else {
+              console.log('🧹 [SPINNER] Skipping show on reconnect (hiddenOnce=', initSpinnerHiddenOnceRef.current, 'shownRef=', initSpinnerShownRef.current, ')');
+              // Ensure we never regress into showing again this session
+              if (initSpinnerHiddenOnceRef.current) {
+                initSpinnerShownRef.current = true; // lock state
+              }
+            }
     try { localStorage.setItem(LOCAL_STORAGE_KEY, currentChatId); } catch {}
           },
           onMessage: handleIncoming,
@@ -1105,6 +1180,11 @@ useEffect(() => {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden relative">
+      {showInitSpinner && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black/20 backdrop-blur-sm z-50">
+          <LoadingSpinner />
+        </div>
+      )}
       <img
         src="/existing-flow-bg.png"
         alt=""

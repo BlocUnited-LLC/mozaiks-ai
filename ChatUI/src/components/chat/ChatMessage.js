@@ -153,63 +153,67 @@ function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarni
     return <div className="w-full" dangerouslySetInnerHTML={renderMarkdown(text)} />;
   };
 
+  // If there's truly no textual content and no structured output and it's not a token/warning system message, avoid rendering any bubble at all
+  const hasRenderableContent = !!(message && String(message).trim().length) || (structuredOutput && typeof structuredOutput === 'object');
+  if (!hasRenderableContent && !isTokenMessage && !isWarningMessage) {
+    return null;
+  }
+
+  // User message branch
+  if (message_from === 'user') {
+    if (!message) return null; // nothing to show
+    return (
+      <div className="flex justify-end px-0 message-container">
+        <div className={`mt-1 user-message message ${isLatest ? 'latest' : ''}`}>
+          <div className="flex flex-col">
+            <div className="message-header justify-end">
+              <span className="name-pill user"><span className="pill-avatar" aria-hidden>🧑</span> You</span>
+            </div>
+            <div className="message-body w-full flex justify-end text-right">
+              {renderMessageContent(message)}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // System token/warning branch
+  if (systemStyles) {
+    return (
+      <div className="flex justify-center mr-3 message-container">
+        <div className={`md:rounded-[10px] rounded-[10px] w-4/5 mt-1 leading-4 techfont px-[12px] py-[6px] ${systemStyles.container}`}>
+          <div className="flex flex-col">
+            <div className={`text-xs mb-1 opacity-75 flex items-center gap-2 ${systemStyles.text}`}>
+              <span>{systemStyles.icon}</span>
+              <span>System Notice</span>
+            </div>
+            {message && (
+              <div className={`sm:w-full flex pr-2 oxanium md:text-[16px] text-[10px] font-bold ${systemStyles.text}`}>
+                {renderMessageContent(message)}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Agent branch
+  if (!message) return null; // ensure no empty container
   return (
-    <>
-  {message_from === "user" ? (
-  <div className="flex justify-end px-0 message-container">
-          <div
-            className={`mt-1 user-message message ${isLatest ? 'latest' : ''}`}
-          >
-            <div className="flex flex-col">
-              {/* In-bubble header for name (right-aligned for user) */}
-              <div className="message-header justify-end">
-                <span className="name-pill user"><span className="pill-avatar" aria-hidden>🧑</span> You</span>
-              </div>
-              {message && (
-                <div className="message-body w-full flex justify-end text-right">
-                  {renderMessageContent(message)}
-                </div>
-              )}
-            </div>
+    <div className="flex justify-start px-0 message-container">
+      <div className={`mt-1 agent-message message ${isLatest ? 'latest' : ''}`}>
+        <div className="flex flex-col">
+          <div className="message-header">
+            <span className="name-pill agent"><span className="pill-avatar" aria-hidden>🤖</span> {agentName || 'Agent'}</span>
+          </div>
+          <div className="message-body w-full flex">
+            {renderMessageContent(message)}
           </div>
         </div>
-      ) : systemStyles ? (
-        // Special styling for system messages (token/warning)
-  <div className="flex justify-center mr-3 message-container">
-          <div className={`md:rounded-[10px] rounded-[10px] w-4/5 mt-1 leading-4 techfont px-[12px] py-[6px] ${systemStyles.container}`}>
-            <div className="flex flex-col">
-              <div className={`text-xs mb-1 opacity-75 flex items-center gap-2 ${systemStyles.text}`}>
-                <span>{systemStyles.icon}</span>
-                <span>System Notice</span>
-              </div>
-              {message && (
-                <div className={`sm:w-full flex pr-2 oxanium md:text-[16px] text-[10px] font-bold ${systemStyles.text}`}>
-                  {renderMessageContent(message)}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-    ) : (
-  <div className="flex justify-start px-0 message-container">
-          {message && (
-            <div
-              className={`mt-1 agent-message message ${isLatest ? 'latest' : ''}`}
-            >
-              <div className="flex flex-col">
-                {/* In-bubble header for name (left-aligned for agent) */}
-                <div className="message-header">
-                  <span className="name-pill agent"><span className="pill-avatar" aria-hidden>🤖</span> {agentName || 'Agent'}</span>
-                </div>
-                <div className="message-body w-full flex">
-                  {renderMessageContent(message)}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </>
+      </div>
+    </div>
   );
 }
 export default ChatMessage;

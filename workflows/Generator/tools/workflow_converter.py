@@ -182,15 +182,23 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
             if section_name == "context_variables":
                 if isinstance(section_data, dict):
                     plan = section_data.get("ContextVariablesPlan") or section_data
-                    if "defined_variables" in plan or "runtime_variables" in plan:
+                    # Support legacy (defined_variables/runtime_variables) and new (database_variables/environment_variables)
+                    has_legacy = any(k in plan for k in ("defined_variables", "runtime_variables"))
+                    has_new = any(k in plan for k in ("database_variables", "environment_variables", "derived_variables"))
+                    if has_legacy or has_new:
                         file_path = workflow_dir / filename
                         _save_json_file(file_path, plan)
                         saved_files.append(filename)
-                        wf_logger.info(
-                            f"📄 [SAVE] context_variables saved → {filename} "
-                            f"(defined={len(plan.get('defined_variables', []))}, "
-                            f"runtime={len(plan.get('runtime_variables', []))})"
-                        )
+                        if has_new:
+                            wf_logger.info(
+                                f"📄 [SAVE] context_variables saved → {filename} "
+                                f"(db={len(plan.get('database_variables', []))}, env={len(plan.get('environment_variables', []))}, derived={len(plan.get('derived_variables', []))})"
+                            )
+                        else:
+                            wf_logger.info(
+                                f"📄 [SAVE] context_variables (legacy) saved → {filename} "
+                                f"(defined={len(plan.get('defined_variables', []))}, runtime={len(plan.get('runtime_variables', []))}, derived={len(plan.get('derived_variables', []))})"
+                            )
                 continue
 
             if section_data:

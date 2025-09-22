@@ -114,7 +114,7 @@ def create_on_connect_handler(chat_id: str, enterprise_id: str):
         # 2. Create streaming agent (AG2 official pattern)
         agent = autogen.ConversableAgent(
             name="chatbot",
-            system_message="Complete tasks and reply TERMINATE when done.",
+            system_message="Complete tasks and reply NEXT when done.",
             llm_config={
                 "config_list": config_list,
                 "stream": True  # AG2 native streaming
@@ -124,7 +124,7 @@ def create_on_connect_handler(chat_id: str, enterprise_id: str):
         # 3. Create user proxy (AG2 official pattern)
         user_proxy = autogen.UserProxyAgent(
             name="user_proxy",
-            is_termination_msg=lambda x: "TERMINATE" in x.get("content", ""),
+            is_termination_msg=lambda x: "NEXT" in x.get("content", ""),
             human_input_mode="NEVER"
         )
         

@@ -134,64 +134,92 @@
           }
         }
       },
-      "DefinedVariable": {
+      "DatabaseVariable": {
         "type": "model",
         "fields": {
-          "name": {
-            "type": "str",
-            "description": "Variable name"
-          },
-          "variable_status": {
-            "type": "literal",
-            "values": [
-              "existing",
-              "new"
-            ],
-            "description": "Marks whether the variable already exists or must be created"
-          },
-          "new_doc_fields": {
+          "name": { "type": "str", "description": "Database variable name" },
+          "description": { "type": "str", "description": "Purpose / usage in workflow" },
+          "type": { "type": "optional_str", "description": "Optional type hint for downstream consumers (e.g., string|boolean)" },
+          "database": { "type": "DatabaseRef", "description": "Database reference information" }
+        }
+      },
+      "EnvironmentVariable": {
+        "type": "model",
+        "fields": {
+          "name": { "type": "str", "description": "Environment variable name" },
+          "description": { "type": "str", "description": "Purpose / usage in workflow" },
+          "type": { "type": "optional_str", "description": "Optional type hint (boolean|integer|string)" },
+          "env_var": { "type": "str", "description": "Underlying environment variable key" },
+          "default": {
             "type": "union",
-            "variants": [
-              "null",
-              "dict"
-            ],
-            "description": "If variable_status = existing \u00e2\u2020\u2019 must be null. If new \u00e2\u2020\u2019 schema of new document with keys and value types."
-          },
-          "description": {
-            "type": "str",
-            "description": "What this variable represents in the workflow"
-          },
-          "database": {
-            "type": "DatabaseRef",
-            "description": "Database reference information"
+            "variants": [ "null", "str", "bool", "int" ],
+            "description": "Fallback value when the environment variable is not set"
           }
         }
       },
-      "RuntimeVariable": {
+      "DeclarativeVariable": {
+        "type": "model",
+        "fields": {
+          "name": { "type": "str", "description": "Declarative variable name" },
+          "description": { "type": "str", "description": "Purpose / usage in workflow" },
+          "type": { "type": "optional_str", "description": "Optional type hint (string|boolean|integer|dict)" },
+          "value": {
+            "type": "union",
+            "variants": [ "str", "bool", "int", "float", "dict" ],
+            "description": "Literal value injected into context"
+          }
+        }
+      },
+      "DerivedVariable": {
         "type": "model",
         "fields": {
           "name": {
             "type": "str",
-            "description": "Runtime variable name"
+            "description": "Derived variable name (computed, not persisted)"
+          },
+          "trigger_type": {
+            "type": "literal",
+            "values": [
+              "agent_text_equals"
+            ],
+            "description": "Type of deterministic trigger rule"
+          },
+          "source_agent": {
+            "type": "str",
+            "description": "Agent whose output activates this derived variable"
+          },
+          "trigger_value": {
+            "type": "str",
+            "description": "Exact value required to satisfy trigger (e.g., NEXT)"
           },
           "description": {
             "type": "str",
-            "description": "Purpose of the runtime variable; no database linkage"
+            "description": "Purpose / effect of the derived variable when true"
           }
         }
       },
       "ContextVariablesPlan": {
         "type": "model",
         "fields": {
-          "defined_variables": {
+          "database_variables": {
             "type": "list",
-            "items": "DefinedVariable",
-            "description": "Database-backed variables required for the workflow"
+            "items": "DatabaseVariable",
+            "description": "Variables loaded from a database source"
           },
-          "runtime_variables": {
+          "environment_variables": {
             "type": "list",
-            "items": "RuntimeVariable",
-            "description": "Workflow-only variables for runtime logic and coordination"
+            "items": "EnvironmentVariable",
+            "description": "Variables sourced from environment flags"
+          },
+          "declarative_variables": {
+            "type": "list",
+            "items": "DeclarativeVariable",
+            "description": "Static values declared directly in the workflow context"
+          },
+          "derived_variables": {
+            "type": "list",
+            "items": "DerivedVariable",
+            "description": "Deterministic, computed state flags triggered by agent outputs (e.g., interview_complete on NEXT)"
           }
         }
       },
@@ -200,7 +228,7 @@
         "fields": {
           "ContextVariablesPlan": {
             "type": "ContextVariablesPlan",
-            "description": "The complete plan of context variables required for the workflow. Note: persisted as a flattened object (defined_variables + runtime_variables)."
+            "description": "Complete plan of context variables (database_variables, environment_variables, declarative_variables, derived_variables)."
           }
         }
       },

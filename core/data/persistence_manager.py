@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import asyncio
 import traceback
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Dict, List, Any, Optional, Union, cast
 import hashlib
 from bson import ObjectId
@@ -116,7 +116,7 @@ class PersistenceManager:
     async def ensure_wallet(self, user_id: str, enterprise_id: Union[str, ObjectId], initial_balance: int = 0) -> Dict[str, Any]:
         await self._ensure_client()
         eid = str(enterprise_id)
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         assert self.wallets_collection is not None
         await self.wallets_collection.update_one(
             {"EnterpriseId": eid, "UserId": user_id},
@@ -135,7 +135,7 @@ class PersistenceManager:
         assert self.wallets_collection is not None
         res = await self.wallets_collection.find_one_and_update(
             {"EnterpriseId": eid, "UserId": user_id, "Balance": {"$gte": int(amount)}},
-            {"$inc": {"Balance": -int(amount)}, "$set": {"UpdatedAt": datetime.utcnow()}},
+            {"$inc": {"Balance": -int(amount)}, "$set": {"UpdatedAt": datetime.now(UTC)}},
             return_document=ReturnDocument.AFTER,
         )
         if res is None:
@@ -239,7 +239,7 @@ class AG2PersistenceManager:
             coll = await self._coll()
             if await coll.find_one({"_id": chat_id}):
                 return
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             await coll.insert_one({
                 "_id": chat_id,
                 "chat_id": chat_id,
@@ -299,7 +299,7 @@ class AG2PersistenceManager:
     async def mark_chat_completed(self, chat_id: str, enterprise_id: str) -> bool:
         try:
             coll = await self._coll()
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             # Fetch created_at & usage to compute duration for rollup averages
             base_doc = await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"created_at": 1})
             created_at = base_doc.get("created_at") if base_doc else None
@@ -346,7 +346,7 @@ class AG2PersistenceManager:
         """
         try:
             coll = await self._coll()
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             doc = {
                 "ui_tool_id": artifact.get("ui_tool_id"),
                 "event_id": artifact.get("event_id"),
@@ -405,14 +405,14 @@ class AG2PersistenceManager:
                 # Increment sequence counter atomically & fetch new value
                 bump = await coll.find_one_and_update(
                     {"_id": chat_id, "enterprise_id": enterprise_id},
-                    {"$inc": {"last_sequence": 1}, "$set": {"last_updated_at": datetime.utcnow()}},
+                    {"$inc": {"last_sequence": 1}, "$set": {"last_updated_at": datetime.now(UTC)}},
                     return_document=ReturnDocument.AFTER,
                 )
                 seq = int(bump.get("last_sequence", 1)) if bump else 1
                 msg_doc = {
                     "role": role,
                     "content": str(content),
-                    "timestamp": datetime.utcnow(),
+                    "timestamp": datetime.now(UTC),
                     "event_type": "message.created",
                     "event_id": f"init_{uuid4()}",
                     "sequence": seq,
@@ -420,7 +420,7 @@ class AG2PersistenceManager:
                 }
                 await coll.update_one(
                     {"_id": chat_id, "enterprise_id": enterprise_id},
-                    {"$push": {"messages": msg_doc}, "$set": {"last_updated_at": datetime.utcnow()}},
+                    {"$push": {"messages": msg_doc}, "$set": {"last_updated_at": datetime.now(UTC)}},
                 )
                 recent.append(msg_doc)
                 logger.debug(
@@ -478,7 +478,7 @@ class AG2PersistenceManager:
             try:
                 bump = await coll.find_one_and_update(
                     {"_id": chat_id, "enterprise_id": enterprise_id},
-                    {"$inc": {"last_sequence": 1}, "$set": {"last_updated_at": datetime.utcnow()}},
+                    {"$inc": {"last_sequence": 1}, "$set": {"last_updated_at": datetime.now(UTC)}},
                     return_document=ReturnDocument.AFTER,
                 )
                 seq = int(bump.get("last_sequence", 1)) if bump else 1
@@ -577,7 +577,7 @@ class AG2PersistenceManager:
             except Exception as _ce:  # pragma: no cover
                 logger.debug(f"Content clean failed: {_ce}")
             ts = getattr(event, "timestamp", None)
-            evt_ts = datetime.fromtimestamp(ts) if isinstance(ts, (int, float)) else datetime.utcnow()
+            evt_ts = datetime.fromtimestamp(ts) if isinstance(ts, (int, float)) else datetime.now(UTC)
             msg = {
                 "role": role,
                 "content": content_str,
@@ -604,7 +604,7 @@ class AG2PersistenceManager:
                 logger.debug(f"Structured output parse skipped agent={raw_name}: {so_err}")
             await coll.update_one(
                 {"_id": chat_id, "enterprise_id": enterprise_id},
-                {"$push": {"messages": msg}, "$set": {"last_updated_at": datetime.utcnow()}},
+                {"$push": {"messages": msg}, "$set": {"last_updated_at": datetime.now(UTC)}},
             )
         except Exception as e:  # pragma: no cover
             logger.error(f"Failed to save event for {chat_id}: {e}")
@@ -666,7 +666,7 @@ class AG2PersistenceManager:
             stats_coll = await self._workflow_stats_coll()
             summary_id = f"mon_{enterprise_id}_{workflow_name}"
             total_tokens = prompt_tokens + completion_tokens
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             if event_ts is None:
                 event_ts = now
             # Ensure base summary & chat session containers exist

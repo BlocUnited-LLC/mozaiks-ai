@@ -5,7 +5,7 @@ Based on TerminateTarget patterns logic (0 = resumable, 1 = completed)
 """
 import asyncio
 from time import perf_counter
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Optional, Dict, Any, Union, Callable, TYPE_CHECKING
 from dataclasses import dataclass
 
@@ -150,7 +150,7 @@ class AG2TerminationHandler:
                             "data": {
                                 "chat_id": self.chat_id,
                                 "status": 1,
-                                "timestamp": datetime.utcnow().isoformat()
+                                "timestamp": datetime.now(UTC).isoformat()
                             }
                         }
                         await self.transport.send_event_to_ui(completion_event, self.chat_id

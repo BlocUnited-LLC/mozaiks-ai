@@ -1,10 +1,12 @@
 {
   "context_variables": {
-    "variables": [
+    "database_variables": [
       {
         "name": "concept_overview",
+        "type": "string",
         "description": "Main project description and overview from the database",
-        "database": {
+        "source": {
+          "type": "database",
           "database_name": "autogen_ai_agents",
           "collection": "Concepts",
           "search_by": "enterprise_id",
@@ -12,17 +14,48 @@
         }
       }
     ],
+    "environment_variables": [
+      {
+        "name": "context_aware",
+        "type": "boolean",
+        "description": "Flag indicating if workflow should use context-aware behavior",
+        "source": {
+          "type": "environment",
+          "env_var": "CONTEXT_AWARE",
+          "default": false
+        }
+      },
+      {
+        "name": "monetization_enabled",
+        "type": "boolean",
+        "description": "Flag indicating if monetization features are enabled",
+        "source": {
+          "type": "environment",
+          "env_var": "MONETIZATION_ENABLED",
+          "default": false
+        }
+      }
+    ],
+    "declarative_variables": [
+      {
+        "name": "workflow_version",
+        "type": "string",
+        "description": "Static tag for downstream logging and comparisons",
+        "value": "v1"
+      }
+    ],
     "derived_variables": [
       {
         "name": "interview_complete",
-        "description": "True once InterviewAgent terminates the discovery conversation.",
+        "type": "boolean",
+        "description": "True once InterviewAgent has enough context to proceed to the next stage",
         "default": false,
         "triggers": [
           {
             "type": "agent_text",
             "agent": "InterviewAgent",
             "match": {
-              "equals": "TERMINATE"
+              "equals": "NEXT"
             }
           }
         ]

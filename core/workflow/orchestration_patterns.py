@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Any, Callable, Tuple
 import os
 import uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, UTC
 import logging
 import time
 from time import perf_counter
@@ -75,6 +75,39 @@ __all__ = [
     'create_ag2_pattern', 
     'InputTimeoutEvent'
 ]
+
+# -------------------------------------------------------------------
+# Helper: safe snapshot for verbose context logging (avoids secrets)
+# -------------------------------------------------------------------
+def _safe_context_snapshot(ctx) -> Dict[str, Any]:  # pragma: no cover (diagnostic)
+    out: Dict[str, Any] = {}
+    try:
+        data = None
+        if ctx is None:
+            return {}
+        if hasattr(ctx, 'data') and isinstance(getattr(ctx, 'data'), dict):
+            data = getattr(ctx, 'data')
+        elif hasattr(ctx, 'to_dict') and callable(getattr(ctx, 'to_dict')):
+            data = ctx.to_dict()
+        elif isinstance(ctx, dict):
+            data = ctx
+        if not isinstance(data, dict):
+            return {"_repr": str(ctx)[:200]}
+        for k, v in data.items():
+            lk = k.lower()
+            if any(s in lk for s in ("secret", "api", "key", "token", "password")):
+                out[k] = "<redacted>"
+                continue
+            try:
+                sv = v if isinstance(v, (int, float, bool)) else str(v)
+            except Exception:
+                sv = "<unserializable>"
+            if isinstance(sv, str) and len(sv) > 300:
+                sv = sv[:300] + "…"
+            out[k] = sv
+    except Exception as _snap_err:
+        out["_error"] = f"snapshot_failed:{_snap_err}"  # pragma: no cover
+    return out
 
 # ===================================================================
 # AG2 INTERNAL LOGGING CONFIGURATION
@@ -878,12 +911,26 @@ async def _create_ag2_pattern(
         group_manager_args={"llm_config": llm_config},
     )
     try:
+        snapshot = _safe_context_snapshot(ag2_context)
+        wf_logger.info(
+            f" [CONTEXT_INIT] AG2 context constructed | keys={list(snapshot.keys())}"
+        )
+        wf_logger.debug(
+            f" [CONTEXT_INIT_DEBUG] snapshot={snapshot}"
+        )
+    except Exception as _snap_log_err:  # pragma: no cover
+        wf_logger.debug(f" [CONTEXT_INIT] snapshot logging failed: {_snap_log_err}")
+    try:
         # Light sanity: if pattern exposes group_manager/context_variables, log keys
         gm = getattr(pattern, "group_manager", None)
         if gm and hasattr(gm, "context_variables"):
             cv = getattr(gm, "context_variables")
             keys = list(getattr(cv, "data", {}).keys()) if hasattr(cv, "data") else []
             wf_logger.info(f" [PATTERN] ContextVariables attached to group manager | keys={keys}")
+            try:
+                wf_logger.debug(f" [PATTERN_DEBUG] group_manager.context snapshot={_safe_context_snapshot(cv)}")
+            except Exception:
+                pass
         else:
             wf_logger.debug("[PATTERN] Group manager or context_variables attribute not available for logging")
     except Exception as _pat_log_err:
@@ -897,7 +944,7 @@ async def _create_ag2_pattern(
                 wire_handoffs_with_debugging(workflow_name, agents)
         except Exception as he:
             wf_logger.warning(f"Handoffs wiring failed: {he}")
-    return pattern
+    return pattern, ag2_context
 
 
 async def _stream_events(
@@ -1024,6 +1071,24 @@ async def _stream_events(
     tool_call_initiators: dict[str, str] = {}
     # Track tool names by id so responses can be labeled even if AG2 omits tool_name
     tool_names_by_id: dict[str, str] = {}
+    # ------------------------------------------------------------------
+    # Verbose context diff support (optional via CONTEXT_VERBOSE_DEBUG=1)
+    # ------------------------------------------------------------------
+    verbose_ctx = os.getenv("CONTEXT_VERBOSE_DEBUG", "0").strip() in {"1", "true", "True"}
+    prev_ctx_snapshot: Dict[str, Any] = {}
+    if verbose_ctx:
+        try:
+            gm0 = getattr(pattern, "group_manager", None)
+            base_ctx = None
+            if gm0 and hasattr(gm0, "context_variables"):
+                base_ctx = getattr(gm0, "context_variables")
+            elif hasattr(pattern, "context_variables"):
+                base_ctx = getattr(pattern, "context_variables")
+            prev_ctx_snapshot = _safe_context_snapshot(base_ctx) if base_ctx else {}
+            wf_logger.info(f" [CONTEXT_VERBOSE] Baseline snapshot captured | keys={len(prev_ctx_snapshot)}")
+        except Exception as _init_snap_err:
+            wf_logger.debug(f" [CONTEXT_VERBOSE] baseline snapshot failed: {_init_snap_err}")
+
     try:
         if transport:
             transport.register_orchestration_input_registry(chat_id, pending_input_requests)  # type: ignore[attr-defined]
@@ -1041,6 +1106,7 @@ async def _stream_events(
                 )
                 first_event_logged = True
             sequence_counter += 1
+            # Context diffing relies on prev_ctx_snapshot captured before the loop; no per-event copy needed here.
             # TextEvent persistence + forwarding (wrapped in tight try so other event types continue on failure)
             if isinstance(ev, TextEvent):
                 try:
@@ -1222,6 +1288,35 @@ async def _stream_events(
                     f" [{workflow_name_upper}] Run complete chat_id={chat_id} events={sequence_counter} executed_agents={sorted(executed_agents)}"
                 )
                 break
+
+            # After processing event, compute diff if verbose enabled
+            if verbose_ctx:
+                try:
+                    gm_live = getattr(pattern, 'group_manager', None)
+                    active_ctx = None
+                    if gm_live and hasattr(gm_live, 'context_variables'):
+                        active_ctx = getattr(gm_live, 'context_variables')
+                    elif hasattr(pattern, 'context_variables'):
+                        active_ctx = getattr(pattern, 'context_variables')
+                    current_snapshot = _safe_context_snapshot(active_ctx) if active_ctx else {}
+                    # Diff
+                    added = [k for k in current_snapshot.keys() if k not in prev_ctx_snapshot]
+                    removed = [k for k in prev_ctx_snapshot.keys() if k not in current_snapshot]
+                    changed = []
+                    for k in current_snapshot.keys():
+                        if k in prev_ctx_snapshot and current_snapshot[k] != prev_ctx_snapshot[k]:
+                            changed.append(k)
+                    if added or removed or changed:
+                        wf_logger.info(
+                            f" [CONTEXT_DIFF] seq={sequence_counter} added={added} removed={removed} changed={changed}"
+                        )
+                        # Only dump detailed values at DEBUG to avoid log noise
+                        wf_logger.debug(
+                            f" [CONTEXT_DIFF_DEBUG] seq={sequence_counter} snapshot={current_snapshot}"
+                        )
+                    prev_ctx_snapshot = current_snapshot
+                except Exception as _diff_err:
+                    wf_logger.debug(f" [CONTEXT_VERBOSE] diff computation failed: {_diff_err}")
     except Exception as loop_err:
         wf_logger.error(f"Event loop failure: {loop_err}")
     finally:
@@ -1518,7 +1613,7 @@ async def run_workflow_orchestration(
             # -----------------------------------------------------------------
             # 9) Pattern creation (AG2 native)
             # -----------------------------------------------------------------
-            pattern = await _create_ag2_pattern(
+            pattern, ag2_context = await _create_ag2_pattern(
                 orchestration_pattern=orchestration_pattern,
                 workflow_name=workflow_name,
                 agents=agents,
@@ -1534,18 +1629,74 @@ async def run_workflow_orchestration(
                 user_id=user_id,
             )
 
-            if derived_context_manager and hasattr(pattern, "group_manager"):
-                # Register pattern-level context providers for derived variables
-                group_manager = getattr(pattern, "group_manager", None)
-                if group_manager and hasattr(group_manager, "context_variables"):
-                    derived_context_manager.register_additional_provider(
-                        getattr(group_manager, "context_variables")
+            try:
+                wf_logger.info(" [CONTEXT_BRIDGE] Pattern created; preparing to register providers")
+                gm = getattr(pattern, 'group_manager', None)
+                if gm and hasattr(gm, 'context_variables'):
+                    wf_logger.debug(
+                        f" [CONTEXT_BRIDGE_DEBUG] group_manager.context id={id(gm.context_variables)} keys={list(getattr(gm.context_variables,'data',{}).keys())}"
                     )
+            except Exception as _bridge_err:
+                wf_logger.debug(f" [CONTEXT_BRIDGE] logging failed: {_bridge_err}")
+
+            if derived_context_manager:
+                # Register the AG2 pattern's context variables as the primary provider
+                # This ensures derived variables update the actual context used by AG2
+                if hasattr(pattern, "group_manager"):
+                    group_manager = getattr(pattern, "group_manager", None)
+                    if group_manager and hasattr(group_manager, "context_variables"):
+                        pattern_context_vars = getattr(group_manager, "context_variables")
+                        derived_context_manager.register_additional_provider(pattern_context_vars)
+                        try:
+                            wf_logger.info(
+                                f" [DERIVED_CONTEXT] Registered group_manager context_variables provider | id={id(pattern_context_vars)} keys={list(getattr(pattern_context_vars,'data',{}).keys())}"
+                            )
+                        except Exception:
+                            wf_logger.info(" [DERIVED_CONTEXT] Registered group_manager context_variables as provider (keys unavailable)")
+
+                # Also register pattern-level context variables if available
                 pattern_context = getattr(pattern, "context_variables", None)
                 if pattern_context:
                     derived_context_manager.register_additional_provider(pattern_context)
-                # Seed defaults into any newly registered providers
+                    try:
+                        wf_logger.info(
+                            f" [DERIVED_CONTEXT] Registered pattern.context_variables provider | id={id(pattern_context)} keys={list(getattr(pattern_context,'data',{}).keys())}"
+                        )
+                    except Exception:
+                        wf_logger.info(" [DERIVED_CONTEXT] Registered pattern context_variables as provider")
+
+                # Register the ag2_context we created as the primary provider
+                # This ensures derived variables can update the same context AG2 uses
+                if ag2_context:
+                    derived_context_manager.register_additional_provider(ag2_context)
+                    try:
+                        wf_logger.info(
+                            f" [DERIVED_CONTEXT] Registered ag2_context provider | id={id(ag2_context)} keys={list(getattr(ag2_context,'data',{}).keys())}"
+                        )
+                    except Exception:
+                        wf_logger.info(" [DERIVED_CONTEXT] Registered ag2_context as primary provider")
+
+                # Seed defaults into all newly registered providers
                 derived_context_manager.seed_defaults()
+
+                # Log final provider count for debugging
+                provider_count = len(derived_context_manager.providers) if hasattr(derived_context_manager, 'providers') else 0
+                try:
+                    # Enumerate providers briefly
+                    details = []
+                    for idx, prov in enumerate(getattr(derived_context_manager, 'providers', [])):
+                        keys = []
+                        if hasattr(prov, 'data') and isinstance(getattr(prov,'data'), dict):
+                            keys = list(getattr(prov,'data').keys())
+                        elif hasattr(prov, 'to_dict'):
+                            try:
+                                keys = list(prov.to_dict().keys())  # type: ignore
+                            except Exception:
+                                keys = []
+                        details.append({"idx": idx, "id": id(prov), "key_count": len(keys)})
+                    wf_logger.info(f" [DERIVED_CONTEXT] Final provider count: {provider_count} | providers={details}")
+                except Exception:
+                    wf_logger.info(f" [DERIVED_CONTEXT] Final provider count: {provider_count}")
             # Hooks are  registered once inside define_agents() via workflow_manager.register_hooks.
             # This avoids duplicate log noise and ensures _hooks_loaded_workflows gating is respected.
             # -----------------------------------------------------------------
@@ -1657,7 +1808,7 @@ async def run_workflow_orchestration(
                             completion_tokens=final_completion_delta,
                             cost_usd=final_cost_delta,
                             agent_name="ag2_final_reconciliation",
-                            event_ts=datetime.utcnow()
+                            event_ts=datetime.now(UTC)
                         )
                     else:
                         wf_logger.info(
@@ -1943,18 +2094,21 @@ async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str
                     agent_chat_logger.info(
                         f"AGENT_MESSAGE | Chat: {chat_id} | Enterprise: {enterprise_id} | Agent: {sender_name} | Message #{i+1}: {clean_content}"
                     )
-                    try:
-                        from core.transport.simple_transport import SimpleTransport
-                        transport = await SimpleTransport.get_instance()
-                        if transport:
-                            await transport.send_chat_message(
-                                message=clean_content,
-                                agent_name=sender_name,
-                                chat_id=chat_id,
-                                metadata={"source": "ag2_conversation", "message_index": i+1}
-                            )
-                    except Exception as ui_error:
-                        logger.debug(f"UI forwarding failed for message {i+1}: {ui_error}")
+                    # Skip user proxy messages to prevent echo back to UI
+                    message_role = message.get('role') if isinstance(message, dict) else None
+                    if not (sender_name.lower() in ("user", "userproxy", "userproxyagent") or message_role == 'user'):
+                        try:
+                            from core.transport.simple_transport import SimpleTransport
+                            transport = await SimpleTransport.get_instance()
+                            if transport:
+                                await transport.send_chat_message(
+                                    message=clean_content,
+                                    agent_name=sender_name,
+                                    chat_id=chat_id,
+                                    metadata={"source": "ag2_conversation", "message_index": i+1}
+                                )
+                        except Exception as ui_error:
+                            logger.debug(f"UI forwarding failed for message {i+1}: {ui_error}")
                 else:
                     agent_chat_logger.debug(f"EMPTY_MESSAGE | Chat: {chat_id} | Agent: {sender_name} | Message #{i+1}: (empty)")
 

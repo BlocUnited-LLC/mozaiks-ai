@@ -6,7 +6,7 @@
 import logging
 import uuid
 from typing import Dict, Any, Optional, Union, List, cast
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from enum import Enum
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
@@ -85,7 +85,7 @@ class BusinessLogEvent:
     description: str
     context: Dict[str, Any] = field(default_factory=dict)
     level: str = "INFO"
-    timestamp: datetime = field(default_factory=lambda: datetime.utcnow())
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     event_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     category: str = field(default="business")
 
@@ -97,7 +97,7 @@ class UIToolEvent:
     workflow_name: str
     display: str = "inline"
     chat_id: Optional[str] = None
-    timestamp: datetime = field(default_factory=lambda: datetime.utcnow())
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     event_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     category: str = field(default="ui_tool")
 
@@ -110,7 +110,7 @@ class SessionPausedEvent:
     enterprise_id: str
     required_tokens: Optional[int] = None
     context: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=lambda: datetime.utcnow())
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     event_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     category: str = field(default="business")
 
@@ -258,7 +258,7 @@ class UnifiedEventDispatcher:
         Returns:
             bool: True if event was handled successfully
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(UTC)
 
         try:
             # Find appropriate handler
@@ -285,7 +285,7 @@ class UnifiedEventDispatcher:
                 self.metrics["events_failed"] += 1
 
             # Log performance
-            duration = (datetime.utcnow() - start_time).total_seconds() * 1000
+            duration = (datetime.now(UTC) - start_time).total_seconds() * 1000
             if duration > 100:  # Log slow events
                 logger.warning(f"⏱️ Slow event processing: {event.category} took {duration:.2f}ms")
 
@@ -301,7 +301,7 @@ class UnifiedEventDispatcher:
         return {
             **self.metrics,
             "handler_count": len(self.handlers),
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
     # ======================================================================
@@ -369,7 +369,7 @@ class UnifiedEventDispatcher:
             - This removes heavy mapping logic from SimpleTransport for SoC.
             - Future: raw passthrough variant (emit_raw_ag2) could be added here; see comment below.
         """
-        timestamp = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()  # type: ignore[name-defined]
+        timestamp = datetime.now(UTC).replace(tzinfo=timezone.utc).isoformat()  # type: ignore[name-defined]
         # Fast-path normalized dicts
         if isinstance(raw_event, dict) and 'kind' in raw_event:
             # Explicitly widen value type for downstream bool enrichment

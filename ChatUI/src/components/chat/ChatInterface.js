@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
 import ChatMessage from "./ChatMessage";
-import LoadingSpinner from "../../utils/LoadingSpinner";
 import ConnectionStatus from "./ConnectionStatus";
 import { useNavigate, useParams } from "react-router-dom";
 import UIToolRenderer from "../../core/ui/UIToolRenderer";
@@ -190,7 +189,7 @@ const ModernChatInterface = ({
 
   return (
     <div className="flex flex-col h-full rounded-2xl border border-cyan-400/30 md:overflow-hidden overflow-visible shadow-2xl bg-gradient-to-br from-white/5 to-cyan-500/5 backdrop-blur-sm cosmic-ui-module">
-      {loading && <LoadingSpinner />}
+  {/* Per-turn loading: rely on subtle typing indicator inside messages area; avoid full-page spinner after init */}
       
       {/* Fixed Command Center Header - Never moves */}
   <div className="flex-shrink-0 px-3 py-1 md:px-4 md:py-2 border-b border-cyan-400/20 bg-gradient-to-r from-cyan-500/5 to-purple-500/5 backdrop-blur-xl shadow-lg rounded-lg md:rounded-xl mx-1 md:mx-2 mt-1 md:mt-2 mb-1">
@@ -304,6 +303,15 @@ const ModernChatInterface = ({
               // console.warn(`Message at index ${index} is null/undefined`);
               return null;
             }
+
+              // Skip pure-empty placeholders (no content, no structured output, no ui tool event) to avoid blank bubble spacing
+              const isEmptyContent = !(chat.content && String(chat.content).trim().length);
+              const hasStructured = !!(chat.structuredOutput && typeof chat.structuredOutput === 'object');
+              const hasUITool = !!chat.uiToolEvent;
+              const isSystem = chat.isTokenMessage || chat.isWarningMessage;
+              if (isEmptyContent && !hasStructured && !hasUITool && !isSystem) {
+                return null;
+              }
             
             // annotate message with workflow mapping if missing
             const isStructuredCapable = typeof chat.isStructuredCapable === 'boolean' 
@@ -325,7 +333,7 @@ const ModernChatInterface = ({
             } catch {}
 
             return (
-              <div key={index}>
+                <div key={index}>
                 <ChatMessage
                   message={chat.content}
                   message_from={chat.sender}
@@ -362,12 +370,11 @@ const ModernChatInterface = ({
           {/* Typing indicator slot (rendered when loading without messages updating) */}
           {loading && (
             <div className="flex justify-start px-0 message-container">
-              <div className="agent-message message">
-                <div className="flex items-center gap-2">
-                  <span className="typing-dot" />
-                  <span className="typing-dot delay-150" />
-                  <span className="typing-dot delay-300" />
-                </div>
+              {/* Minimal, non-bubble typing indicator to avoid appearing as an empty chat bubble */}
+              <div className="mt-1 px-2 py-1 rounded-md bg-transparent text-cyan-300/70 flex items-center gap-1 text-xs font-mono tracking-wide typing-indicator" aria-label="Assistant is typing" role="status">
+                <span className="typing-dot" />
+                <span className="typing-dot delay-150" />
+                <span className="typing-dot delay-300" />
               </div>
             </div>
           )}

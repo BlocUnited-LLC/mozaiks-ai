@@ -18,7 +18,7 @@
 #          {
 #            "type": "agent_text",
 #            "agent": "InterviewAgent",
-#            "match": {"equals": "TERMINATE"}
+#            "match": {"equals": "NEXT"}
 #          }
 #        ]
 #      }
@@ -45,6 +45,10 @@ def _extract_sender_name(event: TextEvent) -> Optional[str]:
     """Best-effort extraction of the logical sender name from a TextEvent."""
 
     sender_obj = getattr(event, "sender", None)
+    # Direct string sender support (some TextEvent forms use plain str identifiers)
+    if isinstance(sender_obj, str) and sender_obj.strip():
+        return sender_obj.strip()
+    # Object with name attribute
     name = getattr(sender_obj, "name", None)
     if isinstance(name, str) and name.strip():
         return name.strip()
@@ -131,7 +135,9 @@ class AgentTextTrigger:
             return False
 
         text = _extract_text_content(event)
-        return text == self.equals
+        if not text:
+            return False
+        return text.strip().lower() == self.equals.strip().lower()
 
 
 TRIGGER_LOADERS = {
@@ -191,13 +197,27 @@ class DerivedContextManager:
             [getattr(agent, "context_variables", None) for agent in agents.values() if getattr(agent, "context_variables", None)]
         )
 
+        # ------------------------------------------------------------------
+        # CONFIG LOADING
+        # Support both of the following shapes (we normalize to ctx_cfg):
+        # 1) { "context_variables": { "variables": [...], "derived_variables": [...] } }
+        # 2) { "context_variables": { "context_variables": { "variables": [...], "derived_variables": [...] } } }
+        # Older code assumed style (2); current repo uses (1).
+        # ------------------------------------------------------------------
         config = workflow_manager.get_config(workflow_name) or {}
-        ctx_cfg = (config.get("context_variables") or {}).get("context_variables") or {}
-        raw_derived = (
-            ctx_cfg.get("derived_variables")
-            or ctx_cfg.get("derived")
-            or []
-        )
+        ctx_root = config.get("context_variables") or {}
+        if (
+            isinstance(ctx_root, dict)
+            and "context_variables" in ctx_root
+            and isinstance(ctx_root.get("context_variables"), dict)
+        ):
+            # Nested style
+            ctx_cfg = ctx_root.get("context_variables") or {}
+        else:
+            # Flat style (current)
+            ctx_cfg = ctx_root
+
+        raw_derived = (ctx_cfg.get("derived_variables") or ctx_cfg.get("derived") or [])
         self.variables: List[DerivedVariableSpec] = []
         for item in raw_derived:
             if not isinstance(item, dict):
@@ -234,6 +254,17 @@ class DerivedContextManager:
                     logger.debug(f"Failed to construct derived context trigger: {err}")
             if triggers:
                 self.variables.append(DerivedVariableSpec(name=name, default=default, triggers=triggers))
+
+        if not self.variables:
+            logger.debug(
+                f"[DERIVED_CONTEXT] No derived variables loaded (available keys={list(ctx_cfg.keys())})"
+            )
+        else:
+            # Seed defaults immediately so conditions referencing them can evaluate from turn 0
+            self.seed_defaults()
+            logger.info(
+                f"[DERIVED_CONTEXT] Loaded {len(self.variables)} derived variables: {[v.name for v in self.variables]}"
+            )
 
     def has_variables(self) -> bool:
         return bool(self.variables)

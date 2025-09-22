@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 # Ensure project root is on Python path for workflow imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -246,7 +246,7 @@ async def metrics_prometheus():
 async def startup():
     """Initialize application on startup."""
     global simple_transport
-    startup_start = datetime.utcnow()
+    startup_start = datetime.now(UTC)
     
     wf_logger.info("🚀 APP_STARTUP: FastAPI startup event triggered")
     wf_logger.info(f"🔧 APP_STARTUP: Environment = {env}")
@@ -295,9 +295,9 @@ async def startup():
         wf_logger.info("✅ APP_STARTUP: Performance manager initialized")
 
         # Initialize simple transport
-        streaming_start = datetime.utcnow()
+        streaming_start = datetime.now(UTC)
         simple_transport = await SimpleTransport.get_instance()
-        streaming_time = (datetime.utcnow() - streaming_start).total_seconds() * 1000
+        streaming_time = (datetime.now(UTC) - streaming_start).total_seconds() * 1000
         performance_logger.info(
             "streaming_config_init_duration",
             metric_name="streaming_config_init_duration",
@@ -312,10 +312,10 @@ async def startup():
             mongo_client = get_mongo_client()
 
         # Test MongoDB connection
-        mongo_start = datetime.utcnow()
+        mongo_start = datetime.now(UTC)
         try:
             await mongo_client.admin.command("ping")
-            mongo_time = (datetime.utcnow() - mongo_start).total_seconds() * 1000
+            mongo_time = (datetime.now(UTC) - mongo_start).total_seconds() * 1000
             performance_logger.info(
                 "mongodb_ping_duration",
                 metric_name="mongodb_ping_duration",
@@ -330,9 +330,9 @@ async def startup():
             raise
 
         # Import workflow modules
-        import_start = datetime.utcnow()
+        import_start = datetime.now(UTC)
         await _import_workflow_modules()
-        import_time = (datetime.utcnow() - import_start).total_seconds() * 1000
+        import_time = (datetime.now(UTC) - import_start).total_seconds() * 1000
         performance_logger.info(
             "workflow_import_duration",
             metric_name="workflow_import_duration",
@@ -341,8 +341,8 @@ async def startup():
         )
 
         # Component system is event-driven, no upfront initialization needed.
-        registry_start = datetime.utcnow()
-        registry_time = (datetime.utcnow() - registry_start).total_seconds() * 1000
+        registry_start = datetime.now(UTC)
+        registry_time = (datetime.now(UTC) - registry_start).total_seconds() * 1000
         performance_logger.info(
             "unified_registry_init_duration",
             metric_name="unified_registry_init_duration",
@@ -354,7 +354,7 @@ async def startup():
         status = workflow_status_summary()
 
         # Total startup time
-        total_startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
+        total_startup_time = (datetime.now(UTC) - startup_start).total_seconds() * 1000
         performance_logger.info(
             "total_startup_duration",
             metric_name="total_startup_duration",
@@ -378,7 +378,7 @@ async def startup():
         )
         wf_logger.info(f"✅ Server ready - {status['summary']} (Startup: {total_startup_time:.1f}ms)")
     except Exception as e:
-        startup_time = (datetime.utcnow() - startup_start).total_seconds() * 1000
+        startup_time = (datetime.now(UTC) - startup_start).total_seconds() * 1000
         get_workflow_logger("shared_app").error(
             "SERVER_STARTUP_FAILED: Server startup failed",
             environment=env,
@@ -391,7 +391,7 @@ async def startup():
 async def shutdown():
     """Cleanup on shutdown"""
     global simple_transport
-    shutdown_start = datetime.utcnow()
+    shutdown_start = datetime.now(UTC)
     
     wf_logger.info("🛑 Shutting down server...")
     
@@ -404,7 +404,7 @@ async def shutdown():
             mongo_client.close()
         
         # Calculate shutdown time and log metrics
-        shutdown_time = (datetime.utcnow() - shutdown_start).total_seconds() * 1000
+        shutdown_time = (datetime.now(UTC) - shutdown_start).total_seconds() * 1000
         
         performance_logger.info(
             "shutdown_duration",
@@ -423,7 +423,7 @@ async def shutdown():
         wf_logger.info(f"✅ Shutdown complete ({shutdown_time:.1f}ms)")
         
     except Exception as e:
-        shutdown_time = (datetime.utcnow() - shutdown_start).total_seconds() * 1000
+        shutdown_time = (datetime.now(UTC) - shutdown_start).total_seconds() * 1000
         get_workflow_logger("shared_app").error(
             "SERVER_SHUTDOWN_FAILED: Error during server shutdown",
             error=str(e),
@@ -435,12 +435,12 @@ async def _import_workflow_modules():
     Workflow system startup - using runtime auto-discovery.
     No more scanning for initializer.py files - workflows are discovered on-demand.
     """
-    scan_start = datetime.utcnow()
+    scan_start = datetime.now(UTC)
     
     # Runtime auto-discovery means no upfront imports needed
     # Workflows will be discovered when requested via WebSocket
     
-    scan_time = (datetime.utcnow() - scan_start).total_seconds() * 1000
+    scan_time = (datetime.now(UTC) - scan_start).total_seconds() * 1000
     
     performance_logger.info(
         "workflow_discovery_duration",
@@ -529,7 +529,7 @@ async def get_event_metrics():
         return {
             "status": "success",
             "data": metrics,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(UTC).isoformat()
         }
         
     except Exception as e:
@@ -539,19 +539,19 @@ async def get_event_metrics():
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
-    health_start = datetime.utcnow()
+    health_start = datetime.now(UTC)
     try:
-        mongo_ping_start = datetime.utcnow()
+        mongo_ping_start = datetime.now(UTC)
         if mongo_client is None:
             raise HTTPException(status_code=503, detail="MongoDB client not initialized")
         await mongo_client.admin.command("ping")
-        mongo_ping_time = (datetime.utcnow() - mongo_ping_start).total_seconds() * 1000
+        mongo_ping_time = (datetime.now(UTC) - mongo_ping_start).total_seconds() * 1000
         status = workflow_status_summary()
         connection_info = {
             "websocket_connections": len(simple_transport.connections) if simple_transport else 0,
             "total_connections": len(simple_transport.connections) if simple_transport else 0
         }
-        health_time = (datetime.utcnow() - health_start).total_seconds() * 1000
+        health_time = (datetime.now(UTC) - health_start).total_seconds() * 1000
         performance_logger.info(
             "health_check_duration",
             extra={
@@ -597,7 +597,7 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
     React StrictMode double-mount or network retries.
     """
     IDEMPOTENCY_WINDOW_SEC = int(os.getenv("CHAT_START_IDEMPOTENCY_SEC", "15"))
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     reuse_cutoff = now - timedelta(seconds=IDEMPOTENCY_WINDOW_SEC)
     try:
             data = await request.json()
@@ -1213,7 +1213,7 @@ async def handle_component_action(
                 "status": "success",
                 "message": "Component action applied",
                 "applied": result.get('applied'),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(UTC).isoformat()
             }
         except Exception as action_error:
             logger.error(f"❌ Component action failed: {action_error}")
