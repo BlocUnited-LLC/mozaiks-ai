@@ -6,7 +6,6 @@
 # ==============================================================================
 
 from typing import Union, List, Dict, Any
-import re
 
 DANGEROUS_HINTS = ("exploit", "malware", "bypass", "jailbreak", "phish", "ddos", "credential", "exfiltrate", 
                    "ransomware", "botnet", "keylogger", "trojan", "backdoor", "rootkit", "virus", "worm",

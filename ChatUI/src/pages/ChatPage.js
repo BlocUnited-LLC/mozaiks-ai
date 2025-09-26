@@ -100,8 +100,8 @@ const ChatPage = () => {
 
   // Simplified incoming handler (namespaced chat.* only)
   const handleIncoming = useCallback((data) => {
-    // Only log messages that are relevant to the UI (reduce console noise)
-    if (data?.type && (data.type.startsWith('chat.') || data.type === 'ui_tool_event' || data.type === 'UI_TOOL_EVENT')) {
+    // Log all incoming events for debugging - you can filter this later if needed
+    if (data?.type) {
       try { logAgentOutput('INCOMING', extractAgentName(data), data, { type: data?.type }); } catch {}
     }
     if (!data?.type) return;
@@ -110,10 +110,12 @@ const ChatPage = () => {
       if (initSpinnerShownRef.current && !initSpinnerHiddenOnceRef.current) {
         const outerType = data.type || '';
         const isText = outerType === 'chat.text';
-        const serializedText = !isText && typeof data.content === 'string' && data.content.includes('"type":"chat.text"');
-        if (isText || serializedText) {
+        const isInputRequest = outerType === 'chat.input_request';
+        const serializedText = !isText && !isInputRequest && typeof data.content === 'string' && 
+          (data.content.includes('"type":"chat.text"') || data.content.includes('"type":"chat.input_request"'));
+        if (isText || isInputRequest || serializedText) {
           initSpinnerHiddenOnceRef.current = true;
-          if (showInitSpinner) console.log('🧹 [SPINNER] Hiding spinner (text event). direct?', isText, 'serialized?', serializedText);
+          if (showInitSpinner) console.log('🧹 [SPINNER] Hiding spinner (interactive event). text?', isText, 'input?', isInputRequest, 'serialized?', serializedText);
           setShowInitSpinner(false);
         }
       }
@@ -145,24 +147,117 @@ const ChatPage = () => {
         }
       };
       
-      console.log('🔌 ChatPage: Passing sendResponse callback type:', typeof sendResponse);
-      dynamicUIHandler.processUIEvent(data, sendResponse);
+      console.debug('🔌 ChatPage: Passing sendResponse callback type:', typeof sendResponse, 'event:', data);
+      try {
+        dynamicUIHandler.processUIEvent(data, sendResponse);
+      } catch (err) {
+        console.error('🔌 ChatPage: dynamicUIHandler.processUIEvent threw', err, data);
+      }
       return;
     }
-    if (!data.type.startsWith('chat.')) return; // ignore legacy
-
+    
+    // Handle chat_meta events (which may not have chat. prefix)
+    if (data.type === 'chat_meta' || data.type === 'chat.chat_meta') {
+      // Initial metadata handshake from backend
+      console.log('🧬 [META] Received chat_meta event:', data);
+      if (data.cache_seed !== undefined && data.cache_seed !== null) {
+        setCacheSeed(data.cache_seed);
+        if (currentChatId) {
+          try { localStorage.setItem(`${LOCAL_STORAGE_KEY}.cache_seed.${currentChatId}`, String(data.cache_seed)); } catch {}
+        }
+        console.log('🧬 [META] Received cache_seed', data.cache_seed, 'for chat', currentChatId);
+      }
+      if (data.chat_exists === false) {
+        // Backend indicates this chat_id had no persisted session (fresh after client-side reuse)
+        setChatExists(false);
+        console.log('🧬 [META] Backend reports chat did NOT previously exist. Suppressing artifact restore. chat_id=', currentChatId);
+        try {
+          // Purge any stale local artifacts for this chat to avoid ghost UI
+          localStorage.removeItem(`mozaiks.last_artifact.${currentChatId}`);
+          localStorage.removeItem(`mozaiks.current_artifact.${currentChatId}`);
+          console.log('🧼 [META] Purged stale artifacts for non-existent chat');
+        } catch {}
+        // Reset any prior artifact state
+        setCurrentArtifactMessages([]);
+        lastArtifactEventRef.current = null;
+        artifactRestoredOnceRef.current = true; // prevent later restore effect
+      } else if (data.chat_exists === true) {
+        setChatExists(true);
+        console.log('🧬 [META] Backend confirms chat exists. Artifact restore allowed.');
+        // If backend already sent last_artifact and we have not restored yet, cache it for restore effect
+        if (!artifactRestoredOnceRef.current && data.last_artifact && data.last_artifact.ui_tool_id) {
+          try {
+            const key = `mozaiks.last_artifact.${currentChatId}`;
+            localStorage.setItem(key, JSON.stringify({
+              ui_tool_id: data.last_artifact.ui_tool_id,
+              eventId: data.last_artifact.event_id || null,
+              workflow_name: data.last_artifact.workflow_name || currentWorkflowName,
+              payload: data.last_artifact.payload || {},
+              display: data.last_artifact.display || 'artifact',
+              ts: Date.now(),
+            }));
+            console.log('🧬 [META] Cached last_artifact from server meta event');
+          } catch (e) { console.warn('Failed to cache server last_artifact', e); }
+        }
+      }
+      return;
+    }
+    
     // Some backends double-serialize the envelope: outer {type, content: JSON-stringified {type:"chat.text", data:{...}}}
     // Detect and unwrap once so downstream logic always works with a flat object.
+    // Do this BEFORE checking for chat. prefix so we can unwrap "unknown" events that contain chat events.
     try {
-      if (typeof data.content === 'string' && data.content.startsWith('{') && data.content.includes('"type":"chat.')) {
+      if (typeof data.content === 'string' && data.content.startsWith('{') && data.content.includes('"type":"')) {
         const inner = JSON.parse(data.content);
-        if (inner && inner.type && inner.type.startsWith('chat.') && inner.data) {
+        if (inner && inner.type) {
           if (debugFlag('mozaiks.debug_pipeline')) {
             console.log('[PIPELINE] unwrapped nested envelope', { originalType: data.type, innerType: inner.type });
           }
-          const innerData = inner.data;
-          // Force overwrite authoritative fields (outer agent placeholder 'Agent' is not useful)
-          data.type = inner.type; // chat.*
+          // If this is chat_meta, handle it directly
+          if (inner.type === 'chat_meta') {
+            console.log('🧬 [META] Received chat_meta event (unwrapped):', inner);
+            const metaData = inner.data || {};
+            if (metaData.cache_seed !== undefined && metaData.cache_seed !== null) {
+              setCacheSeed(metaData.cache_seed);
+              if (currentChatId) {
+                try { localStorage.setItem(`${LOCAL_STORAGE_KEY}.cache_seed.${currentChatId}`, String(metaData.cache_seed)); } catch {}
+              }
+              console.log('🧬 [META] Received cache_seed', metaData.cache_seed, 'for chat', currentChatId);
+            }
+            if (metaData.chat_exists === false) {
+              setChatExists(false);
+              console.log('🧬 [META] Backend reports chat did NOT previously exist. Suppressing artifact restore. chat_id=', currentChatId);
+              try {
+                localStorage.removeItem(`mozaiks.last_artifact.${currentChatId}`);
+                localStorage.removeItem(`mozaiks.current_artifact.${currentChatId}`);
+                console.log('🧼 [META] Purged stale artifacts for non-existent chat');
+              } catch {}
+              setCurrentArtifactMessages([]);
+              lastArtifactEventRef.current = null;
+              artifactRestoredOnceRef.current = true;
+            } else if (metaData.chat_exists === true) {
+              setChatExists(true);
+              console.log('🧬 [META] Backend confirms chat exists. Artifact restore allowed.');
+              if (!artifactRestoredOnceRef.current && metaData.last_artifact && metaData.last_artifact.ui_tool_id) {
+                try {
+                  const key = `mozaiks.last_artifact.${currentChatId}`;
+                  localStorage.setItem(key, JSON.stringify({
+                    ui_tool_id: metaData.last_artifact.ui_tool_id,
+                    eventId: metaData.last_artifact.event_id || null,
+                    workflow_name: metaData.last_artifact.workflow_name || currentWorkflowName,
+                    payload: metaData.last_artifact.payload || {},
+                    display: metaData.last_artifact.display || 'artifact',
+                    ts: Date.now(),
+                  }));
+                  console.log('🧬 [META] Cached last_artifact from server meta event');
+                } catch (e) { console.warn('Failed to cache server last_artifact', e); }
+              }
+            }
+            return;
+          }
+          // For other events, unwrap and continue processing
+          const innerData = inner.data || {};
+          data.type = inner.type; // Use the inner type (could be chat.*, unknown, etc.)
           if (typeof innerData.content === 'string') data.content = innerData.content;
           if (innerData.agent) data.agent = innerData.agent;
           if (innerData.agent_name) data.agent_name = innerData.agent_name;
@@ -188,6 +283,9 @@ const ChatPage = () => {
     } catch (e) {
       if (debugFlag('mozaiks.debug_pipeline')) console.warn('[PIPELINE] failed to unwrap nested envelope', e);
     }
+    
+    // Allow chat.* events and other known event types (like input_request, unknown, etc.)
+    if (!data.type.startsWith('chat.') && !['input_request', 'unknown'].includes(data.type)) return; // ignore unrecognized legacy
 
     // Some events may arrive already as { type:'chat.text', data:{ ...actualFields... } } (no double-serialization)
     // or after the above unwrap we can still retain an inner data object we need to promote.
@@ -392,7 +490,7 @@ const ChatPage = () => {
       case 'input_request': {
         const componentType = data.component_type || data.ui_tool_id || null;
         if (componentType) {
-          dynamicUIHandler.processUIEvent({
+          console.debug('🧩 [UI_EVENT] input_request -> processUIEvent payload:', {
             type: 'user_input_request',
             data: {
               input_request_id: data.request_id,
@@ -404,11 +502,67 @@ const ChatPage = () => {
               }
             }
           });
+          try {
+            dynamicUIHandler.processUIEvent({
+            type: 'user_input_request',
+            data: {
+              input_request_id: data.request_id,
+              chat_id: currentChatId,
+              payload: {
+                prompt: data.prompt,
+                ui_tool_id: componentType,
+                workflow_name: currentWorkflowName
+              }
+            }
+            });
+          } catch (err) {
+            console.error('🧩 [UI_EVENT] dynamicUIHandler.processUIEvent threw for input_request', err, data);
+          }
+        }
+        return;
+      }
+      case 'chat.input_request': {
+        console.log('📥 [INPUT_REQUEST] Received chat.input_request:', data);
+        const componentType = data.component_type || data.ui_tool_id || null;
+        if (componentType) {
+          console.debug('🧩 [UI_EVENT] chat.input_request -> processUIEvent payload:', {
+            type: 'user_input_request',
+            data: {
+              input_request_id: data.request_id,
+              chat_id: currentChatId,
+              payload: {
+                prompt: data.prompt,
+                ui_tool_id: componentType,
+                workflow_name: currentWorkflowName
+              }
+            }
+          });
+          try {
+            dynamicUIHandler.processUIEvent({
+              type: 'user_input_request',
+              data: {
+                input_request_id: data.request_id,
+                chat_id: currentChatId,
+                payload: {
+                  prompt: data.prompt,
+                  ui_tool_id: componentType,
+                  workflow_name: currentWorkflowName
+                }
+              }
+            });
+          } catch (err) {
+            console.error('🧩 [UI_EVENT] dynamicUIHandler.processUIEvent threw for chat.input_request', err, data);
+          }
+        } else {
+          // Fallback: show as a simple input request
+          console.log('📝 [INPUT_REQUEST] Simple input request:', data.prompt);
+          // You could add UI logic here to show an input dialog
         }
         return;
       }
       case 'tool_call': {
-        if (data.is_ui_tool && data.component_type) {
+        if (data.component_type) {
+          console.log('🛠️ [TOOL_CALL] Processing UI tool event:', data.tool_name, 'component:', data.component_type);
           dynamicUIHandler.processUIEvent({ type:'ui_tool_event', ui_tool_id:data.tool_name, eventId: data.tool_call_id || data.corr, workflow_name: currentWorkflowName, payload:{ ...(data.payload||{}), tool_name:data.tool_name, component_type:data.component_type, workflow_name: currentWorkflowName, awaiting_response: data.awaiting_response }});
         } else {
           setMessagesWithLogging(prev => [...prev, { id: data.tool_call_id || `tool-call-${Date.now()}`, sender:'system', agentName:'System', content:`🔧 Tool Call: ${data.tool_name}`, isStreaming:false }]);
@@ -491,51 +645,6 @@ const ChatPage = () => {
   // Replay boundary marker: insert a divider system note
   setMessagesWithLogging(prev => [...prev, { id:`resume-${Date.now()}`, sender:'system', agentName:'System', content:`🔄 Session replay complete. Live events resumed.`, isStreaming:false }]);
         return;
-      case 'chat_meta': {
-        // Initial metadata handshake from backend
-        console.log('🧬 [META] Received chat_meta event:', data);
-        if (data.cache_seed !== undefined && data.cache_seed !== null) {
-          setCacheSeed(data.cache_seed);
-          if (currentChatId) {
-            try { localStorage.setItem(`${LOCAL_STORAGE_KEY}.cache_seed.${currentChatId}`, String(data.cache_seed)); } catch {}
-          }
-          console.log('🧬 [META] Received cache_seed', data.cache_seed, 'for chat', currentChatId);
-        }
-        if (data.chat_exists === false) {
-          // Backend indicates this chat_id had no persisted session (fresh after client-side reuse)
-          setChatExists(false);
-          console.log('🧬 [META] Backend reports chat did NOT previously exist. Suppressing artifact restore. chat_id=', currentChatId);
-          try {
-            // Purge any stale local artifacts for this chat to avoid ghost UI
-            localStorage.removeItem(`mozaiks.last_artifact.${currentChatId}`);
-            localStorage.removeItem(`mozaiks.current_artifact.${currentChatId}`);
-            console.log('🧼 [META] Purged stale artifacts for non-existent chat');
-          } catch {}
-          // Reset any prior artifact state
-          setCurrentArtifactMessages([]);
-          lastArtifactEventRef.current = null;
-          artifactRestoredOnceRef.current = true; // prevent later restore effect
-        } else if (data.chat_exists === true) {
-          setChatExists(true);
-          console.log('🧬 [META] Backend confirms chat exists. Artifact restore allowed.');
-          // If backend already sent last_artifact and we have not restored yet, cache it for restore effect
-          if (!artifactRestoredOnceRef.current && data.last_artifact && data.last_artifact.ui_tool_id) {
-            try {
-              const key = `mozaiks.last_artifact.${currentChatId}`;
-              localStorage.setItem(key, JSON.stringify({
-                ui_tool_id: data.last_artifact.ui_tool_id,
-                eventId: data.last_artifact.event_id || null,
-                workflow_name: data.last_artifact.workflow_name || currentWorkflowName,
-                payload: data.last_artifact.payload || {},
-                display: data.last_artifact.display || 'artifact',
-                ts: Date.now(),
-              }));
-              console.log('🧬 [META] Cached last_artifact from server meta event');
-            } catch (e) { console.warn('Failed to cache server last_artifact', e); }
-          }
-        }
-        return;
-      }
       default:
         return;
     }
@@ -1181,8 +1290,11 @@ useEffect(() => {
   return (
     <div className="flex flex-col h-screen overflow-hidden relative">
       {showInitSpinner && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black/20 backdrop-blur-sm z-50">
-          <LoadingSpinner />
+        // Make the overlay visually blocking but non-interactive so background UI can still receive events
+        <div className="fixed inset-0 flex items-center justify-center bg-black/20 backdrop-blur-sm z-50 pointer-events-none">
+          <div className="pointer-events-auto">
+            <LoadingSpinner />
+          </div>
         </div>
       )}
       <img

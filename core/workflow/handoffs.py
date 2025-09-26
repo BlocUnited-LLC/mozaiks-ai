@@ -55,6 +55,7 @@ class HandoffManager:
             "after_work_set": 0,
             "llm_conditions": 0,
             "context_conditions": 0,
+            "conditional_after_works": 0,
             "missing_source_agents": [],
             "missing_target_agents": [],
             "errors": []
@@ -91,7 +92,8 @@ class HandoffManager:
                 continue
 
             llm_list: List[OnCondition] = []
-            ctx_list: List[OnContextCondition] = []
+            context_list: List[OnContextCondition] = []
+            conditional_after_list: List[OnContextCondition] = []
             after_work_target = None
 
             for rule in src_rules:
@@ -106,47 +108,97 @@ class HandoffManager:
                         log.info(f"🔁 [HANDOFFS] Overriding after_work for {source} -> {t_name}")
                     after_work_target = target
                 elif h_type == "condition":
-                    if not cond_text:
+                    if cond_text is None or (isinstance(cond_text, str) and not cond_text.strip()):
                         log.warning(f"⚠️ [HANDOFFS] condition rule without condition text skipped: {rule}")
                         continue
-                    if "${" in cond_text:  # context expression
+                    cond_type_raw = rule.get("condition_type")
+                    cond_type = ""
+                    if isinstance(cond_type_raw, str):
+                        cond_type = cond_type_raw.strip().lower()
+                    elif cond_type_raw is not None:
+                        cond_type = str(cond_type_raw).strip().lower()
+                    if isinstance(cond_text, str):
+                        cond_text = cond_text.strip()
+                    use_expression = cond_type in {"expression", "context_expression", "context"}
+                    use_llm = cond_type in {"llm", "string_llm"}
+                    if not cond_type:
+                        if isinstance(cond_text, str) and "${" in cond_text:
+                            use_expression = True
+                        else:
+                            use_llm = True
+                    if use_expression:
+                        expr_text = cond_text if isinstance(cond_text, str) else str(cond_text)
+                        scope_raw = rule.get("condition_scope") or rule.get("scope")
+                        scope = str(scope_raw).strip().lower() if scope_raw is not None else ""
                         try:
-                            ctx_list.append(
-                                OnContextCondition(
-                                    target=target,
-                                    condition=ExpressionContextCondition(expression=ContextExpression(cond_text))
+                            condition_obj = ExpressionContextCondition(expression=ContextExpression(expr_text))
+                            condition_obj = self._wrap_expression_condition_logging(condition_obj, source, target, expr_text)
+                            context_condition = OnContextCondition(target=target, condition=condition_obj)
+                            if scope in {"pre", "before_reply", "immediate", "context_pre"}:
+                                context_list.append(context_condition)
+                                self._log_expression_condition_debug(source, target, expr_text, "add_context_condition")
+                                log.debug(
+                                    f"[HANDOFFS] Added context handoff {source}->{t_name}: expr={expr_text!r} scope={scope or 'after'} cond_type={cond_type or 'auto-expression'}"
                                 )
-                            )
-                            summary["context_conditions"] += 1
+                            else:
+                                conditional_after_list.append(context_condition)
+                                self._log_expression_condition_debug(source, target, expr_text, "add_after_work")
+                                log.debug(
+                                    f"[HANDOFFS] Added conditional after-work {source}->{t_name}: expr={expr_text!r} scope={scope or 'after'} cond_type={cond_type or 'auto-expression'}"
+                                )
                         except Exception as e:
                             summary["errors"].append(f"Context condition build failed ({source}): {e}")
                             log.error(f"❌ [HANDOFFS] Context condition build failed for {source}: {e}")
-                    else:
+                    elif use_llm:
+                        llm_prompt = cond_text if isinstance(cond_text, str) else str(cond_text)
                         try:
                             llm_list.append(
                                 OnCondition(
                                     target=target,
-                                    condition=StringLLMCondition(prompt=cond_text)
+                                    condition=StringLLMCondition(prompt=llm_prompt)
                                 )
                             )
-                            summary["llm_conditions"] += 1
+                            log.debug(f"[HANDOFFS] Added llm condition {source}->{t_name}: prompt={llm_prompt!r} cond_type={cond_type or 'auto-llm'}")
                         except Exception as e:
                             summary["errors"].append(f"LLM condition build failed ({source}): {e}")
                             log.error(f"❌ [HANDOFFS] LLM condition build failed for {source}: {e}")
+                    else:
+                        log.warning(f"⚠️ [HANDOFFS] Unsupported condition_type '{cond_type_raw}' for {source}->{t_name}; defaulting to LLM evaluation")
+                        llm_prompt = cond_text if isinstance(cond_text, str) else str(cond_text)
+                        try:
+                            llm_list.append(
+                                OnCondition(
+                                    target=target,
+                                    condition=StringLLMCondition(prompt=llm_prompt)
+                                )
+                            )
+                        except Exception as e:
+                            summary["errors"].append(f"LLM condition build failed ({source}): {e}")
+                            log.error(f"❌ [HANDOFFS] LLM condition build failed for {source}: {e}")
+
                 else:
                     log.warning(f"⚠️ [HANDOFFS] Unknown handoff_type '{h_type}' skipped (rule={rule})")
 
             applied = False
             try:
+                after_work_conditions: List[OnContextCondition] = []
                 if llm_list:
                     agent_obj.handoffs.add_llm_conditions(llm_list)  # type: ignore[attr-defined]
+                    summary["llm_conditions"] += len(llm_list)
                     applied = True
-                if ctx_list:
-                    agent_obj.handoffs.add_context_conditions(ctx_list)  # type: ignore[attr-defined]
+                if context_list:
+                    agent_obj.handoffs.add_context_conditions(context_list)  # type: ignore[attr-defined]
+                    summary["context_conditions"] += len(context_list)
                     applied = True
+                if conditional_after_list:
+                    after_work_conditions.extend(conditional_after_list)
                 if after_work_target is not None:
-                    agent_obj.handoffs.set_after_work(after_work_target)  # type: ignore[attr-defined]
-                    summary["after_work_set"] += 1
+                    after_work_conditions.append(OnContextCondition(target=after_work_target, condition=None))
+                if after_work_conditions:
+                    agent_obj.handoffs.add_after_works(after_work_conditions)  # type: ignore[attr-defined]
+                    summary["conditional_after_works"] += len(conditional_after_list)
+                    if after_work_target is not None:
+                        summary["after_work_set"] += 1
                     applied = True
             except Exception as e:
                 summary["errors"].append(f"Apply failed ({source}): {e}")
@@ -155,7 +207,7 @@ class HandoffManager:
             if applied:
                 summary["agents_with_rules"].add(source)
                 log.info(
-                    f"✅ [HANDOFFS] {source}: llm={len(llm_list)} ctx={len(ctx_list)} after_work={'yes' if after_work_target else 'no'}"
+                    f"✅ [HANDOFFS] {source}: llm={len(llm_list)} ctx_pre={len(context_list)} conditional_after={len(conditional_after_list)} after_work={'yes' if after_work_target else 'no'}"
                 )
 
         summary["agents_with_rules"] = list(summary["agents_with_rules"])
@@ -180,6 +232,77 @@ class HandoffManager:
             if any([out["details"][name]["llm"], out["details"][name]["ctx"], out["details"][name]["after_work"]]):
                 out["configured"] += 1
         return out
+
+    def _wrap_expression_condition_logging(self, condition_obj: ExpressionContextCondition, source: str, target: Any, expr_text: str) -> ExpressionContextCondition:
+        """Wrap ExpressionContextCondition.evaluate to log runtime evaluation results."""
+        original_evaluate = condition_obj.evaluate
+        target_name = getattr(target, 'agent_name', None)
+        if not target_name and hasattr(target, 'normalized_name'):
+            try:
+                target_name = target.normalized_name()
+            except Exception:
+                target_name = None
+        if not target_name:
+            target_name = target.__class__.__name__
+
+        variable_names: list[str] = []
+        expression = getattr(condition_obj, 'expression', None)
+        candidate_vars = getattr(expression, '_variable_names', None)
+        if isinstance(candidate_vars, list):
+            variable_names = [str(name) for name in candidate_vars if isinstance(name, str)]
+
+        def _logged_evaluate(context_variables):
+            try:
+                result = original_evaluate(context_variables)
+            except Exception as exc:
+                log.error(f'[HANDOFFS] Expression evaluate failed source={source} target={target_name}: {exc}')
+                raise
+
+            values = {}
+            for name in variable_names:
+                try:
+                    if hasattr(context_variables, 'get'):
+                        values[name] = context_variables.get(name, None)
+                    elif hasattr(context_variables, 'data') and isinstance(getattr(context_variables, 'data'), dict):
+                        values[name] = getattr(context_variables, 'data').get(name)
+                    else:
+                        values[name] = None
+                except Exception:
+                    values[name] = None
+
+            log.info(f"[HANDOFFS][EVAL] source={source} target={target_name} expr={expr_text!r} vars={values} -> {result}")
+            return result
+
+        object.__setattr__(condition_obj, 'evaluate', _logged_evaluate)  # type: ignore[assignment]
+        return condition_obj
+
+    def _log_expression_condition_debug(self, source: str, target: Any, expr_text: str, method: str) -> None:
+        """Emit a trace snippet showing how an expression handoff is wired."""
+        try:
+            target_name = getattr(target, 'agent_name', None)
+            if not target_name and hasattr(target, 'normalized_name'):
+                target_name = target.normalized_name()
+            if not target_name:
+                target_name = target.__class__.__name__
+        except Exception:  # pragma: no cover - debug helper should never break wiring
+            target_name = getattr(target, 'agent_name', None) or target.__class__.__name__
+        expr_display = expr_text.replace('"', '\\"')
+        display_method = 'add_context_condition'
+        if method != 'add_context_condition':
+            log.info(f'# Runtime uses {method} for after-work evaluation')
+        snippet = (
+            'from autogen.agentchat.group import OnContextCondition, ExpressionContextCondition, ContextExpression\n\n'
+            f'# Set up context-based handoffs for the {source}\n'
+            f'{source}.handoffs.{display_method}(\n'
+            '    OnContextCondition(\n'
+            f'        target=AgentTarget({target_name}),\n'
+            '        condition=ExpressionContextCondition(\n'
+            f'            expression=ContextExpression("{expr_display}")\n'
+            '        )\n'
+            '    )\n'
+            ')\n'
+        )
+        log.info(''.join(snippet))
 
     def _build_target(self, target_name: Optional[str], agents: Dict[str, Any], summary: Dict[str, Any]):
         if not target_name:
@@ -211,7 +334,7 @@ def wire_handoffs(workflow_name: str, agents: Dict[str, Any]) -> None:
         summary = handoff_manager.apply_handoffs_from_config(workflow_name, agents)
         log.info(
             f"HANDOFFS_APPLIED rules={summary['rules_total']} agents={len(summary['agents_with_rules'])} "
-            f"after_work={summary['after_work_set']} llm={summary['llm_conditions']} ctx={summary['context_conditions']}"
+            f"after_work={summary['after_work_set']} llm={summary['llm_conditions']} ctx={summary['context_conditions']} conditional_after={summary['conditional_after_works']}"
         )
     except Exception as e:
         log.error(f"❌ [HANDOFFS] Wiring failed: {e}", exc_info=True)
@@ -225,3 +348,4 @@ def wire_handoffs_with_debugging(workflow_name: str, agents: Dict[str, Any]) -> 
 
 
 __all__ = ["wire_handoffs", "wire_handoffs_with_debugging", "handoff_manager", "HandoffManager"]
+

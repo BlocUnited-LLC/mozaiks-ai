@@ -5,7 +5,6 @@
 # ==============================================================================
 
 import json
-import logging
 import importlib
 from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable
 from pathlib import Path
@@ -586,7 +585,7 @@ class UnifiedWorkflowManager:
     def _load_json_if_exists(self, path: Path) -> Dict[str, Any]:
         try:
             if path.exists():
-                with open(path, 'r', encoding='utf-8') as f:
+                with open(path, 'r', encoding='utf-8-sig') as f:
                     return json.load(f) or {}
         except Exception as e:  # pragma: no cover
             logger.error(f"Failed reading JSON {path}: {e}")

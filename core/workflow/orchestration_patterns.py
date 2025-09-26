@@ -19,7 +19,6 @@ Sections (skim map)
 from typing import Dict, List, Optional, Any, Callable, Tuple
 import os
 import uuid
-from pathlib import Path
 from datetime import datetime, UTC
 import logging
 import time
@@ -27,6 +26,7 @@ from time import perf_counter
 import asyncio
 import inspect
 import re
+from collections import Counter
 
 from autogen import ConversableAgent, UserProxyAgent
 from autogen.agentchat.group.patterns import (
@@ -36,31 +36,26 @@ from autogen.agentchat.group.patterns import (
     RandomPattern as AG2RandomPattern,
 )
 from autogen.events.agent_events import (
-    FunctionCallEvent,
-    FunctionResponseEvent, 
-    ToolCallEvent,
-    ToolResponseEvent,
     TextEvent,
     InputRequestEvent,
     SelectSpeakerEvent,
-    GroupChatResumeEvent,
     RunCompletionEvent,
-    ErrorEvent,
 )
 from core.workflow.structured_outputs import agent_has_structured_output, get_structured_output_model_fields
 from core.data.persistence_manager import AG2PersistenceManager as _PM
+from core.events.event_serialization import (
+    build_ui_event_payload as unified_build_ui_event_payload,
+    EventBuildContext as UnifiedEventBuildContext,
+)
 
 from ..data.persistence_manager import AG2PersistenceManager
 from .termination_handler import create_termination_handler
 from .derived_context import DerivedContextManager
-from logs.logging_config import (
-    get_workflow_logger,
-    WorkflowLogger,
-)
+from logs.logging_config import get_workflow_logger
 from core.observability.ag2_runtime_logger import ag2_logging_session
-
 from core.observability.performance_manager import get_performance_manager
 
+from .ui_tools import InputTimeoutEvent
 logger = logging.getLogger(__name__)
 
 # Consolidated logging with optimized workflow logger
@@ -68,11 +63,10 @@ chat_logger = get_workflow_logger("orchestration")
 workflow_logger = get_workflow_logger("orchestration")
 performance_logger = get_workflow_logger("performance.orchestration")
 
-from .ui_tools import InputTimeoutEvent
 
 __all__ = [
     'run_workflow_orchestration',
-    'create_ag2_pattern', 
+    'create_ag2_pattern',
     'InputTimeoutEvent'
 ]
 
@@ -103,7 +97,7 @@ def _safe_context_snapshot(ctx) -> Dict[str, Any]:  # pragma: no cover (diagnost
             except Exception:
                 sv = "<unserializable>"
             if isinstance(sv, str) and len(sv) > 300:
-                sv = sv[:300] + "…"
+                sv = sv[:300] + "�?�"
             out[k] = sv
     except Exception as _snap_err:
         out["_error"] = f"snapshot_failed:{_snap_err}"  # pragma: no cover
@@ -229,36 +223,54 @@ def _serialize_event_content(raw: Any) -> Any:
 def _extract_agent_name(obj: Any) -> Optional[str]:
     """Best-effort extraction of an agent/sender name from AG2 event/message objects.
 
-    Checks direct attributes, nested sender object, content dict, and string patterns.
+    Traverses nested structures (dicts, lists, dataclasses) and falls back to string pattern
+    matching so that tool and agent messages surface their logical speaker in the UI.
     """
-    try:
-        # Direct attributes
-        for k in ("sender", "agent", "agent_name", "name"):
-            v = getattr(obj, k, None)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-            # sender may be an object with 'name'
-            if v and hasattr(v, "name"):
-                nv = getattr(v, "name", None)
-                if isinstance(nv, str) and nv.strip():
-                    return nv.strip()
-        content = getattr(obj, "content", None)
-        if isinstance(content, dict):
-            for k in ("sender", "agent", "agent_name", "name"):
-                try:
-                    v = content.get(k) if hasattr(content, 'get') else None
-                    if isinstance(v, str) and v.strip():
-                        return v.strip()
-                except (TypeError, AttributeError):
-                    # Handle cases where content doesn't support .get() or is not subscriptable
-                    continue
-        # Parse from string representation if available
-        if isinstance(content, str):
-            import re
-            m = re.search(r"sender(?:=|\"\s*:)['\"]([^'\"\\]+)['\"]", content)
-            if m:
-                return m.group(1).strip()
+
+    def _scan(candidate: Any) -> Optional[str]:
+        if candidate is None:
+            return None
+        if isinstance(candidate, str):
+            value = candidate.strip()
+            if not value:
+                return None
+            match = re.search(r"sender(?:=|\"\s*:)['\"]([^'\"\\]+)['\"]", value)
+            if match:
+                return match.group(1).strip()
+            if ' ' not in value and len(value) <= 64:
+                return value
+            return None
+        if isinstance(candidate, dict):
+            for key in ("sender", "agent", "agent_name", "name"):
+                value = candidate.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            for key in ("sender", "agent", "agent_name", "name", "content"):
+                value = candidate.get(key)
+                result = _scan(value)
+                if result:
+                    return result
+            return None
+        if isinstance(candidate, (list, tuple, set)):
+            for item in candidate:
+                result = _scan(item)
+                if result:
+                    return result
+            return None
+        for key in ("sender", "agent", "agent_name", "name"):
+            attr = getattr(candidate, key, None)
+            if isinstance(attr, str) and attr.strip():
+                return attr.strip()
+            result = _scan(attr)
+            if result:
+                return result
+        content = getattr(candidate, "content", None)
+        if content is not None:
+            return _scan(content)
         return None
+
+    try:
+        return _scan(obj)
     except Exception:  # pragma: no cover
         return None
  
@@ -270,7 +282,7 @@ def _build_ui_event_payload(
     ev: Any,
     workflow_name: str,
     turn_agent: Optional[str],
-    wf_logger: "WorkflowLogger",  # type: ignore[name-defined]
+    wf_logger: logging.Logger,
     tool_call_initiators: Dict[str, str],
     tool_names_by_id: Dict[str, str],
     workflow_name_upper: str,
@@ -292,6 +304,7 @@ def _build_ui_event_payload(
             ToolResponseEvent as _TRe,
             SelectSpeakerEvent as _SS,
             GroupChatResumeEvent as _GR,
+            GroupChatRunChatEvent as _GRCE,
         )
         from autogen.events.client_events import UsageSummaryEvent as _US
         try:
@@ -420,6 +433,11 @@ def _build_ui_event_payload(
 
     if isinstance(ev, _GR):
         payload.update({"kind": "resume_boundary"})
+        return payload
+
+    # GroupChatRunChatEvent -------------------------------------------
+    if isinstance(ev, _GRCE):
+        payload.update({"kind": "unknown"})
         return payload
 
     if isinstance(ev, (_FCe, _TCe)):
@@ -588,7 +606,7 @@ def _normalize_human_in_the_loop(value) -> bool:
 
     Accepts booleans directly, and common string/int representations:
     - True-y: "true", "yes", "1", "on", "always"
-    - False-y: "false", "no", "0", "off", "never"
+    - False-y: "false", "no", "0", "of", "never"
     Any other value defaults to False.
     """
     if isinstance(value, bool):
@@ -603,7 +621,7 @@ def _normalize_human_in_the_loop(value) -> bool:
         v = value.strip().lower()
         if v in {"true", "yes", "1", "on", "always"}:
             return True
-        if v in {"false", "no", "0", "off", "never"}:
+        if v in {"false", "no", "0", "of", "never"}:
             return False
     return False
 
@@ -653,7 +671,7 @@ async def _resume_or_initialize_chat(
         )
         initial_messages: List[Dict[str, Any]] = list(resumed_messages or [])  # shallow copy to append safely
         if initial_message:
-            initial_messages.append({"role": "user", "name": "user", "content": initial_message})
+            initial_messages.append({"role": "user", "name": "user", "content": initial_message, "_mozaiks_seed_kind": "initial_message"})
     else:
         if resume_raw_count > 0:
             wf_logger.info(
@@ -664,7 +682,7 @@ async def _resume_or_initialize_chat(
         resumed_messages = []  # normalize to empty for downstream checks
         initial_messages = []
         if initial_message:
-            initial_messages.append({"role": "user", "name": "user", "content": initial_message})
+            initial_messages.append({"role": "user", "name": "user", "content": initial_message, "_mozaiks_seed_kind": "initial_message"})
         current_user_id = user_id or "system_user"
         if not user_id:
             logger.warning(f"Starting chat {chat_id} without a specific user_id. Defaulting to 'system_user'.")
@@ -699,7 +717,8 @@ async def _resume_or_initialize_chat(
     if not initial_messages:
         seed = config.get("initial_message") or config.get("initial_message_to_user")
         if seed:
-            initial_messages = [{"role": "user", "name": "user", "content": seed}]
+            seed_kind = "initial_message" if config.get("initial_message") else "initial_message_to_user"
+            initial_messages = [{"role": "user", "name": "user", "content": seed, "_mozaiks_seed_kind": seed_kind}]
             import os as _os
             if _os.getenv("ENABLE_MANUAL_INITIAL_PERSIST") == "1":
                 # Persist config-seeded initial message too (optional)
@@ -977,10 +996,6 @@ async def _stream_events(
     # Import AG2 group chat execution and events
     from autogen.agentchat import a_run_group_chat
     from autogen.events.client_events import UsageSummaryEvent
-    try:
-        from autogen.events.print_event import PrintEvent
-    except Exception:  # pragma: no cover
-        PrintEvent = object  # type: ignore
 
     # pattern.context_variables provided by AG2 pattern if needed
 
@@ -1028,7 +1043,7 @@ async def _stream_events(
         wf_logger.info(f" [AG2_RESUME] Group manager resolved: {type(group_manager).__name__ if group_manager else 'None'}")
         
         if not group_manager or not hasattr(group_manager, "a_resume"):
-            wf_logger.error(f" [AG2_RESUME] Pattern missing required a_resume capability!")
+            wf_logger.error(" [AG2_RESUME] Pattern missing required a_resume capability!")
             raise RuntimeError("Pattern missing required a_resume capability; backward compatibility removed")
             
         wf_logger.info(f" [AG2_RESUME] Calling group_manager.a_resume() with {len(initial_messages)} messages, max_rounds={max_turns}")
@@ -1036,7 +1051,7 @@ async def _stream_events(
         try:
             # Remove hard timeout to avoid cancelling when user feedback is slow
             response = await group_manager.a_resume(messages=initial_messages, max_rounds=max_turns)  # type: ignore[attr-defined]
-            wf_logger.info(f" [AG2_RESUME] a_resume() initialized successfully!")
+            wf_logger.info(" [AG2_RESUME] a_resume() initialized successfully!")
         except Exception as resume_err:
             wf_logger.error(f" [AG2_RESUME] a_resume() failed: {resume_err}")
             raise
@@ -1050,12 +1065,12 @@ async def _stream_events(
             
         #  AG2 handles context variables setup internally via prepare_group_chat
         
-        wf_logger.info(f" [AG2_RUN] Calling a_run_group_chat() NOW...")
+        wf_logger.info(" [AG2_RUN] Calling a_run_group_chat() NOW...")
         
         try:
             # Remove hard timeout to avoid cancelling when user feedback is slow
             response = await a_run_group_chat(pattern=pattern, messages=initial_messages, max_rounds=max_turns)
-            wf_logger.info(f" [AG2_RUN] a_run_group_chat() initialized successfully!")
+            wf_logger.info(" [AG2_RUN] a_run_group_chat() initialized successfully!")
         except Exception as run_err:
             wf_logger.error(f" [AG2_RUN] a_run_group_chat() failed: {run_err}")
             raise
@@ -1089,13 +1104,28 @@ async def _stream_events(
         except Exception as _init_snap_err:
             wf_logger.debug(f" [CONTEXT_VERBOSE] baseline snapshot failed: {_init_snap_err}")
 
+
+    seed_user_messages = Counter()
+    try:
+        for seed in initial_messages or []:
+            if (
+                isinstance(seed, dict)
+                and seed.get('role') == 'user'
+                and seed.get('_mozaiks_seed_kind') == 'initial_message'
+            ):
+                content = seed.get('content')
+                if isinstance(content, str) and content.strip():
+                    seed_user_messages[content.strip()] += 1
+    except Exception:
+        seed_user_messages = Counter()
+
     try:
         if transport:
             transport.register_orchestration_input_registry(chat_id, pending_input_requests)  # type: ignore[attr-defined]
     except Exception as e:
         logger.debug(f"Failed to register orchestration input registry for {chat_id}: {e}")
 
-    from .ui_tools import handle_tool_call_for_ui_interaction, InputTimeoutEvent as _ITO
+    from .ui_tools import handle_tool_call_for_ui_interaction
     from autogen.events.agent_events import FunctionCallEvent as _FC, ToolCallEvent as _TC
     try:
         executed_agents: set[str] = set()
@@ -1119,24 +1149,74 @@ async def _stream_events(
                         from core.transport.simple_transport import SimpleTransport
                         transport = await SimpleTransport.get_instance()
                         if transport:
-                            sender_name = getattr(ev, 'sender', None) or _extract_agent_name(ev) or 'Agent'
-                            message_content = getattr(ev, 'content', '') if hasattr(ev, 'content') else ''
+                            sender_name = _extract_agent_name(ev)
+                            if not sender_name:
+                                sender_attr = getattr(ev, 'sender', None)
+                                if isinstance(sender_attr, str) and sender_attr.strip():
+                                    sender_name = sender_attr.strip()
+                                elif hasattr(sender_attr, 'name') and isinstance(getattr(sender_attr, 'name'), str):
+                                    sender_name = getattr(sender_attr, 'name').strip()
+                            sender_name = sender_name or 'Agent'
+                            message_content = _normalize_text_content(getattr(ev, 'content', None))
+                            content_key = message_content.strip()
+                            sender_lower = sender_name.lower() if isinstance(sender_name, str) else ''
+                            if content_key and seed_user_messages.get(content_key) and sender_lower in {'user', 'chat_manager', 'manager', 'agentmanager'}:
+                                seed_user_messages[content_key] -= 1
+                                if seed_user_messages[content_key] <= 0:
+                                    seed_user_messages.pop(content_key, None)
+                                wf_logger.debug(f" [{workflow_name_upper}] Suppressed seeded initial message for chat {chat_id}")
+                                continue
+
                             wf_logger.info(
                                 f" [{workflow_name_upper}] TextEvent details: sender='{sender_name}' content='{message_content[:100]}...' "
                                 f"content_len={len(message_content)} has_sender={hasattr(ev, 'sender')} has_content={hasattr(ev, 'content')}"
                             )
-                            await transport.send_chat_message(
-                                message=message_content,
-                                agent_name=sender_name,
-                                chat_id=chat_id,
-                                metadata={"source": "ag2_textevent", "sequence": sequence_counter}
-                            )
+                            try:
+                                await transport.send_chat_message(
+                                    message=message_content,
+                                    agent_name=sender_name,
+                                    chat_id=chat_id,
+                                    metadata={"source": "ag2_textevent", "sequence": sequence_counter}
+                                )
+                                try:
+                                    setattr(ev, "_mozaiks_forwarded", True)
+                                except Exception:
+                                    pass
+                            except TypeError as te:
+                                # Known intermittent issue: some AG2 TextEvent objects (older versions / mixed reload state)
+                                # bubble a "'TextEvent' object is not subscriptable" error if a downstream layer
+                                # accidentally treats them like dicts. Provide a resilient fallback path.
+                                if "TextEvent" in str(te) and "not subscriptable" in str(te):
+                                    wf_logger.warning(
+                                        f" [{workflow_name_upper}] Fallback serialization for TextEvent (subscriptable TypeError) sender={sender_name} len={len(message_content)}"
+                                    )
+                                    # Build a normalized 'kind' payload so dispatcher fast-path handles it
+                                    fallback_payload = {
+                                        "kind": "text",
+                                        "agent": sender_name,
+                                        "content": message_content,
+                                        "_fallback": True,
+                                        "sequence": sequence_counter,
+                                        "source": "textevent_fallback",
+                                    }
+                                    try:
+                                        await transport.send_event_to_ui(fallback_payload, chat_id)
+                                        wf_logger.info(f" [{workflow_name_upper}] Fallback TextEvent forwarded successfully sender={sender_name}")
+                                    except Exception as fallback_err:
+                                        wf_logger.error(
+                                            f" [{workflow_name_upper}] Fallback TextEvent forwarding failed sender={sender_name}: {fallback_err}"
+                                        )
+                                else:
+                                    # Re-raise unexpected TypeError
+                                    raise
                             wf_logger.info(
                                 f" [{workflow_name_upper}] TextEvent forwarded to UI: sender='{sender_name}' message_len={len(message_content)}"
                             )
                     except Exception as transport_err:
+                        import traceback as _tb
                         logger.warning(
-                            f"Failed to forward TextEvent to UI for {chat_id}: {transport_err}"
+                            f"Failed to forward TextEvent to UI for {chat_id}: {transport_err}\n"
+                            f"Type={type(transport_err).__name__} Traceback:\n{_tb.format_exc()}"
                         )
                 except Exception as e:
                     logger.warning(f"Failed to persist/handle TextEvent for {chat_id}: {e}")
@@ -1178,6 +1258,32 @@ async def _stream_events(
                     f"[{workflow_name_upper}] New turn started with agent={turn_agent} seq={sequence_counter} chat_id={chat_id}"
                 )
 
+                candidates = getattr(ev, 'agents', None)
+                selected_name = None
+                if turn_agent is not None:
+                    selected_name = getattr(turn_agent, 'name', None) or str(turn_agent)
+                context_snapshot = {}
+                try:
+                    ctx_ref = locals().get('ag2_context', globals().get('ag2_context'))
+                    if ctx_ref:
+                        if hasattr(ctx_ref, 'to_dict') and callable(getattr(ctx_ref, 'to_dict')):
+                            context_snapshot = dict(ctx_ref.to_dict())  # type: ignore[arg-type]
+                        elif hasattr(ctx_ref, 'data') and isinstance(getattr(ctx_ref, 'data'), dict):
+                            context_snapshot = dict(getattr(ctx_ref, 'data'))
+                    if not context_snapshot:
+                        base_ctx = locals().get('context', globals().get('context'))
+                        if base_ctx:
+                            if hasattr(base_ctx, 'to_dict') and callable(getattr(base_ctx, 'to_dict')):
+                                context_snapshot = dict(base_ctx.to_dict())  # type: ignore[arg-type]
+                            elif hasattr(base_ctx, 'data') and isinstance(getattr(base_ctx, 'data'), dict):
+                                context_snapshot = dict(getattr(base_ctx, 'data'))
+                except Exception as ctx_err:  # pragma: no cover
+                    wf_logger.debug(f"[HANDOFF_TRACE] context snapshot unavailable: {ctx_err}")
+                interview_state = context_snapshot.get('interview_complete') if isinstance(context_snapshot, dict) else None
+                wf_logger.debug(
+                    f"[HANDOFF_TRACE] SelectSpeakerEvent candidates={candidates} selected={selected_name} interview_complete={interview_state}"
+                )
+
             if isinstance(ev, InputRequestEvent):
                 request_obj = getattr(ev, "content", None)
                 request_uuid = getattr(ev, "uuid", None) or getattr(ev, "id", None)
@@ -1211,18 +1317,21 @@ async def _stream_events(
                     prompt_hint = getattr(request_obj, "prompt", None) or getattr(request_obj, "message", None)
                 if prompt_hint is not None:
                     setattr(ev, "_mozaiks_prompt", prompt_hint)
-            if transport:
+            if transport and not getattr(ev, '_mozaiks_forwarded', False):
                 try:
-                    payload = _build_ui_event_payload(
-                        ev=ev,
+                    # Unified serialization context object
+                    build_ctx = UnifiedEventBuildContext(
                         workflow_name=workflow_name,
                         turn_agent=turn_agent,
-                        wf_logger=wf_logger,
                         tool_call_initiators=tool_call_initiators,
                         tool_names_by_id=tool_names_by_id,
                         workflow_name_upper=workflow_name_upper,
+                        wf_logger=wf_logger,
                     )
+                    payload = unified_build_ui_event_payload(ev=ev, ctx=build_ctx)
                     if payload:
+                        if payload.get("kind") == "text" and "source" not in payload:
+                            payload["source"] = "ag2_textevent"
                         if payload.get("kind") == "run_complete" and not payload.get("agent"):
                             payload["agent"] = turn_agent or "workflow"
                         await transport.send_event_to_ui(payload, chat_id)
@@ -1518,6 +1627,27 @@ async def run_workflow_orchestration(
             derived_context_manager = DerivedContextManager(workflow_name, agents, context)
             if derived_context_manager.has_variables():
                 derived_context_manager.seed_defaults()
+
+                def _derived_listener(payload: Dict[str, Any]):  # type: ignore
+                    try:
+                        var_name = payload.get('variable')
+                        value = payload.get('value')
+                        if not var_name:
+                            return
+                        if transport:
+                            evt = {
+                                'kind': 'context_update',
+                                'variable': var_name,
+                                'value': value,
+                            }
+                            asyncio.create_task(transport.send_event_to_ui(evt, chat_id))
+                    except Exception as _dl_err:  # pragma: no cover
+                        wf_logger.debug(f"Derived listener emit failed: {_dl_err}")
+
+                try:
+                    derived_context_manager.add_listener(_derived_listener)
+                except Exception as _lerr:  # pragma: no cover
+                    wf_logger.debug(f"Failed registering derived listener: {_lerr}")
             else:
                 derived_context_manager = None
 
@@ -1567,8 +1697,6 @@ async def run_workflow_orchestration(
             )
 
             # -----------------------------------------------------------------
-            wf_logger.info(f" [{workflow_name_upper}] Tools already bound at agent creation; skipping runtime registration")
-
             # Store agents on transport
             try:
                 if transport and hasattr(transport, 'connections') and chat_id in transport.connections:
@@ -1777,7 +1905,7 @@ async def run_workflow_orchestration(
 
                     # Log comprehensive AG2 final summary
                     wf_logger.info(
-                        f"[AG2_FINAL_SUMMARY] Authoritative usage data | "
+                        "[AG2_FINAL_SUMMARY] Authoritative usage data | "
                         f"total_cost=${ag2_total_cost:.4f} | "
                         f"with_cache={ag2_usage_including_cached} | "
                         f"without_cache={ag2_usage_excluding_cached}"
@@ -1795,7 +1923,7 @@ async def run_workflow_orchestration(
 
                     if final_cost_delta > 0.01 or final_prompt_delta or final_completion_delta:
                         wf_logger.warning(
-                            f"[FINAL_RECONCILIATION] Delta detected | "
+                            "[FINAL_RECONCILIATION] Delta detected | "
                             f"ag2_total=${ag2_total_cost:.4f} tracked_total=${tracked_cost:.4f} | "
                             f"delta=${final_cost_delta:.4f} prompt_delta={final_prompt_delta} completion_delta={final_completion_delta}"
                         )
@@ -1812,7 +1940,7 @@ async def run_workflow_orchestration(
                         )
                     else:
                         wf_logger.info(
-                            f"o. [FINAL_RECONCILIATION] Usage tracking accurate | "
+                            "o. [FINAL_RECONCILIATION] Usage tracking accurate | "
                             f"ag2=${ag2_total_cost:.4f} tracked=${tracked_cost:.4f} | "
                             f"delta=${final_cost_delta:.4f}"
                         )
@@ -1970,7 +2098,7 @@ def create_ag2_pattern(
         except Exception as _log_err:
             logger.info(f" Pattern setup - context_variables: True (keys unavailable: {_log_err})")
     else:
-        logger.info(f" Pattern setup - context_variables: False")
+        logger.info(" Pattern setup - context_variables: False")
 
     # Build AG2 Pattern constructor arguments following proper signature
     pattern_args = {
@@ -1982,7 +2110,7 @@ def create_ag2_pattern(
     # Add user_agent if provided (AG2 handles human-in-the-loop logic)
     if user_agent is not None:
         pattern_args["user_agent"] = user_agent
-        logger.info(f" User agent included in AG2 pattern")
+        logger.info(" User agent included in AG2 pattern")
 
     # Add group_manager_args for GroupChatManager configuration
     if group_manager_args is not None:
@@ -2120,6 +2248,7 @@ async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str
     except Exception as e:
         logger.error(f" Failed to log conversation to agent chat file for {chat_id}: {e}")
         # Do not raise
+
 
 
 

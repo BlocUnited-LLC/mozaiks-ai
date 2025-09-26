@@ -1,4 +1,4 @@
-﻿# ==============================================================================
+# ==============================================================================
 # FILE: config.py
 # DESCRIPTION: Configuration for Azure Key Vault, MongoDB, LLMs, and Tokens API
 # NOTES: Avoid module-level cloud calls; build credentials lazily and prefer
@@ -125,11 +125,6 @@ def get_mongo_client() -> AsyncIOMotorClient:
 #   Wallets collection uses VE uppercase schema by default:
 #     { EnterpriseId, UserId, Balance, Transactions, CreatedAt, UpdatedAt }
 #   ChatSessions should not mirror balances; only track usage aggregates.
-# ------------------------------------------------------------------------------
-# Tokens API Base URL
-TOKENS_API_URL = os.getenv("TOKENS_API_URL", "http://localhost:5000")
-from core.workflow.ui_tools import use_ui_tool
-
 def get_free_trial_config() -> Dict[str, Any]:
     """Get free trial configuration from environment variables"""
     return {
@@ -140,6 +135,7 @@ def get_free_trial_config() -> Dict[str, Any]:
 # Low balance (token) prompt helper (emits standardized UI tool event)
 # -----------------------------------------------------------------------------
 async def prompt_low_balance(chat_id: str, workflow_name: str, needed_tokens: int, current_balance: int) -> dict:
+    from core.workflow.ui_tools import use_ui_tool
     """Display a low-balance UI prompt and return user response (single-call helper)."""
     return await use_ui_tool(
         tool_id="token_top_up_prompt",

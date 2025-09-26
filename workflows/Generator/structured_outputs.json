@@ -488,6 +488,14 @@
             "type": "optional_str",
             "description": "Condition for conditional handoffs"
           },
+          "condition_type": {
+            "type": "literal",
+            "values": [
+              "expression",
+              "string_llm"
+            ],
+            "description": "Optional override: use 'expression' for context expressions or omit to fall back to LLM evaluation. Use null in registry to indicate omitted."
+          },
           "transition_target": {
             "type": "literal",
             "values": [

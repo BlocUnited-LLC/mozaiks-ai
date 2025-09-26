@@ -1,254 +1,361 @@
 # ==============================================================================
-# FILE: core/workflow/agents.py  
-# DESCRIPTION: Clean agent factory following AG2 ConversableAgent patterns
+# FILE: core/workflow/agents.py
+# DESCRIPTION: ConversableAgent factory aligned with agent-centric context plan
 # ==============================================================================
-import logging
-from typing import Dict, List, Callable, Any, Optional
+from __future__ import annotations
 
-from autogen import ConversableAgent
+import logging
+import string
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Callable
+
+from autogen import ConversableAgent, UpdateSystemMessage
+
 from .workflow_manager import workflow_manager
 
 logger = logging.getLogger(__name__)
 
-async def create_agents(workflow_name: str, context_variables=None, cache_seed: Optional[int] = None) -> Dict[str, ConversableAgent]:
-    """
-    Create ConversableAgent instances following AG2 patterns.
-    
-    Creates agents with proper AG2 constructor parameters:
-    - name: str
-    - system_message: str | list | None  
-    - llm_config: LLMConfig | dict[str, Any] | Literal[False] | None
-    - human_input_mode: Literal["ALWAYS", "NEVER", "TERMINATE"]
-    - max_consecutive_auto_reply: int | None
-    - functions: list[Callable[..., Any]] | Callable[..., Any]
-    
-    Args:
-        workflow_name: Name of the workflow to load agents for
-        context_variables: AG2 ContextVariables to pass to each agent
-        cache_seed: Optional[int] = None - deterministic seed forwarded to llm_config helpers
-        
-    Returns:
-        Dictionary of ConversableAgent instances
-    """
-    
-    logger.info(f"🏗️ [AGENTS] Creating agents for workflow: {workflow_name}")
-    from time import perf_counter
-    start_time = perf_counter()
 
-    # Load workflow configuration using file manager
-    workflow_config = workflow_manager.get_config(workflow_name)
-    
-    if not workflow_config:
-        logger.error(f"❌ [AGENTS] No configuration found for workflow: {workflow_name}")
-        return {}
-    
-    agent_configs = workflow_config.get('agents', {})
-    
-    # Handle nested structure: agents -> agents -> agent_definitions
-    if 'agents' in agent_configs:
-        agent_configs = agent_configs['agents']
-    
-    logger.debug(f"🔧 [AGENTS] Loading {len(agent_configs)} agent definitions")
-    
-    # ---------------------------------------------------------------
-    # Load a single base LLM config; per-agent structured configs resolved by registry
-    logger.debug("🔧 [AGENTS] Loading base LLM config...")
+def _context_to_dict(container: Any) -> Dict[str, Any]:
     try:
-        # Centralized llm_config (caching + provider aggregation)
+        if hasattr(container, "to_dict"):
+            return dict(container.to_dict())  # type: ignore[arg-type]
+    except Exception:  # pragma: no cover
+        pass
+    data = getattr(container, "data", None)
+    if isinstance(data, dict):
+        return dict(data)
+    if isinstance(container, dict):
+        return dict(container)
+    return {}
+
+
+def _stringify_context_value(value: Any, null_label: Optional[str]) -> str:
+    if value is None:
+        return null_label if null_label is not None else "None"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _format_template(template: str, mapping: Dict[str, Any]) -> str:
+    formatter = string.Formatter()
+    try:
+        return formatter.vformat(template, (), mapping)
+    except Exception:  # pragma: no cover
+        return template
+
+
+def _render_exposure_fragment(
+    exposure: Dict[str, Any],
+    context_dict: Dict[str, Any],
+    fallback_variables: List[str],
+) -> str:
+    if not isinstance(exposure, dict):
+        return ""
+
+    raw_variables = exposure.get("variables") or fallback_variables or []
+    variables = [str(var).strip() for var in raw_variables if isinstance(var, str) and str(var).strip()]
+    if not variables:
+        return ""
+
+    null_label = exposure.get("null_label")
+    mapping = defaultdict(lambda: _stringify_context_value(None, null_label))
+
+    for key, value in context_dict.items():
+        mapping[key] = _stringify_context_value(value, null_label if key in variables else None)
+
+    for var in variables:
+        if var not in mapping:
+            mapping[var] = _stringify_context_value(context_dict.get(var), null_label)
+
+    template = exposure.get("template")
+    if template:
+        rendered_body = _format_template(str(template), mapping)
+    else:
+        rendered_body = "\n".join(f"{var.upper()}: {mapping[var]}" for var in variables)
+
+    if not isinstance(rendered_body, str) or not rendered_body.strip():
+        return ""
+
+    header = exposure.get("header")
+    if isinstance(header, str) and header.strip():
+        return f"{header.strip()}\n{rendered_body.strip()}"
+
+    return rendered_body.strip()
+
+
+def _merge_message_parts(existing: str, fragment: str, placement: str) -> str:
+    placement_mode = (placement or "append").lower() if isinstance(placement, str) else "append"
+    fragment = fragment.strip() if isinstance(fragment, str) else ""
+    existing = existing.strip() if isinstance(existing, str) else ""
+    if not fragment:
+        return existing
+    if placement_mode == "replace":
+        return fragment
+    if placement_mode == "prepend":
+        parts = [fragment, existing]
+    else:
+        parts = [existing, fragment]
+    joined = "\n\n".join(part for part in parts if part)
+    return joined
+
+
+def _apply_context_exposures(
+    base_message: str,
+    exposures: List[Dict[str, Any]],
+    context_dict: Dict[str, Any],
+    fallback_variables: List[str],
+) -> str:
+    message = base_message or ""
+    for exposure in exposures:
+        fragment = _render_exposure_fragment(exposure, context_dict, fallback_variables)
+        placement = exposure.get("placement", "append") if isinstance(exposure, dict) else "append"
+        message = _merge_message_parts(message, fragment, placement)
+    return message or base_message or ""
+
+
+def _build_exposure_update_hook(
+    agent_name: str,
+    base_message: str,
+    exposures: List[Dict[str, Any]],
+    fallback_variables: List[str],
+):
+    valid_exposures = [exp for exp in exposures if isinstance(exp, dict)]
+    if not valid_exposures:
+        return None
+
+    def _update(agent: ConversableAgent, messages: List[Dict[str, Any]]) -> str:
+        container = getattr(agent, "context_variables", None)
+        context_dict = _context_to_dict(container) if container is not None else {}
+        logger.debug(f"[UpdateSystemMessage][{agent_name}] context snapshot: {context_dict}")
+        updated = _apply_context_exposures(base_message, valid_exposures, context_dict, fallback_variables)
+        if hasattr(agent, "update_system_message") and callable(agent.update_system_message):
+            agent.update_system_message(updated or base_message or "")
+        return updated or base_message or ""
+
+    _update.__annotations__ = {
+        "agent": ConversableAgent,
+        "messages": List[Dict[str, Any]],
+        "return": str,
+    }
+    _update.__name__ = f"{agent_name.lower()}_context_update"
+    return UpdateSystemMessage(_update)
+
+
+def _build_interview_message_hook(
+    exposures: List[Dict[str, Any]],
+    fallback_variables: List[str],
+) -> Callable[..., Any]:
+    exposures_copy = [exp.copy() for exp in exposures if isinstance(exp, dict)] or []
+
+    def _hook(sender=None, message=None, recipient=None, silent=False):
+        try:
+            raw_message = message.get("content") if isinstance(message, dict) else message
+            if not isinstance(raw_message, str):
+                return message
+            trimmed = raw_message.strip()
+            if trimmed.upper().startswith("NEXT"):
+                final = "NEXT"
+            else:
+                container = getattr(sender, "context_variables", None)
+                context_dict = _context_to_dict(container) if container is not None else {}
+                fragment = _apply_context_exposures("", exposures_copy, context_dict, fallback_variables).strip()
+                if fragment:
+                    header, _, body = fragment.partition("\n")
+                    header = header.strip() or "Context Variables"
+                    body = body.strip()
+                    if not body:
+                        body = "null"
+                    context_block = f"{header}:\n{body}"
+                else:
+                    context_block = "Context Variables:\nnull"
+                question_line = "What would you like to automate?"
+                final = f"{question_line}\n\n{context_block}".strip()
+            logger.debug(f"[InterviewAgent] normalized outgoing message: {final!r}")
+            if isinstance(message, dict):
+                updated = dict(message)
+                updated["content"] = final
+                return updated
+            return final
+        except Exception as hook_err:  # pragma: no cover
+            logger.debug(f"[InterviewAgent] message normalization skipped: {hook_err}")
+            return message
+
+    return _hook
+
+
+async def create_agents(
+    workflow_name: str,
+    context_variables=None,
+    cache_seed: Optional[int] = None,
+) -> Dict[str, ConversableAgent]:
+    """Create ConversableAgent instances for a workflow."""
+
+    logger.info(f"[AGENTS] Creating agents for workflow: {workflow_name}")
+    from time import perf_counter
+
+    start_time = perf_counter()
+    workflow_config = workflow_manager.get_config(workflow_name) or {}
+    agent_configs = workflow_config.get("agents", {})
+    if "agents" in agent_configs:
+        agent_configs = agent_configs["agents"]
+
+    try:
         from .llm_config import get_llm_config as _get_base_llm_config
+
         extra = {"cache_seed": cache_seed} if cache_seed is not None else None
         _, base_llm_config = await _get_base_llm_config(stream=True, extra_config=extra)
-    except Exception as e:
-        logger.error(f"❌ [AGENTS] Failed to load base LLM config: {e}")
+    except Exception as err:
+        logger.error(f"[AGENTS] Failed to load base LLM config: {err}")
         return {}
-    logger.debug("✅ [AGENTS] Base LLM config loaded")
-    
-    # Tool function discovery via centralized loader (loads ALL tools including UI_Tools)
+
     try:
         from .agent_tools import load_agent_tool_functions
+
         agent_tool_functions = load_agent_tool_functions(workflow_name)
-    except Exception as tool_load_err:
-        logger.warning(f"🧩 [AGENTS] Failed loading agent tool functions: {tool_load_err}")
+    except Exception as tool_err:
+        logger.warning(f"[AGENTS] Failed loading agent tool functions: {tool_err}")
         agent_tool_functions = {}
+
+    if context_variables is not None:
+        try:
+            context_dict: Dict[str, Any] = _context_to_dict(context_variables)
+            logger.debug(f"[AGENTS] context_variables snapshot: {context_dict}")
+        except Exception as ctx_err:
+            logger.debug(f"[AGENTS] context_variables snapshot unavailable: {ctx_err}")
+            context_dict = {}
+    else:
+        context_dict = {}
+    exposures_map = (
+        getattr(context_variables, "_mozaiks_context_exposures", {}) if context_variables is not None else {}
+    )
+    agent_plan_map = (
+        getattr(context_variables, "_mozaiks_context_agents", {}) if context_variables is not None else {}
+    )
 
     agents: Dict[str, ConversableAgent] = {}
 
-    # NOTE: UserProxyAgent is auto-generated by orchestration_patterns.py
-    # based on workflow config human_in_the_loop flag. No need to create it here.
-    
-    # Create agents dynamically from JSON configuration
     for agent_name, agent_config in agent_configs.items():
-        logger.debug(f"🔧 [AGENTS] Creating agent '{agent_name}' dynamically from JSON config...")
-
-        # Try to get structured model for this specific agent via registry
         try:
             from .structured_outputs import get_llm_for_workflow as _get_structured_llm
+
             extra = {"cache_seed": cache_seed} if cache_seed is not None else None
-            _, llm_config = await _get_structured_llm(workflow_name, 'base', agent_name=agent_name, extra_config=extra)
-            logger.debug(f"🔧 [AGENTS] Got structured LLM config for {agent_name}: {llm_config}")
-        except Exception as e:
-            logger.debug(f"🔧 [AGENTS] Failed to get structured config for {agent_name}, using base: {e}")
+            _, llm_config = await _get_structured_llm(
+                workflow_name,
+                "base",
+                agent_name=agent_name,
+                extra_config=extra,
+            )
+        except Exception:
             llm_config = base_llm_config
-            logger.debug(f"🔧 [AGENTS] Using base LLM config for {agent_name}: {llm_config}")
 
-        # Create the agent with configuration from JSON
         agent_functions = agent_tool_functions.get(agent_name, [])
-        # Debug: inspect the functions we plan to attach so we can diagnose registration issues
-        if agent_functions:
-            func_details = []
-            for i, fn in enumerate(agent_functions):
-                func_details.append({
-                    "index": i,
-                    "repr": repr(fn),
-                    "callable": callable(fn),
-                    "name": getattr(fn, "__name__", None),
-                    "module": getattr(fn, "__module__", None),
-                })
-            logger.debug(f"🧩 [AGENTS] Attaching {len(agent_functions)} tool functions to {agent_name}: {func_details}")
-        else:
-            logger.debug(f"🧩 [AGENTS] No tool functions found for {agent_name}")
-
-        # Validate functions before passing to ConversableAgent
-        for i, fn in enumerate(agent_functions):
+        for idx, fn in enumerate(agent_functions):
             if not callable(fn):
-                logger.error(f"🧩 [AGENTS] Tool function at index {i} for agent '{agent_name}' is not callable: {fn}")
-        
-        # Ensure AG2 tool registration path is primed: llm_config must have a 'tools' list
-        try:
-            if isinstance(llm_config, dict) and 'tools' not in llm_config:
-                llm_config['tools'] = []
-                logger.debug(f"🧩 [AGENTS] Injected empty tools list into llm_config for {agent_name} to enable AG2 function calling")
-        except Exception as _inj_err:
-            logger.debug(f"🧩 [AGENTS] Skipped llm_config tools injection for {agent_name}: {_inj_err}")
+                logger.error(
+                    f"[AGENTS] Tool function at index {idx} for agent '{agent_name}' is not callable: {fn}"
+                )
 
-        logger.debug(f"🔧 [AGENTS] Final config for {agent_name}: config_list={llm_config.get('config_list', [])} other_keys={list(k for k in llm_config.keys() if k != 'config_list')}")
-        
-        # Additional debug - make a deep copy to see if something is modifying the original
-        import copy
-        config_copy = copy.deepcopy(llm_config)
-        logger.debug(f"🔧 [AGENTS] Config copy for {agent_name}: {config_copy}")
-        
-        # Check if config_list entries are valid IMMEDIATELY before creating agent
-        config_list = llm_config.get('config_list', [])
-        logger.debug(f"🔧 [AGENTS] About to create agent {agent_name} with config_list length: {len(config_list)}")
-        for i, entry in enumerate(config_list):
-            logger.debug(f"🔧 [AGENTS] FINAL CHECK Config entry [{i}] for {agent_name}: {entry}")
-            if not isinstance(entry, dict):
-                logger.error(f"❌ [AGENTS] FATAL ERROR: Config entry [{i}] is not a dict: {type(entry)} {entry}")
-                raise ValueError(f"Config entry [{i}] is not a dict for agent {agent_name}")
-            if not entry.get('model'):
-                logger.error(f"❌ [AGENTS] FATAL ERROR: Config entry [{i}] missing model field: {entry}")
-                raise ValueError(f"Config entry [{i}] missing model field for agent {agent_name}")
+        if isinstance(llm_config, dict) and "tools" not in llm_config:
+            llm_config["tools"] = []
 
-        logger.debug(f"🔧 [AGENTS] Creating ConversableAgent {agent_name} with validated config...")
+        system_message = agent_config.get("system_message", "You are a helpful AI assistant.")
+        agent_exposures = []
+        if isinstance(exposures_map, dict):
+            agent_exposures = exposures_map.get(agent_name, []) or []
 
-        # LAST CHANCE DEBUG - inspect the actual llm_config right before AG2 gets it
-        logger.debug(f"🔧 [AGENTS] ABSOLUTE FINAL CONFIG CHECK for {agent_name}:")
-        logger.debug(f"🔧 [AGENTS] llm_config type: {type(llm_config)}")
-        logger.debug(f"🔧 [AGENTS] llm_config keys: {list(llm_config.keys()) if isinstance(llm_config, dict) else 'NOT_DICT'}")
-        if isinstance(llm_config, dict):
-            logger.debug(f"🔧 [AGENTS] llm_config.tools present: {'tools' in llm_config} length={len(llm_config.get('tools', [])) if isinstance(llm_config.get('tools', []), list) else 'n/a'}")
+        agent_plan = None
+        if isinstance(agent_plan_map, dict):
+            agent_plan = agent_plan_map.get(agent_name)
+        agent_variables = list(getattr(agent_plan, "variables", []) or [])
 
-        final_config_list = llm_config.get('config_list', []) if isinstance(llm_config, dict) else []
-        logger.debug(f"🔧 [AGENTS] config_list length: {len(final_config_list)}")
+        base_system_message = system_message
+        update_hooks: List[Callable[..., Any] | UpdateSystemMessage] = []
+        if agent_exposures:
+            system_message = _apply_context_exposures(
+                base_system_message,
+                agent_exposures,
+                context_dict,
+                agent_variables,
+            )
+            exposure_hook = _build_exposure_update_hook(
+                agent_name,
+                base_system_message,
+                agent_exposures,
+                agent_variables,
+            )
+            if exposure_hook:
+                update_hooks.append(exposure_hook)
+        else:
+            system_message = base_system_message
 
-        for idx, entry in enumerate(final_config_list):
-            logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}]: {entry}")
-            logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] type: {type(entry)}")
-            if isinstance(entry, dict):
-                logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] keys: {list(entry.keys())}")
-                logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] has model: {'model' in entry}")
-                logger.debug(f"🔧 [AGENTS] FINAL Entry[{idx}] model value: {entry.get('model', 'MISSING')}")
+        interview_message_hook = None
+        if agent_name == "InterviewAgent":
+            interview_message_hook = _build_interview_message_hook(agent_exposures, agent_variables)
 
         try:
-            raw_human_mode = agent_config.get('human_input_mode')
-            if raw_human_mode and str(raw_human_mode).upper() not in ('', 'NEVER', 'NONE'):
-                logger.debug(f"[AGENTS] Ignoring configured human_input_mode {raw_human_mode} for {agent_name}; enforcing NEVER")
-            human_input_mode = 'NEVER'
+            raw_human_mode = agent_config.get("human_input_mode")
+            if raw_human_mode and str(raw_human_mode).upper() not in ("", "NEVER", "NONE"):
+                logger.debug(
+                    f"[AGENTS] Ignoring configured human_input_mode {raw_human_mode} for {agent_name}; enforcing NEVER"
+                )
+            human_input_mode = "NEVER"
+
             agent = ConversableAgent(
                 name=agent_name,
-                system_message=agent_config.get('system_message', 'You are a helpful AI assistant.'),
+                system_message=system_message,
                 llm_config=llm_config,
                 human_input_mode=human_input_mode,
-                max_consecutive_auto_reply=agent_config.get('max_consecutive_auto_reply', 2),
-                functions=agent_functions,  # AG2 functions parameter
-                context_variables=context_variables,  # AG2 ContextVariables for LLM access
+                max_consecutive_auto_reply=agent_config.get("max_consecutive_auto_reply", 2),
+                functions=agent_functions,
+                context_variables=context_variables,
+                update_agent_state_before_reply=update_hooks or None,
             )
-            # After creation, log what the agent reports back (if accessible) about attached functions
-            try:
-                attached = getattr(agent, 'functions', None)
-                if attached is None:
-                    logger.debug(f"✅ [AGENTS] ConversableAgent {agent_name} created (no 'functions' attribute exposed)")
-                else:
-                    attached_summary = [{"name": getattr(f, '__name__', None), "callable": callable(f)} for f in attached]
-                    logger.debug(f"✅ [AGENTS] ConversableAgent {agent_name} created with functions: {attached_summary}")
-            except Exception as _ex:
-                logger.debug(f"✅ [AGENTS] ConversableAgent {agent_name} created but could not introspect 'functions': {_ex}")
-
-        except Exception as e:
-            logger.error(f"❌ [AGENTS] CRITICAL ERROR creating ConversableAgent {agent_name}: {e}")
-            logger.error(f"❌ [AGENTS] FINAL CONFIG DUMP: {llm_config}")
+            if agent_name == "InterviewAgent" and interview_message_hook:
+                agent.register_hook("process_message_before_send", interview_message_hook)
+        except Exception as err:
+            logger.error(f"[AGENTS] CRITICAL ERROR creating ConversableAgent {agent_name}: {err}")
             raise
 
+        setattr(agent, "_mozaiks_base_system_message", base_system_message)
         agents[agent_name] = agent
 
-        # Minimal agent creation confirmation
-        logger.debug(f"✅ [AGENTS] Created '{agent_name}' with {len(agent_tool_functions.get(agent_name, []))} tools")
-
-    # Completion log remains generic
-    agent_count = len(agents)
     duration = perf_counter() - start_time
-    logger.info(f"✅ [AGENTS] Created {agent_count} agents for '{workflow_name}' in {duration:.2f}s")
-    logger.debug(f"🔍 [AGENTS] Agent names: {list(agents.keys())}")
-    
-    # Import and use consolidated logging for summary
-    from logs.logging_config import get_workflow_session_logger
-    workflow_logger = get_workflow_session_logger(workflow_name)
-    
-    # Log tool binding summary with proper parameters
-    total_tools = sum(len(tools) for tools in agent_tool_functions.values())
-    workflow_logger.log_tool_binding_summary("ALL_AGENTS", total_tools, list(agent_tool_functions.keys()))
+    logger.info(f"[AGENTS] Created {len(agents)} agents for '{workflow_name}' in {duration:.2f}s")
 
-    # NOTE: Tool registration is handled by the modular tool system
-    logger.info("🔧 [AGENTS] Tools registration handled by modular tool system")
+    try:
+        from logs.logging_config import get_workflow_session_logger
 
-    # ------------------------------------------------------------------
-    # HOOK REGISTRATION
-    # Register any hooks declared in workflows/<workflow>/hooks.json.
-    # This MUST happen *after* all ConversableAgent instances exist and
-    # *before* orchestration starts so AG2 can invoke them during send
-    # and generate_reply.
-    # ------------------------------------------------------------------
+        workflow_logger = get_workflow_session_logger(workflow_name)
+        total_tools = sum(len(tools) for tools in agent_tool_functions.values())
+        workflow_logger.log_tool_binding_summary("ALL_AGENTS", total_tools, list(agent_tool_functions.keys()))
+    except Exception:
+        logger.debug("[AGENTS] Tool binding summary skipped")
+
     try:
         from .workflow_manager import get_workflow_manager
+
         wm = get_workflow_manager()
-        already_loaded = workflow_name in getattr(wm, '_hooks_loaded_workflows', set())
-        if already_loaded:
-            logger.debug(f"🪝 [HOOKS] Skipping registration for '{workflow_name}' (already loaded)")
+        already_loaded = workflow_name in getattr(wm, "_hooks_loaded_workflows", set())
         registered = wm.register_hooks(workflow_name, agents, force=False)
         if registered:
-            logger.info(f"🪝 [HOOKS] Registered {len(registered)} hooks for '{workflow_name}' (already_loaded={already_loaded})")
-            try:
-                qualnames = [r.function_qualname for r in registered]
-                logger.debug(f"🪝 [HOOKS] Registered functions: {qualnames}")
-            except Exception:
-                logger.debug("🪝 [HOOKS] Registered hooks (could not stringify qualnames)")
-        else:
-            logger.debug(f"🪝 [HOOKS] No new hooks registered for '{workflow_name}' (already_loaded={already_loaded})")
+            logger.info(
+                f"[HOOKS] Registered {len(registered)} hooks for '{workflow_name}' (already_loaded={already_loaded})"
+            )
     except Exception as hook_err:  # pragma: no cover
-        logger.warning(f"🪝 [HOOKS] Failed to register hooks for '{workflow_name}': {hook_err}")
+        logger.warning(f"[HOOKS] Failed to register hooks for '{workflow_name}': {hook_err}")
 
     return agents
+
 
 # ------------------------------------------------------------------
 # RUNTIME INSPECTION UTILITIES
 # ------------------------------------------------------------------
 
 def list_agent_hooks(agent: Any) -> Dict[str, List[str]]:
-    """Return a mapping of hook_type -> list of function names for a given agent.
+    """Return a mapping of hook_type -> list of function names for a given agent."""
 
-    Supports both agent._hooks and agent.hooks structures.
-    """
     out: Dict[str, List[str]] = {}
     try:
         for attr in ("_hooks", "hooks"):
@@ -258,22 +365,26 @@ def list_agent_hooks(agent: Any) -> Dict[str, List[str]]:
                     for htype, fns in raw.items():
                         names: List[str] = []
                         try:
-                            for f in (fns or []):  # type: ignore
-                                names.append(getattr(f, '__name__', repr(f)))
+                            for fn in fns or []:  # type: ignore
+                                names.append(getattr(fn, "__name__", repr(fn)))
                         except Exception:
-                            names.append('<error>')
+                            names.append("<error>")
                         out[htype] = names
                 break
     except Exception:
         pass
     return out
 
+
 def list_hooks_for_workflow(agents: Dict[str, Any]) -> Dict[str, Dict[str, List[str]]]:
     """Return hooks per agent for an agents dict."""
+
     return {name: list_agent_hooks(agent) for name, agent in agents.items()}
 
+
 __all__ = [
-    'create_agents',
-    'list_agent_hooks', 
-    'list_hooks_for_workflow',
+    "create_agents",
+    "list_agent_hooks",
+    "list_hooks_for_workflow",
 ]
+

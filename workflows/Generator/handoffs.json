@@ -19,6 +19,7 @@
                                                "source_agent":  "InterviewAgent",
                                                "target_agent":  "ContextAgent",
                                                "handoff_type":  "condition",
+                                               "condition_type":  "expression",
                                                "condition":  "${interview_complete} == True",
                                                "transition_target":  "AgentTarget"
                                            },

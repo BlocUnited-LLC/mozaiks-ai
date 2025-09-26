@@ -7,16 +7,15 @@
 # ==============================================================================
 
 from __future__ import annotations
-import asyncio
 import uuid
 import logging
 from typing import Dict, Any, Optional
 import datetime as _dt
 
-logger = logging.getLogger(__name__)
-
 from logs.logging_config import get_workflow_logger
 from core.workflow.workflow_manager import workflow_manager
+logger = logging.getLogger(__name__)
+
 
 try:  # Prefer pydantic if available
     from pydantic import BaseModel as _PydanticBase
@@ -208,23 +207,19 @@ async def emit_tool_progress_event(
     # Validate progress percentage
     progress_percent = max(0.0, min(100.0, float(progress_percent)))
     
-    event_data = {
-        "type": "chat.tool_progress",
-        "data": {
-            "chat_id": chat_id,
-            "tool_name": tool_name,
-            "progress_percent": progress_percent,
-            "status_message": status_message,
-            "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat()
-        }
+    normalized = {
+        "kind": "tool_progress",
+        "chat_id": chat_id,
+        "tool_name": tool_name,
+        "progress_percent": progress_percent,
+        "status_message": status_message,
+        "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat()
     }
-    
-    # Add correlation ID if provided
     if correlation_id:
-        event_data["data"]["corr"] = correlation_id
-    
+        normalized["corr"] = correlation_id
+
     try:
-        await transport.send_event_to_ui(event_data, chat_id)
+        await transport.send_event_to_ui(normalized, chat_id)
         wf_logger.info(f"📈 Tool progress: {tool_name} at {progress_percent:.1f}% - {status_message}")
     except Exception as e:
         wf_logger.error(f"❌ [TOOL_PROGRESS] Failed to emit progress event: {e}")

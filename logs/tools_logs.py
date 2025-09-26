@@ -3,7 +3,6 @@ Shared logging helpers for backend tool implementations.
 """
 
 import logging
-import os
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Dict, Any

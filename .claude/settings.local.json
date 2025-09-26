@@ -32,7 +32,8 @@
       "Bash(sqlite3:*)",
       "Bash(docker logs:*)",
       "Bash(docker rm:*)",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []

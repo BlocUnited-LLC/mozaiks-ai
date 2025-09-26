@@ -4,8 +4,6 @@ Provides secure code execution capabilities through E2B
 """
 
 from typing import Dict, Any, List
-import asyncio
-import json
 import logging
 
 # Import the core plugin system

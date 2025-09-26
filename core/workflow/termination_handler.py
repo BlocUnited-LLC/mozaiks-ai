@@ -6,7 +6,7 @@ Based on TerminateTarget patterns logic (0 = resumable, 1 = completed)
 import asyncio
 from time import perf_counter
 from datetime import datetime, UTC
-from typing import Optional, Dict, Any, Union, Callable, TYPE_CHECKING
+from typing import Optional, Dict, Any, Callable, TYPE_CHECKING
 from dataclasses import dataclass
 
 from logs.logging_config import get_workflow_logger
@@ -123,7 +123,7 @@ class AG2TerminationHandler:
                 return self._last_result
                 
             if not self.conversation_active and not self._ended:
-                wf_logger.warning(f"⚠️ Termination handler called but conversation not active")
+                wf_logger.warning("⚠️ Termination handler called but conversation not active")
                 return TerminationResult(
                     terminated=False,
                     status=0,
@@ -146,15 +146,12 @@ class AG2TerminationHandler:
                     # Emit a dedicated event to the UI to signal completion
                     if self.transport:
                         completion_event = {
-                            "type": "chat.run_complete",
-                            "data": {
-                                "chat_id": self.chat_id,
-                                "status": 1,
-                                "timestamp": datetime.now(UTC).isoformat()
-                            }
+                            "kind": "run_complete",
+                            "chat_id": self.chat_id,
+                            "status": 1,
+                            "timestamp": datetime.now(UTC).isoformat()
                         }
-                        await self.transport.send_event_to_ui(completion_event, self.chat_id
-                        )
+                        await self.transport.send_event_to_ui(completion_event, self.chat_id)
                         wf_logger.info(f"✅ Sent 'workflow_completed' event to UI for chat {self.chat_id}")
 
                     # Create termination result

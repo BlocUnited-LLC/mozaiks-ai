@@ -5,13 +5,8 @@
 
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-import sys
 import json
-import os
 
-# Add the project root to the path for logging only
-project_root = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from logs.logging_config import get_workflow_logger
 
@@ -278,7 +273,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         orchestrator_output = data.get('orchestrator_output', {})
         if orchestrator_output:
             config.update(orchestrator_output)
-            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added orchestrator config")
+            wf_logger.info("📋 [CREATE_WORKFLOW_FILES] Added orchestrator config")
 
         # Extract agents from AgentsAgent output
         agents_output = data.get('agents_output', {})
@@ -386,7 +381,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         ui_config = data.get('ui_config', {})
         if ui_config:
             config.update(ui_config)
-            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added UI configuration")
+            wf_logger.info("📋 [CREATE_WORKFLOW_FILES] Added UI configuration")
 
         # Add extra files to config so they can be saved
         extra_files = data.get('extra_files')
@@ -475,7 +470,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                 context_variables.set('generated_workflow_files', workflow_files)
                 context_variables.set('latest_workflow', workflow_record)
 
-                wf_logger.info(f"📝 [CREATE_WORKFLOW_FILES] Updated context variables with workflow record")
+                wf_logger.info("📝 [CREATE_WORKFLOW_FILES] Updated context variables with workflow record")
 
             return {
                 "status": "success",

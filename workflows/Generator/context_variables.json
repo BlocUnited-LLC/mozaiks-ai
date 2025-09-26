@@ -1,8 +1,7 @@
-{
+﻿{
   "context_variables": {
-    "database_variables": [
-      {
-        "name": "concept_overview",
+    "definitions": {
+      "concept_overview": {
         "type": "string",
         "description": "Main project description and overview from the database",
         "source": {
@@ -12,11 +11,8 @@
           "search_by": "enterprise_id",
           "field": "ConceptOverview"
         }
-      }
-    ],
-    "environment_variables": [
-      {
-        "name": "context_aware",
+      },
+      "context_aware": {
         "type": "boolean",
         "description": "Flag indicating if workflow should use context-aware behavior",
         "source": {
@@ -25,8 +21,7 @@
           "default": false
         }
       },
-      {
-        "name": "monetization_enabled",
+      "monetization_enabled": {
         "type": "boolean",
         "description": "Flag indicating if monetization features are enabled",
         "source": {
@@ -34,32 +29,62 @@
           "env_var": "MONETIZATION_ENABLED",
           "default": false
         }
-      }
-    ],
-    "declarative_variables": [
-      {
-        "name": "workflow_version",
-        "type": "string",
-        "description": "Static tag for downstream logging and comparisons",
-        "value": "v1"
-      }
-    ],
-    "derived_variables": [
-      {
-        "name": "interview_complete",
+      },
+      "interview_complete": {
         "type": "boolean",
         "description": "True once InterviewAgent has enough context to proceed to the next stage",
-        "default": false,
-        "triggers": [
-          {
-            "type": "agent_text",
-            "agent": "InterviewAgent",
-            "match": {
-              "equals": "NEXT"
+        "source": {
+          "type": "derived",
+          "default": false,
+          "triggers": [
+            {
+              "type": "agent_text",
+              "agent": "InterviewAgent",
+              "match": {
+                "equals": "NEXT"
+              }
             }
+          ]
+        }
+      }
+    },
+    "agents": {
+      "InterviewAgent": {
+        "variables": [
+          "concept_overview",
+          "context_aware",
+          "monetization_enabled"
+        ],
+        "exposures": [
+          {
+            "header": "Context Variables",
+            "variables": [
+              "concept_overview",
+              "context_aware",
+              "monetization_enabled"
+            ],
+            "placement": "append",
+            "null_label": "null"
+          }
+        ]
+      },
+      "ContextAgent": {
+        "variables": [
+          "concept_overview",
+          "interview_complete"
+        ],
+        "exposures": [
+          {
+            "header": "Context Snapshot",
+            "variables": [
+              "concept_overview",
+              "interview_complete"
+            ],
+            "placement": "append",
+            "null_label": "null"
           }
         ]
       }
-    ]
+    }
   }
 }

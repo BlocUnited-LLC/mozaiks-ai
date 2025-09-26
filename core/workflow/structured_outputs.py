@@ -3,7 +3,7 @@
 # DESCRIPTION: Clean, simplified structured output models for AG2 workflows
 # ==============================================================================
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import Field, create_model
 from typing import List, Dict, Any, Optional, Union, Tuple, Set
 from enum import Enum
 from .llm_config import get_llm_config
@@ -48,17 +48,22 @@ def resolve_field_type(field_def: Dict[str, Any], available_models: Dict[str, ty
         LiteralEnum = Enum(enum_name, enum_members)  # type: ignore
         return LiteralEnum, Field(**field_kwargs)
     # list type
-    if field_type_str == 'list':
+    if field_type_str in {'list', 'optional_list'}:
         items_type = field_def.get('items')
         if not items_type:
             raise ValueError("List type requires 'items'")
         if isinstance(items_type, str):
             if items_type in TYPE_MAP:
-                return List[TYPE_MAP[items_type]], Field(**field_kwargs)  # type: ignore
-            if items_type in available_models:
-                return List[available_models[items_type]], Field(**field_kwargs)  # type: ignore
-            raise ValueError(f"Unknown list item type: {items_type}")
-        raise ValueError("Unsupported list items spec")
+                base = List[TYPE_MAP[items_type]]  # type: ignore[valid-type]
+            elif items_type in available_models:
+                base = List[available_models[items_type]]  # type: ignore[valid-type]
+            else:
+                raise ValueError(f"Unknown list item type: {items_type}")
+        else:
+            raise ValueError("Unsupported list items spec")
+        if field_type_str == 'optional_list':
+            return Optional[base], Field(default=None, **field_kwargs)  # type: ignore[return-value]
+        return base, Field(**field_kwargs)  # type: ignore[return-value]
     # dict primitive support (already mapped in TYPE_MAP earlier, but handle explicit 'dict' path if missed)
     if field_type_str == 'dict':
         return Dict[str, Any], Field(**field_kwargs)  # type: ignore
@@ -143,9 +148,9 @@ def build_models_from_config(models_config: Dict[str, Any]) -> Dict[str, type]:
                 remaining.append((name, mdef))
             else:
                 models[name] = create_model(name, **fields)  # type: ignore[arg-type]
-        if not remaining:
-            break
         pending = remaining
+        if not pending:
+            break
     if pending:
         raise ValueError(f"Unresolved model dependencies: {[n for n,_ in pending]}")
     return models

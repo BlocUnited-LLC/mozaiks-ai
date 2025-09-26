@@ -23,7 +23,7 @@ import importlib
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Callable, Dict, List, Any, Optional
+from typing import Callable, Dict, List, Optional
 import json
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,6 @@ def load_agent_tool_functions(workflow_name: str) -> Dict[str, List[Callable]]:
         logger.warning(f"[TOOLS] tools.json 'tools' section not a list in '{workflow_name}'")
         return mapping
     # Disable per-process tool module caching to always load fresh tool code
-    module_cache: Dict[Path, Any] = {}
     logger.debug(f"[TOOLS][TRACE] Starting tool load for workflow '{workflow_name}' (entries={len(entries)})")
     for idx, tool in enumerate(entries, start=1):
         if not isinstance(tool, dict):

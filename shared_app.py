@@ -5,7 +5,7 @@
 import logging
 import os
 import sys
-from typing import Optional, Dict, Any
+from typing import Optional, Any
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 # Ensure project root is on Python path for workflow imports
@@ -1041,7 +1041,7 @@ async def get_workflow_transport_info(workflow_name: str):
         "transport": transport,
         "endpoints": {
             "websocket": f"/ws/{workflow_name}/{{enterprise_id}}/{{chat_id}}/{{user_id}}",
-            "input": f"/chat/{{enterprise_id}}/{{chat_id}}/{{user_id}}/input"
+            "input": "/chat/{{enterprise_id}}/{{chat_id}}/{{user_id}}/input"
         }
     }
 

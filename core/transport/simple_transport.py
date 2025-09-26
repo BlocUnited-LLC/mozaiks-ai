@@ -391,6 +391,14 @@ class SimpleTransport:
             if chat_id and chat_id in self.connections:
                 workflow_name = self.connections[chat_id].get('workflow_name')
 
+            # DEBUG: Log what we're processing
+            event_type = type(event).__name__ if hasattr(event, '__class__') else 'dict'
+            if isinstance(event, dict):
+                event_kind = event.get('kind', 'unknown')
+                logger.info(f"🔍 [TRANSPORT] Processing event: type={event_type}, kind={event_kind}, chat_id={chat_id}, dict_keys={list(event.keys()) if isinstance(event, dict) else 'N/A'}")
+            else:
+                logger.info(f"🔍 [TRANSPORT] Processing event: type={event_type}, chat_id={chat_id}")
+
             envelope = dispatcher.build_outbound_event_envelope(
                 raw_event=event,
                 chat_id=chat_id,
@@ -398,6 +406,7 @@ class SimpleTransport:
                 workflow_name=workflow_name,
             )
             if not envelope:
+                logger.warning(f"❌ [TRANSPORT] No envelope created for event type={event_type}")
                 return
 
             # Additional filtering (agent visibility) only for BaseEvent path where needed
@@ -423,6 +432,14 @@ class SimpleTransport:
             except Exception:
                 pass
 
+            # Check for suppression flag from derived context hooks
+            if envelope and isinstance(envelope, dict):
+                data_payload = envelope.get('data')
+                if isinstance(data_payload, dict) and data_payload.get('_mozaiks_hide'):
+                    logger.info(f"🚫 [TRANSPORT] Suppressing hidden message (derived context trigger) for chat {chat_id}: {data_payload.get('content', 'no content')[:100]}")
+                    return
+
+            logger.info(f"📤 [TRANSPORT] Sending envelope: type={envelope.get('type')}, chat_id={chat_id}")
             await self._broadcast_to_websockets(envelope, chat_id)
         except Exception as e:
             logger.error(f"❌ Failed to serialize or send UI event: {e}\n{traceback.format_exc()}")
@@ -1013,21 +1030,19 @@ class SimpleTransport:
         metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """Send chat message to user interface"""
-        # Create properly formatted event data
+        # Create properly formatted event data with 'kind' field for envelope builder
         event_data = {
-            "type": "chat.text",
-            "data": {
-                "chat_id": chat_id,
-                "agent": agent_name or "Agent",
-                "content": str(message),
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
+            "kind": "text",
+            "agent": agent_name or "Agent", 
+            "content": str(message),
+            "chat_id": chat_id,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         if metadata:
-            event_data["data"]["metadata"] = metadata
+            event_data["metadata"] = metadata
 
         # Enhanced logging for debugging UI rendering
-        logger.info(f"💬 Sending chat message: type={event_data['type']} agent='{agent_name}' content_len={len(message)} content_preview='{message[:50]}...'")
+        logger.info(f"💬 Sending chat message: kind={event_data['kind']} agent='{agent_name}' content_len={len(message)} content_preview='{message[:50]}...'")
 
         await self.send_event_to_ui(event_data, chat_id)
     
@@ -1065,6 +1080,10 @@ class SimpleTransport:
             "payload": payload,
             "corr": event_id,
         }
+        
+        # DEBUG: Log UI tool event emission
+        logger.info(f"🛠️ [UI_TOOL] Emitting tool_call event: tool={tool_name}, component={component_name}, event_id={event_id}, chat_id={chat_id}")
+        
         # Delegate to core event sender for namespacing and sequence handling
         await self.send_event_to_ui(event, chat_id)
 

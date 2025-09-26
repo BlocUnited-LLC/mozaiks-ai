@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import asyncio
-import traceback
 from datetime import datetime, UTC
 from typing import Dict, List, Any, Optional, Union, cast
 import hashlib
@@ -559,7 +558,8 @@ class AG2PersistenceManager:
             try:
                 # Fast check to avoid regex cost when pattern absent
                 if "content=" in content_str and " sender=" in content_str:
-                    import re, json as _json
+                    import re
+                    import json as _json
                     # Non-greedy capture between content=quote and the next quote before sender=
                     m = re.search(r"content=(?:'|\")(?P<inner>.*?)(?:'|\")\s+sender=", content_str, re.DOTALL)
                     if m:
@@ -845,15 +845,17 @@ class AG2PersistenceManager:
                         )
                         # If debit failed due to insufficient tokens, emit pause event
                         if result is None:
-                            from core.events import get_event_dispatcher, SessionPausedEvent
-                            dispatcher = get_event_dispatcher()
-                            await dispatcher.dispatch(SessionPausedEvent(
-                                chat_id=chat_id,
-                                reason="insufficient_tokens",
-                                required_tokens=total_tokens,
-                                user_id=user_id,
-                                enterprise_id=enterprise_id
-                            ))
+                            # SessionPausedEvent temporarily disabled - commenting out to prevent import errors
+                            # from core.events import get_event_dispatcher, SessionPausedEvent
+                            # dispatcher = get_event_dispatcher()
+                            # await dispatcher.dispatch(SessionPausedEvent(
+                            #     chat_id=chat_id,
+                            #     reason="insufficient_tokens",
+                            #     required_tokens=total_tokens,
+                            #     user_id=user_id,
+                            #     enterprise_id=enterprise_id
+                            # ))
+                            logger.warning(f"Token debit failed for chat {chat_id} - insufficient tokens ({total_tokens} required)")
                 
         except Exception as e:  # pragma: no cover
             logger.error(f"Failed to update session metrics for {chat_id}: {e}")

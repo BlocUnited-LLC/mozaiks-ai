@@ -309,7 +309,7 @@ async def get_llm_config(
     if stream:
         # Autogen uses stream via runtime / event layer; we'll handle streaming at the transport level
         # DO NOT add _stream flag to llm_config as it confuses AG2 config validation
-        logger.debug(f"[LLM_CONFIG] Stream mode requested but not adding _stream flag to avoid AG2 validation issues")
+        logger.debug("[LLM_CONFIG] Stream mode requested but not adding _stream flag to avoid AG2 validation issues")
     if extra_config:
         # Merge remaining extras without overwriting core entries already set unless user explicitly wants it
         for k, v in extra_config.items():
