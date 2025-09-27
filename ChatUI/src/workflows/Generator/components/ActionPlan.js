@@ -36,7 +36,7 @@ const ActionPlan = ({
   const safePayload = payload || {};
   
   // DEV NOTE: This component receives the agent's contextual message via the
-  // `payload.description` prop. This is the standardized convention for all
+  // `safePayload.description` prop. This is the standardized convention for all
   // dynamic UI components in this application.
   const config = {
     workflow_title: safePayload.workflow_title || "Generated Workflow",
@@ -48,7 +48,7 @@ const ActionPlan = ({
     description: safePayload.description || null
   };
   
-  const agentMessageId = payload.agent_message_id;
+  const agentMessageId = safePayload.agent_message_id || null;
   const tlog = createToolsLogger({ tool: ui_tool_id || componentId, eventId, workflowName, agentMessageId });
   const [actionStatus, setActionStatus] = useState({});
 

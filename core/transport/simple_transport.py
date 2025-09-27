@@ -1079,11 +1079,15 @@ class SimpleTransport:
             "awaiting_response": True,
             "payload": payload,
             "corr": event_id,
+            "display": display_type,
+            "display_type": display_type,
         }
-        
-        # DEBUG: Log UI tool event emission
-        logger.info(f"🛠️ [UI_TOOL] Emitting tool_call event: tool={tool_name}, component={component_name}, event_id={event_id}, chat_id={chat_id}")
-        
+
+        payload_keys = list(payload.keys()) if isinstance(payload, dict) else []
+        logger.info(
+            f"🛠️ [UI_TOOL] Emitting tool_call event: tool={tool_name}, component={component_name}, display={display_type}, event_id={event_id}, chat_id={chat_id}, payload_keys={payload_keys[:12]}"
+        )
+
         # Delegate to core event sender for namespacing and sequence handling
         await self.send_event_to_ui(event, chat_id)
 
@@ -1276,6 +1280,10 @@ class SimpleTransport:
                         try:
                             safe_message = message.copy()
                             safe_message['data'] = self._serialize_ag2_events(message['data'])
+                            if safe_message.get('type') == 'chat.tool_call':
+                                payload_obj = safe_message.get('data', {}).get('payload', {})
+                                payload_keys = list(payload_obj.keys()) if isinstance(payload_obj, dict) else []
+                                logger.info('TRANSPORT payload keys before send: %s', payload_keys[:12])
                             await websocket.send_json(safe_message)
                         except Exception:
                             # Fallback: attempt to serialize whole message as a last resort

@@ -91,7 +91,10 @@ async def _emit_ui_tool_event_core(
         wf_logger.error(f"❌ [UI_TOOLS] Transport unavailable: {e}")
         raise UIToolError(f"SimpleTransport not available: {e}")
 
-    chat_logger.info(f"🎯 UI tool event: {tool_id} (event={event_id}, display={display})")
+    payload_to_send = {**payload, "workflow_name": workflow_name, "display": display, "mode": payload.get("mode") or display}
+    chat_logger.info(
+        f"🎯 UI tool event: {tool_id} (event={event_id}, display={display}, payload_keys={list(payload_to_send.keys())[:12]})"
+    )
     
     try:
         await transport.send_ui_tool_event(
@@ -100,7 +103,7 @@ async def _emit_ui_tool_event_core(
             tool_name=tool_id,  # use actual tool id
             component_name=tool_id,
             display_type=display,
-            payload={**payload, "workflow_name": workflow_name},
+            payload=payload_to_send,
         )
         wf_logger.info(f"✅ [UI_TOOLS] Emitted UI tool event: {event_id}")
         return event_id

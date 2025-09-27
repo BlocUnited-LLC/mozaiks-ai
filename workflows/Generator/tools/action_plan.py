@@ -449,6 +449,12 @@ async def action_plan(
         "description": agent_message or "Please review this proposed Action Plan.",
         "agent_message_id": agent_message_id,
         "workflow_name": wf_name,
+        # Explicit display hints so downstream transports/clients know to render as an artifact
+        "display": "artifact",
+        "mode": "artifact",
+        # Surface component + tool identifiers for routers that rely on payload only
+        "component_type": "ActionPlan",
+        "tool_name": "ActionPlan",
     }
 
     # Emit UI artifact and wait for a response

@@ -49,12 +49,19 @@ export class DynamicUIHandler {
    */
   async processUIEvent(eventData, sendResponse = null) {
     if (!eventData) return;
-    let { type, data } = eventData;
 
-    // Expect already canonical lowercase event types (runtime no longer emits legacy variants)
-    const originalType = type;
-    if (typeof type !== 'string') {
-      console.warn('⚠️ Received UI event with non-string type, ignoring:', eventData);
+    const originalType = eventData?.type;
+    let type = originalType;
+    let data = eventData?.data;
+
+    // Support transports that send payload fields at the top level instead of nested under data
+    if (data === undefined || data === null) {
+      const { type: _ignoredType, data: _ignoredData, ...rest } = eventData || {};
+      data = Object.keys(rest).length ? rest : {};
+    }
+
+    if (typeof type !== 'string' || !type) {
+      console.warn('⚠️ Received UI event with invalid type, ignoring:', eventData);
       return;
     }
     if (type !== type.toLowerCase()) {

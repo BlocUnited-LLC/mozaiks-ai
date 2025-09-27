@@ -561,9 +561,34 @@ const ChatPage = () => {
         return;
       }
       case 'tool_call': {
-        if (data.component_type) {
-          console.log('🛠️ [TOOL_CALL] Processing UI tool event:', data.tool_name, 'component:', data.component_type);
-          dynamicUIHandler.processUIEvent({ type:'ui_tool_event', ui_tool_id:data.tool_name, eventId: data.tool_call_id || data.corr, workflow_name: currentWorkflowName, payload:{ ...(data.payload||{}), tool_name:data.tool_name, component_type:data.component_type, workflow_name: currentWorkflowName, awaiting_response: data.awaiting_response }});
+        if (data.component_type || (data.data && data.data.component_type)) {
+          const envelope = data || {};
+          const detail = envelope.data || {};
+          const toolName = envelope.tool_name || detail.tool_name || detail.tool || envelope.ui_tool_id || 'UnknownTool';
+          const componentType = envelope.component_type || detail.component_type || detail.component || toolName;
+          const basePayload = detail.payload || envelope.payload || {};
+          const payloadKeys = Object.keys(basePayload);
+          console.log('🛠️ [TOOL_CALL] Processing UI tool event:', toolName, 'component:', componentType);
+          console.log('🛠️ [TOOL_CALL] Raw tool_call data:', envelope);
+          console.log('🛠️ [TOOL_CALL] Payload keys received:', payloadKeys);
+          const derivedDisplay = envelope.display || envelope.display_type || envelope.mode || detail.display || detail.display_type || detail.mode || basePayload.display || basePayload.mode || null;
+          const eventId = envelope.tool_call_id || envelope.corr || detail.tool_call_id || detail.corr || null;
+          const awaiting = envelope.awaiting_response !== undefined ? envelope.awaiting_response : detail.awaiting_response;
+          dynamicUIHandler.processUIEvent({
+            type: 'ui_tool_event',
+            ui_tool_id: toolName,
+            eventId: eventId || undefined,
+            workflow_name: currentWorkflowName,
+            display: derivedDisplay,
+            payload: {
+              ...basePayload,
+              tool_name: toolName,
+              component_type: componentType,
+              workflow_name: currentWorkflowName,
+              awaiting_response: awaiting,
+              ...(derivedDisplay ? { display: derivedDisplay } : {})
+            }
+          });
         } else {
           setMessagesWithLogging(prev => [...prev, { id: data.tool_call_id || `tool-call-${Date.now()}`, sender:'system', agentName:'System', content:`🔧 Tool Call: ${data.tool_name}`, isStreaming:false }]);
         }
@@ -969,6 +994,24 @@ useEffect(() => {
     if (displayMode === 'artifact') {
       console.log('🖼️ [UI] Auto-opening ArtifactPanel for artifact-mode event');
       setIsSidePanelOpen(true);
+      const agentText = payload.agent_message || payload.description || null;
+      if (agentText) {
+        setMessagesWithLogging((prev) => {
+          const hasExisting = prev.some(msg => msg?.metadata?.eventId === (eventId || ui_tool_id) && msg?.metadata?.type === 'ui_tool_agent_message');
+          if (hasExisting) return prev;
+          return [
+            ...prev,
+            {
+              id: `ui-msg-${eventId || Date.now()}`,
+              sender: 'agent',
+              agentName: payload.agentName || 'Agent',
+              content: agentText,
+              isStreaming: false,
+              metadata: { type: 'ui_tool_agent_message', eventId: eventId || ui_tool_id, ui_tool_id }
+            }
+          ];
+        });
+      }
       // Create artifact payload for ArtifactPanel to render
       try {
         const artifactMsg = {
@@ -1025,7 +1068,7 @@ useEffect(() => {
               id: `ui-${eventId || Date.now()}`,
               sender: 'agent',
               agentName: payload.agentName || 'Agent',
-              content: '', // UI tool renders its own visuals
+              content: (payload.agent_message || payload.description || ''), // Surface agent context alongside inline UI
               isStreaming: false,
               uiToolEvent: {
                 ui_tool_id,
