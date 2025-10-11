@@ -119,18 +119,11 @@ if ($Mode -eq 'docker') {
             docker compose -f infra/compose/docker-compose.yml down
             exit 0
         }
-    # FreshRun: clean DB collections and logs before starting
+    # FreshRun: clean logs before starting
     if ($FreshRun) {
-        Write-Host "FreshRun requested: clearing test collections and cleaning saved logs..." -ForegroundColor Yellow
-        $clearScript = Join-Path -Path $ScriptRoot -ChildPath 'scripts\clear_collections.py'
-        if (Test-Path $clearScript) {
-            # Default behavior of script deletes documents and will prompt — pass --yes to avoid prompt
-            Write-Host "Running clear_collections.py --action delete --yes" -ForegroundColor Yellow
-            python $clearScript --action delete --yes
-        } else {
-            Write-Host "clear_collections.py not found; skipping DB cleanup." -ForegroundColor Yellow
-        }
-        # Also remove saved capture logs (now stored under logs\logs)
+        Write-Host "FreshRun requested: cleaning saved logs..." -ForegroundColor Yellow
+        Write-Host "💡 Tip: Use '.\scripts\cleanse.ps1 -Full' for complete cleanup (DB + Docker + caches)" -ForegroundColor Cyan
+        # Remove saved capture logs (now stored under logs\logs)
         if ($CleanLogsBefore -or $true) {
             $logsDir = Join-Path -Path $RepoRoot -ChildPath 'logs\logs'
             if (Test-Path $logsDir) {

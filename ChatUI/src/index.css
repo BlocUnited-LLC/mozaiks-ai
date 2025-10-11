@@ -64,15 +64,74 @@
   font-family: "Hyperjump", sans-serif;
 }
 
-/* Theme color variables (Mozaiks Website palette) */
+/* Theme color variables with CSS variable fallbacks */
 :root {
-  --color-primary: #6d28d9;
-  --color-secondary: #06b6d4;
+  /* Brand scales */
+  --color-primary: #06b6d4;
+  --color-primary-rgb: 6, 182, 212;
+  --color-primary-light: #67e8f9;
+  --color-primary-light-rgb: 103, 232, 249;
+  --color-primary-dark: #0e7490;
+  --color-primary-dark-rgb: 14, 116, 144;
+
+  --color-secondary: #8b5cf6;
+  --color-secondary-rgb: 139, 92, 246;
+  --color-secondary-light: #a78bfa;
+  --color-secondary-light-rgb: 167, 139, 250;
+  --color-secondary-dark: #6d28d9;
+  --color-secondary-dark-rgb: 109, 40, 217;
+
   --color-accent: #f59e0b;
-  --color-dark: #030712;
-  --color-light: #f8fafc;
-  --color-card: #0f172a;
-  --color-border: #1e293b;
+  --color-accent-rgb: 245, 158, 11;
+  --color-accent-light: #fbbf24;
+  --color-accent-light-rgb: 251, 191, 36;
+  --color-accent-dark: #d97706;
+  --color-accent-dark-rgb: 217, 119, 6;
+
+  /* Status scales */
+  --color-success: #10b981;
+  --color-success-rgb: 16, 185, 129;
+  --color-warning: #f59e0b;
+  --color-warning-rgb: 245, 158, 11;
+  --color-error: #ef4444;
+  --color-error-rgb: 239, 68, 68;
+
+  /* Surface + text tokens */
+  --color-background: #0b1220;
+  --color-background-rgb: 11, 18, 32;
+  --color-surface: #0f1724;
+  --color-surface-rgb: 15, 23, 36;
+  --color-surface-alt: #131d33;
+  --color-surface-alt-rgb: 19, 29, 51;
+  --color-surface-overlay: rgba(13, 23, 42, 0.72);
+
+  --color-border-subtle: #1e293b;
+  --color-border-subtle-rgb: 30, 41, 59;
+  --color-border-strong: #334155;
+  --color-border-strong-rgb: 51, 65, 85;
+  --color-border-accent: #06b6d4;
+  --color-border-accent-rgb: 6, 182, 212;
+
+  --color-text-primary: #e6eef8;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #64748b;
+  --color-text-on-accent: #020617;
+
+  /* Legacy aliases maintained for compatibility */
+  --color-dark: var(--color-background);
+  --color-light: var(--color-text-primary);
+  --color-card: var(--color-surface);
+  --color-border: var(--color-border-subtle);
+
+  /* Shadow tokens */
+  --shadow-primary: 0 20px 45px rgba(6, 182, 212, 0.24);
+  --shadow-secondary: 0 20px 45px rgba(139, 92, 246, 0.24);
+  --shadow-accent: 0 18px 40px rgba(245, 158, 11, 0.32);
+  --shadow-success: 0 18px 40px rgba(16, 185, 129, 0.24);
+  --shadow-warning: 0 18px 45px rgba(245, 158, 11, 0.34);
+  --shadow-error: 0 18px 45px rgba(239, 68, 68, 0.3);
+  --shadow-elevated: 0 24px 60px rgba(11, 18, 32, 0.55);
+  --shadow-focus: 0 0 0 3px rgba(8, 145, 178, 0.55);
 }
 
 /* Global base styles */
@@ -82,18 +141,20 @@
   }
   body {
     @apply bg-dark text-light;
+    background-color: var(--color-background);
+    color: var(--color-text-primary);
     font-family: 'Rajdhani', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Noto Sans', 'Helvetica Neue', Arial, sans-serif;
   }
   h1, h2, h3, h4, h5, h6, .heading-font {
     font-family: 'Orbitron', 'Rajdhani', ui-sans-serif, system-ui, sans-serif;
-    color: var(--color-light);
+    color: var(--color-text-primary);
   }
   .logo-font {
     font-family: 'Fagrak Inline', 'Rajdhani', ui-sans-serif, system-ui, sans-serif;
   }
   /* Card and border helpers */
-  .card-bg { background-color: var(--color-card); }
-  .border-default { border-color: var(--color-border); }
+  .card-bg { background-color: var(--color-surface); }
+  .border-default { border-color: var(--color-border-subtle); }
 }
 
 /* Text Shadows and Effects */

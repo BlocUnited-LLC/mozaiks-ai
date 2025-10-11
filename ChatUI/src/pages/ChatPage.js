@@ -49,6 +49,7 @@ const ChatPage = () => {
   const lastArtifactEventRef = useRef(null);
   // Prevent duplicate restores per connection
   const artifactRestoredOnceRef = useRef(false);
+  const artifactCacheValidRef = useRef(false);
   const currentEnterpriseId = enterpriseId || config?.chat?.defaultEnterpriseId || '68542c1109381de738222350';
   const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
   // Helper function to get default workflow from registry
@@ -76,6 +77,9 @@ const ChatPage = () => {
       // First try direct agent field
       if (data.agent && data.agent !== 'Unknown') {
         return data.agent;
+      }
+      if (data.agentName && data.agentName !== 'Unknown') {
+        return data.agentName;
       }
       if (data.agent_name && data.agent_name !== 'Unknown') {
         return data.agent_name;
@@ -180,10 +184,22 @@ const ChatPage = () => {
         // Reset any prior artifact state
         setCurrentArtifactMessages([]);
         lastArtifactEventRef.current = null;
+        artifactCacheValidRef.current = false;
         artifactRestoredOnceRef.current = true; // prevent later restore effect
       } else if (data.chat_exists === true) {
         setChatExists(true);
         console.log('🧬 [META] Backend confirms chat exists. Artifact restore allowed.');
+        if (!data.last_artifact || !data.last_artifact.ui_tool_id) {
+          try {
+            localStorage.removeItem(`mozaiks.last_artifact.${currentChatId}`);
+            localStorage.removeItem(`mozaiks.current_artifact.${currentChatId}`);
+          } catch {}
+          setCurrentArtifactMessages([]);
+          lastArtifactEventRef.current = null;
+          artifactRestoredOnceRef.current = false;
+          artifactCacheValidRef.current = false;
+        }
+
         // If backend already sent last_artifact and we have not restored yet, cache it for restore effect
         if (!artifactRestoredOnceRef.current && data.last_artifact && data.last_artifact.ui_tool_id) {
           try {
@@ -197,6 +213,7 @@ const ChatPage = () => {
               ts: Date.now(),
             }));
             console.log('🧬 [META] Cached last_artifact from server meta event');
+            artifactCacheValidRef.current = true;
           } catch (e) { console.warn('Failed to cache server last_artifact', e); }
         }
       }
@@ -235,9 +252,20 @@ const ChatPage = () => {
               setCurrentArtifactMessages([]);
               lastArtifactEventRef.current = null;
               artifactRestoredOnceRef.current = true;
+              artifactCacheValidRef.current = false;
             } else if (metaData.chat_exists === true) {
               setChatExists(true);
               console.log('🧬 [META] Backend confirms chat exists. Artifact restore allowed.');
+              if (!metaData.last_artifact || !metaData.last_artifact.ui_tool_id) {
+                try {
+                  localStorage.removeItem(`mozaiks.last_artifact.${currentChatId}`);
+                  localStorage.removeItem(`mozaiks.current_artifact.${currentChatId}`);
+                } catch {}
+                setCurrentArtifactMessages([]);
+                lastArtifactEventRef.current = null;
+                artifactRestoredOnceRef.current = false;
+                artifactCacheValidRef.current = false;
+              }
               if (!artifactRestoredOnceRef.current && metaData.last_artifact && metaData.last_artifact.ui_tool_id) {
                 try {
                   const key = `mozaiks.last_artifact.${currentChatId}`;
@@ -250,6 +278,7 @@ const ChatPage = () => {
                     ts: Date.now(),
                   }));
                   console.log('🧬 [META] Cached last_artifact from server meta event');
+                  artifactCacheValidRef.current = true;
                 } catch (e) { console.warn('Failed to cache server last_artifact', e); }
               }
             }
@@ -313,7 +342,7 @@ const ChatPage = () => {
         if (inner.structured_output !== undefined && data.structured_output === undefined) data.structured_output = inner.structured_output;
         if (inner.structured_schema !== undefined && data.structured_schema === undefined) data.structured_schema = inner.structured_schema;
         // UI tool / component hints (input_request etc.)
-        ['component_type','ui_tool_id','tool_name','tool_call_id','request_id','progress_percent','prompt'].forEach(f => {
+        ['component_type','ui_tool_id','tool_name','tool_call_id','request_id','progress_percent','prompt','success','interaction_type','status','corr','call_id','payload'].forEach(f => {
           if (inner[f] !== undefined && data[f] === undefined) data[f] = inner[f];
         });
       }
@@ -450,7 +479,14 @@ const ChatPage = () => {
         if (!content.trim()) return;
         const agentName = extractAgentName(data);
         setMessagesWithLogging(prev => {
-          const updated = [...prev];
+          // Remove any thinking messages when agent actually speaks
+          const thinkingMessages = prev.filter(m => m.isThinking);
+          if (thinkingMessages.length > 0) {
+            console.log('💭 [THINKING] Text event received - removing', thinkingMessages.length, 'thinking bubble(s)');
+          }
+          const filtered = prev.filter(m => !m.isThinking);
+          const updated = [...filtered];
+          
           if (updated.length) {
             const last = updated[updated.length-1];
             if (last.__streaming && last.agentName === agentName) {
@@ -595,6 +631,12 @@ const ChatPage = () => {
         return;
       }
       case 'tool_response': {
+        // Suppress intermediate auto-tool responses (already handled by dynamicUIHandler)
+        // Only show failures or non-auto-tool responses
+        if (data.interaction_type === 'auto_tool' && data.success) {
+          console.log(`⏭️ Skipping auto-tool success response (${data.tool_name}) - handled by UI renderer`);
+          return;
+        }
         const responseContent = data.success ? `✅ Tool Response: ${data.content || 'Success'}` : `❌ Tool Failed: ${data.content || 'Error'}`;
         setMessagesWithLogging(prev => [...prev, { id: data.tool_call_id || `tool-response-${Date.now()}`, sender:'system', agentName:'System', content: responseContent, isStreaming:false }]);
         return;
@@ -604,6 +646,33 @@ const ChatPage = () => {
         return;
       }
       case 'select_speaker': {
+        // Speaker selection marks a new agent taking over - inject thinking state
+        const nextAgentName = data.agent || data.agent_name || data.selected_speaker || 'Agent';
+        
+        console.log('💭 [THINKING] Speaker selected:', nextAgentName, '- adding thinking bubble');
+        
+        // Add a temporary "thinking" message that will be removed when next agent speaks
+        setMessagesWithLogging(prev => {
+          // Remove any existing thinking messages first
+          const existingThinking = prev.filter(m => m.isThinking);
+          if (existingThinking.length > 0) {
+            console.log('💭 [THINKING] Removing', existingThinking.length, 'existing thinking bubble(s) before adding new one');
+          }
+          
+          const filtered = prev.filter(m => !m.isThinking);
+          return [
+            ...filtered,
+            {
+              id: `thinking-${Date.now()}`,
+              sender: 'agent',
+              agentName: nextAgentName,
+              content: '', // Empty content - will show thinking indicator
+              isThinking: true,
+              timestamp: Date.now()
+            }
+          ];
+        });
+        
         // Speaker selection often marks a new turn/run start. If we have an open artifact
         // from a prior sequence, collapse it now and clear the cache.
         if (lastArtifactEventRef.current && isSidePanelOpen) {
@@ -780,6 +849,7 @@ useEffect(() => {
     setCurrentArtifactMessages([]);
     lastArtifactEventRef.current = null;
     artifactRestoredOnceRef.current = false;
+    artifactCacheValidRef.current = false;
     setCurrentChatId(null);
   }, []);
 
@@ -1004,7 +1074,7 @@ useEffect(() => {
             {
               id: `ui-msg-${eventId || Date.now()}`,
               sender: 'agent',
-              agentName: payload.agentName || 'Agent',
+              agentName: payload.agentName || payload.agent_name || update.agent_name || update.agent || 'Agent',
               content: agentText,
               isStreaming: false,
               metadata: { type: 'ui_tool_agent_message', eventId: eventId || ui_tool_id, ui_tool_id }
@@ -1017,13 +1087,14 @@ useEffect(() => {
         const artifactMsg = {
           id: `ui-artifact-${eventId || Date.now()}`,
           sender: 'agent',
-          agentName: payload.agentName || 'Agent',
+          agentName: payload.agentName || payload.agent_name || update.agent_name || update.agent || 'Agent',
           content: payload.structured_output || payload.content || payload || {},
           isStreaming: false,
           uiToolEvent: { ui_tool_id, payload, eventId, workflow_name, onResponse, display: displayMode }
         };
         console.log('🖼️ [UI] Setting currentArtifactMessages', artifactMsg.id);
         setCurrentArtifactMessages([artifactMsg]);
+        artifactCacheValidRef.current = true;
         
         // Also cache to localStorage for persistence across panel open/close
         try {
@@ -1062,25 +1133,32 @@ useEffect(() => {
   // Don't inject artifact UIs into the chat feed; they'll render in ArtifactPanel only
   return;
           }
-          setMessagesWithLogging((prev) => [
-            ...prev,
-            {
-              id: `ui-${eventId || Date.now()}`,
-              sender: 'agent',
-              agentName: payload.agentName || 'Agent',
-              content: (payload.agent_message || payload.description || ''), // Surface agent context alongside inline UI
-              isStreaming: false,
-              uiToolEvent: {
-                ui_tool_id,
-                payload,
-                eventId,
-                workflow_name,
-                onResponse,
-                // Surface display mode for inline Completed chip logic
-    display: displayMode || 'inline',
+          setMessagesWithLogging((prev) => {
+            const thinkingMessages = prev.filter(m => m.isThinking);
+            if (thinkingMessages.length > 0) {
+              console.log('💭 [THINKING] UI tool event (inline) received - removing', thinkingMessages.length, 'thinking bubble(s)');
+            }
+            
+            return [
+              ...prev.filter(m => !m.isThinking), // Remove thinking bubbles when UI tool event arrives
+              {
+                id: `ui-${eventId || Date.now()}`,
+                sender: 'agent',
+                agentName: payload.agentName || payload.agent_name || update.agent_name || update.agent || 'Agent',
+                content: (payload.agent_message || payload.description || ''), // Surface agent context alongside inline UI
+                isStreaming: false,
+                uiToolEvent: {
+                  ui_tool_id,
+                  payload,
+                  eventId,
+                  workflow_name,
+                  onResponse,
+                  // Surface display mode for inline Completed chip logic
+      display: displayMode || 'inline',
+                },
               },
-            },
-          ]);
+            ];
+          });
         }
       } catch (err) {
         console.error('❌ Failed to handle DynamicUIHandler update in ChatPage:', err);
@@ -1109,8 +1187,32 @@ useEffect(() => {
       isStreaming: false
     };
     
-    // Optimistic add: add user message to chat immediately
-    setMessagesWithLogging(prevMessages => [...prevMessages, userMessage]);
+    console.log('💭 [THINKING] User message sent, adding thinking bubble');
+    
+    // Optimistic add: add user message to chat immediately, then add thinking indicator
+    setMessagesWithLogging(prevMessages => {
+      const existingThinking = prevMessages.filter(m => m.isThinking);
+      if (existingThinking.length > 0) {
+        console.log('💭 [THINKING] Removing', existingThinking.length, 'existing thinking bubble(s)');
+      }
+      
+      const thinkingBubble = {
+        id: `thinking-${Date.now()}`,
+        sender: 'agent',
+        agentName: 'Agent',
+        content: '',
+        isThinking: true,
+        timestamp: Date.now()
+      };
+      
+      console.log('💭 [THINKING] Adding thinking bubble:', thinkingBubble.id);
+      
+      return [
+        ...prevMessages.filter(m => !m.isThinking), // Remove any existing thinking bubbles
+        userMessage,
+        thinkingBubble
+      ];
+    });
     
     // Send directly to backend workflow via WebSocket
     try {
@@ -1229,7 +1331,7 @@ useEffect(() => {
     setIsSidePanelOpen((open) => {
       const next = !open;
       
-      if (next && currentArtifactMessages.length === 0) {
+      if (next && currentArtifactMessages.length === 0 && artifactCacheValidRef.current) {
         // Panel opening and no current artifact - try to restore from cache
         try {
           const cacheKey = `mozaiks.current_artifact.${currentChatId}`;
@@ -1248,8 +1350,15 @@ useEffect(() => {
             console.log('🖼️ [UI] Restored artifact from cache on panel open');
             setCurrentArtifactMessages([artifactMsg]);
             lastArtifactEventRef.current = artifactMsg.uiToolEvent?.eventId || 'cached';
+          } else {
+            artifactCacheValidRef.current = false;
           }
-        } catch (e) { console.warn('Failed to restore artifact from cache', e); }
+        } catch (e) {
+          artifactCacheValidRef.current = false;
+          console.warn('Failed to restore artifact from cache', e);
+        }
+      } else if (next && currentArtifactMessages.length === 0) {
+        artifactCacheValidRef.current = false;
       }
       
       console.log(`🖼️ [UI] Panel ${next ? 'opening' : 'closing'} - keeping artifact cached`);
@@ -1281,7 +1390,7 @@ useEffect(() => {
       const restoredMsg = {
         id: `ui-restored-${Date.now()}`,
         sender: 'agent',
-        agentName: cached.payload?.agentName || 'Agent',
+        agentName: cached.payload?.agentName || cached.payload?.agent_name || cached.agentName || cached.agent_name || 'Agent',
         content: cached.payload?.structured_output || cached.payload || {},
         isStreaming: false,
         uiToolEvent: {

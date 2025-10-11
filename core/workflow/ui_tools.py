@@ -62,7 +62,8 @@ async def _emit_ui_tool_event_core(
     payload: Dict[str, Any],
     display: str = "inline",
     chat_id: Optional[str] = None,
-    workflow_name: str = "unknown"
+    workflow_name: str = "unknown",
+    agent_name: Optional[str] = None
 ) -> str:
     """
     Core function to emit a UI tool event to the frontend.
@@ -96,6 +97,10 @@ async def _emit_ui_tool_event_core(
         f"🎯 UI tool event: {tool_id} (event={event_id}, display={display}, payload_keys={list(payload_to_send.keys())[:12]})"
     )
     
+    # Extract agent_name from payload if not explicitly provided
+    if not agent_name and isinstance(payload_to_send, dict):
+        agent_name = payload_to_send.get("agent_name")
+    
     try:
         await transport.send_ui_tool_event(
             event_id=event_id,
@@ -104,6 +109,7 @@ async def _emit_ui_tool_event_core(
             component_name=tool_id,
             display_type=display,
             payload=payload_to_send,
+            agent_name=agent_name,
         )
         wf_logger.info(f"✅ [UI_TOOLS] Emitted UI tool event: {event_id}")
         return event_id
@@ -140,12 +146,17 @@ async def use_ui_tool(
     """
     wf_logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id)
     start = _dt.datetime.now(_dt.timezone.utc)
+    
+    # Extract agent_name from payload for proper attribution
+    agent_name = payload.get("agent_name") if isinstance(payload, dict) else None
+    
     event_id = await _emit_ui_tool_event_core(
         tool_id=tool_id,
         payload=payload,
         display=display,
         chat_id=chat_id,
         workflow_name=workflow_name,
+        agent_name=agent_name,
     )
     try:
         # Try to log via tools logger (optional import)

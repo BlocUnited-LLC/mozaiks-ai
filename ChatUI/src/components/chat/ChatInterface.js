@@ -55,13 +55,13 @@ const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRe
       )}
 
       {/* UI Tool Component */}
-      <div className="my-4 p-4 border border-cyan-400/20 rounded-lg bg-gradient-to-r from-cyan-500/5 to-purple-500/5">
+  <div className="my-4 p-4 border border-[rgba(var(--color-primary-light-rgb),0.2)] rounded-lg bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)]">
         {/* Inline-only completion chip */}
         {completed && ((uiToolEvent.display || uiToolEvent.payload?.display || uiToolEvent.payload?.mode || 'inline') === 'inline') && (
           <div className="mb-2">
             <span
               aria-label="Completed"
-              className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 select-none"
+              className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded-full bg-[rgba(var(--color-success-rgb),0.15)] text-[var(--color-success)] border border-[rgba(var(--color-success-rgb),0.3)] select-none"
             >
               ✓ Completed
             </span>
@@ -188,15 +188,15 @@ const ModernChatInterface = ({
   }, []);
 
   return (
-    <div className="flex flex-col h-full rounded-2xl border border-cyan-400/30 md:overflow-hidden overflow-visible shadow-2xl bg-gradient-to-br from-white/5 to-cyan-500/5 backdrop-blur-sm cosmic-ui-module">
+    <div className="flex flex-col h-full rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] md:overflow-hidden overflow-visible shadow-2xl bg-gradient-to-br from-white/5 to-[rgba(var(--color-primary-rgb),0.05)] backdrop-blur-sm cosmic-ui-module">
   {/* Per-turn loading: rely on subtle typing indicator inside messages area; avoid full-page spinner after init */}
       
       {/* Fixed Command Center Header - Never moves */}
-  <div className="flex-shrink-0 px-3 py-1 md:px-4 md:py-2 border-b border-cyan-400/20 bg-gradient-to-r from-cyan-500/5 to-purple-500/5 backdrop-blur-xl shadow-lg rounded-lg md:rounded-xl mx-1 md:mx-2 mt-1 md:mt-2 mb-1">
+  <div className="flex-shrink-0 px-3 py-1 md:px-4 md:py-2 border-b border-[rgba(var(--color-primary-light-rgb),0.2)] bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)] backdrop-blur-xl shadow-lg rounded-lg md:rounded-xl mx-1 md:mx-2 mt-1 md:mt-2 mb-1">
         <div className="flex items-center justify-between">
           <div className="flex-1">
             <div className="cosmic-module-header text-sm md:text-base leading-tight">
-              <span className="text-cyan-300">🚀</span>
+              <span className="text-[var(--color-primary-light)]">🚀</span>
               {workflowName ? workflowName.charAt(0).toUpperCase() + workflowName.slice(1) : 'Command Center Interface'}
             </div>
             {connectionStatus && (
@@ -213,7 +213,7 @@ const ModernChatInterface = ({
                 {onArtifactToggle && (
                   <button
                     onClick={onArtifactToggle}
-                    className="md:hidden absolute right-1 top-[calc(50%-18px)] -translate-y-1/2 w-14 h-14 rounded-2xl border bg-gradient-to-r from-cyan-500/15 to-purple-500/15 backdrop-blur-sm artifact-hover-glow artifact-cta flex items-center justify-center transition-all duration-300 z-10"
+                    className="md:hidden absolute right-1 top-[calc(50%-18px)] -translate-y-1/2 w-14 h-14 rounded-2xl border bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.15)] to-[rgba(var(--color-secondary-rgb),0.15)] backdrop-blur-sm artifact-hover-glow artifact-cta flex items-center justify-center transition-all duration-300 z-10"
                     title="Artifact Canvas"
                     aria-label="Open Artifact Canvas"
                   >
@@ -229,11 +229,11 @@ const ModernChatInterface = ({
             {/* Initial Message - only show for UserDriven workflows and if message exists */}
             {startupMode === 'UserDriven' && initialMessageToUser && (
               <div className="mt-2 flex justify-center">
-                <div className="relative px-3 py-1.5 rounded-lg bg-gradient-to-r from-fuchsia-500/20 to-purple-500/20 border border-fuchsia-500/30 flex items-center justify-center space-x-2 backdrop-blur-sm max-w-md">
-                  <div className="absolute inset-0 bg-gradient-to-r from-fuchsia-500/10 to-purple-500/10 rounded-lg blur-sm"></div>
+                <div className="relative px-3 py-1.5 rounded-lg bg-gradient-to-r from-[rgba(var(--color-secondary-rgb),0.2)] to-[rgba(var(--color-secondary-dark-rgb),0.2)] border border-[rgba(var(--color-secondary-rgb),0.3)] flex items-center justify-center space-x-2 backdrop-blur-sm max-w-md">
+                  <div className="absolute inset-0 bg-gradient-to-r from-[rgba(var(--color-secondary-rgb),0.1)] to-[rgba(var(--color-secondary-dark-rgb),0.1)] rounded-lg blur-sm"></div>
                   {/* Animated pulse dot - aligned to left */}
-                  <div className="relative w-2 h-2 bg-fuchsia-400 rounded-full animate-pulse shadow-sm shadow-fuchsia-400/50 flex-shrink-0"></div>
-                  <span className="relative text-fuchsia-300 text-xs font-semibold tracking-wide oxanium text-center">
+                  <div className="relative w-2 h-2 bg-[rgba(var(--color-secondary-rgb),0.8)] rounded-full animate-pulse [box-shadow:0_0_6px_rgba(var(--color-secondary-rgb),0.5)] flex-shrink-0"></div>
+                  <span className="relative text-[rgba(var(--color-secondary-rgb),0.7)] text-xs font-semibold tracking-wide oxanium text-center">
                     {initialMessageToUser}
                   </span>
                 </div>
@@ -260,7 +260,7 @@ const ModernChatInterface = ({
                 */}
                 <button
                   onClick={onArtifactToggle}
-                  className="hidden md:block group relative p-3 rounded-lg bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border transition-all duration-300 backdrop-blur-sm artifact-hover-glow artifact-cta"
+                  className="hidden md:block group relative p-3 rounded-lg bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.1)] to-[rgba(var(--color-secondary-rgb),0.1)] border transition-all duration-300 backdrop-blur-sm artifact-hover-glow artifact-cta"
                   title="Toggle Artifact Canvas"
                 >
                   <img 
@@ -268,7 +268,7 @@ const ModernChatInterface = ({
                     className="w-10 h-10 opacity-70 group-hover:opacity-100 transition-all duration-300 group-hover:scale-105" 
                     alt="Artifact Canvas" 
                   />
-                  <div className="absolute inset-0 bg-cyan-400/10 rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
+                  <div className="absolute inset-0 bg-[rgba(var(--color-primary-light-rgb),0.1)] rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
                 </button>
               </>
             )}
@@ -344,6 +344,7 @@ const ModernChatInterface = ({
                   isStructuredCapable={isStructuredCapable}
                   structuredOutput={chat.structuredOutput}
                   structuredSchema={chat.structuredSchema}
+                  isThinking={chat.isThinking}
                 />
                 
                 {/* Render UI Tool Events */}
@@ -371,7 +372,7 @@ const ModernChatInterface = ({
           {loading && (
             <div className="flex justify-start px-0 message-container">
               {/* Minimal, non-bubble typing indicator to avoid appearing as an empty chat bubble */}
-              <div className="mt-1 px-2 py-1 rounded-md bg-transparent text-cyan-300/70 flex items-center gap-1 text-xs font-mono tracking-wide typing-indicator" aria-label="Assistant is typing" role="status">
+              <div className="mt-1 px-2 py-1 rounded-md bg-transparent text-[rgba(var(--color-primary-light-rgb),0.7)] flex items-center gap-1 text-xs font-mono tracking-wide typing-indicator" aria-label="Assistant is typing" role="status">
                 <span className="typing-dot" />
                 <span className="typing-dot delay-150" />
                 <span className="typing-dot delay-300" />
@@ -396,7 +397,7 @@ const ModernChatInterface = ({
       </div>
 
   {/* Fixed Transmission Input Area - Never moves */}
-            <div className={`flex-shrink-0 p-1.5 md:p-3 border-t border-cyan-400/20 bg-gradient-to-r from-cyan-500/5 to-purple-500/5 backdrop-blur-xl shadow-lg transition-all duration-500 transmission-input-tight`}> 
+            <div className={`flex-shrink-0 p-1.5 md:p-3 border-t border-[rgba(var(--color-primary-light-rgb),0.2)] bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)] backdrop-blur-xl shadow-lg transition-all duration-500 transmission-input-tight`}>
         <form onSubmit={onSubmitClick} className="flex gap-3 flex-row items-center">
           <div className="flex-1 relative min-w-0 flex items-center">
             <textarea
@@ -413,10 +414,10 @@ const ModernChatInterface = ({
               placeholder={tokensExhausted ? "Tokens exhausted - please upgrade to continue..." : "Transmit your message..."}
               disabled={buttonText === 'NEXT' || tokensExhausted}
               rows={1}
-              className={`w-full bg-white/10 border-2 rounded-xl px-3 py-2 mt-0.5 text-cyan-50 placeholder-cyan-400/80 focus:outline-none resize-none transition-all duration-300 transmission-typing-font min-h-[40px] max-h-[120px] my-scroll1 backdrop-blur-sm ${
+              className={`w-full bg-white/10 border-2 rounded-xl px-3 py-2 mt-0.5 text-[var(--color-text-primary)] text-slate-100 placeholder:text-[var(--color-text-secondary)] placeholder:text-slate-400 focus:outline-none resize-none transition-all duration-300 transmission-typing-font min-h-[40px] max-h-[120px] my-scroll1 backdrop-blur-sm ${
                 hasUserInteracted 
-                  ? 'border-cyan-400/50 focus:border-cyan-400/80 focus:bg-white/15 focus:shadow-[0_0_25px_rgba(51,240,250,0.4)]' 
-                  : 'border-cyan-400/30 focus:border-cyan-400/70 focus:bg-white/15 focus:shadow-[0_0_30px_rgba(51,240,250,0.5)] shadow-[0_0_15px_rgba(51,240,250,0.2)]'
+                  ? 'border-[rgba(var(--color-primary-light-rgb),0.5)] focus:border-[rgba(var(--color-primary-light-rgb),0.8)] focus:bg-white/15 focus:shadow-[0_0_25px_rgba(var(--color-primary-light-rgb),0.4)]' 
+                  : 'border-[rgba(var(--color-primary-light-rgb),0.3)] focus:border-[rgba(var(--color-primary-light-rgb),0.7)] focus:bg-white/15 focus:shadow-[0_0_30px_rgba(var(--color-primary-light-rgb),0.5)] shadow-[0_0_15px_rgba(var(--color-primary-light-rgb),0.2)]'
               }`}
               style={{ 
                 height: '40px',
@@ -436,7 +437,7 @@ const ModernChatInterface = ({
               px-2 py-1.5 rounded-md transition-all duration-300 min-w-[40px] w-auto h-9 oxanium font-bold text-[13px] flex items-center justify-center letter-spacing-wide border-2
               ${(!message.trim() || tokensExhausted)
                 ? 'bg-gray-800/50 text-gray-400 cursor-not-allowed border-gray-600/50' 
-                : 'bg-gradient-to-r from-cyan-500/80 to-blue-500/80 hover:from-cyan-400/90 hover:to-blue-400/90 text-white border-cyan-400/50 hover:border-cyan-300/70 shadow-sm shadow-cyan-500/10 hover:shadow-cyan-400/20 hover:scale-105 active:scale-95'
+                : 'bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.8)] to-[rgba(var(--color-primary-dark-rgb),0.8)] hover:from-[rgba(var(--color-primary-light-rgb),0.9)] hover:to-[rgba(var(--color-primary-light-rgb),0.9)] text-white border-[rgba(var(--color-primary-light-rgb),0.5)] hover:border-[rgba(var(--color-primary-light-rgb),0.7)] shadow-sm [box-shadow:0_0_0_rgba(var(--color-primary-rgb),0.1)] hover:[box-shadow:0_0_0_rgba(var(--color-primary-light-rgb),0.2)] hover:scale-105 active:scale-95'
               }
             `}
           >

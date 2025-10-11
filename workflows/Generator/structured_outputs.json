@@ -1,120 +1,163 @@
 {
   "structured_outputs": {
     "models": {
-      "AgentSpec": {
+      "WorkflowAgent": {
         "type": "model",
         "fields": {
-          "agent_title": {
+          "name": {
             "type": "str",
-            "description": "Short name of the agent"
+            "description": "Agent identifier (unique within the workflow)"
           },
-          "agent_type": {
+          "description": {
             "type": "str",
-            "enum": [
-              "ContextualAgent",
-              "FunctionalAgent",
-              "ThirdPartyAgent",
-              "InterviewAgent",
-              "UIToolsAgent"
-            ],
-            "description": "Defines whether the agent is contextual only, requires tools, external APIs, interviewer, or UI stubs."
+            "description": "Short human-readable description of the agent's responsibilities (displayed in the UI)."
           },
-          "agent_description": {
-            "type": "str",
-            "description": "Explicit role and behavior of the agent. Must explain how listed services are used (or clarify none are needed)."
-          },
-          "services": {
+          "integrations": {
             "type": "list",
             "items": "str",
-            "description": "List of external services required. Leave empty if none. Services must be proper case (e.g., 'Slack', 'Google Sheets'). Do NOT include payments or alternative LLMs/frameworks."
+            "description": "External third-party APIs/services this agent uses (PascalCase). Examples: [\"GoogleAnalytics\", \"Slack\", \"MozaiksPay\"]. Include ALL external API interactions (read/write/execute). Use [] when no external APIs are required."
+          },
+          "operations": {
+            "type": "list",
+            "items": "str",
+            "description": "Workflow-internal logic this agent executes (snake_case). Examples: [\"calculate_taxes\", \"validate_email\", \"format_report\"]. Includes calculations, validations, transformations, and business logic. May touch platform DB (that's infrastructure, not third-party). Use [] when no operations apply."
+          },
+          "human_interaction": {
+            "type": "str",
+            "allowed_values": [
+              "none",
+              "context",
+              "approval"
+            ],
+            "description": "Human involvement mode for THIS SPECIFIC AGENT. none = fully automated execution; context = pauses to collect user information/clarification; approval = pauses for human decision/sign-off. Set based on interaction_mode: autonomous→none only; checkpoint_approval→approval for gates; conversational→context for input collection."
           }
         }
       },
-      "ModuleSpec": {
+      "WorkflowPhase": {
         "type": "model",
         "fields": {
-          "module_title": {
+          "name": {
             "type": "str",
-            "description": "Concise name of the module"
+            "description": "Phase title (e.g., Intake, Execution, QA)"
           },
-          "module_description": {
+          "description": {
             "type": "str",
-            "description": "Plain-language purpose of the module"
-          },
-          "human_in_the_loop": {
-            "type": "bool",
-            "description": "Whether this module requires human input or approval (true/false)."
+            "description": "Description of the phase goals and outputs. Should include Phase prefix (e.g., 'Phase 1:') and handoff clause when applicable."
           },
           "agents": {
             "type": "list",
-            "items": "AgentSpec",
-            "description": "Agents contained in this module."
+            "items": "WorkflowAgent",
+            "description": "Agents participating in this phase (at least one)."
+          }
+        }
+      },
+      "WorkflowSpec": {
+        "type": "model",
+        "fields": {
+          "name": {
+            "type": "str",
+            "description": "Human-readable workflow name"
+          },
+          "model": {
+            "type": "str",
+            "description": "Primary model or API key used by agents in this workflow (e.g., gpt-5)."
+          },
+          "description": {
+            "type": "str",
+            "description": "Paragraph-length summary (400-600 chars) explaining when the workflow triggers, what it does, and what business value it delivers. MUST follow trigger-specific patterns defined in ActionPlanArchitect instructions."
+          },
+          "initiated_by": {
+            "type": "literal",
+            "values": [
+              "user",
+              "system",
+              "external_event"
+            ],
+            "description": "Who or what starts this workflow. user = human explicitly starts (form submit, button click, chat); system = platform automatically starts (cron schedule, database condition); external_event = external service triggers (webhook from third-party)."
+          },
+          "trigger_type": {
+            "type": "literal",
+            "values": [
+              "form_submit",
+              "chat_start",
+              "cron_schedule",
+              "webhook",
+              "database_condition"
+            ],
+            "description": "Specific mechanism that initiates workflow execution. form_submit = user submits web form; chat_start = user initiates conversational session; cron_schedule = time-based trigger; webhook = external service sends HTTP POST; database_condition = internal database state meets trigger criteria."
+          },
+          "interaction_mode": {
+            "type": "literal",
+            "values": [
+              "autonomous",
+              "checkpoint_approval",
+              "conversational"
+            ],
+            "description": "Human involvement pattern during execution. autonomous = fully automated, no human input during execution; checkpoint_approval = autonomous with specific human approval gates (requires_approval=true agents); conversational = multi-turn dialogue with user throughout."
+          },
+          "phases": {
+            "type": "list",
+            "items": "WorkflowPhase",
+            "description": "Ordered list of phases that make up the workflow."
           }
         }
       },
       "ActionPlan": {
         "type": "model",
         "fields": {
-          "workflow_title": {
-            "type": "str",
-            "description": "Concise workflow title"
-          },
-          "workflow_description": {
-            "type": "str",
-            "description": "Short description of purpose and value"
-          },
-          "mermaid_flow": {
-            "type": "str",
-            "description": "Mermaid flowchart diagram; MUST start with 'flowchart LR' and map modules \u00e2\u2020\u2019 agents \u00e2\u2020\u2019 services."
-          },
-          "modules": {
-            "type": "list",
-            "items": "ModuleSpec",
-            "description": "List of modules, each containing agents, services, and human-in-the-loop indicator."
-          },
-          "constraints": {
-            "type": "list",
-            "items": "str",
-            "description": "Explicit rules, preferences, or limitations for the automation process. Can be empty."
+          "workflow": {
+            "type": "WorkflowSpec",
+            "description": "Workflow definition produced by the ActionPlanArchitect"
           }
         }
       },
-      "ContextAgentOutput": {
+      "ActionPlanCall": {
         "type": "model",
         "fields": {
           "ActionPlan": {
             "type": "ActionPlan",
-            "description": "The Action Plan object (required)."
+            "description": "Workflow container passed to the Action Plan UI tool (PascalCase to match tool arg)."
           },
           "agent_message": {
             "type": "str",
-            "description": "Message prompting the user to review the Action Plan."
+            "description": "Single friendly review prompt (<=140 chars)."
           }
         }
       },
-      "APIKeyRequest": {
+      "MermaidSequenceDiagram": {
         "type": "model",
         "fields": {
-          "service": {
+          "workflow_name": {
             "type": "str",
-            "description": "Lowercase identifier of the service requiring an API key (e.g., 'slack', 'google_sheets')."
+            "description": "Workflow name this diagram represents"
           },
-          "description": {
+          "mermaid_diagram": {
             "type": "str",
-            "description": "Purpose of this API key, derived from the agent_description in the Action Plan."
+            "description": "Complete Mermaid sequence diagram text, beginning with 'sequenceDiagram'. Must include required blank line after participant declarations."
           },
-          "mask_input": {
-            "type": "bool",
-            "description": "Always true to hide sensitive input."
+          "legend": {
+            "type": "list",
+            "items": "str",
+            "description": "Optional phase legend entries (P1: Phase Name). Provide [] when no legend is required."
+          }
+        }
+      },
+      "MermaidSequenceDiagramCall": {
+        "type": "model",
+        "fields": {
+          "MermaidSequenceDiagram": {
+            "type": "MermaidSequenceDiagram",
+            "description": "Diagram payload rendered after the Action Plan is approved."
           },
           "agent_message": {
             "type": "str",
-            "description": "Message prompting the user to provide API Key."
+            "description": "Concise invitation (<=140 chars) asking the user to review the diagram."
           }
         }
       },
       "DatabaseRef": {
         "type": "model",
+        "NOTE": "DEPRECATED - Kept for backwards compatibility. New context variables use definitions+agents structure with source.type discrimination.",
         "fields": {
           "database_name": {
             "type": "str",
@@ -137,22 +180,59 @@
       "DatabaseVariable": {
         "type": "model",
         "fields": {
-          "name": { "type": "str", "description": "Database variable name" },
-          "description": { "type": "str", "description": "Purpose / usage in workflow" },
-          "type": { "type": "optional_str", "description": "Optional type hint for downstream consumers (e.g., string|boolean)" },
-          "database": { "type": "DatabaseRef", "description": "Database reference information" }
+          "name": {
+            "type": "str",
+            "description": "Database variable name"
+          },
+          "description": {
+            "type": "str",
+            "description": "Purpose / usage in workflow"
+          },
+          "type": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Optional type hint for downstream consumers (e.g., string|boolean)"
+          },
+          "database": {
+            "type": "DatabaseRef",
+            "description": "Database reference information"
+          }
         }
       },
       "EnvironmentVariable": {
         "type": "model",
         "fields": {
-          "name": { "type": "str", "description": "Environment variable name" },
-          "description": { "type": "str", "description": "Purpose / usage in workflow" },
-          "type": { "type": "optional_str", "description": "Optional type hint (boolean|integer|string)" },
-          "env_var": { "type": "str", "description": "Underlying environment variable key" },
+          "name": {
+            "type": "str",
+            "description": "Environment variable name"
+          },
+          "description": {
+            "type": "str",
+            "description": "Purpose / usage in workflow"
+          },
+          "type": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Optional type hint (boolean|integer|string)"
+          },
+          "env_var": {
+            "type": "str",
+            "description": "Underlying environment variable key"
+          },
           "default": {
             "type": "union",
-            "variants": [ "null", "str", "bool", "int" ],
+            "variants": [
+              "null",
+              "str",
+              "bool",
+              "int"
+            ],
             "description": "Fallback value when the environment variable is not set"
           }
         }
@@ -160,13 +240,106 @@
       "DeclarativeVariable": {
         "type": "model",
         "fields": {
-          "name": { "type": "str", "description": "Declarative variable name" },
-          "description": { "type": "str", "description": "Purpose / usage in workflow" },
-          "type": { "type": "optional_str", "description": "Optional type hint (string|boolean|integer|dict)" },
+          "name": {
+            "type": "str",
+            "description": "Declarative variable name"
+          },
+          "description": {
+            "type": "str",
+            "description": "Purpose / usage in workflow"
+          },
+          "type": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Optional type hint (string|boolean|integer|dict)"
+          },
           "value": {
             "type": "union",
-            "variants": [ "str", "bool", "int", "float", "dict" ],
+            "variants": [
+              "str",
+              "bool",
+              "int",
+              "float",
+              "dict"
+            ],
             "description": "Literal value injected into context"
+          }
+        }
+      },
+      "DerivedTriggerMatch": {
+        "type": "model",
+        "fields": {
+          "equals": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Exact string match required for the trigger (agent_text only)."
+          },
+          "contains": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Substring match evaluated against emitted agent text (agent_text only)."
+          },
+          "regex": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Regular expression applied to emitted agent text (agent_text only)."
+          }
+        }
+      },
+      "DerivedTrigger": {
+        "type": "model",
+        "fields": {
+          "type": {
+            "type": "literal",
+            "values": [
+              "agent_text",
+              "ui_response"
+            ],
+            "description": "Trigger mode: agent_text (passive detection) or ui_response (active UI tool response)."
+          },
+          "agent": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Agent whose output is monitored (required when type=agent_text)."
+          },
+          "match": {
+            "type": "union",
+            "variants": [
+              "DerivedTriggerMatch",
+              "null"
+            ],
+            "description": "Match conditions for agent_text triggers. Must be omitted for ui_response triggers."
+          },
+          "tool": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Snake_case tool name responsible for updating the variable (required when type=ui_response)."
+          },
+          "response_key": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Key in the UI tool response payload whose value seeds the derived variable (required when type=ui_response)."
           }
         }
       },
@@ -175,51 +348,50 @@
         "fields": {
           "name": {
             "type": "str",
-            "description": "Derived variable name (computed, not persisted)"
-          },
-          "trigger_type": {
-            "type": "literal",
-            "values": [
-              "agent_text_equals"
-            ],
-            "description": "Type of deterministic trigger rule"
-          },
-          "source_agent": {
-            "type": "str",
-            "description": "Agent whose output activates this derived variable"
-          },
-          "trigger_value": {
-            "type": "str",
-            "description": "Exact value required to satisfy trigger (e.g., NEXT)"
+            "description": "Derived variable name (computed, not persisted)."
           },
           "description": {
             "type": "str",
-            "description": "Purpose / effect of the derived variable when true"
+            "description": "Purpose / effect of the derived variable. Context variables remain hidden from the frontend unless surfaced explicitly via UI tooling."
+          },
+          "type": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Optional type hint for downstream consumers (e.g., string|boolean|json)."
+          },
+          "default": {
+            "type": "union",
+            "variants": [
+              "null",
+              "str",
+              "bool",
+              "int",
+              "float",
+              "dict",
+              "list"
+            ],
+            "description": "Initial value prior to any triggers firing."
+          },
+          "triggers": {
+            "type": "list",
+            "items": "DerivedTrigger",
+            "description": "Ordered trigger definitions supporting both agent_text and ui_response contracts."
           }
         }
       },
       "ContextVariablesPlan": {
         "type": "model",
         "fields": {
-          "database_variables": {
-            "type": "list",
-            "items": "DatabaseVariable",
-            "description": "Variables loaded from a database source"
+          "definitions": {
+            "type": "dict",
+            "description": "Dictionary of all context variables keyed by variable name. Each value has type, description, and source (source.type = database|environment|static|derived). Derived variables have triggers array with type (agent_text|ui_response)."
           },
-          "environment_variables": {
-            "type": "list",
-            "items": "EnvironmentVariable",
-            "description": "Variables sourced from environment flags"
-          },
-          "declarative_variables": {
-            "type": "list",
-            "items": "DeclarativeVariable",
-            "description": "Static values declared directly in the workflow context"
-          },
-          "derived_variables": {
-            "type": "list",
-            "items": "DerivedVariable",
-            "description": "Deterministic, computed state flags triggered by agent outputs (e.g., interview_complete on NEXT)"
+          "agents": {
+            "type": "dict",
+            "description": "Dictionary mapping agent names to objects containing a variables array (which variables each agent sees via AG2 UpdateSystemMessage)."
           }
         }
       },
@@ -228,7 +400,7 @@
         "fields": {
           "ContextVariablesPlan": {
             "type": "ContextVariablesPlan",
-            "description": "Complete plan of context variables (database_variables, environment_variables, declarative_variables, derived_variables)."
+            "description": "Complete plan with definitions dict (all variables) and agents dict (exposure mappings)."
           }
         }
       },
@@ -236,11 +408,19 @@
         "type": "model",
         "fields": {
           "component": {
-            "type": "optional_str",
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
             "description": "React component name (UI_Tool only)"
           },
           "mode": {
-            "type": "optional_str",
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
             "description": "inline or artifact (UI_Tool only)"
           }
         }
@@ -394,10 +574,9 @@
             "type": "int",
             "default": 10
           },
-          "structured_outputs": {
+          "auto_tool_mode": {
             "type": "bool",
-            "default": false,
-            "description": "Whether this agent produces structured outputs"
+            "description": "True when the runtime should auto-invoke UI tools for this agent (agent has at least one UI tool entry)."
           },
           "structured_outputs_required": {
             "type": "bool",
@@ -442,11 +621,19 @@
             "default": "DefaultPattern"
           },
           "initial_message_to_user": {
-            "type": "optional_str",
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
             "description": "Message shown to user (UserDriven only)"
           },
           "initial_message": {
-            "type": "optional_str",
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
             "description": "Initial workflow message (AgentDriven/BackendOnly)"
           },
           "recipient": {
@@ -485,7 +672,11 @@
             "description": "Type of handoff"
           },
           "condition": {
-            "type": "optional_str",
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
             "description": "Condition for conditional handoffs"
           },
           "condition_type": {
@@ -525,7 +716,7 @@
           },
           "type": {
             "type": "str",
-            "description": "Field type (str|int|bool|list|optional_str)"
+            "description": "Field type (str|int|bool|list|union with variants)"
           },
           "description": {
             "type": "str",
@@ -554,7 +745,11 @@
             "description": "Agent name"
           },
           "agent_definition": {
-            "type": "optional_str",
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
             "description": "Model name for this agent, or null if no structured output applies"
           }
         }
@@ -573,21 +768,21 @@
           }
         }
       }
+    },
+    "registry": {
+      "InterviewAgent": null,
+      "ActionPlanArchitect": "ActionPlanCall",
+      "ProjectOverviewAgent": "MermaidSequenceDiagramCall",
+      "ToolsManagerAgent": "ToolsManagerAgentOutput",
+      "UIFileGenerator": "UIFileGeneratorOutput",
+      "AgentToolsFileGenerator": "AgentToolsFileGeneratorOutput",
+      "HookAgent": "HookAgentOutput",
+      "AgentsAgent": "AgentsAgentOutput",
+      "ContextVariablesAgent": "ContextVariablesAgentOutput",
+      "OrchestratorAgent": "OrchestratorAgentOutput",
+      "HandoffsAgent": "HandoffsAgentOutput",
+      "StructuredOutputsAgent": "StructuredOutputsAgentOutput",
+      "DownloadAgent": null
     }
-  },
-  "registry": {
-    "InterviewAgent": null,
-    "ContextAgent": "ContextAgentOutput",
-    "ToolsManagerAgent": "ToolsManagerAgentOutput",
-    "UIFileGenerator": "UIFileGeneratorOutput",
-    "AgentToolsFileGenerator": "AgentToolsFileGeneratorOutput",
-    "HookAgent": "HookAgentOutput",
-    "AgentsAgent": "AgentsAgentOutput",
-    "ContextVariablesAgent": "ContextVariablesAgentOutput",
-    "OrchestratorAgent": "OrchestratorAgentOutput",
-    "HandoffsAgent": "HandoffsAgentOutput",
-    "StructuredOutputsAgent": "StructuredOutputsAgentOutput",
-    "APIKeyAgent": null,
-    "UserFeedbackAgent": null
   }
 }

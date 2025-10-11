@@ -2,13 +2,13 @@
   "hooks": [
     {
       "hook_type": "process_message_before_send",
-      "hook_agent": "UserFeedbackAgent",
+      "hook_agent": "DownloadAgent",
       "filename": "hook_tokengate.py",
       "function": "add_usage_footer"
     },
     {
       "hook_type": "process_last_received_message",
-      "hook_agent": "ContextAgent",
+      "hook_agent": "ActionPlanArchitect",
       "filename": "hook_gaurdrail.py",
       "function": "soft_policy_label"
     }

@@ -115,18 +115,18 @@ const UserInputRequest = ({ payload, onResponse, onCancel, submitInputRequest })
   }, [handleSubmit]);
 
   return (
-    <div className="user-input-request-container bg-blue-50 border-l-4 border-blue-400 p-4 mb-4 rounded-r-lg">
+    <div className="user-input-request-container bg-[var(--color-surface)] border-l-4 border-[rgba(var(--color-primary-rgb),0.6)] p-4 mb-4 rounded-r-lg shadow-lg shadow-[rgba(var(--color-primary-rgb),0.12)] backdrop-blur-sm">
       <div className="flex items-start space-x-3">
         <div className="flex-shrink-0">
-          <FiMessageCircle className="h-5 w-5 text-blue-400 mt-0.5" />
+          <FiMessageCircle className="h-5 w-5 text-[var(--color-primary-light)] mt-0.5" />
         </div>
         
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-blue-800 mb-2">
+          <div className="text-sm font-medium text-[var(--color-primary-light)] mb-2">
             Agent Input Request
           </div>
           
-          <div className="text-sm text-blue-700 mb-3">
+          <div className="text-sm text-[var(--color-text-secondary)] mb-3">
             {prompt}
           </div>
           
@@ -138,7 +138,7 @@ const UserInputRequest = ({ payload, onResponse, onCancel, submitInputRequest })
                 onChange={(e) => setUserInput(e.target.value)}
                 onKeyPress={handleKeyPress}
                 placeholder="Type your response or press Enter to skip..."
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="flex-1 px-3 py-2 border border-[rgba(var(--color-primary-rgb),0.4)] rounded-md text-sm bg-[rgba(var(--color-surface-alt-rgb),0.4)] text-[var(--color-text-primary)] placeholder-[rgba(var(--color-text-secondary-rgb,148,163,184),0.7)] focus:ring-2 focus:ring-[rgba(var(--color-primary-rgb),0.6)] focus:border-[var(--color-primary)]"
                 disabled={isSubmitting}
                 autoFocus
               />
@@ -146,7 +146,7 @@ const UserInputRequest = ({ payload, onResponse, onCancel, submitInputRequest })
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-[var(--color-text-on-accent)] bg-[var(--color-primary)] hover:bg-[var(--color-primary-light)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--color-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <FiSend className="h-4 w-4" />
               </button>
@@ -155,7 +155,7 @@ const UserInputRequest = ({ payload, onResponse, onCancel, submitInputRequest })
                 type="button"
                 onClick={handleSkip}
                 disabled={isSubmitting}
-                className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center px-3 py-2 border border-[rgba(var(--color-primary-rgb),0.35)] text-sm font-medium rounded-md text-[var(--color-text-secondary)] bg-[rgba(var(--color-surface-rgb),0.85)] hover:bg-[rgba(var(--color-surface-rgb),0.95)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--color-primary-light)] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Skip
               </button>
@@ -165,14 +165,14 @@ const UserInputRequest = ({ payload, onResponse, onCancel, submitInputRequest })
                   type="button"
                   onClick={handleCancel}
                   disabled={isSubmitting}
-                  className="inline-flex items-center px-2 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="inline-flex items-center px-2 py-2 border border-[rgba(var(--color-error-rgb),0.5)] text-sm font-medium rounded-md text-[var(--color-error)] bg-[rgba(var(--color-error-rgb),0.08)] hover:bg-[rgba(var(--color-error-rgb),0.15)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--color-error)] disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <FiX className="h-4 w-4" />
                 </button>
               )}
             </div>
             
-            <div className="text-xs text-gray-500">
+            <div className="text-xs text-[var(--color-text-muted)]">
               Press Enter to submit, or click Skip to continue without input
             </div>
           </form>
@@ -180,7 +180,7 @@ const UserInputRequest = ({ payload, onResponse, onCancel, submitInputRequest })
       </div>
       
       {isSubmitting && (
-        <div className="mt-2 text-xs text-blue-600">
+        <div className="mt-2 text-xs text-[var(--color-primary-light)]">
           Sending response...
         </div>
       )}

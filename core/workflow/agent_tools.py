@@ -22,11 +22,61 @@ import logging
 import importlib
 import importlib.util
 import sys
+import inspect
+from functools import wraps
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 import json
 
 logger = logging.getLogger(__name__)
+
+
+def _wrap_with_validation(
+    *,
+    workflow_name: str,
+    agent_name: str,
+    tool_name: str,
+    func: Callable,
+    enforce_schema: bool,
+) -> Callable:
+    """Wrap tool callables with structured-output validation when applicable."""
+
+    if not enforce_schema:
+        return func
+
+    from .tool_validation import validate_tool_call
+
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def _async_wrapper(*args, **kwargs):
+            payload = dict(kwargs)
+            outcome = validate_tool_call(
+                workflow_name=workflow_name,
+                agent_name=agent_name,
+                tool_name=tool_name,
+                raw_payload=payload,
+            )
+            if not outcome.is_valid and outcome.error_payload is not None:
+                return outcome.error_payload
+            return await func(*args, **kwargs)
+
+        return _async_wrapper
+
+    @wraps(func)
+    def _sync_wrapper(*args, **kwargs):
+        payload = dict(kwargs)
+        outcome = validate_tool_call(
+            workflow_name=workflow_name,
+            agent_name=agent_name,
+            tool_name=tool_name,
+            raw_payload=payload,
+        )
+        if not outcome.is_valid and outcome.error_payload is not None:
+            return outcome.error_payload
+        return func(*args, **kwargs)
+
+    return _sync_wrapper
 
 def load_agent_tool_functions(workflow_name: str) -> Dict[str, List[Callable]]:
     """Discover and import per-agent tool functions for a workflow.
@@ -54,6 +104,19 @@ def load_agent_tool_functions(workflow_name: str) -> Dict[str, List[Callable]]:
     if not isinstance(entries, list):
         logger.warning(f"[TOOLS] tools.json 'tools' section not a list in '{workflow_name}'")
         return mapping
+    # Discover which agents have structured outputs for schema enforcement
+    try:
+        from .structured_outputs import get_structured_outputs_for_workflow
+
+        structured_registry = get_structured_outputs_for_workflow(workflow_name)
+    except Exception as reg_err:  # pragma: no cover - introspection only
+        structured_registry = {}
+        logger.debug(
+            "[TOOLS][TRACE] Structured outputs registry unavailable for '%s': %s",
+            workflow_name,
+            reg_err,
+        )
+
     # Disable per-process tool module caching to always load fresh tool code
     logger.debug(f"[TOOLS][TRACE] Starting tool load for workflow '{workflow_name}' (entries={len(entries)})")
     for idx, tool in enumerate(entries, start=1):
@@ -114,11 +177,24 @@ def load_agent_tool_functions(workflow_name: str) -> Dict[str, List[Callable]]:
             "[TOOLS][TRACE] Preparing to bind function -> workflow=%s agent_targets=%s file=%s func=%s module=%s",
             workflow_name, agent_targets, file_path.name, func_name, getattr(func, '__module__', None)
         )
+        tool_identifier = tool.get('name') or func_name
         for ag in agent_targets:
-            mapping.setdefault(ag, []).append(func)
+            enforce_schema = ag in structured_registry
+            wrapped_func = _wrap_with_validation(
+                workflow_name=workflow_name,
+                agent_name=ag,
+                tool_name=str(tool_identifier),
+                func=func,
+                enforce_schema=enforce_schema,
+            )
+            mapping.setdefault(ag, []).append(wrapped_func)
             logger.debug(
-                "[TOOLS][TRACE] Bound function to agent -> workflow=%s agent=%s func=%s id=%s",
-                workflow_name, ag, func_name, hex(id(func))
+                "[TOOLS][TRACE] Bound function to agent -> workflow=%s agent=%s func=%s id=%s enforced=%s",
+                workflow_name,
+                ag,
+                func_name,
+                hex(id(wrapped_func)),
+                enforce_schema,
             )
     # Emit a structured summary for post-mortem debugging
     summary = {agent: [getattr(f, '__name__', '<noname>') for f in funcs] for agent, funcs in mapping.items()}

@@ -28,7 +28,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from autogen.logger.base_logger import BaseLogger as _BaseLogger
     from openai.types.chat import ChatCompletion
 
-logger = get_workflow_logger("realtime_tokens")
+import logging
+logger = logging.getLogger("core.observability.realtime_token_logger")
 
 
 class RealtimeTokenLogger(BaseLogger):
@@ -70,11 +71,13 @@ class RealtimeTokenLogger(BaseLogger):
         self._reset_totals()
         logger.debug(
             "realtime_logger_configured",
-            chat_id=chat_id,
-            workflow=workflow_name,
-            enterprise=enterprise_id,
-            user=user_id,
-            delegate=delegate.__class__.__name__ if delegate else None,
+            extra={
+                "chat_id": chat_id,
+                "workflow": workflow_name,
+                "enterprise": enterprise_id,
+                "user": user_id,
+                "delegate": delegate.__class__.__name__ if delegate else None,
+            }
         )
 
     def set_active_agent(self, agent_name: Optional[str]) -> None:
@@ -108,7 +111,7 @@ class RealtimeTokenLogger(BaseLogger):
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = None
-        logger.debug("realtime_logger_started", session_id=self._session_id, chat_id=self._chat_id)
+        logger.debug("realtime_logger_started", extra={"session_id": self._session_id, "chat_id": self._chat_id})
         return self._session_id
 
     def stop(self) -> None:
@@ -117,7 +120,7 @@ class RealtimeTokenLogger(BaseLogger):
                 self._delegate.stop()
         finally:
             self._flush_session_totals()
-            logger.debug("realtime_logger_stopped", session_id=self._session_id)
+            logger.debug("realtime_logger_stopped", extra={"session_id": self._session_id})
 
     def log_chat_completion(
         self,
@@ -217,14 +220,20 @@ class RealtimeTokenLogger(BaseLogger):
     def log_new_wrapper(self, wrapper: Any, init_args: Dict[str, Any]) -> None:
         if self._delegate:
             try:
-                self._delegate.log_new_wrapper(wrapper, init_args)
+                # Sanitize init_args to remove logging reserved keys that might cause conflicts
+                sanitized_args = {k: v for k, v in init_args.items() 
+                                 if k not in {'exc_info', 'stack_info', 'stacklevel', 'extra'}}
+                self._delegate.log_new_wrapper(wrapper, sanitized_args)
             except Exception:  # pragma: no cover
                 logger.debug("Delegate log_new_wrapper failed", exc_info=True)
 
     def log_new_client(self, client: Any, wrapper: Any, init_args: Dict[str, Any]) -> None:
         if self._delegate:
             try:
-                self._delegate.log_new_client(client, wrapper, init_args)
+                # Sanitize init_args to remove logging reserved keys that might cause conflicts
+                sanitized_args = {k: v for k, v in init_args.items() 
+                                 if k not in {'exc_info', 'stack_info', 'stacklevel', 'extra'}}
+                self._delegate.log_new_client(client, wrapper, sanitized_args)
             except Exception:  # pragma: no cover
                 logger.debug("Delegate log_new_client failed", exc_info=True)
 

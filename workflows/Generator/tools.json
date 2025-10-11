@@ -1,32 +1,32 @@
 {
   "tools": [
     {
-      "agent": "UserFeedbackAgent",
+      "agent": "DownloadAgent",
       "file": "generate_and_download.py",
       "function": "generate_and_download",
-      "description": "Generate the final workflow files and provide download links.",
+      "description": "Prepare workflow files and present inline download request.",
       "tool_type": "UI_Tool",
       "ui": {
         "component": "FileDownloadCenter",
-        "mode": "artifact"
-      }
-    },
-    {
-      "agent": "APIKeyAgent",
-      "file": "request_api_key.py",
-      "function": "request_api_key",
-      "description": "Request an API key from the user for external services.",
-      "tool_type": "UI_Tool",
-      "ui": {
-        "component": "AgentAPIKeyInput",
         "mode": "inline"
       }
     },
     {
-      "agent": "ContextAgent",
+      "agent": "ActionPlanArchitect",
       "file": "action_plan.py",
       "function": "action_plan",
-      "description": "Provide action plan to user to sign off on workflow suggestion.",
+      "description": "Normalize and cache the action plan before Mermaid enrichment.",
+      "tool_type": "UI_Tool",
+      "ui": {
+        "component": "ActionPlan",
+        "mode": "artifact"
+      }
+    },
+    {
+      "agent": "ProjectOverviewAgent",
+      "file": "mermaid_sequence_diagram.py",
+      "function": "mermaid_sequence_diagram",
+      "description": "Refresh the Action Plan artifact with the generated Mermaid sequence diagram.",
       "tool_type": "UI_Tool",
       "ui": {
         "component": "ActionPlan",
@@ -43,6 +43,15 @@
         "component": null,
         "mode": null
       }
+    }
+  ],
+  "lifecycle_tools": [
+    {
+      "trigger": "before_agent",
+      "agent": "ContextVariablesAgent",
+      "file": "collect_api_keys.py",
+      "function": "collect_api_keys_from_action_plan",
+      "description": "Collect API keys for third-party services before context variable planning"
     }
   ]
 }

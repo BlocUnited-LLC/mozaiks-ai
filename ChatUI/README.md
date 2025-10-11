@@ -330,6 +330,20 @@ npm run format
 npm run type-check
 ```
 
+### ♻️ Tailwind → Token Migration
+
+To replace legacy Tailwind color utilities with the runtime theme tokens, use the codemod in `scripts/tailwind_to_tokens.mjs`:
+
+```bash
+# Preview changes without writing
+node scripts/tailwind_to_tokens.mjs --dry-run src/workflows/Generator/components/ActionPlan.js
+
+# Apply replacements to one or more files/directories
+node scripts/tailwind_to_tokens.mjs src/workflows/Generator/components/ActionPlan.js src/components/chat
+```
+
+The script rewrites supported color classes (e.g., `bg-cyan-500`, `from-violet-500/10`, `shadow-amber-500/40`) to their CSS-variable-backed equivalents, ensuring enterprise themes flow through without manual edits.
+
 ### 🔧 Key Development Files
 
 - **`src/core/WorkflowUIRouter.js`** - Core routing system
@@ -651,28 +665,9 @@ export { APIKeyInput, FileDownload };
 
 ---
 
-## 📞 Support & Community
-
-### Getting Help
-
-- 📖 **Documentation**: Check this README and inline code comments
-- 🐛 **Issues**: Report bugs via GitHub Issues
-- 💬 **Discussions**: Join our GitHub Discussions
-- 📧 **Email**: contact@mozaiksai.com
-
-### Roadmap
-
-- [ ] TypeScript migration
-- [ ] Advanced component caching
-- [ ] Visual workflow builder
-- [ ] Plugin marketplace
-- [ ] Real-time collaboration features
-
----
-
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+This project is Intellectual Property of BlocUnited, LLC - see the [LICENSE.md](LICENSE.md) file for details.
 
 ---
 
@@ -682,6 +677,6 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
 
 *Making AI workflows beautiful, one component at a time.*
 
-[🌐 Website](https://mozaiksai.com) • [📧 Contact](mailto:contact@mozaiksai.com) • [🐙 GitHub](https://github.com/BlocUnited-LLC/MozaiksAI)
+[🌐 Website](https://mozaiks.ai) • [📧 Contact](mailto:info@blocunited.com) • [🐙 GitHub](https://github.com/BlocUnited-LLC/MozaiksAI)
 
 </div>

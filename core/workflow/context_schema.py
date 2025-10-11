@@ -15,11 +15,20 @@ class ContextTriggerMatch(BaseModel):
 
 
 class ContextTriggerSpec(BaseModel):
-    """Declarative trigger definition for derived variables."""
+    """Declarative trigger definition for derived variables.
+    
+    Trigger Types:
+    - agent_text: Passive agent text detection (DerivedContextManager)
+    - ui_response: Active UI interaction (tool code updates value)
+    """
 
-    type: Literal["agent_text"]
-    agent: str
-    match: ContextTriggerMatch
+    type: Literal["agent_text", "ui_response"]
+    agent: Optional[str] = None  # Required for agent_text, optional for ui_response
+    match: Optional[ContextTriggerMatch] = None  # Required for agent_text, N/A for ui_response
+    
+    # UI response trigger fields (type="ui_response")
+    tool: Optional[str] = None  # Tool name that handles UI interaction
+    response_key: Optional[str] = None  # Key in response dict to extract
 
     @model_validator(mode="before")
     def _normalize_match(cls, data: Any) -> Any:
@@ -37,16 +46,31 @@ class ContextTriggerSpec(BaseModel):
 
 
 class ContextVariableSource(BaseModel):
-    """Source metadata for resolving a context variable."""
+    """Source metadata for resolving a context variable.
+    
+    Source Types:
+    - database: Load from MongoDB collection
+    - environment: Load from environment variable
+    - static: Fixed value in config
+    - derived: Value updated by external signals (agent text or UI response)
+    """
 
     type: Literal["database", "environment", "static", "derived"]
+    
+    # Database source fields
     database_name: Optional[str] = None
     collection: Optional[str] = None
     search_by: Optional[str] = None
     field: Optional[str] = None
+    
+    # Environment source fields
     env_var: Optional[str] = None
+    
+    # Static/default value
     default: Optional[Any] = None
     value: Optional[Any] = None
+    
+    # Derived source fields (external signal triggers)
     triggers: List[ContextTriggerSpec] = Field(default_factory=list)
 
     @model_validator(mode="before")
@@ -65,32 +89,10 @@ class ContextVariableDefinition(BaseModel):
     source: ContextVariableSource
 
 
-class ContextExposureTemplate(BaseModel):
-    """Exposure template for injecting context into system prompts."""
-
-    variables: List[str]
-    template: Optional[str] = None
-    header: Optional[str] = None
-    null_label: Optional[str] = None
-    placement: Literal["append", "prepend", "replace"] = "append"
-
-    @model_validator(mode="before")
-    def _sanitize_variables(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            raw_variables = data.get("variables")
-            if isinstance(raw_variables, list):
-                data = data.copy()
-                data["variables"] = [
-                    str(item).strip() for item in raw_variables if isinstance(item, str) and item.strip()
-                ]
-        return data
-
-
 class ContextAgentView(BaseModel):
-    """Per-agent context requirements and exposures."""
+    """Per-agent context requirements (variables list only - exposures handled by AG2's UpdateSystemMessage)."""
 
     variables: List[str] = Field(default_factory=list)
-    exposures: List[ContextExposureTemplate] = Field(default_factory=list)
 
     @model_validator(mode="before")
     def _default_lists(cls, data: Any) -> Any:
@@ -98,8 +100,6 @@ class ContextAgentView(BaseModel):
             updated = data.copy()
             if updated.get("variables") is None:
                 updated["variables"] = []
-            if updated.get("exposures") is None:
-                updated["exposures"] = []
             return updated
         return data
 
@@ -129,7 +129,6 @@ __all__ = [
     "ContextVariablesPlan",
     "ContextVariableDefinition",
     "ContextVariableSource",
-    "ContextExposureTemplate",
     "ContextAgentView",
     "ContextTriggerSpec",
     "ContextTriggerMatch",

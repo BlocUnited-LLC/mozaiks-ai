@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Callable
 
 from autogen import ConversableAgent, UpdateSystemMessage
 
+from core.workflow.structured_outputs import get_structured_outputs_for_workflow
+
 from .workflow_manager import workflow_manager
 
 logger = logging.getLogger(__name__)
@@ -107,12 +109,29 @@ def _apply_context_exposures(
     context_dict: Dict[str, Any],
     fallback_variables: List[str],
 ) -> str:
+    effective_exposures: List[Dict[str, Any]] = [
+        exposure for exposure in exposures if isinstance(exposure, dict)
+    ]
+    if not effective_exposures and fallback_variables:
+        effective_exposures = [{"variables": list(fallback_variables)}]
+
     message = base_message or ""
-    for exposure in exposures:
+    for exposure in effective_exposures:
         fragment = _render_exposure_fragment(exposure, context_dict, fallback_variables)
         placement = exposure.get("placement", "append") if isinstance(exposure, dict) else "append"
         message = _merge_message_parts(message, fragment, placement)
     return message or base_message or ""
+
+
+def _render_default_context_fragment(variables: List[str], context_dict: Dict[str, Any]) -> str:
+    cleaned = [var.strip() for var in variables if isinstance(var, str) and var.strip()]
+    if not cleaned:
+        return ""
+    lines = ["Context Variables"]
+    for var in cleaned:
+        value = _stringify_context_value(context_dict.get(var), "null")
+        lines.append(f"{var.upper()}: {value}")
+    return "\n".join(lines)
 
 
 def _build_exposure_update_hook(
@@ -160,7 +179,26 @@ def _build_interview_message_hook(
             else:
                 container = getattr(sender, "context_variables", None)
                 context_dict = _context_to_dict(container) if container is not None else {}
-                fragment = _apply_context_exposures("", exposures_copy, context_dict, fallback_variables).strip()
+
+                if fallback_variables:
+                    visible_snapshot: Dict[str, str] = {}
+                    for var in fallback_variables:
+                        if not isinstance(var, str) or not var.strip():
+                            continue
+                        value = _stringify_context_value(context_dict.get(var), "null")
+                        if len(value) > 500:
+                            value = f"{value[:497]}..."
+                        visible_snapshot[var] = value
+                    if visible_snapshot:
+                        logger.info(
+                            "[InterviewAgent] Context variables snapshot",
+                            extra={"variables": visible_snapshot},
+                        )
+
+                if exposures_copy:
+                    fragment = _apply_context_exposures("", exposures_copy, context_dict, fallback_variables).strip()
+                else:
+                    fragment = _render_default_context_fragment(fallback_variables, context_dict).strip()
                 if fragment:
                     header, _, body = fragment.partition("\n")
                     header = header.strip() or "Context Variables"
@@ -218,6 +256,12 @@ async def create_agents(
         logger.warning(f"[AGENTS] Failed loading agent tool functions: {tool_err}")
         agent_tool_functions = {}
 
+    try:
+        structured_registry = get_structured_outputs_for_workflow(workflow_name)
+    except Exception as so_err:
+        structured_registry = {}
+        logger.debug(f"[AGENTS] Structured outputs unavailable for '{workflow_name}': {so_err}")
+
     if context_variables is not None:
         try:
             context_dict: Dict[str, Any] = _context_to_dict(context_variables)
@@ -250,15 +294,25 @@ async def create_agents(
         except Exception:
             llm_config = base_llm_config
 
-        agent_functions = agent_tool_functions.get(agent_name, [])
+        auto_tool_mode = bool(agent_config.get("auto_tool_mode"))
+        structured_model_cls = structured_registry.get(agent_name) if structured_registry else None
+        if auto_tool_mode and structured_model_cls is None:
+            raise ValueError(
+                f"[AGENTS] auto_tool_mode enabled for '{agent_name}' but no structured output model is registered"
+            )
+
+        agent_functions = [] if auto_tool_mode else agent_tool_functions.get(agent_name, [])
         for idx, fn in enumerate(agent_functions):
             if not callable(fn):
                 logger.error(
                     f"[AGENTS] Tool function at index {idx} for agent '{agent_name}' is not callable: {fn}"
                 )
 
-        if isinstance(llm_config, dict) and "tools" not in llm_config:
-            llm_config["tools"] = []
+        if isinstance(llm_config, dict):
+            if "tools" not in llm_config:
+                llm_config["tools"] = []
+            elif auto_tool_mode:
+                llm_config["tools"] = []
 
         system_message = agent_config.get("system_message", "You are a helpful AI assistant.")
         agent_exposures = []
@@ -290,10 +344,11 @@ async def create_agents(
         else:
             system_message = base_system_message
 
+##################################################################################################
         interview_message_hook = None
         if agent_name == "InterviewAgent":
             interview_message_hook = _build_interview_message_hook(agent_exposures, agent_variables)
-
+##################################################################################################
         try:
             raw_human_mode = agent_config.get("human_input_mode")
             if raw_human_mode and str(raw_human_mode).upper() not in ("", "NEVER", "NONE"):
@@ -318,6 +373,15 @@ async def create_agents(
             logger.error(f"[AGENTS] CRITICAL ERROR creating ConversableAgent {agent_name}: {err}")
             raise
 
+        setattr(agent, "_mozaiks_auto_tool_mode", auto_tool_mode)
+        if structured_model_cls is not None:
+            try:
+                model_name = getattr(structured_model_cls, "__name__", None)
+            except Exception:
+                model_name = None
+            if model_name:
+                setattr(agent, "_mozaiks_structured_model_name", model_name)
+            setattr(agent, "_mozaiks_structured_model_cls", structured_model_cls)
         setattr(agent, "_mozaiks_base_system_message", base_system_message)
         agents[agent_name] = agent
 

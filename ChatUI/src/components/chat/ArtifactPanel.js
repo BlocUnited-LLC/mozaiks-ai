@@ -8,7 +8,7 @@ const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
     
   const contentClasses = isMobile
     ? "relative w-full h-full flex flex-col"
-    : "flex flex-col h-full rounded-2xl border border-cyan-400/30 overflow-hidden shadow-2xl bg-gradient-to-br from-white/5 to-cyan-500/5 backdrop-blur-sm cosmic-ui-module artifact-panel animate-in slide-in-from-right";
+  : "flex flex-col h-full rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] overflow-hidden shadow-2xl bg-gradient-to-br from-white/5 to-[rgba(var(--color-primary-rgb),0.05)] backdrop-blur-sm cosmic-ui-module artifact-panel animate-in slide-in-from-right";
 
   return (
     <div className={containerClasses}>
@@ -20,24 +20,24 @@ const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
       {/* Panel Content */}
       <div className={contentClasses}>
         {/* Artifact Header */}
-        <div className="flex-shrink-0 px-4 py-3 border-b border-cyan-400/20 bg-gradient-to-r from-cyan-500/5 to-purple-500/5 backdrop-blur-xl shadow-lg rounded-2xl mx-2 mt-2 mb-1 min-h-[80px]">
+  <div className="flex-shrink-0 px-4 py-3 border-b border-[rgba(var(--color-primary-light-rgb),0.2)] bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)] backdrop-blur-xl shadow-lg rounded-2xl mx-2 mt-2 mb-1 min-h-[80px]">
           <div className="flex items-center justify-between h-full">
             <div className="flex-1">
               <div className="cosmic-module-header">
-                <span className="text-cyan-300">🎨</span>
+                <span className="text-[var(--color-primary-light)]">🎨</span>
                 Artifact Canvas
               </div>
             </div>
             <div className="flex flex-col items-end gap-2">
               <button 
                 onClick={onClose}
-                className="group relative p-3 rounded-lg bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-400/20 hover:border-cyan-400/40 transition-all duration-300 backdrop-blur-sm"
+                className="group relative p-3 rounded-lg bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.1)] to-[rgba(var(--color-secondary-rgb),0.1)] border border-[rgba(var(--color-primary-light-rgb),0.2)] hover:border-[rgba(var(--color-primary-light-rgb),0.4)] transition-all duration-300 backdrop-blur-sm"
                 title={`Close${isMobile ? '' : ' Artifact Canvas'}`}
               >
-                <svg className="w-5 h-5 group-hover:rotate-90 transition-transform duration-300 text-white group-hover:text-cyan-100" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 group-hover:rotate-90 transition-transform duration-300 text-[var(--color-text-primary)] text-white group-hover:text-[var(--color-primary-light)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
-                <div className="absolute inset-0 bg-cyan-400/10 rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
+                <div className="absolute inset-0 bg-[rgba(var(--color-primary-light-rgb),0.1)] rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
               </button>
             </div>
           </div>
@@ -50,7 +50,7 @@ const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
             {(!messages || messages.length === 0) ? (
               <div className="text-center space-y-6 mt-8">
                 <div className="flex items-center justify-center h-full min-h-[400px]">
-                  <div className="w-32 h-32 bg-gradient-to-br from-cyan-500/10 to-purple-500/10 rounded-2xl border border-cyan-400/30 flex items-center justify-center backdrop-blur-sm shadow-lg">
+                  <div className="w-32 h-32 bg-gradient-to-br from-[rgba(var(--color-primary-rgb),0.1)] to-[rgba(var(--color-secondary-rgb),0.1)] rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] flex items-center justify-center backdrop-blur-sm shadow-lg">
                     <img 
                       src="/mozaik_logo.svg" 
                       alt="Mozaik Logo" 
@@ -63,16 +63,10 @@ const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
             ) : (
               <div className="space-y-6">
                 {messages.map((m, idx) => {
-                  // If message has uiToolEvent, render the actual UI component
+                  // If message has uiToolEvent, render the actual UI component (OUTER BOX REMOVED PER REQUEST)
                   if (m.uiToolEvent && m.uiToolEvent.ui_tool_id) {
                     return (
-                      <div key={m.id || idx} className="bg-black/20 border border-gray-700 rounded-lg p-4">
-                        <div className="flex items-start justify-between mb-2">
-                          <div>
-                            <div className="text-xs text-cyan-300">{m.agentName || 'Agent'}</div>
-                            <div className="text-sm text-gray-200 font-semibold">Interactive Tool: {m.uiToolEvent.ui_tool_id}</div>
-                          </div>
-                        </div>
+                      <div key={m.id || idx} className="artifact-tool-wrapper">
                         <UIToolRenderer
                           event={m.uiToolEvent}
                           onResponse={m.uiToolEvent.onResponse}
@@ -94,7 +88,7 @@ const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
                     <div key={m.id || idx} className="bg-black/20 border border-gray-700 rounded-lg p-4">
                       <div className="flex items-start justify-between mb-2">
                         <div>
-                          <div className="text-xs text-cyan-300">{m.agentName || 'Agent'}</div>
+                          <div className="text-xs text-[var(--color-primary-light)]">{m.agentName || 'Agent'}</div>
                           <div className="text-sm text-gray-200 font-semibold">Structured Output</div>
                         </div>
                         <div className="flex items-center gap-2">

@@ -48,6 +48,31 @@ MAIN_LOG_FILE = LOGS_DIR / "mozaiks.log"
 # Sensitive key substrings for redaction
 _SENSITIVE_KEYS = {"api_key", "apikey", "authorization", "auth", "secret", "password", "token"}
 
+RESERVED_LOG_RECORD_KEYS = {
+    "name",
+    "msg",
+    "args",
+    "levelname",
+    "levelno",
+    "pathname",
+    "filename",
+    "module",
+    "exc_info",
+    "exc_text",
+    "stack_info",
+    "lineno",
+    "funcName",
+    "created",
+    "msecs",
+    "relativeCreated",
+    "thread",
+    "threadName",
+    "processName",
+    "process",
+    "message",
+    "stacklevel",
+}
+
 def _redact(value: Any) -> Any:
     if value is None:
         return value
@@ -56,6 +81,12 @@ def _redact(value: Any) -> Any:
             return "***" if any(k in value.lower() for k in ["sk-", "key", "tok"]) else value
         return value[:4] + "***" + value[-4:]
     return value
+
+def _filter_reserved_log_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+    if not data:
+        return {}
+    return {k: v for k, v in data.items() if k not in RESERVED_LOG_RECORD_KEYS}
+
 
 def _maybe_redact_mapping(data: Dict[str, Any]) -> Dict[str, Any]:
     if not data:
@@ -104,7 +135,7 @@ class ProductionJSONFormatter(logging.Formatter):
         # Harvest extras
         extras: Dict[str, Any] = {}
         for k, v in record.__dict__.items():
-            if k not in {"name","msg","args","levelname","levelno","pathname","filename","module","exc_info","exc_text","stack_info","lineno","funcName","created","msecs","relativeCreated","thread","threadName","processName","process","message"}:
+            if k not in RESERVED_LOG_RECORD_KEYS:
                 extras[k] = v
         if extras:
             base["extra"] = _maybe_redact_mapping(extras)
@@ -401,14 +432,38 @@ get_core_config_logger = lambda: logging.getLogger("core.core_config")
 
 # Context logger -----------------------------------------------------
 class ContextLogger:
-    def __init__(self, base: logging.Logger, ctx: Dict[str, Any]): self._base = base; self._ctx = ctx
-    def _log(self, lvl, msg, **extra): merged = {**self._ctx, **extra}; self._base.log(lvl, msg, extra=_maybe_redact_mapping(merged))
-    def info(self, msg, **extra): self._log(logging.INFO, msg, **extra)
-    def debug(self, msg, **extra): self._log(logging.DEBUG, msg, **extra)
-    def warning(self, msg, **extra): self._log(logging.WARNING, msg, **extra)
-    def error(self, msg, exc_info=False, **extra): self._log(logging.ERROR, msg, **extra); \
-        (self._base.exception(msg, extra=_maybe_redact_mapping({**self._ctx, **extra})) if exc_info else None)
-    def with_context(self, **more): return ContextLogger(self._base, {**self._ctx, **more})
+    def __init__(self, base: logging.Logger, ctx: Dict[str, Any]):
+        self._base = base
+        self._ctx = _filter_reserved_log_keys(ctx)
+
+    def _log(self, lvl, msg, *args, **extra):
+        exc_info = extra.pop("exc_info", None)
+        stack_info = extra.pop("stack_info", None)
+        stacklevel = extra.pop("stacklevel", None)
+        merged = _filter_reserved_log_keys({**self._ctx, **extra})
+        log_kwargs: Dict[str, Any] = {"extra": _maybe_redact_mapping(merged)}
+        if exc_info is not None:
+            log_kwargs["exc_info"] = exc_info
+        if stack_info is not None:
+            log_kwargs["stack_info"] = stack_info
+        if stacklevel is not None:
+            log_kwargs["stacklevel"] = stacklevel
+        self._base.log(lvl, msg, *args, **log_kwargs)
+
+    def info(self, msg, *args, **extra):
+        self._log(logging.INFO, msg, *args, **extra)
+
+    def debug(self, msg, *args, **extra):
+        self._log(logging.DEBUG, msg, *args, **extra)
+
+    def warning(self, msg, *args, **extra):
+        self._log(logging.WARNING, msg, *args, **extra)
+
+    def error(self, msg, *args, **extra):
+        self._log(logging.ERROR, msg, *args, **extra)
+
+    def with_context(self, **more):
+        return ContextLogger(self._base, _filter_reserved_log_keys({**self._ctx, **more}))
 
 def get_workflow_logger(workflow_name: str | None = None, chat_id: str | None = None, enterprise_id: str | None = None, **context):
     ctx = {k:v for k,v in {"workflow_name":workflow_name, "chat_id":chat_id, "enterprise_id":enterprise_id}.items() if v}

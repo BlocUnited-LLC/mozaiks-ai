@@ -356,9 +356,18 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]):
             context.set(name, value)
             business_logger.info(f"Loaded static variable {name}")
         elif source.type == "derived":
+            # Derived variables (both agent_text and ui_response triggers)
+            # Seed with default value; updates handled by:
+            # - DerivedContextManager for agent_text triggers
+            # - Tool code for ui_response triggers
             value = _resolve_derived_default(definition)
             context.set(name, value)
-            business_logger.info(f"Seeded derived variable {name} with default={value}")
+            
+            # Log trigger types for debugging
+            trigger_types = [t.type for t in source.triggers] if source.triggers else []
+            business_logger.info(
+                f"Seeded derived variable {name} with default={value}, triggers={trigger_types}"
+            )
         elif source.type == "database":
             database_items.append((name, definition))
         else:
@@ -376,13 +385,6 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]):
         setattr(context, "_mozaiks_context_definitions", definitions)
     if plan.agents:
         setattr(context, "_mozaiks_context_agents", plan.agents)
-        exposures_map: Dict[str, List[Dict[str, Any]]] = {}
-        for agent_name, agent_view in plan.agents.items():
-            exposures = [exp.model_dump(exclude_none=True) for exp in agent_view.exposures]
-            if exposures:
-                exposures_map[agent_name] = exposures
-        if exposures_map:
-            setattr(context, "_mozaiks_context_exposures", exposures_map)
 
     # Log context summary
     try:

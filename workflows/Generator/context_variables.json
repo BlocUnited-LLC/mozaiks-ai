@@ -1,6 +1,15 @@
 ﻿{
   "context_variables": {
     "definitions": {
+      "context_aware": {
+        "type": "boolean",
+        "description": "Flag indicating if the application is opensource (in which the llm will ask for context) or part of an existing product in which the agent will be seeded with initial context",
+        "source": {
+          "type": "environment",
+          "env_var": "CONTEXT_AWARE",
+          "default": true
+        }
+      },
       "concept_overview": {
         "type": "string",
         "description": "Main project description and overview from the database",
@@ -10,15 +19,6 @@
           "collection": "Concepts",
           "search_by": "enterprise_id",
           "field": "ConceptOverview"
-        }
-      },
-      "context_aware": {
-        "type": "boolean",
-        "description": "Flag indicating if workflow should use context-aware behavior",
-        "source": {
-          "type": "environment",
-          "env_var": "CONTEXT_AWARE",
-          "default": false
         }
       },
       "monetization_enabled": {
@@ -42,47 +42,83 @@
               "agent": "InterviewAgent",
               "match": {
                 "equals": "NEXT"
-              }
+              },
+              "ui_hidden": true
             }
           ]
+        }
+      },
+      "action_plan_acceptance": {
+        "type": "string",
+        "description": "User's response to the action plan: 'accepted', 'adjustments_requested', or 'pending'. Updated after the combined Action Plan + diagram review UI completes.",
+        "source": {
+          "type": "derived",
+          "default": "pending",
+          "triggers": [
+            {
+              "type": "ui_response",
+              "tool": "mermaid_sequence_diagram",
+              "response_key": "plan_acceptance"
+            }
+          ]
+        }
+      },
+      "action_plan": {
+        "type": "json",
+        "description": "Latest normalized action plan payload produced by ActionPlanArchitect.",
+        "source": {
+          "type": "derived",
+          "default": {}
+        }
+      },
+      "mermaid_sequence_diagram": {
+        "type": "string",
+        "description": "Most recent Mermaid sequence diagram presented during final plan approval.",
+        "source": {
+          "type": "static",
+          "default": ""
+        }
+      },
+      "mermaid_diagram_ready": {
+        "type": "boolean",
+        "description": "Signals that the diagram artifact is ready. Set by mermaid_sequence_diagram tool.",
+        "source": {
+          "type": "static",
+          "default": false
+        }
+      },
+      "mermaid_diagram_metadata": {
+        "type": "json",
+        "description": "Supplemental metadata for the most recent Mermaid diagram (legend, notes, agent_message).",
+        "source": {
+          "type": "static",
+          "default": {}
         }
       }
     },
     "agents": {
       "InterviewAgent": {
         "variables": [
-          "concept_overview",
           "context_aware",
+          "concept_overview",
           "monetization_enabled"
-        ],
-        "exposures": [
-          {
-            "header": "Context Variables",
-            "variables": [
-              "concept_overview",
-              "context_aware",
-              "monetization_enabled"
-            ],
-            "placement": "append",
-            "null_label": "null"
-          }
         ]
       },
-      "ContextAgent": {
+      "ActionPlanArchitect": {
         "variables": [
           "concept_overview",
-          "interview_complete"
-        ],
-        "exposures": [
-          {
-            "header": "Context Snapshot",
-            "variables": [
-              "concept_overview",
-              "interview_complete"
-            ],
-            "placement": "append",
-            "null_label": "null"
-          }
+          "interview_complete",
+          "action_plan_acceptance",
+          "action_plan"
+        ]
+      },
+      "ProjectOverviewAgent": {
+        "variables": [
+          "action_plan",
+          "action_plan_acceptance",
+          "mermaid_sequence_diagram",
+          "mermaid_diagram_ready",
+          "mermaid_diagram_metadata"
         ]
       }
     }

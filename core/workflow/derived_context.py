@@ -218,22 +218,43 @@ class DerivedContextManager:
         results: List[DerivedVariableSpec] = []
         for name, definition in definitions.items():
             source = getattr(definition, "source", None)
-            if not source or getattr(source, "type", None) != "derived":
+            if not source:
                 continue
+            
+            source_type = getattr(source, "type", None)
+            
+            # Only process derived variables
+            if source_type != "derived":
+                continue
+            
+            # Filter for agent_text triggers only (skip ui_response triggers)
             triggers: List[AgentTextTrigger] = []
             for trig_spec in getattr(source, "triggers", []) or []:
+                # Skip ui_response triggers (tool code handles them)
+                if getattr(trig_spec, "type", None) == "ui_response":
+                    logger.debug(
+                        f"[DERIVED_CONTEXT] Skipping ui_response trigger for '{name}' (tool-driven)"
+                    )
+                    continue
+                
+                # Only process agent_text triggers
+                if getattr(trig_spec, "type", None) != "agent_text":
+                    continue
+                    
                 try:
                     trigger = AgentTextTrigger(
                         agent=trig_spec.agent,
-                        equals=trig_spec.match.equals,
-                        contains=trig_spec.match.contains,
-                        regex=trig_spec.match.regex,
+                        equals=trig_spec.match.equals if trig_spec.match else None,
+                        contains=trig_spec.match.contains if trig_spec.match else None,
+                        regex=trig_spec.match.regex if trig_spec.match else None,
                     )
                     triggers.append(trigger)
                 except Exception as err:  # pragma: no cover
                     logger.debug(f"Skipping invalid derived trigger for {name}: {err}")
+            
             if not triggers:
                 continue
+            
             results.append(
                 DerivedVariableSpec(
                     name=name,

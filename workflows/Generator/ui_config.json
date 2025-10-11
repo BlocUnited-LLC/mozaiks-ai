@@ -2,9 +2,9 @@
   "visual_agents": [
     "InterviewAgent",
     "user",
-    "ContextAgent",
+    "ProjectOverviewAgent",
     "APIKeyAgent",
-    "UserFeedbackAgent"
+    "DownloadAgent"
   ]
 }
 

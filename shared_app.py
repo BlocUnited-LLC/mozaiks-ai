@@ -23,10 +23,12 @@ from pydantic import BaseModel
 from core.core_config import get_mongo_client
 from core.transport.simple_transport import SimpleTransport
 from core.workflow.workflow_manager import workflow_status_summary, get_workflow_transport, get_workflow_tools
-from core.data.persistence_manager import AG2PersistenceManager
+from core.data.persistence_manager import AG2PersistenceManager, InvalidEnterpriseIdError
+from core.data.theme_manager import ThemeManager, ThemeResponse, ThemeUpdateRequest
 
 # Initialize persistence manager (handles lean chat session storage internally)
 persistence_manager = AG2PersistenceManager()
+theme_manager = ThemeManager(persistence_manager.persistence)
 
 async def _chat_coll():
     """Return the new lean chat_sessions collection (lowercase)."""
@@ -46,6 +48,7 @@ from logs.logging_config import (
 
 # Setup logging based on environment ASAP (before any KV/DB work)
 env = os.getenv("ENVIRONMENT", "development").lower()
+
 if env == "production":
     setup_production_logging()
     get_workflow_logger("shared_app_setup").info(
@@ -168,6 +171,30 @@ app.add_middleware(
 
 mongo_client = None  # delay until startup so logging is definitely initialized
 simple_transport: Optional[SimpleTransport] = None
+
+
+@app.get("/api/themes/{enterprise_id}", response_model=ThemeResponse)
+async def get_enterprise_theme(enterprise_id: str):
+    try:
+        return await theme_manager.get_theme(enterprise_id)
+    except InvalidEnterpriseIdError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("THEME_FETCH_FAILED")
+        raise HTTPException(status_code=500, detail="Failed to load theme") from exc
+
+
+@app.put("/api/themes/{enterprise_id}", response_model=ThemeResponse)
+async def upsert_enterprise_theme(enterprise_id: str, payload: ThemeUpdateRequest):
+    try:
+        return await theme_manager.upsert_theme(enterprise_id, payload)
+    except InvalidEnterpriseIdError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("THEME_SAVE_FAILED")
+        raise HTTPException(status_code=500, detail="Failed to save theme") from exc
 
 @app.get("/health/active-runs")
 async def health_active_runs():

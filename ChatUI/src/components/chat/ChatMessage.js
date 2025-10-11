@@ -5,7 +5,7 @@ import DOMPurify from "dompurify";
 // Local debug flag helper (duplicated intentionally to avoid cross-file import churn)
 const debugFlag = (k) => { try { return ['1','true','on','yes'].includes((localStorage.getItem(k)||'').toLowerCase()); } catch { return false; } };
 
-function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarningMessage, isLatest = false, isStructuredCapable = false, structuredOutput = null, structuredSchema = null }) {
+function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarningMessage, isLatest = false, isStructuredCapable = false, structuredOutput = null, structuredSchema = null, isThinking = false }) {
   // No local state needed: always show pretty structured output
   
   // Debug (disabled by default): uncomment to trace renders
@@ -36,7 +36,7 @@ function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarni
     const root = structuredData.data || {};
     const schemaOrder = structuredSchema ? Object.keys(structuredSchema) : Object.keys(root);
 
-    const renderPrimitive = (val) => <span className="text-emerald-300">{String(val)}</span>;
+    const renderPrimitive = (val) => <span className="text-[var(--color-success)]">{String(val)}</span>;
 
     const renderAny = (val, depth = 0) => {
       if (depth > 4) return <span className="text-gray-500">…</span>;
@@ -108,15 +108,15 @@ function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarni
   const getSystemMessageStyles = () => {
     if (isTokenMessage) {
       return {
-        container: "bg-gradient-to-r from-red-500/20 to-orange-500/20 border border-red-400/40",
-        text: "text-red-200",
+        container: "bg-gradient-to-r from-[rgba(var(--color-error-rgb),0.2)] to-[rgba(var(--color-error-rgb),0.1)] border border-[rgba(var(--color-error-rgb),0.4)]",
+  text: "text-[var(--color-error)] text-slate-100",
         icon: "💰"
       };
     }
     if (isWarningMessage) {
       return {
-        container: "bg-gradient-to-r from-yellow-500/20 to-orange-500/20 border border-yellow-400/40",
-        text: "text-yellow-200",
+        container: "bg-gradient-to-r from-[rgba(var(--color-warning-rgb),0.2)] to-[rgba(var(--color-warning-rgb),0.15)] border border-[rgba(var(--color-warning-rgb),0.4)]",
+  text: "text-[var(--color-warning)] text-slate-100",
         icon: "⚠️"
       };
     }
@@ -155,6 +155,32 @@ function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarni
 
   // If there's truly no textual content and no structured output and it's not a token/warning system message, avoid rendering any bubble at all
   const hasRenderableContent = !!(message && String(message).trim().length) || (structuredOutput && typeof structuredOutput === 'object');
+  
+  // Special case: thinking message
+  if (isThinking) {
+    return (
+      <div className="flex justify-start px-0 message-container">
+        <div className="mt-1 agent-message message thinking-indicator">
+          <div className="flex flex-col">
+            <div className="message-header">
+              <span className="name-pill agent">
+                <span className="pill-avatar" aria-hidden>🤖</span> {agentName || 'Agent'}
+              </span>
+            </div>
+            <div className="message-body w-full flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 bg-[var(--color-primary-light)] rounded-full animate-bounce [animation-delay:0ms]"></div>
+                <div className="w-2 h-2 bg-[var(--color-primary-light)] rounded-full animate-bounce [animation-delay:150ms]"></div>
+                <div className="w-2 h-2 bg-[var(--color-primary-light)] rounded-full animate-bounce [animation-delay:300ms]"></div>
+              </div>
+              <span className="text-sm text-[var(--color-text-secondary)] italic ml-1">thinking...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  
   if (!hasRenderableContent && !isTokenMessage && !isWarningMessage) {
     return null;
   }

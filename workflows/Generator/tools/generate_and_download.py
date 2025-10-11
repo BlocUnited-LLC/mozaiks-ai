@@ -22,45 +22,38 @@ except Exception:
     _log_tool_event = None  # type: ignore
 
 async def generate_and_download(
-    agent_message: Annotated[Optional[str], "Mandatory short sentence displayed in the chat along with the artifact for context."] = None,
+    agent_message: Annotated[Optional[str], "Short sentence shown with confirmation UI."] = None,
     description: Optional[str] = None,
-    storage_backend: Annotated[str, "Persistence mode: 'local' copies files to user selectedPath; 'none' skips. Future: gridfs, github."] = "local",
-    files: Annotated[Optional[Union[str, List[Dict[str, Any]]]], "Advanced override: custom file metadata list for UI. Provide list[{'name','size','path'}] or single path string. Generally omit."] = None,
-    # AG2-native context injection
-    context_variables: Annotated[Optional[Any], "Context variables provided by AG2"] = None,
+    storage_backend: Annotated[str, "'local' copies after confirm; 'none' disables copy."] = "local",
+    files: Annotated[Optional[Union[str, List[Dict[str, Any]]]], "(Legacy) Pre-supplied file metadata list."] = None,
+    confirmation_only: Annotated[bool, "If true, ask user Yes/No before creating files."] = True,
+    prebuild: Annotated[bool, "If true AND confirmation_only, still pre-create files for immediate availability (legacy behavior)."] = False,
+    context_variables: Annotated[Optional[Any], "Injected runtime context."] = None,
 ) -> Dict[str, Any]:
-    """AGENT CONTRACT: Generate workflow artifact files and present a download UI.
+    """AGENT CONTRACT (Two-Phase Compatible): Prompt user to confirm download; only build artifacts upon confirmation.
 
-Primary Objective:
-    Derive JSON / config artifact files from the latest persisted agent JSON outputs and
-    present them to the user via the FileDownloadCenter UI component for download.
+Execution Modes:
+  A) confirmation_only=True (default):
+     1) Collect high-level metadata only.
+     2) Emit inline confirmation (Yes/No) via FileDownloadCenter.
+     3) On 'confirm_download' (Yes): create files, optionally copy to storage, return success + file list.
+     4) On 'decline_download' (No): return cancelled.
+  B) confirmation_only=False: Preserve legacy single-phase behavior (build first, then UI) — used for backward compatibility.
 
-STRICT EXECUTION STEPS (do not reorder):
-    1. Resolve chat_id, enterprise_id, workflow_name from runtime or context_variables; abort with status=error if missing ids.
-    2. Gather freshest agent outputs via AG2PersistenceManager.gather_latest_agent_jsons (read-only).
-    3. Build aggregation payload including (orchestrator_output, agents_output, handoffs_output,
-         context_variables_output, structured_outputs) plus optional tools_config/ui_config/extra_files.
-    4. Discover code_files patterns in ANY agent output and merge unique files into extra_files (dedupe by filename).
-    5. Call create_workflow_files(payload, context_variables) to materialize files on disk. On failure return status=error.
-    6. Construct UI file metadata list ONLY (name, size, path, id). NEVER return raw file contents.
-    7. Emit FileDownloadCenter UI event (display='artifact') with correlation agent_message_id; await user response.
-    8. If storage_backend == 'local' AND response.status == 'success', copy generated files to user-selectedPath.
-    9. Return a dict containing: status, ui_response, agent_message_id, workflow_dir, files, ui_files (UI metadata), and optional storage result.
+Security & Constraints:
+  - Never return raw file content.
+  - Metadata only: names, sizes, paths after creation.
+  - Graceful handling of malformed persisted outputs.
 
-SECURITY / PRIVACY:
-    - Never print or return file bodies; restrict to metadata.
-    - Do not leak internal runtime/context variables beyond those required in return.
-    - Gracefully continue discovery even if individual agent payloads are malformed.
+Error Handling:
+  - Missing IDs -> early error result (status=error).
+  - UI emission failure -> UIToolError.
+  - File creation failure -> status=error.
 
-ERROR HANDLING:
-    - Missing chat_id or enterprise_id -> early status=error (no exception).
-    - UI tool emission or wait failures -> raise UIToolError (caller decides retry policy).
-    - File creation failure -> return status=error with message.
-
-NON-GOALS / DECLINED BEHAVIORS:
-    - Do not mutate source persistence data.
-    - Do not introduce side-channel storage beyond optional local copy when requested.
-    - Do not expand archive bundles (zipping not implemented here).
+Parameters:
+  confirmation_only: Enables new lightweight confirmation UX.
+  prebuild: Allows building files before confirmation (optimization / legacy bridging).
+  storage_backend: Local copy only performed after user confirmation success.
     """
     # Extract parameters from AG2 ContextVariables
     chat_id: Optional[str] = None
@@ -81,16 +74,20 @@ NON-GOALS / DECLINED BEHAVIORS:
                 _log_tool_event(tlog, action="start", status="ok")
         except Exception:
             tlog = None
-    wf_logger.info(f"🏗️ Starting workflow generation for chat: {chat_id}")
+    wf_logger.info(f"🏗️ Starting generate_and_download (confirmation_only={confirmation_only}, prebuild={prebuild}) chat: {chat_id}")
 
-    agent_message_text = agent_message or description or "I'm creating your workflow files. Please use the download center below when ready."
+    agent_message_text = agent_message or description or (
+        "Would you like to download the generated workflow bundle now?"
+        if confirmation_only else
+        "Preparing your workflow files. Use the download panel when ready."
+    )
     agent_message_id = f"msg_{uuid.uuid4().hex[:10]}"
     print(agent_message_text)
 
     if not chat_id or not enterprise_id:
         return {"status": "error", "message": "chat_id and enterprise_id are required"}
 
-    # 1. Gather latest agent JSON outputs
+    # PHASE 1: Gather latest agent JSON outputs (always needed for metadata or file creation)
     pm = AG2PersistenceManager()
     collected = await pm.gather_latest_agent_jsons(chat_id=chat_id, enterprise_id=enterprise_id)
     wf_name = collected.get("workflow_name") or workflow_name
@@ -98,7 +95,7 @@ NON-GOALS / DECLINED BEHAVIORS:
         return {"status": "error", "message": "workflow_name missing (not provided and not in persistence)"}
     wf_logger = get_workflow_logger(workflow_name=wf_name, chat_id=chat_id, enterprise_id=enterprise_id)
 
-    # 2. Build payload
+    # Build aggregation payload (used later if/when we create files)
     payload: Dict[str, Any] = {
         "workflow_name": wf_name,
         "orchestrator_output": collected.get("orchestrator_output", {}),
@@ -178,12 +175,46 @@ NON-GOALS / DECLINED BEHAVIORS:
         if existing:
             payload["extra_files"] = existing
 
-    # 3. Create workflow files
-    create_res = await create_workflow_files(payload, context_variables)
-    if create_res.get("status") != "success":
-        return {"status": "error", "message": create_res.get("message", "Failed to create files")}
+    # Decide whether to prebuild files BEFORE asking (legacy compatibility)
+    create_res: Dict[str, Any] = {}
+    ui_files: List[Dict[str, Any]] = []
+    workflow_dir: Optional[Path] = None
 
-    # 4. Prepare UI file list
+    def _format_bytes(num: int) -> str:  # local helper (moved earlier for dual-phase use)
+        try:
+            value: float = float(num)
+            for unit in ['bytes', 'KB', 'MB', 'GB', 'TB']:
+                if value < 1024 or unit == 'TB':
+                    if unit == 'bytes':
+                        return f"{int(value)} bytes"
+                    return f"{value:.1f} {unit}"
+                value /= 1024.0
+        except Exception:
+            return f"{num} bytes"
+        return f"{num} bytes"
+
+    if not confirmation_only or (confirmation_only and prebuild):
+        # Build now (legacy single-phase or optimized confirmation)
+        create_res = await create_workflow_files(payload, context_variables)
+        if create_res.get("status") != "success":
+            return {"status": "error", "message": create_res.get("message", "Failed to create files")}
+        created_files = create_res.get("files", [])
+        workflow_dir = Path(create_res.get("workflow_dir", "")) if create_res.get("workflow_dir") else None
+        for f in created_files:
+            fp = (workflow_dir / f) if workflow_dir and workflow_dir.exists() else Path(f)
+            size_bytes = fp.stat().st_size if fp.exists() else 0
+            ui_files.append({
+                "name": f,
+                "size": _format_bytes(size_bytes),
+                "size_bytes": size_bytes,
+                "path": str(fp),
+                "id": f"file-{len(ui_files)}",
+            })
+    else:
+        # Defer file creation until user confirms; minimal metadata only
+        ui_files = []
+
+    # Prepare initial UI payload (confirmation-focused when confirmation_only True)
     def _format_bytes(num: int) -> str:
         # Simple human-readable bytes (KiB, MiB, GiB) with 1 decimal
         try:
@@ -198,60 +229,15 @@ NON-GOALS / DECLINED BEHAVIORS:
         except Exception:
             return f"{num} bytes"
         return f"{num} bytes"
-    if files is None:
-        created_files = create_res.get("files", [])
-        workflow_dir = Path(create_res.get("workflow_dir", ""))
-        ui_files: List[Dict[str, Any]] = []
-        for f in created_files:
-            fp = workflow_dir / f if workflow_dir.exists() else Path(f)
-            size_bytes = fp.stat().st_size if fp.exists() else 0
-            ui_files.append({
-                "name": f,
-                "size": _format_bytes(size_bytes),
-                "size_bytes": size_bytes,
-                "path": str(fp),
-                "id": f"file-{len(ui_files)}",
-            })
-    else:
-        if isinstance(files, str):
-            ui_files = [{"name": files, "size": "unknown", "size_bytes": None, "id": "file-0"}]
-        else:
-            ui_files = []
-            for i, item in enumerate(files):
-                if isinstance(item, dict):
-                    cp = item.copy()
-                    cp.setdefault("id", f"file-{i}")
-                    # Derive size_bytes if possible
-                    if "size_bytes" not in cp:
-                        sb = None
-                        if isinstance(cp.get("size"), (int, float)):
-                            sb = int(cp["size"])
-                        elif isinstance(cp.get("size"), str):
-                            digits = ''.join(ch for ch in cp["size"] if ch.isdigit())
-                            if digits.isdigit():
-                                try:
-                                    sb = int(digits)
-                                except Exception:
-                                    sb = None
-                        path_val = cp.get("path")
-                        if sb is None and isinstance(path_val, str) and path_val:
-                            try:
-                                p = Path(path_val)
-                                if p.exists():
-                                    sb = p.stat().st_size
-                            except Exception:
-                                pass
-                        cp["size_bytes"] = sb
-                        if sb is not None and ("size" not in cp or cp.get("size") == "unknown"):
-                            cp["size"] = _format_bytes(sb)
-                    ui_files.append(cp)
+    if files is not None and ui_files:  # legacy override path still allowed
+        pass  # ui_files already populated
 
-    payload = {
+    ui_payload = {
         "downloadType": "bulk" if len(ui_files) > 1 else "single",
-        "files": ui_files,
+        "files": ui_files,  # empty list if waiting for confirmation
         "agent_message": agent_message_text,
         "description": agent_message_text,
-        "title": "Generated Workflow Files",
+        "title": "Workflow Bundle Ready" if confirmation_only else "Generated Workflow Files",
         "workflow_name": wf_name,
         "agent_message_id": agent_message_id,
     }
@@ -259,13 +245,13 @@ NON-GOALS / DECLINED BEHAVIORS:
     # 5. Emit UI + wait
     try:
         if tlog and _log_tool_event:
-            _log_tool_event(tlog, action="emit_ui", status="start", display="artifact", agent_message_id=agent_message_id)
+            _log_tool_event(tlog, action="emit_ui", status="start", display="inline", agent_message_id=agent_message_id)
         response = await use_ui_tool(
             tool_id="FileDownloadCenter",
-            payload=payload,
+            payload=ui_payload,
             chat_id=chat_id,
             workflow_name=wf_name,
-            display="artifact",
+            display="inline",
         )
         wf_logger.info(f"📥 File download UI completed with status: {response.get('status', 'unknown')}")
         if tlog and _log_tool_event:
@@ -276,8 +262,38 @@ NON-GOALS / DECLINED BEHAVIORS:
         wf_logger.error(f"❌ UI interaction failed: {e}", exc_info=True)
         raise UIToolError("Failed during file download UI interaction")
 
-    # 6. Optional storage
-    if storage_backend != "none" and isinstance(response, dict) and response.get("status") == "success":
+    # If confirmation_only and user declined -> return early
+    if confirmation_only and response.get("status") == "cancelled":
+        return {
+            "status": "cancelled",
+            "ui_response": response,
+            "agent_message_id": agent_message_id,
+            "ui_files": [],
+            "message": "User declined download",
+        }
+
+    # If confirmation_only and we have not yet created files (and user confirmed)
+    if confirmation_only and not prebuild:
+        wf_logger.info("🛠️ User confirmed download; creating files now...")
+        create_res = await create_workflow_files(payload, context_variables)
+        if create_res.get("status") != "success":
+            return {"status": "error", "message": create_res.get("message", "Failed to create files post-confirmation")}
+        created_files = create_res.get("files", [])
+        workflow_dir = Path(create_res.get("workflow_dir", "")) if create_res.get("workflow_dir") else None
+        ui_files = []
+        for f in created_files:
+            fp = (workflow_dir / f) if workflow_dir and workflow_dir.exists() else Path(f)
+            size_bytes = fp.stat().st_size if fp.exists() else 0
+            ui_files.append({
+                "name": f,
+                "size": _format_bytes(size_bytes),
+                "size_bytes": size_bytes,
+                "path": str(fp),
+                "id": f"file-{len(ui_files)}",
+            })
+
+    # Optional storage only if success & files built
+    if storage_backend != "none" and create_res.get("status") == "success" and ui_files:
         try:
             storage_result = await _handle_storage_action(
                 storage_backend=storage_backend,
@@ -297,12 +313,13 @@ NON-GOALS / DECLINED BEHAVIORS:
             if tlog and _log_tool_event:
                 _log_tool_event(tlog, action="storage", status="error", error=str(se))
 
+    final_status = create_res.get("status") if create_res else (response.get("status") or "success")
     return {
-        "status": "success",
+        "status": final_status,
         "ui_response": response,
         "agent_message_id": agent_message_id,
         "ui_files": ui_files,
-        **create_res,
+        **({k: v for k, v in create_res.items() if k not in {"status"}} if create_res else {}),
     }
 
 

@@ -25,6 +25,7 @@ from .data import (
 )
 from .events import (
 	emit_business_event,
+	emit_ui_tool_event, 
 	get_event_dispatcher,
 )
 
@@ -45,7 +46,8 @@ __all__ = [
 	# Persistence
 	"PersistenceManager",
 	"AG2PersistenceManager",
-	# Events
+	# Events  
 	"emit_business_event",
+	"emit_ui_tool_event",
 	"get_event_dispatcher",
 ]

@@ -4,6 +4,8 @@
 // ==============================================================================
 
 import React, { useState } from 'react';
+import { createToolsLogger } from '../../../core/toolsLogger';
+import { components as designComponents, colors as designColors, typography as designTypography } from '../../../styles/artifactDesignSystem';
 
 /**
  * AgentAPIKeyInput - Production AG2 component for secure API key collection
@@ -11,28 +13,28 @@ import React, { useState } from 'react';
  * Handles secure API key collection for ANY service within the AG2 workflow system.
  * Fully integrated with chat.* event protocol and WebSocket communication.
  */
-const AgentAPIKeyInput = ({ 
+const AgentAPIKeyInput = ({
   payload = {},
   onResponse,
   ui_tool_id,
   eventId,
-  workflowName,
-  componentId = "AgentAPIKeyInput"
+  sourceWorkflowName,
+  generatedWorkflowName,
+  componentId = 'AgentAPIKeyInput'
 }) => {
-  // DEV NOTE: This component receives the agent's contextual message via the
-  // `payload.description` prop. This is the standardized convention for all
-  // dynamic UI components in this application.
-  // Extract dynamic configuration from AG2 agent payload
+  const service = String(payload.service || 'openai').trim().toLowerCase();
+  const agentMessageId = payload.agent_message_id;
+  const resolvedWorkflowName = generatedWorkflowName || sourceWorkflowName || payload.generatedWorkflowName || payload.sourceWorkflowName || null;
+  const agentMessage = payload.agent_message || payload.description || `Enter your ${service.toUpperCase()} API key to continue.`;
   const config = {
-    service: payload.service || "openai",
-    label: payload.label || `${(payload.service || "openai").toUpperCase()} API Key`,
-    description: payload.description || `Enter your ${payload.service || "openai"} API key to continue`,
-    placeholder: payload.placeholder || `Enter your ${(payload.service || "openai").toUpperCase()} API key...`,
+    service,
+    label: payload.label || `${service.toUpperCase()} API Key`,
+    description: agentMessage,
+    placeholder: payload.placeholder || `Enter your ${service.toUpperCase()} API key...`,
     required: payload.required !== undefined ? payload.required : true,
     maskInput: payload.maskInput !== undefined ? payload.maskInput : true
   };
-  // Correlate with originating agent message (added in backend payload)
-  const agentMessageId = payload.agent_message_id;
+  const tlog = createToolsLogger({ tool: ui_tool_id || componentId, eventId, workflowName: resolvedWorkflowName, agentMessageId });
   const [apiKey, setApiKey] = useState('');
   const [isVisible, setIsVisible] = useState(!config.maskInput);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -59,8 +61,8 @@ const AgentAPIKeyInput = ({
     setError('');
     
     try {
-      // Prepare response for backend (don't send actual key in logs)
-    const response = {
+      tlog.event('submit', 'start', { service: config.service });
+      const response = {
         status: 'success',
         action: 'submit',
         data: {
@@ -71,8 +73,10 @@ const AgentAPIKeyInput = ({
           submissionTime: new Date().toISOString(),
           ui_tool_id,
           eventId,
-      workflowName,
-      agent_message_id: agentMessageId
+          workflowName: resolvedWorkflowName,
+          sourceWorkflowName,
+          generatedWorkflowName,
+          agent_message_id: agentMessageId
         }
       };
 
@@ -82,14 +86,10 @@ const AgentAPIKeyInput = ({
       }
       
       setApiKey(''); // Clear input after successful submission
-      
-      console.log(`✅ AgentAPIKeyInput: API key submitted for service: ${config.service}`);
-      
+      tlog.event('submit', 'done', { service: config.service, ok: true });
     } catch (error) {
-      console.error('❌ AgentAPIKeyInput: Submission failed:', error);
       setError('Failed to submit API key. Please try again.');
-      
-      // Send error response
+      tlog.error('submit failed', { service: config.service, error: error?.message });
       if (onResponse) {
         onResponse({
           status: 'error',
@@ -105,8 +105,8 @@ const AgentAPIKeyInput = ({
 
   const handleCancel = async () => {
     try {
-      // Send cancel response to backend
-    const response = {
+      tlog.event('cancel', 'start', { service: config.service });
+      const response = {
         status: 'cancelled',
         action: 'cancel',
         data: {
@@ -114,8 +114,10 @@ const AgentAPIKeyInput = ({
           cancelTime: new Date().toISOString(),
           ui_tool_id,
           eventId,
-      workflowName,
-      agent_message_id: agentMessageId
+          workflowName: resolvedWorkflowName,
+          sourceWorkflowName,
+          generatedWorkflowName,
+          agent_message_id: agentMessageId
         }
       };
 
@@ -125,11 +127,9 @@ const AgentAPIKeyInput = ({
       
       setApiKey('');
       setError('');
-      
-      console.log(`🚫 AgentAPIKeyInput: Cancelled for service: ${config.service}`);
-      
+      tlog.event('cancel', 'done', { service: config.service, ok: true });
     } catch (error) {
-      console.error('❌ AgentAPIKeyInput: Cancel failed:', error);
+      tlog.error('cancel failed', { service: config.service, error: error?.message });
     }
   };
 
@@ -138,18 +138,21 @@ const AgentAPIKeyInput = ({
   };
 
   return (
-  <div className="agent-api-key-input rounded-lg p-6 max-w-md mx-auto border-cyan-500/30 bg-gray-900" data-agent-message-id={agentMessageId || undefined}>
+  <div
+    className={`${designComponents.panel.inline} agent-api-key-input max-w-md mx-auto`}
+    data-agent-message-id={agentMessageId || undefined}
+  >
       <div className="header mb-4">
-        <h3 className="text-cyan-400 text-lg font-semibold mb-2 flex items-center gap-2">
+        <h3 className={`${designTypography.heading.lg} ${designColors.brand.primaryLight.text} mb-2 flex items-center gap-2`}>
           <span>🔑</span>
           {config.label}
-          {config.required && <span className="text-red-400 ml-1">*</span>}
+          {config.required && <span className={`${designColors.status.error.text} ml-1`}>*</span>}
         </h3>
         {config.description && (
-          <p className="text-gray-400 text-sm">{config.description}</p>
+          <p className={`${designTypography.body.md} ${designColors.text.secondary}`}>{config.description}</p>
         )}
         <div className="flex justify-between items-center mt-2">
-          <p className="text-gray-400 text-xs">Service: {config.service}</p>
+          <p className={`${designTypography.body.sm} ${designColors.text.muted}`}>Service: {config.service}</p>
         </div>
       </div>
 
@@ -167,18 +170,23 @@ const AgentAPIKeyInput = ({
               placeholder={config.placeholder}
               required={config.required}
               disabled={isSubmitting}
-              className={`w-full px-4 py-3 bg-gray-800 border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 transition-colors ${
-                error 
-                  ? 'border-red-500 focus:ring-red-500' 
-                  : 'border-gray-600 focus:border-cyan-500 focus:ring-cyan-500'
-              } ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}`}
+              className={[
+                designComponents.input.base,
+                config.maskInput ? designComponents.input.withIcon : '',
+                error ? designComponents.input.error : '',
+                isSubmitting ? designComponents.input.disabled : '',
+              ].filter(Boolean).join(' ')}
             />
             
             {config.maskInput && (
               <button
                 type="button"
                 onClick={toggleVisibility}
-                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white transition-colors"
+                className={[
+                  'absolute right-3 top-1/2 -translate-y-1/2 transform',
+                  designColors.text.secondary,
+                  'hover:text-[var(--color-text-primary)] hover:text-slate-100 transition-colors',
+                ].join(' ')}
                 disabled={isSubmitting}
               >
                 {isVisible ? '🙈' : '👁️'}
@@ -187,7 +195,7 @@ const AgentAPIKeyInput = ({
           </div>
 
           {error && (
-            <p className="text-red-400 text-sm mt-2">⚠️ {error}</p>
+            <p className={`${designColors.status.error.text} ${designTypography.body.md} mt-2`}>⚠️ {error}</p>
           )}
         </div>
         
@@ -196,7 +204,7 @@ const AgentAPIKeyInput = ({
             type="button"
             onClick={handleCancel}
             disabled={isSubmitting}
-            className="flex-1 px-4 py-3 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-700 disabled:opacity-50 text-white rounded-lg transition-colors font-medium"
+            className={[designComponents.button.secondary, 'flex flex-1 items-center justify-center'].join(' ')}
           >
             Cancel
           </button>
@@ -204,7 +212,7 @@ const AgentAPIKeyInput = ({
           <button
             type="submit"
             disabled={!apiKey.trim() || isSubmitting}
-            className="flex-1 px-4 py-3 bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-700 disabled:opacity-50 text-white rounded-lg transition-colors font-medium"
+            className={[designComponents.button.primary, 'flex flex-1 items-center justify-center'].join(' ')}
           >
             {isSubmitting ? '⏳ Submitting...' : '🔑 Submit'}
           </button>
@@ -213,8 +221,16 @@ const AgentAPIKeyInput = ({
 
       {/* Debug info (only in development) */}
       {process.env.NODE_ENV === 'development' && (
-        <div className="debug-info mt-4 p-2 bg-gray-800 rounded text-xs text-gray-400">
-          <div>Tool: {ui_tool_id} | Event: {eventId} | Workflow: {workflowName}</div>
+        <div
+          className={[
+            'debug-info mt-4 rounded-lg border p-3',
+            designColors.border.subtle,
+            designColors.surface.raisedOverlay,
+            designTypography.body.sm,
+            designColors.text.muted,
+          ].join(' ')}
+        >
+          <div>Tool: {ui_tool_id} | Event: {eventId} | Workflow: {resolvedWorkflowName}</div>
           <div>Service: {config.service} | Required: {config.required.toString()} | Component: {componentId}</div>
         </div>
       )}
@@ -225,5 +241,5 @@ const AgentAPIKeyInput = ({
 // Add display name for better debugging
 AgentAPIKeyInput.displayName = 'AgentAPIKeyInput';
 
-// Component metadata for the dynamic UI system (MASTER_UI_TOOL_AGENT_PROMPT requirement)
+// Component metadata for the dynamic UI system
 export default AgentAPIKeyInput;

@@ -6,7 +6,7 @@
 
 import json
 import importlib
-from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable
+from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable, Set
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -370,6 +370,77 @@ class UnifiedWorkflowManager:
                     continue
                 derived.append(agent)
         return derived
+
+    def get_auto_tool_agents(self, workflow_name: str) -> Set[str]:
+        """Return set of agent names with auto_tool_mode enabled.
+        
+        Auto-tool agents emit structured outputs that are automatically converted to tool calls.
+        Their text messages (containing agent_message) should be suppressed to avoid duplication
+        since the agent_message also appears in the tool_call payload.
+        
+        Returns:
+            Set of agent names with auto_tool_mode=true (e.g., {"ContextAgent", "APIKeyAgent"})
+        """
+        config = self.get_config(workflow_name)
+        agents_data = config.get('agents', {})
+        
+        # Handle double-nesting: agents.agents.{agent_name}
+        if 'agents' in agents_data and isinstance(agents_data['agents'], dict):
+            agents_dict = agents_data['agents']
+        elif isinstance(agents_data, dict):
+            agents_dict = agents_data
+        else:
+            agents_dict = {}
+        
+        auto_tool_agents: Set[str] = set()
+        
+        # Iterate over agent_name -> agent_config mapping
+        for agent_name, agent_config in agents_dict.items():
+            if not isinstance(agent_config, dict):
+                continue
+            auto_tool_mode = agent_config.get('auto_tool_mode', False)
+            if auto_tool_mode is True:
+                auto_tool_agents.add(agent_name)
+        
+        return auto_tool_agents
+
+    def get_ui_hidden_triggers(self, workflow_name: str) -> Dict[str, Set[str]]:
+        """Return mapping of agent_name -> set of ui_hidden trigger values.
+        
+        Extracts derived variables with ui_hidden: true from context_variables.json
+        and returns a dict mapping each source agent to the set of trigger values
+        that should be hidden from the UI.
+        
+        Returns:
+            Dict mapping agent_name to Set of trigger values (e.g., {"InterviewAgent": {"NEXT"}})
+        """
+        config = self.get_config(workflow_name)
+        context_vars = config.get('context_variables', {})
+        # Handle double-nesting: context_variables.context_variables.definitions
+        if 'context_variables' in context_vars:
+            context_vars = context_vars['context_variables']
+        definitions = context_vars.get('definitions', {})
+        
+        hidden_triggers: Dict[str, Set[str]] = {}
+        
+        for var_name, var_config in definitions.items():
+            if not isinstance(var_config, dict):
+                continue
+            source = var_config.get('source', {})
+            if source.get('type') == 'derived' and isinstance(source.get('triggers'), list):
+                for trigger in source['triggers']:
+                    if not isinstance(trigger, dict):
+                        continue
+                    # Check if this trigger should be hidden from UI
+                    if trigger.get('ui_hidden') is True:
+                        agent = trigger.get('agent')
+                        trigger_value = trigger.get('match', {}).get('equals')
+                        if agent and trigger_value:
+                            if agent not in hidden_triggers:
+                                hidden_triggers[agent] = set()
+                            hidden_triggers[agent].add(trigger_value)
+        
+        return hidden_triggers
 
     def get_structured_output_registry(self, workflow_name: str) -> Dict[str, Optional[str]]:
         """Return a normalized mapping: agent_name -> model_name or None.

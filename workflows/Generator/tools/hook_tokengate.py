@@ -1,6 +1,6 @@
 # ==============================================================================
 # FILE: workflows/Generator/tools/hook_tokengate.py
-# PURPOSE: Append a short footer to UserFeedbackAgent's outbound message when on free trial or when tokens are exhausted.
+# PURPOSE: Append a short footer to DownloadAgent's outbound message when on free trial or when tokens are exhausted.
 # HOOK TYPE: process_message_before_send
 # SIGNATURE: def your_function_name(sender: ConversableAgent, message: Union[dict[str, Any], str], recipient: Agent, silent: bool) -> Union[dict[str, Any], str]:
 # ==============================================================================
@@ -32,7 +32,7 @@ def add_usage_footer(
     silent: bool
 ) -> Union[str, Dict[str, Any]]:
     """
-    Appends the correct footer to outgoing UserFeedbackAgent messages
+    Appends the correct footer to outgoing DownloadAgent messages
     when free trial is enabled.
     """
     # Respect silent flag - don't modify messages when silent

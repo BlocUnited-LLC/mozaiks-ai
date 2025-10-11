@@ -1,23 +1,39 @@
-"""Unified AG2 event serialization helpers.
+"""AG2 Runtime Event Serialization - Third Event Type Handler
 
-This module centralizes logic for transforming raw AutoGen (AG2) runtime events
+This module handles the THIRD type of event in MozaiksAI's event system:
+
+1. Business Events: emit_business_event(log_event_type=...) -> UnifiedEventDispatcher  
+2. UI Tool Events: emit_ui_tool_event(ui_tool_id=...) -> UnifiedEventDispatcher
+3. AG2 Runtime Events: AutoGen events with 'kind' field -> THIS MODULE -> WebSocket
+
+This module centralizes logic for transforming raw AutoGen (AG2) runtime events  
 into transport-friendly payload dictionaries consumed by the WebSocket/UI layer.
 
+Key transformation: 'kind' field (internal) -> 'type' field (WebSocket/frontend)
+Examples: {"kind": "text"} -> {"type": "chat.text", "data": {...}}
+
 Goals:
- - Single source of truth for mapping, normalization, structured output flags.
- - Keep orchestration loop lean and focused on control flow.
- - Provide testable, deterministic helpers.
+ - Single source of truth for AG2 event mapping, normalization, structured output flags
+ - Keep orchestration loop lean and focused on control flow  
+ - Provide testable, deterministic helpers
 
-Public entry point:
-	build_ui_event_payload(...)
-
-The orchestration layer should only import the specific functions it needs.
+Public entry point: build_ui_event_payload(...)
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 from dataclasses import dataclass
+
+from core.workflow.tool_validation import (
+	SENTINEL_AGENT_KEY,
+	SENTINEL_ERRORS_KEY,
+	SENTINEL_EXPECTED_MODEL_KEY,
+	SENTINEL_FLAG,
+	SENTINEL_MESSAGE_KEY,
+	SENTINEL_STATUS,
+	SENTINEL_TOOL_KEY,
+)
 
 # Lightweight dataclass to pass context (avoids long arg lists if extended later)
 @dataclass
@@ -169,11 +185,15 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 					get_structured_output_model_fields,
 				)
 				if agent_has_structured_output(ctx.workflow_name, sender):
+					ctx.wf_logger.debug(f" [STRUCTURED_DEBUG] agent={sender} has_structured_output=True, clean_content_len={len(clean_content) if clean_content else 0}")
+					ctx.wf_logger.debug(f" [STRUCTURED_DEBUG] clean_content_preview: {clean_content[:200] if clean_content else 'None'}...")
 					from core.data.persistence_manager import AG2PersistenceManager as _PM  # lazy import
 					if hasattr(_PM, '_extract_json_from_text'):
 						structured = _PM._extract_json_from_text(clean_content)  # type: ignore
+						ctx.wf_logger.debug(f" [STRUCTURED_DEBUG] _extract_json_from_text result: {structured is not None}")
 					else:
 						structured = None
+						ctx.wf_logger.debug(f" [STRUCTURED_DEBUG] _PM._extract_json_from_text not available")
 					if structured:
 						payload["structured_output"] = structured
 						schema_fields = get_structured_output_model_fields(ctx.workflow_name, sender)
@@ -194,6 +214,8 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 							ctx.wf_logger.info(f" [STRUCTURED_OUTPUT] agent={sender} keys={so_keys} json={so_json}")
 						except Exception as _so_log_err:  # pragma: no cover
 							ctx.wf_logger.debug(f"[STRUCTURED_OUTPUT] log skipped: {_so_log_err}")
+					else:
+						ctx.wf_logger.debug(f" [STRUCTURED_DEBUG] No structured output extracted for {sender}")
 		except Exception as so_err:  # pragma: no cover
 			ctx.wf_logger.debug(f"Structured output attach failed sender={sender}: {so_err}")
 		return payload
@@ -278,8 +300,22 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 			call_id = str(call_id)
 		name = ctx.tool_names_by_id.get(str(call_id), None) or getattr(ev, "name", None)
 		result_obj = getattr(ev, "content", None) or getattr(ev, "result", None)
-		serialized_result = serialize_event_content(result_obj) if result_obj is not None else None
+		sentinel_info = None
+		clean_result_obj = result_obj
+		if isinstance(result_obj, dict) and result_obj.get(SENTINEL_FLAG):
+			sentinel_info = {
+				"message": result_obj.get(SENTINEL_MESSAGE_KEY),
+				"errors": result_obj.get(SENTINEL_ERRORS_KEY),
+				"expected_model": result_obj.get(SENTINEL_EXPECTED_MODEL_KEY),
+				"agent": result_obj.get(SENTINEL_AGENT_KEY),
+				"tool": result_obj.get(SENTINEL_TOOL_KEY),
+			}
+			clean_result_obj = {k: v for k, v in result_obj.items() if k != SENTINEL_FLAG}
+		serialized_result = serialize_event_content(clean_result_obj) if clean_result_obj is not None else None
 		origin = ctx.tool_call_initiators.get(str(call_id), None) or extract_agent_name(ev)
+		if sentinel_info:
+			sentinel_info.setdefault("agent", origin)
+			sentinel_info.setdefault("tool", name)
 		payload.update({
 			"kind": "tool_response",
 			"call_id": call_id,
@@ -288,6 +324,11 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 		})
 		if serialized_result is not None:
 			payload["result"] = serialized_result
+		if sentinel_info:
+			payload["status"] = SENTINEL_STATUS
+			payload["error"] = sentinel_info
+		else:
+			payload.setdefault("status", "ok")
 		return payload
 
 	# SelectSpeakerEvent ----------------------------------------------
@@ -311,9 +352,14 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 
 	# GroupChatRunChatEvent -------------------------------------------
 	if isinstance(ev, _GRCE):
+		# Map run lifecycle orchestration marker to a semantic kind so UI can
+		# optionally display or ignore it deterministically instead of treating
+		# it as a generic 'unknown'. This also avoids spinner lock conditions
+		# that previously depended on chat.text only.
 		payload.update({
-			"kind": "unknown",
+			"kind": "run_start",
 			"agent": extract_agent_name(ev) or ctx.turn_agent,
+			"message": "Workflow run initialized"
 		})
 		return payload
 
@@ -366,10 +412,29 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 	payload.update({"kind": "unknown"})
 	return payload
 
+def build_structured_output_ready_event(
+	agent: str,
+	model_name: str,
+	structured_data: Any,
+	auto_tool_mode: bool,
+	context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+	"""Build normalized payload for chat.structured_output_ready events."""
+	return {
+		"kind": "structured_output_ready",
+		"agent": agent,
+		"agent_name": agent,
+		"model_name": model_name,
+		"structured_data": serialize_event_content(structured_data),
+		"auto_tool_mode": bool(auto_tool_mode),
+		"context": context or {},
+	}
+
 __all__ = [
 	"EventBuildContext",
 	"normalize_text_content",
 	"serialize_event_content",
 	"extract_agent_name",
 	"build_ui_event_payload",
+	"build_structured_output_ready_event",
 ]

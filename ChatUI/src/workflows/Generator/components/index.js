@@ -7,6 +7,7 @@
 import AgentAPIKeyInput from './AgentAPIKeyInput';
 import FileDownloadCenter from './FileDownloadCenter';
 import ActionPlan from './ActionPlan';
+import MermaidSequenceDiagram from './MermaidSequenceDiagram';
 
 /**
  * 🎯 GENERATOR WORKFLOW COMPONENTS
@@ -17,12 +18,14 @@ import ActionPlan from './ActionPlan';
  * - AgentAPIKeyInput: Handles API key requests for Generator workflow
  * - FileDownloadCenter: Handles file downloads for Generator workflow
  * - ActionPlan: Visualizes workflow steps and status
+ * - MermaidSequenceDiagram: Presents the post-approval sequence diagram artifact
  */
 
 const GeneratorComponents = {
   AgentAPIKeyInput,
   FileDownloadCenter,
-  ActionPlan
+  ActionPlan,
+  MermaidSequenceDiagram
 };
 
 
@@ -33,5 +36,6 @@ export default GeneratorComponents;
 export {
   AgentAPIKeyInput,
   FileDownloadCenter,
-  ActionPlan
+  ActionPlan,
+  MermaidSequenceDiagram
 };

@@ -26,7 +26,10 @@ from time import perf_counter
 import asyncio
 import inspect
 import re
+import json
 from collections import Counter
+
+from pydantic import ValidationError
 
 from autogen import ConversableAgent, UserProxyAgent
 from autogen.agentchat.group.patterns import (
@@ -41,11 +44,13 @@ from autogen.events.agent_events import (
     SelectSpeakerEvent,
     RunCompletionEvent,
 )
-from core.workflow.structured_outputs import agent_has_structured_output, get_structured_output_model_fields
+from core.workflow.structured_outputs import agent_has_structured_output, get_structured_output_model_fields, get_structured_outputs_for_workflow
 from core.data.persistence_manager import AG2PersistenceManager as _PM
 from core.events.event_serialization import (
     build_ui_event_payload as unified_build_ui_event_payload,
     EventBuildContext as UnifiedEventBuildContext,
+    build_structured_output_ready_event,
+    serialize_event_content,
 )
 
 from ..data.persistence_manager import AG2PersistenceManager
@@ -54,7 +59,9 @@ from .derived_context import DerivedContextManager
 from logs.logging_config import get_workflow_logger
 from core.observability.ag2_runtime_logger import ag2_logging_session
 from core.observability.performance_manager import get_performance_manager
+from core.events.unified_event_dispatcher import get_event_dispatcher
 
+from .tool_validation import SENTINEL_STATUS
 from .ui_tools import InputTimeoutEvent
 logger = logging.getLogger(__name__)
 
@@ -999,6 +1006,25 @@ async def _stream_events(
 
     # pattern.context_variables provided by AG2 pattern if needed
 
+    try:
+        structured_registry = get_structured_outputs_for_workflow(workflow_name)
+    except Exception as so_err:
+        structured_registry = {}
+        wf_logger.debug(f"[{workflow_name_upper}] Structured outputs unavailable: {so_err}")
+
+    auto_tool_agents = {name for name, agent in agents.items() if getattr(agent, '_mozaiks_auto_tool_mode', False)}
+    if auto_tool_agents:
+        wf_logger.info(f" [{workflow_name_upper}] Auto-tool agents detected: {sorted(auto_tool_agents)}")
+    else:
+        wf_logger.debug(f" [{workflow_name_upper}] No auto-tool agents registered for this run.")
+    dispatcher = get_event_dispatcher()
+    if auto_tool_agents:
+        wf_logger.info(f" [{workflow_name_upper}] Auto-tool agents detected: {sorted(auto_tool_agents)}")
+    
+    # Load lifecycle tools for this workflow
+    from core.workflow.lifecycle_tools import get_lifecycle_manager
+    lifecycle_manager = get_lifecycle_manager(workflow_name)
+
     resumed_mode = bool(resumed_messages)
     # Log which context keys are present at stream start for diagnostics
     try:
@@ -1086,6 +1112,57 @@ async def _stream_events(
     tool_call_initiators: dict[str, str] = {}
     # Track tool names by id so responses can be labeled even if AG2 omits tool_name
     tool_names_by_id: dict[str, str] = {}
+    # Track schema validation retries per call/agent so we avoid infinite loops
+    schema_retry_tracker: dict[str, int] = {}
+    MAX_SCHEMA_RETRIES = 2
+
+    def _build_auto_tool_context_payload(turn_sequence: int) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "enterprise_id": enterprise_id,
+            "workflow_name": workflow_name,
+            "turn_sequence": turn_sequence,
+        }
+        try:
+            ctx_source = None
+            gm_candidate = getattr(pattern, "group_manager", None)
+            if gm_candidate and hasattr(gm_candidate, "context_variables"):
+                ctx_source = getattr(gm_candidate, "context_variables")
+            elif hasattr(pattern, "context_variables"):
+                ctx_source = getattr(pattern, "context_variables")
+
+            raw_ctx: Optional[Dict[str, Any]] = None
+            if ctx_source is not None:
+                if hasattr(ctx_source, "data") and isinstance(getattr(ctx_source, "data"), dict):
+                    raw_ctx = dict(getattr(ctx_source, "data"))  # type: ignore[arg-type]
+                elif hasattr(ctx_source, "to_dict") and callable(getattr(ctx_source, "to_dict")):
+                    raw_ctx = dict(ctx_source.to_dict())  # type: ignore[arg-type]
+                elif isinstance(ctx_source, dict):
+                    raw_ctx = dict(ctx_source)
+
+            if raw_ctx:
+                sanitized: Dict[str, Any] = {}
+                for key, value in raw_ctx.items():
+                    try:
+                        sanitized[key] = serialize_event_content(value)
+                    except Exception:
+                        sanitized[key] = str(value)
+                payload["context_variables"] = sanitized
+        except Exception as ctx_err:
+            wf_logger.debug(
+                f" [{workflow_name_upper}] Auto-tool context snapshot failed: {ctx_err}"
+            )
+        return payload
+
+    def _resolve_agent_object(agent_name: Optional[str]):
+        if not agent_name:
+            return None
+        if agent_name in agents:
+            return agents[agent_name]
+        for candidate in agents.values():
+            if getattr(candidate, "name", None) == agent_name:
+                return candidate
+        return None
     # ------------------------------------------------------------------
     # Verbose context diff support (optional via CONTEXT_VERBOSE_DEBUG=1)
     # ------------------------------------------------------------------
@@ -1136,6 +1213,22 @@ async def _stream_events(
                 )
                 first_event_logged = True
             sequence_counter += 1
+            
+            # Comprehensive event tracing for debugging
+            event_class = ev.__class__.__name__
+            if event_class == 'TextEvent':
+                try:
+                    from core.events.event_serialization import extract_agent_name
+                    agent_name = extract_agent_name(ev)
+                    content = getattr(ev, 'content', '')
+                    content_preview = str(content)[:100] if content else 'None'
+                    wf_logger.info(f" [EVENT_TRACE] {event_class} from {agent_name}: content_len={len(str(content)) if content else 0} preview='{content_preview}...'")
+                    if agent_name == 'ContextAgent':
+                        wf_logger.info(f" [CONTEXT_AGENT_TRACE] ContextAgent event detected! auto_tool_agents={auto_tool_agents}")
+                except Exception as trace_err:
+                    wf_logger.debug(f" [EVENT_TRACE] Error tracing {event_class}: {trace_err}")
+            else:
+                wf_logger.debug(f" [EVENT_TRACE] {event_class} event received")
             # Context diffing relies on prev_ctx_snapshot captured before the loop; no per-event copy needed here.
             # TextEvent persistence + forwarding (wrapped in tight try so other event types continue on failure)
             if isinstance(ev, TextEvent):
@@ -1171,9 +1264,105 @@ async def _stream_events(
                                 f" [{workflow_name_upper}] TextEvent details: sender='{sender_name}' content='{message_content[:100]}...' "
                                 f"content_len={len(message_content)} has_sender={hasattr(ev, 'sender')} has_content={hasattr(ev, 'content')}"
                             )
+                            
+                            wf_logger.info(f" [{workflow_name_upper}] 🚨 CHECKPOINT A: About to check auto-tool intercept")
+                            
+                            # AUTO-TOOL INTERCEPT: Process ContextAgent structured outputs before UI forwarding
+                            import uuid
+                            actual_message_to_send = message_content
+                            
+                            wf_logger.info(f" [{workflow_name_upper}] 🚨 CHECKPOINT B: Variables initialized, checking auto_tool_agents")
+                            try:
+                                wf_logger.info(f" [{workflow_name_upper}] Auto-tool debug: sender_name='{sender_name}' type={type(sender_name)}")
+                                wf_logger.info(f" [{workflow_name_upper}] Auto-tool debug: auto_tool_agents={auto_tool_agents}")
+                                wf_logger.info(f" [{workflow_name_upper}] Auto-tool debug: sender in agents? {sender_name in auto_tool_agents}")
+                            except Exception as debug_err:
+                                wf_logger.error(f" [{workflow_name_upper}] Debug logging error: {debug_err}")
+                            if sender_name in auto_tool_agents:
+                                wf_logger.info(f" [{workflow_name_upper}] Auto-tool intercept for {sender_name} (content_len={len(message_content)})")
+                                
+                                # Try to extract structured output from message content
+                                structured_blob = None
+                                try:
+                                    from core.data.persistence_manager import AG2PersistenceManager as _PM
+                                    if hasattr(_PM, '_extract_json_from_text'):
+                                        structured_blob = _PM._extract_json_from_text(message_content)
+                                        wf_logger.info(f" [{workflow_name_upper}] JSON extraction result for {sender_name}: {structured_blob is not None}")
+                                    
+                                    if not structured_blob and isinstance(message_content, str):
+                                        # Fallback: direct JSON parsing
+                                        import json
+                                        try:
+                                            stripped_content = message_content.strip()
+                                            if stripped_content.startswith('{') and stripped_content.endswith('}'):
+                                                structured_blob = json.loads(stripped_content)
+                                                wf_logger.info(f" [{workflow_name_upper}] Direct JSON parsing succeeded for {sender_name}")
+                                        except json.JSONDecodeError:
+                                            pass
+                                    
+                                    if structured_blob and isinstance(structured_blob, dict):
+                                        # We have valid structured output - process it
+                                        wf_logger.info(f" [{workflow_name_upper}] Structured output detected for {sender_name}, keys: {list(structured_blob.keys())}")
+                                        
+                                        # Extract friendly message from structured output
+                                        agent_message = structured_blob.get("agent_message")
+                                        if isinstance(agent_message, str) and agent_message.strip():
+                                            actual_message_to_send = agent_message.strip()
+                                            wf_logger.info(f" [{workflow_name_upper}] Using agent_message as display text: '{actual_message_to_send[:100]}...'")
+                                        else:
+                                            actual_message_to_send = f"{sender_name} prepared structured output."
+                                            wf_logger.info(f" [{workflow_name_upper}] Using fallback display message for {sender_name}")
+                                        
+                                        # Emit structured_output_ready event
+                                        try:
+                                            turn_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"{chat_id}:{sequence_counter}")
+                                            turn_key = f"turn-{turn_uuid.hex}"
+                                            context_payload = _build_auto_tool_context_payload(sequence_counter)
+                                            # Add agent_name to context so auto-tool handler can inject it into context_variables
+                                            context_payload["agent_name"] = sender_name
+                                            
+                                            # Get the correct model name from structured outputs registry
+                                            model_name = structured_registry.get(sender_name)
+                                            if model_name and hasattr(model_name, '__name__'):
+                                                model_name = model_name.__name__
+                                            else:
+                                                model_name = "UnknownModel"
+                                            
+                                            from core.events.event_serialization import build_structured_output_ready_event
+                                            structured_event = build_structured_output_ready_event(
+                                                agent=sender_name,
+                                                model_name=model_name,
+                                                structured_data=structured_blob,
+                                                auto_tool_mode=True,
+                                                context=context_payload,
+                                            )
+                                            structured_event["turn_idempotency_key"] = turn_key
+                                            
+                                            # Attach pattern context reference for auto-tool write-back
+                                            try:
+                                                gm_candidate = getattr(pattern, "group_manager", None)
+                                                if gm_candidate and hasattr(gm_candidate, "context_variables"):
+                                                    structured_event["_pattern_context_ref"] = getattr(gm_candidate, "context_variables")
+                                                elif hasattr(pattern, "context_variables"):
+                                                    structured_event["_pattern_context_ref"] = getattr(pattern, "context_variables")
+                                            except Exception:
+                                                pass
+                                            
+                                            if dispatcher:
+                                                wf_logger.info(f" [{workflow_name_upper}] Dispatching structured_output_ready for {sender_name} (turn_key={turn_key})")
+                                                import asyncio
+                                                asyncio.create_task(dispatcher.emit("chat.structured_output_ready", structured_event))
+                                        except Exception as struct_err:
+                                            wf_logger.warning(f" [{workflow_name_upper}] Failed to emit structured_output_ready for {sender_name}: {struct_err}")
+                                    else:
+                                        wf_logger.debug(f" [{workflow_name_upper}] No valid structured output found for {sender_name}")
+                                        
+                                except Exception as auto_tool_err:
+                                    wf_logger.warning(f" [{workflow_name_upper}] Auto-tool processing failed for {sender_name}: {auto_tool_err}")
+                            
                             try:
                                 await transport.send_chat_message(
-                                    message=message_content,
+                                    message=actual_message_to_send,
                                     agent_name=sender_name,
                                     chat_id=chat_id,
                                     metadata={"source": "ag2_textevent", "sequence": sequence_counter}
@@ -1212,6 +1401,28 @@ async def _stream_events(
                             wf_logger.info(
                                 f" [{workflow_name_upper}] TextEvent forwarded to UI: sender='{sender_name}' message_len={len(message_content)}"
                             )
+                            
+                            # LIFECYCLE TRIGGER: after_agent
+                            # Execute after_agent lifecycle tools when an agent completes its turn
+                            try:
+                                gm_ctx = getattr(pattern, "group_manager", None)
+                                active_ctx = getattr(gm_ctx, "context_variables", None) if gm_ctx else None
+                                if not active_ctx and hasattr(pattern, "context_variables"):
+                                    active_ctx = getattr(pattern, "context_variables")
+                                
+                                await lifecycle_manager.execute_trigger(
+                                    trigger=LifecycleTrigger.AFTER_AGENT,
+                                    workflow_name=workflow_name,
+                                    agent_name=sender_name,
+                                    agent_output=message_content,
+                                    chat_id=chat_id,
+                                    enterprise_id=enterprise_id,
+                                    context_variables=active_ctx,
+                                    sequence_number=sequence_counter,
+                                )
+                            except Exception as lc_err:
+                                wf_logger.debug(f" [{workflow_name_upper}] after_agent lifecycle tools failed: {lc_err}")
+                            
                     except Exception as transport_err:
                         import traceback as _tb
                         logger.warning(
@@ -1237,6 +1448,8 @@ async def _stream_events(
                 except Exception as ctx_err:
                     wf_logger.debug(f"Failed to update realtime token context: {ctx_err}")
 
+                # LIFECYCLE TRIGGER: after_agent (for previous agent)
+                # Execute after_agent lifecycle tools when previous agent's turn completes
                 if turn_agent and turn_started is not None:
                     duration = max(0.0, time.perf_counter() - turn_started)
                     # Record agent turn performance
@@ -1249,10 +1462,40 @@ async def _stream_events(
                         )
                     except Exception as perf_err:
                         logger.warning(f"Failed to record turn for {turn_agent}: {perf_err}")
+                    
+                    # Execute after_agent lifecycle tools
+                    try:
+                        gm_ctx = getattr(pattern, "group_manager", None)
+                        active_ctx = getattr(gm_ctx, "context_variables", None) if gm_ctx else None
+                        if not active_ctx and hasattr(pattern, "context_variables"):
+                            active_ctx = getattr(pattern, "context_variables")
+                        
+                        await lifecycle_manager.trigger_after_agent(
+                            agent_name=str(turn_agent),
+                            context_variables=active_ctx,
+                        )
+                    except Exception as lc_err:
+                        wf_logger.debug(f" [{workflow_name_upper}] after_agent lifecycle tools failed for {turn_agent}: {lc_err}")
 
                 turn_agent = getattr(ev, "sender", None) or getattr(ev, "agent", None)
                 if turn_agent:
                     executed_agents.add(str(turn_agent))
+                    
+                    # LIFECYCLE TRIGGER: before_agent (for new agent)
+                    # Execute before_agent lifecycle tools when an agent's turn begins
+                    try:
+                        gm_ctx = getattr(pattern, "group_manager", None)
+                        active_ctx = getattr(gm_ctx, "context_variables", None) if gm_ctx else None
+                        if not active_ctx and hasattr(pattern, "context_variables"):
+                            active_ctx = getattr(pattern, "context_variables")
+                        
+                        await lifecycle_manager.trigger_before_agent(
+                            agent_name=str(turn_agent),
+                            context_variables=active_ctx,
+                        )
+                    except Exception as lc_err:
+                        wf_logger.debug(f" [{workflow_name_upper}] before_agent lifecycle tools failed for {turn_agent}: {lc_err}")
+                    
                 turn_started = time.perf_counter()
                 wf_logger.debug(
                     f"[{workflow_name_upper}] New turn started with agent={turn_agent} seq={sequence_counter} chat_id={chat_id}"
@@ -1317,7 +1560,24 @@ async def _stream_events(
                     prompt_hint = getattr(request_obj, "prompt", None) or getattr(request_obj, "message", None)
                 if prompt_hint is not None:
                     setattr(ev, "_mozaiks_prompt", prompt_hint)
+            # Debug: Check if this is a ContextAgent TextEvent and transport conditions
+            transport_available = transport is not None
+            already_forwarded = getattr(ev, '_mozaiks_forwarded', False)
+            wf_logger.debug(f" [TRANSPORT_CHECK] Event {ev.__class__.__name__}: transport_available={transport_available}, already_forwarded={already_forwarded}")
+            
+            if hasattr(ev, '__class__'):
+                event_class = ev.__class__.__name__
+                if event_class == 'TextEvent':
+                    try:
+                        from core.events.event_serialization import extract_agent_name
+                        agent_name = extract_agent_name(ev)
+                        if agent_name == 'ContextAgent':
+                            wf_logger.info(f" [DEBUG_CONTEXT_AGENT] ContextAgent TextEvent: transport={transport_available}, forwarded={already_forwarded}, will_process={transport_available and not already_forwarded}")
+                    except Exception as debug_err:
+                        wf_logger.debug(f" [DEBUG_CONTEXT_AGENT] Debug error: {debug_err}")
+            
             if transport and not getattr(ev, '_mozaiks_forwarded', False):
+                wf_logger.debug(f" [TRANSPORT_PROCESSING] Processing {ev.__class__.__name__} through transport pipeline")
                 try:
                     # Unified serialization context object
                     build_ctx = UnifiedEventBuildContext(
@@ -1328,8 +1588,214 @@ async def _stream_events(
                         workflow_name_upper=workflow_name_upper,
                         wf_logger=wf_logger,
                     )
+                    wf_logger.debug(f" [TRANSPORT_PROCESSING] Built context for {ev.__class__.__name__}")
                     payload = unified_build_ui_event_payload(ev=ev, ctx=build_ctx)
+                    wf_logger.debug(f" [TRANSPORT_PROCESSING] Got payload for {ev.__class__.__name__}: {payload is not None}")
                     if payload:
+                        if payload.get("kind") in {"text", "print"}:
+                            if payload.get("kind") == "text":
+                                wf_logger.debug(
+                                    " [%s] Text payload from %s: %s", workflow_name_upper, payload.get("agent"), payload.get("content")
+                                )
+                            agent_for_event = payload.get("agent") or payload.get("sender") or turn_agent
+                            wf_logger.debug(f" [{workflow_name_upper}] Checking auto-tool: agent={agent_for_event}, auto_tool_agents={auto_tool_agents}")
+                            if agent_for_event in auto_tool_agents:
+                                wf_logger.debug(f" [{workflow_name_upper}] Auto-tool intercept for agent {agent_for_event}; payload keys={list(payload.keys())}")
+                                structured_blob = payload.get("structured_output")
+                                wf_logger.debug(f" [{workflow_name_upper}] Initial structured_blob present: {bool(structured_blob)}")
+                                if not structured_blob and isinstance(payload.get("content"), str):
+                                    wf_logger.debug(
+                                        f" [{workflow_name_upper}] No structured_output field for {agent_for_event}; attempting fallback parse."
+                                    )
+                                    try:
+                                        structured_blob = _PM._extract_json_from_text(payload["content"]) if hasattr(_PM, '_extract_json_from_text') else None
+                                        wf_logger.debug(f" [{workflow_name_upper}] Fallback parse result present={bool(structured_blob)}")
+                                    except Exception as parse_err:
+                                        wf_logger.debug(f" [{workflow_name_upper}] Structured output parse fallback failed for {agent_for_event}: {parse_err}")
+                                        structured_blob = None
+                                    # Additional parse attempts if persistence helper fails
+                                    if not structured_blob:
+                                        candidate_text = payload.get("content")
+                                        if isinstance(candidate_text, str):
+                                            stripped_candidate = candidate_text.strip()
+                                            try:
+                                                structured_blob = json.loads(stripped_candidate)
+                                                wf_logger.debug(
+                                                    f" [{workflow_name_upper}] Direct json.loads succeeded for {agent_for_event}"
+                                                )
+                                            except Exception as direct_err:
+                                                # Try slicing the first JSON object substring
+                                                start_idx = stripped_candidate.find('{')
+                                                end_idx = stripped_candidate.rfind('}')
+                                                if start_idx != -1 and end_idx > start_idx:
+                                                    try:
+                                                        structured_blob = json.loads(stripped_candidate[start_idx:end_idx + 1])
+                                                        wf_logger.debug(
+                                                            f" [{workflow_name_upper}] Substring json.loads succeeded for {agent_for_event}"
+                                                        )
+                                                    except Exception as substring_err:
+                                                        wf_logger.debug(
+                                                            f" [{workflow_name_upper}] Substring parse failed for {agent_for_event}: {substring_err}"
+                                                        )
+                                                else:
+                                                    wf_logger.debug(
+                                                        f" [{workflow_name_upper}] No JSON braces found in payload content for {agent_for_event}. Direct parse error: {direct_err}"
+                                                    )
+                                if structured_blob:
+
+                                    wf_logger.debug(f" [{workflow_name_upper}] structured_blob truthy for {agent_for_event}: {bool(structured_blob)}")
+                                    normalized_structured = structured_blob
+                                    if isinstance(structured_blob, str):
+                                        try:
+                                            normalized_structured = json.loads(structured_blob)
+                                        except json.JSONDecodeError:
+                                            wf_logger.debug(
+                                                f" [{workflow_name_upper}] Structured output JSON decode failed for {agent_for_event}"
+                                            )
+                                            normalized_structured = None
+                                    if isinstance(normalized_structured, dict):
+                                        model_cls = structured_registry.get(agent_for_event)
+                                        if model_cls is not None:
+                                            try:
+                                                validated = model_cls.model_validate(normalized_structured)
+                                                normalized_structured = validated.model_dump()  # type: ignore[attr-defined]
+                                            except ValidationError as err:
+                                                wf_logger.warning(
+                                                    f" [{workflow_name_upper}] Structured output validation failed for {agent_for_event}: {err}"
+                                                )
+                                                normalized_structured = None
+                                    else:
+                                        normalized_structured = None
+                                    if normalized_structured:
+                                        wf_logger.info(f" [{workflow_name_upper}] Structured output ready for {agent_for_event}; emitting auto-tool event.")
+                                        agent_message = normalized_structured.get("agent_message")
+                                        if isinstance(agent_message, str) and agent_message.strip():
+                                            display_message = agent_message.strip()
+                                        else:
+                                            display_message = f"{agent_for_event} prepared structured output."
+                                        payload["content"] = display_message
+                                        payload["is_structured_capable"] = True
+                                        payload.pop("structured_output", None)
+                                        payload.pop("structured_schema", None)
+                                        turn_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"{chat_id}:{sequence_counter}")
+                                        turn_key = f"turn-{turn_uuid.hex}"
+                                        context_payload = _build_auto_tool_context_payload(sequence_counter)
+                                        # Add agent_name to context so auto-tool handler can inject it into context_variables
+                                        context_payload["agent_name"] = agent_for_event
+                                        model_name = getattr(agents.get(agent_for_event), "_mozaiks_structured_model_name", None)
+                                        if not model_name:
+                                            model_cls = structured_registry.get(agent_for_event)
+                                            if model_cls is not None:
+                                                model_name = getattr(model_cls, "__name__", None)
+                                        if not model_name:
+                                            wf_logger.warning(
+                                                f" [{workflow_name_upper}] Unable to determine structured model name for {agent_for_event}; skipping auto-tool dispatch"
+                                            )
+                                        else:
+                                            structured_event = build_structured_output_ready_event(
+                                                agent=agent_for_event,
+                                                model_name=model_name,
+                                                structured_data=normalized_structured,
+                                                auto_tool_mode=True,
+                                                context=context_payload,
+                                            )
+                                            structured_event["turn_idempotency_key"] = turn_key
+                                            if dispatcher:
+                                                wf_logger.info(
+                                                    f" [{workflow_name_upper}] Dispatching chat.structured_output_ready for {agent_for_event} (turn_key={turn_key})"
+                                                )
+                                                asyncio.create_task(dispatcher.emit("chat.structured_output_ready", structured_event))
+                                    else:
+                                        wf_logger.debug(
+                                            f" [{workflow_name_upper}] Normalized structured payload empty for {agent_for_event}; nothing to emit."
+                                        )
+                                else:
+                                    wf_logger.debug(
+                                        f" [{workflow_name_upper}] No structured content detected for {agent_for_event}; leaving message unchanged."
+                                    )
+                        if payload.get("kind") == "tool_response" and payload.get("status") == SENTINEL_STATUS:
+                            agent_name = payload.get("agent")
+                            tool_name = payload.get("name") or payload.get("tool_name") or "unknown_tool"
+                            call_id = payload.get("call_id")
+                            retry_key_parts = [str(part) for part in (call_id, agent_name, tool_name) if part]
+                            retry_key = "|".join(retry_key_parts) if retry_key_parts else f"agent:{agent_name}|tool:{tool_name}"
+                            attempts = schema_retry_tracker.get(retry_key, 0)
+                            error_info = payload.get("error") or {}
+                            expected_model = error_info.get("expected_model")
+                            validation_errors = error_info.get("errors")
+
+                            if attempts >= MAX_SCHEMA_RETRIES:
+                                if attempts == MAX_SCHEMA_RETRIES:
+                                    wf_logger.warning(
+                                        f" [{workflow_name_upper}] Schema validation failed {attempts} time(s) for agent={agent_name} tool={tool_name} call_id={call_id}. No further auto-retries."
+                                    )
+                                    schema_retry_tracker[retry_key] = MAX_SCHEMA_RETRIES + 1
+                                    if transport:
+                                        error_payload = {
+                                            "kind": "error",
+                                            "agent": agent_name,
+                                            "code": "SCHEMA_VALIDATION_FAILED",
+                                            "message": (
+                                                f"Schema validation failed repeatedly for tool '{tool_name}'. "
+                                                "Manual follow-up is required."
+                                            ),
+                                        }
+                                        try:
+                                            await transport.send_event_to_ui(error_payload, chat_id)
+                                        except Exception as err:
+                                            logger.debug(
+                                                f"Failed to send schema failure error event for {chat_id}: {err}"
+                                            )
+                            else:
+                                schema_retry_tracker[retry_key] = attempts + 1
+                                gm = getattr(pattern, "group_manager", None)
+                                target_agent = _resolve_agent_object(agent_name)
+                                if gm and target_agent:
+                                    message_lines = []
+                                    if attempts > 0:
+                                        message_lines.append(
+                                            f"Retry attempt {attempts + 1} of {MAX_SCHEMA_RETRIES}."
+                                        )
+                                    if expected_model:
+                                        message_lines.append(
+                                            f"The previous call to `{tool_name}` failed schema validation for model `{expected_model}`."
+                                        )
+                                    else:
+                                        message_lines.append(
+                                            f"The previous call to `{tool_name}` failed schema validation."
+                                        )
+                                    message_lines.append(
+                                        "Review the validation errors and call the tool again with arguments that satisfy the schema."
+                                    )
+                                    if validation_errors:
+                                        try:
+                                            message_lines.append(
+                                                "Validation errors: "
+                                                + json.dumps(validation_errors, ensure_ascii=False)
+                                            )
+                                        except Exception:
+                                            message_lines.append(
+                                                f"Validation errors: {validation_errors}"
+                                            )
+                                    feedback_text = "\n".join(message_lines)
+                                    try:
+                                        await gm.a_send(
+                                            message=feedback_text,
+                                            recipient=target_agent,
+                                            request_reply=True,
+                                            silent=True,
+                                        )
+                                        wf_logger.info(
+                                            f" [{workflow_name_upper}] Requested schema retry for agent={agent_name} tool={tool_name} attempt={attempts + 1}"
+                                        )
+                                    except Exception as retry_err:
+                                        wf_logger.warning(
+                                            f" [{workflow_name_upper}] Failed to enqueue schema retry for agent={agent_name} tool={tool_name}: {retry_err}"
+                                        )
+                                else:
+                                    wf_logger.debug(
+                                        f" [{workflow_name_upper}] Schema retry skipped; agent or group manager missing for agent={agent_name}"
+                                    )
                         if payload.get("kind") == "text" and "source" not in payload:
                             payload["source"] = "ag2_textevent"
                         if payload.get("kind") == "run_complete" and not payload.get("agent"):
@@ -1399,36 +1865,82 @@ async def _stream_events(
                 break
 
             # After processing event, compute diff if verbose enabled
-            if verbose_ctx:
-                try:
-                    gm_live = getattr(pattern, 'group_manager', None)
-                    active_ctx = None
-                    if gm_live and hasattr(gm_live, 'context_variables'):
-                        active_ctx = getattr(gm_live, 'context_variables')
-                    elif hasattr(pattern, 'context_variables'):
-                        active_ctx = getattr(pattern, 'context_variables')
-                    current_snapshot = _safe_context_snapshot(active_ctx) if active_ctx else {}
-                    # Diff
-                    added = [k for k in current_snapshot.keys() if k not in prev_ctx_snapshot]
-                    removed = [k for k in prev_ctx_snapshot.keys() if k not in current_snapshot]
-                    changed = []
-                    for k in current_snapshot.keys():
-                        if k in prev_ctx_snapshot and current_snapshot[k] != prev_ctx_snapshot[k]:
-                            changed.append(k)
-                    if added or removed or changed:
-                        wf_logger.info(
-                            f" [CONTEXT_DIFF] seq={sequence_counter} added={added} removed={removed} changed={changed}"
-                        )
-                        # Only dump detailed values at DEBUG to avoid log noise
-                        wf_logger.debug(
-                            f" [CONTEXT_DIFF_DEBUG] seq={sequence_counter} snapshot={current_snapshot}"
-                        )
-                    prev_ctx_snapshot = current_snapshot
-                except Exception as _diff_err:
-                    wf_logger.debug(f" [CONTEXT_VERBOSE] diff computation failed: {_diff_err}")
+            # Also trigger on_context_change lifecycle tools for ANY changed variables
+            try:
+                gm_live = getattr(pattern, 'group_manager', None)
+                active_ctx = None
+                if gm_live and hasattr(gm_live, 'context_variables'):
+                    active_ctx = getattr(gm_live, 'context_variables')
+                elif hasattr(pattern, 'context_variables'):
+                    active_ctx = getattr(pattern, 'context_variables')
+                current_snapshot = _safe_context_snapshot(active_ctx) if active_ctx else {}
+                # Diff
+                added = [k for k in current_snapshot.keys() if k not in prev_ctx_snapshot]
+                removed = [k for k in prev_ctx_snapshot.keys() if k not in current_snapshot]
+                changed = []
+                for k in current_snapshot.keys():
+                    if k in prev_ctx_snapshot and current_snapshot[k] != prev_ctx_snapshot[k]:
+                        changed.append(k)
+                
+                # LIFECYCLE TRIGGER: on_context_change
+                # Trigger lifecycle tools for each changed variable
+                if changed and active_ctx:
+                    for context_key in changed:
+                        try:
+                            old_value = prev_ctx_snapshot.get(context_key)
+                            new_value = current_snapshot.get(context_key)
+                            
+                            await lifecycle_manager.execute_trigger(
+                                trigger=LifecycleTrigger.ON_CONTEXT_CHANGE,
+                                workflow_name=workflow_name,
+                                chat_id=chat_id,
+                                enterprise_id=enterprise_id,
+                                context_key=context_key,
+                                old_value=old_value,
+                                new_value=new_value,
+                                context_variables=active_ctx,
+                            )
+                        except Exception as lc_err:
+                            wf_logger.debug(
+                                f" [{workflow_name_upper}] on_context_change lifecycle tool failed for {context_key}: {lc_err}"
+                            )
+                
+                if verbose_ctx and (added or removed or changed):
+                    wf_logger.info(
+                        f" [CONTEXT_DIFF] seq={sequence_counter} added={added} removed={removed} changed={changed}"
+                    )
+                    # Only dump detailed values at DEBUG to avoid log noise
+                    wf_logger.debug(
+                        f" [CONTEXT_DIFF_DEBUG] seq={sequence_counter} snapshot={current_snapshot}"
+                    )
+                prev_ctx_snapshot = current_snapshot
+            except Exception as _diff_err:
+                wf_logger.debug(f" [CONTEXT_VERBOSE] diff computation failed: {_diff_err}")
     except Exception as loop_err:
         wf_logger.error(f"Event loop failure: {loop_err}")
     finally:
+        # LIFECYCLE TRIGGER: after_chat
+        # Execute after_chat lifecycle tools after event loop completes (success or error)
+        try:
+            gm_ctx = getattr(pattern, "group_manager", None)
+            active_ctx = getattr(gm_ctx, "context_variables", None) if gm_ctx else None
+            if not active_ctx and hasattr(pattern, "context_variables"):
+                active_ctx = getattr(pattern, "context_variables")
+            
+            final_status = "error" if "loop_err" in locals() else "success"
+            
+            await lifecycle_manager.execute_trigger(
+                trigger=LifecycleTrigger.AFTER_CHAT,
+                workflow_name=workflow_name,
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
+                user_id=user_id,
+                context_variables=active_ctx,
+                final_status=final_status,
+            )
+        except Exception as lc_err:
+            wf_logger.warning(f" [{workflow_name_upper}] after_chat lifecycle tools failed: {lc_err}")
+        
         # AG2-native: No manual context cleanup needed - AG2 handles lifecycle automatically
         pass
 
@@ -1827,6 +2339,18 @@ async def run_workflow_orchestration(
                     wf_logger.info(f" [DERIVED_CONTEXT] Final provider count: {provider_count}")
             # Hooks are  registered once inside define_agents() via workflow_manager.register_hooks.
             # This avoids duplicate log noise and ensures _hooks_loaded_workflows gating is respected.
+            
+            # -----------------------------------------------------------------
+            # 10.5) Lifecycle Tools: before_chat trigger
+            # -----------------------------------------------------------------
+            try:
+                from core.workflow.lifecycle_tools import get_lifecycle_manager
+                lifecycle_manager = get_lifecycle_manager(workflow_name)
+                await lifecycle_manager.trigger_before_chat(context_variables=ag2_context)
+                wf_logger.info(f" [{workflow_name_upper}] Lifecycle before_chat triggers completed")
+            except Exception as lc_err:
+                wf_logger.debug(f" [{workflow_name_upper}] Lifecycle before_chat failed: {lc_err}")
+            
             # -----------------------------------------------------------------
             # 11) Execute AG2 group chat with proper event streaming
             # -----------------------------------------------------------------
@@ -1987,6 +2511,17 @@ async def run_workflow_orchestration(
             # Log execution completion
             duration_sec = perf_counter() - start_time
             wf_logger.info(f" [EXECUTION_COMPLETE] Duration: {duration_sec:.2f}s")
+
+            # -----------------------------------------------------------------
+            # 12) Lifecycle Tools: after_chat trigger
+            # -----------------------------------------------------------------
+            try:
+                from core.workflow.lifecycle_tools import get_lifecycle_manager
+                lifecycle_manager = get_lifecycle_manager(workflow_name)
+                await lifecycle_manager.trigger_after_chat(context_variables=ag2_context)
+                wf_logger.info(f" [{workflow_name_upper}] Lifecycle after_chat triggers completed")
+            except Exception as lc_err:
+                wf_logger.debug(f" [{workflow_name_upper}] Lifecycle after_chat failed: {lc_err}")
 
             result_payload = {
                 "workflow_name": workflow_name,
@@ -2248,14 +2783,6 @@ async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str
     except Exception as e:
         logger.error(f" Failed to log conversation to agent chat file for {chat_id}: {e}")
         # Do not raise
-
-
-
-
-
-
-
-
 
 
 

@@ -4,23 +4,37 @@
 # ==============================================================================
 
 """
-MozaiksAI Unified Event System
+MozaiksAI Unified Event System - Three Distinct Event Types
 
-This package provides a centralized event dispatcher for all event types:
-- Business Logic Events (logging/monitoring)
-- AG2 Runtime Events (workflow execution)  
-- UI Tool Events (user interactions)
+This package handles THREE separate event systems, each with different purposes:
+
+1. BUSINESS EVENTS (System Monitoring & Logging)
+   - Field: log_event_type  
+   - Purpose: Application lifecycle, performance, monitoring
+   - Usage: emit_business_event("SERVER_STARTUP_COMPLETED", "Server ready")
+
+2. UI TOOL EVENTS (Agent-to-UI Communication) 
+   - Field: ui_tool_id
+   - Purpose: Interactive components, user input requests, dynamic UI
+   - Usage: emit_ui_tool_event("agent_api_key_input", {...}, workflow_name="generator")
+
+3. AG2 RUNTIME EVENTS (AutoGen Workflow Events)
+   - Field: kind (internal) -> type (WebSocket)  
+   - Purpose: AG2 agent messages, state changes, workflow execution
+   - Processed via: event_serialization.py -> WebSocket transport
 
 Usage Examples:
 
-    # Business events
+    # Business events (monitoring/logging)
     from core.events import emit_business_event
     await emit_business_event("WORKFLOW_STARTED", "Workflow initialized")
 
-    # UI tool interactions should use use_ui_tool helper (see core.workflow.ui_tools)
-    from core.workflow.ui_tools import use_ui_tool
-    response = await use_ui_tool("api_key_input", {"service": "openai"}, workflow_name="generator")
-    api_key = response.get("api_key")
+    # UI tool events (agent-UI interaction)
+    from core.events import emit_ui_tool_event  
+    await emit_ui_tool_event("api_key_input", {"service": "openai"}, "generator")
+
+    # AG2 runtime events are handled automatically by the orchestration layer
+    # via event_serialization.py - no direct API needed
 
     # Direct dispatcher access (advanced / internal)
     from core.events import get_event_dispatcher
@@ -44,7 +58,8 @@ from .unified_event_dispatcher import (
     
     # Main functions
     get_event_dispatcher,
-    emit_business_event
+    emit_business_event,
+    emit_ui_tool_event
 )
 
 __all__ = [
@@ -65,5 +80,6 @@ __all__ = [
     "UIToolHandler",
     
     # Convenience functions
-    "emit_business_event"
+    "emit_business_event",
+    "emit_ui_tool_event"
 ]

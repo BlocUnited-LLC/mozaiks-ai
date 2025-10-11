@@ -29,16 +29,19 @@ const UIToolRenderer = ({
   console.warn('⚠️ UIToolRenderer: Invalid event structure', event);
     return (
       <div className={`ui-tool-error ${className}`}>
-        <p className="text-red-400">Invalid UI tool event</p>
+        <p className="text-[var(--color-error)]">Invalid UI tool event</p>
       </div>
     );
   }
 
   try {
+    // Prefer explicit agentName when available to attribute UI tools correctly
+    const resolvedAgentName = event.agentName || event.agent_name || event.payload?.agentName || event.payload?.agent_name || event.agent || null;
     console.log('🧩 UIToolRenderer: Rendering', {
       ui_tool_id: event.ui_tool_id,
       eventId: event.eventId,
       workflow_name: event.workflow_name,
+      agentName: resolvedAgentName,
       payloadKeys: event.payload ? Object.keys(event.payload) : []
     });
     // Use the event dispatcher to render the component
@@ -48,7 +51,7 @@ const UIToolRenderer = ({
       console.warn('⚠️ UIToolRenderer: handleEvent returned null; component may be missing');
       return (
         <div className={`ui-tool-not-found ${className}`}>
-          <p className="text-yellow-400">
+          <p className="text-[var(--color-warning)] text-slate-200">
             UI tool '{event.ui_tool_id}' not found or failed to load
           </p>
           <p className="text-gray-400 text-sm">
@@ -68,7 +71,7 @@ const UIToolRenderer = ({
     console.error('❌ UIToolRenderer: Error rendering UI tool', error);
     return (
       <div className={`ui-tool-error ${className}`}>
-        <p className="text-red-400">Error rendering UI tool: {event.ui_tool_id}</p>
+        <p className="text-[var(--color-error)]">Error rendering UI tool: {event.ui_tool_id}</p>
         <p className="text-gray-400 text-sm">{error.message}</p>
       </div>
     );

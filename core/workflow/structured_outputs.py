@@ -3,7 +3,7 @@
 # DESCRIPTION: Clean, simplified structured output models for AG2 workflows
 # ==============================================================================
 
-from pydantic import Field, create_model
+from pydantic import BaseModel, Field, create_model
 from typing import List, Dict, Any, Optional, Union, Tuple, Set
 from enum import Enum
 from .llm_config import get_llm_config
@@ -23,10 +23,56 @@ TYPE_MAP = {
     'bool': bool,
     'optional_str': Optional[str],
     'Optional[str]': Optional[str],
+    'list': list,
+    'List': list,
     'dict': Dict[str, Any],
     'Dict': Dict[str, Any],
     'float': float,
 }
+
+
+def _inline_schema_refs(node: Any, defs: Dict[str, Any], stack: Optional[Set[str]] = None) -> Any:
+    if stack is None:
+        stack = set()
+
+    if isinstance(node, dict):
+        ref = node.get('$ref')
+        if isinstance(ref, str) and ref.startswith('#/$defs/'):
+            key = ref.split('/')[-1]
+            if key in stack:
+                return {k: _inline_schema_refs(v, defs, stack) for k, v in node.items() if k != '$ref'}
+            if key in defs:
+                stack.add(key)
+                resolved = _inline_schema_refs(defs[key], defs, stack)
+                stack.remove(key)
+                remainder = {k: _inline_schema_refs(v, defs, stack) for k, v in node.items() if k != '$ref'}
+                if remainder:
+                    merged = dict(resolved)
+                    merged.update(remainder)
+                    return merged
+                return resolved
+        return {k: _inline_schema_refs(v, defs, stack) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_inline_schema_refs(item, defs, stack) for item in node]
+    return node
+
+
+def _patch_model_schema(model_cls: type[BaseModel]) -> None:
+    """Ensure JSON schema expands nested refs for OpenAI structured outputs."""
+
+    if getattr(model_cls, "__mozaiks_schema_patched", False):
+        return
+
+    def _model_json_schema(cls, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        schema = BaseModel.model_json_schema.__func__(cls, *args, **kwargs)  # type: ignore[attr-defined]
+        defs = schema.pop('$defs', None)
+        if isinstance(defs, dict) and defs:
+            schema = _inline_schema_refs(schema, defs)
+        return schema
+
+    model_cls.model_json_schema = classmethod(_model_json_schema)  # type: ignore[assignment]
+    setattr(model_cls, "__mozaiks_schema_patched", True)
+
 
 def resolve_field_type(field_def: Dict[str, Any], available_models: Dict[str, type]) -> Tuple[Any, Any]:
     field_type_str = str(field_def.get('type', '')).strip()
@@ -36,18 +82,6 @@ def resolve_field_type(field_def: Dict[str, Any], available_models: Dict[str, ty
     if 'default' in field_def:
         field_kwargs['default'] = field_def['default']
     # Primitive
-    if field_type_str in TYPE_MAP:
-        return TYPE_MAP[field_type_str], Field(**field_kwargs)
-    # Literal -> Enum
-    if field_type_str == 'literal':
-        values = field_def.get('values') or []
-        if not values:
-            raise ValueError("Literal type requires 'values'")
-        enum_name = f"LiteralEnum_{abs(hash(tuple(values))) % 10000}"
-        enum_members = {f"VALUE_{i}": v for i, v in enumerate(values)}
-        LiteralEnum = Enum(enum_name, enum_members)  # type: ignore
-        return LiteralEnum, Field(**field_kwargs)
-    # list type
     if field_type_str in {'list', 'optional_list'}:
         items_type = field_def.get('items')
         if not items_type:
@@ -64,6 +98,18 @@ def resolve_field_type(field_def: Dict[str, Any], available_models: Dict[str, ty
         if field_type_str == 'optional_list':
             return Optional[base], Field(default=None, **field_kwargs)  # type: ignore[return-value]
         return base, Field(**field_kwargs)  # type: ignore[return-value]
+    if field_type_str in TYPE_MAP:
+        return TYPE_MAP[field_type_str], Field(**field_kwargs)
+    # Literal -> Enum
+    if field_type_str == 'literal':
+        values = field_def.get('values') or []
+        if not values:
+            raise ValueError("Literal type requires 'values'")
+        enum_name = f"LiteralEnum_{abs(hash(tuple(values))) % 10000}"
+        enum_members = {f"VALUE_{i}": v for i, v in enumerate(values)}
+        LiteralEnum = Enum(enum_name, enum_members)  # type: ignore
+        return LiteralEnum, Field(**field_kwargs)
+    # list type
     # dict primitive support (already mapped in TYPE_MAP earlier, but handle explicit 'dict' path if missed)
     if field_type_str == 'dict':
         return Dict[str, Any], Field(**field_kwargs)  # type: ignore
@@ -130,7 +176,9 @@ def build_models_from_config(models_config: Dict[str, Any]) -> Dict[str, type]:
         if unresolved:
             pending.append((name, mdef))
         else:
-            models[name] = create_model(name, **fields)  # type: ignore[arg-type]
+            model_cls = create_model(name, **fields)  # type: ignore[arg-type]
+            _patch_model_schema(model_cls)
+            models[name] = model_cls
     # iterative resolution
     for _ in range(len(pending)):
         remaining: List[Tuple[str, Dict[str, Any]]] = []
@@ -147,7 +195,9 @@ def build_models_from_config(models_config: Dict[str, Any]) -> Dict[str, type]:
             if unresolved:
                 remaining.append((name, mdef))
             else:
-                models[name] = create_model(name, **fields)  # type: ignore[arg-type]
+                model_cls = create_model(name, **fields)  # type: ignore[arg-type]
+                _patch_model_schema(model_cls)
+                models[name] = model_cls
         pending = remaining
         if not pending:
             break

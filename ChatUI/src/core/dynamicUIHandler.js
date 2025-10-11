@@ -17,6 +17,9 @@ export class DynamicUIHandler {
     this.eventHandlers = new Map();
     this.uiUpdateCallbacks = new Set();
     this.workflowCache = new Map();
+    // Track last speaker (agent) per chat_id or workflow to maintain correct attribution
+    // Keyed by chat_id if available, else workflow_name
+    this._lastSpeaker = new Map();
     this.setupDefaultHandlers();
   }
 
@@ -70,6 +73,41 @@ export class DynamicUIHandler {
       return;
     }
     console.log(`🎯 Processing UI event: ${originalType}`, data);
+
+    // Resolve agent attribution in a workflow-agnostic way. Prefer explicit fields, then payload keys,
+    // then previously tracked last speaker for the chat/workflow.
+    const resolveAgentName = (evt) => {
+      if (!evt) return null;
+      const payload = evt.data || evt.payload || {};
+      const candidates = [
+        evt.agentName,
+        evt.agent_name,
+        evt.agent,
+        payload?.agentName,
+        payload?.agent_name,
+        payload?.agent,
+        payload?.speaker,
+        payload?.sender,
+      ];
+      for (const c of candidates) {
+        if (typeof c === 'string' && c.trim()) return c.trim();
+      }
+
+      // fallback to tracked last speaker for this chat_id or workflow_name
+      const chatId = payload?.chat_id || evt?.chat_id || evt?.chatId || null;
+      const wf = payload?.workflow_name || evt?.workflow_name || evt?.workflow || null;
+      const key = chatId || wf || null;
+      if (key && this._lastSpeaker.has(key)) return this._lastSpeaker.get(key);
+      return null;
+    };
+
+    const resolvedAgent = resolveAgentName(eventData);
+    if (resolvedAgent) {
+      // Ensure both canonical keys are present on payload and top-level event for downstream consumers
+      if (!data) data = {};
+      data.agentName = data.agentName || resolvedAgent;
+      data.agent_name = data.agent_name || resolvedAgent;
+    }
 
     const handler = this.eventHandlers.get(type);
     if (!handler) {
@@ -248,6 +286,39 @@ export class DynamicUIHandler {
       console.log('🎯 DynamicUIHandler: responseCallback type:', typeof responseCallback);
 
       const { ui_tool_id, payload, eventId, workflow_name } = eventData;
+      const agentName = eventData?.agentName || eventData?.agent_name || eventData.agent_name || eventData.agent || null;
+      // Logging: record how agent attribution was resolved for auditing/debugging
+      try {
+        const logger = createToolsLogger({ tool: ui_tool_id, eventId, workflowName: workflow_name, agentMessageId: payload?.agent_message_id });
+        const provided = {
+          top_level_agent: eventData.agentName || eventData.agent_name || eventData.agent || null,
+          payload_agent: payload?.agentName || payload?.agent_name || payload?.agent || null,
+          resolved: agentName || null,
+        };
+        const chatKey = payload?.chat_id || eventData.chat_id || eventData.chatId || workflow_name || eventData.workflow_name || null;
+        logger.info('UI TOOL ATTRIBUTION', { ui_tool_id, workflow_name, chatKey, ...provided });
+      } catch (err) {
+        try { console.debug('Failed to log UI tool attribution', err); } catch {}
+      }
+      if (agentName) {
+        if (payload.agentName !== agentName) {
+          payload.agentName = agentName;
+        }
+        if (payload.agent_name !== agentName) {
+          payload.agent_name = agentName;
+        }
+        // Track last speaker for this chat/workflow
+        const chatKey = payload?.chat_id || eventData.chat_id || eventData.chatId || workflow_name || eventData.workflow_name || null;
+        if (chatKey) {
+          this._lastSpeaker.set(chatKey, agentName);
+          try {
+            const logger = createToolsLogger({ tool: ui_tool_id, eventId, workflowName: workflow_name, agentMessageId: payload?.agent_message_id });
+            logger.info('Updated last speaker', { chatKey, agentName });
+          } catch (err) {
+            try { console.debug('Failed to log last speaker update', err); } catch {}
+          }
+        }
+      }
 
       if (!ui_tool_id) {
         console.error('❌ Missing ui_tool_id in UI tool event');
@@ -275,7 +346,17 @@ export class DynamicUIHandler {
       };
 
   // Determine display mode ('inline' or 'artifact') with robust fallbacks
-  const display = eventData.display || eventData.display_type || (payload && (payload.display || payload.mode)) || 'inline';
+  const display = eventData.display || eventData.display_type || (payload && (payload.display || payload.mode)) || null;
+
+      // CRITICAL: Skip rendering for auto-tool events without explicit display mode
+      // Auto-tool events are followed by explicit tool calls with proper display settings
+      if (payload?.interaction_type === 'auto_tool' && !display) {
+        console.log(`⏭️ DynamicUIHandler: Skipping auto-tool event without display mode (${ui_tool_id}) - waiting for explicit tool call`);
+        return true; // Successful processing, just not rendering yet
+      }
+
+      // Default to inline only if we're actually rendering
+      const finalDisplay = display || 'inline';
 
       // SIMPLIFIED: Just notify UI callbacks - let ChatInterface handle rendering
       // This eliminates duplication with eventDispatcher
@@ -285,11 +366,14 @@ export class DynamicUIHandler {
         payload,
         eventId,
         workflow_name,
-        display,
-        onResponse
+        display: finalDisplay,
+    onResponse,
+    agent_name: agentName || undefined,
+    agentName: agentName || undefined,
+    agent: agentName || undefined
       });
 
-  console.log(`✅ DynamicUIHandler: Notified UI callbacks for ${ui_tool_id} (display=${display})`);
+  console.log(`✅ DynamicUIHandler: Notified UI callbacks for ${ui_tool_id} (display=${finalDisplay})`);
 
       return true; // Indicate successful processing
 

@@ -754,6 +754,10 @@ class SimpleTransport:
             # request_id optional (only when responding to InputRequestEvent)
             return True
         
+        elif msg_type == "ui_tool_response":
+            # UI tool response from frontend (Approve/Cancel/Submit buttons)
+            # Must have ui_tool_id or eventId to correlate with pending wait_for_ui_tool_response
+            return ("ui_tool_id" in message_data or "eventId" in message_data)
         
         elif msg_type == "client.resume":
             # Canonical resume field: lastClientIndex (0-based index of last message the client has)
@@ -910,6 +914,29 @@ class SimpleTransport:
                                 "timestamp": datetime.now(timezone.utc).isoformat()
                             })
                     continue
+                
+                # Handle UI tool response submission (Approve/Cancel/Submit buttons from frontend)
+                if mtype == "ui_tool_response":
+                    event_id = data.get('eventId') or data.get('ui_tool_id')
+                    response_data = data.get('response', {})
+                    if event_id:
+                        try:
+                            ok = await self.submit_ui_tool_response(event_id, response_data)
+                            logger.info(f"✅ UI tool response received for event {event_id}: {ok}")
+                            await websocket.send_json({
+                                "type": "ack.ui_tool_response",
+                                "data": {"eventId": event_id, "status": "accepted" if ok else "rejected"},
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+                        except Exception as uie:
+                            logger.error(f"❌ Failed to process UI tool response {event_id}: {uie}")
+                            await websocket.send_json({
+                                "type": "chat.error",
+                                "data": {"message": "UI tool response failed", "error_code": "UI_TOOL_RESPONSE_FAILED"},
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+                    continue
+                
                 # Client resume handshake (B11)
                 if mtype == "client.resume":
                     try:
@@ -1058,6 +1085,129 @@ class SimpleTransport:
     # ==================================================================================
     # UI TOOL EVENT HANDLING (Companion to user input)
     # ==================================================================================
+
+    def _get_or_create_persistence_manager(self):
+        """Return cached AG2PersistenceManager instance (lazy import)."""
+        pm = getattr(self, "_persistence_manager", None)
+        if pm is None:
+            from core.data.persistence_manager import AG2PersistenceManager
+            pm = AG2PersistenceManager()
+            self._persistence_manager = pm
+        return pm
+
+    async def _resolve_chat_context(
+        self,
+        chat_id: Optional[str],
+        *,
+        pm,
+        payload_workflow: Optional[str] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Resolve enterprise/workflow for a chat regardless of live connection."""
+        if not chat_id:
+            return None, payload_workflow
+
+        enterprise_id: Optional[str] = None
+        workflow_name: Optional[str] = payload_workflow
+
+        conn = self.connections.get(chat_id)
+        if conn:
+            raw_ent = conn.get("enterprise_id")
+            if raw_ent:
+                enterprise_id = str(raw_ent)
+            if not workflow_name:
+                workflow_name = conn.get("workflow_name")
+
+        if enterprise_id and workflow_name:
+            return enterprise_id, workflow_name
+
+        try:
+            coll = await pm._coll()
+            doc = await coll.find_one({"_id": chat_id}, {"enterprise_id": 1, "workflow_name": 1})
+            if doc:
+                if not enterprise_id and doc.get("enterprise_id") is not None:
+                    enterprise_id = str(doc.get("enterprise_id"))
+                if not workflow_name and doc.get("workflow_name"):
+                    workflow_name = doc.get("workflow_name")
+        except Exception as ctx_err:
+            logger.debug(f"dY'\" [UI_TOOL] Context lookup failed for chat {chat_id}: {ctx_err}")
+
+        if chat_id in self.connections:
+            conn = self.connections[chat_id]
+            if enterprise_id and not conn.get("enterprise_id"):
+                conn["enterprise_id"] = enterprise_id
+            if workflow_name and not conn.get("workflow_name"):
+                conn["workflow_name"] = workflow_name
+
+        return enterprise_id, workflow_name
+
+    async def _persist_ui_tool_state(
+        self,
+        *,
+        chat_id: Optional[str],
+        tool_name: str,
+        event_id: str,
+        display_type: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        """Persist latest artifact/inline UI payload for chat restoration."""
+        if not chat_id or not isinstance(payload, dict):
+            return
+
+        mode_candidates = [
+            display_type,
+            payload.get("display"),
+            payload.get("mode"),
+        ]
+        display_mode = next(
+            (m.strip() for m in mode_candidates if isinstance(m, str) and m.strip()),
+            None,
+        )
+        normalized_mode = display_mode.lower() if display_mode else None
+        persist_flag = bool(payload.get("persist_ui_state")) if isinstance(payload, dict) else False
+
+        if not normalized_mode and not persist_flag:
+            return
+        if normalized_mode not in ("artifact", "inline") and not persist_flag:
+            return
+
+        if not normalized_mode:
+            normalized_mode = "artifact"
+
+        try:
+            pm = self._get_or_create_persistence_manager()
+        except Exception as pm_err:  # pragma: no cover
+            logger.debug(f"dY'\" [UI_TOOL] Persistence manager unavailable: {pm_err}")
+            return
+
+        try:
+            enterprise_id, workflow_name = await self._resolve_chat_context(
+                chat_id,
+                pm=pm,
+                payload_workflow=payload.get("workflow_name"),
+            )
+            if not enterprise_id:
+                logger.debug(f"dY'\" [UI_TOOL] Missing enterprise_id for chat {chat_id}; skipping last_artifact persist")
+                return
+
+            try:
+                sanitized_payload = json.loads(json.dumps(payload))
+            except Exception:
+                sanitized_payload = payload
+
+            artifact_doc = {
+                "ui_tool_id": tool_name,
+                "event_id": event_id,
+                "display": normalized_mode,
+                "workflow_name": payload.get("workflow_name") or workflow_name,
+                "payload": sanitized_payload,
+            }
+            await pm.update_last_artifact(
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
+                artifact=artifact_doc,
+            )
+        except Exception as persist_err:
+            logger.debug(f"dY'\" [UI_TOOL] Failed to persist last_artifact for chat {chat_id}: {persist_err}")
     
     async def send_ui_tool_event(
         self,
@@ -1066,11 +1216,16 @@ class SimpleTransport:
         tool_name: str,
         component_name: str,
         display_type: str,
-        payload: Dict[str, Any]
+        payload: Dict[str, Any],
+        agent_name: Optional[str] = None
     ) -> None:
         """
         Emit a tool_call event to the frontend using the strict chat.tool_call protocol.
         """
+        # Extract agent_name from payload if not explicitly provided
+        if not agent_name and isinstance(payload, dict):
+            agent_name = payload.get("agent_name")
+        
         # Build a standardized AG2 tool_call payload
         event = {
             "kind": "tool_call",
@@ -1082,11 +1237,26 @@ class SimpleTransport:
             "display": display_type,
             "display_type": display_type,
         }
+        
+        # Set agent field if available
+        if agent_name:
+            event["agent"] = agent_name
 
         payload_keys = list(payload.keys()) if isinstance(payload, dict) else []
         logger.info(
             f"🛠️ [UI_TOOL] Emitting tool_call event: tool={tool_name}, component={component_name}, display={display_type}, event_id={event_id}, chat_id={chat_id}, payload_keys={payload_keys[:12]}"
         )
+
+        try:
+            await self._persist_ui_tool_state(
+                chat_id=chat_id,
+                tool_name=tool_name,
+                event_id=event_id,
+                display_type=display_type,
+                payload=payload,
+            )
+        except Exception as persist_exc:  # pragma: no cover
+            logger.debug(f"🧩 [UI_TOOL] Persist hook raised for chat {chat_id}: {persist_exc}")
 
         # Delegate to core event sender for namespacing and sequence handling
         await self.send_event_to_ui(event, chat_id)
@@ -1280,6 +1450,16 @@ class SimpleTransport:
                         try:
                             safe_message = message.copy()
                             safe_message['data'] = self._serialize_ag2_events(message['data'])
+                            
+                            # Extract agent name from data payload and add to top-level envelope for frontend attribution
+                            if isinstance(safe_message.get('data'), dict):
+                                agent_from_data = safe_message['data'].get('agent') or safe_message['data'].get('sender')
+                                if agent_from_data and isinstance(agent_from_data, str):
+                                    safe_message['agent'] = agent_from_data
+                                elif 'agent' not in safe_message:
+                                    # Fallback to generic if no agent in data
+                                    safe_message['agent'] = 'Agent'
+                            
                             if safe_message.get('type') == 'chat.tool_call':
                                 payload_obj = safe_message.get('data', {}).get('payload', {})
                                 payload_keys = list(payload_obj.keys()) if isinstance(payload_obj, dict) else []
