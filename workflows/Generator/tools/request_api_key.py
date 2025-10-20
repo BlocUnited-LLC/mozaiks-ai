@@ -9,7 +9,35 @@ from typing import Any, Dict, Optional, Annotated
 from datetime import datetime, timezone
 
 from logs.logging_config import get_workflow_logger
-from core.workflow.ui_tools import use_ui_tool, UIToolError
+from core.workflow.outputs.ui_tools import use_ui_tool, UIToolError
+
+
+def _extract_agent_name(container: Any) -> Optional[str]:
+    """Best-effort agent attribution lookup from context variables."""
+    if not container or not hasattr(container, "get"):
+        return None
+
+    candidate_keys = (
+        "agent_name",
+        "agentName",
+        "turn_agent_name",
+        "turn_agent",
+        "auto_tool_agent_name",
+        "auto_tool_agent",
+        "last_agent_name",
+        "speaker",
+        "sender",
+    )
+    for key in candidate_keys:
+        try:
+            value = container.get(key)
+        except Exception:  # pragma: no cover - defensive guard
+            continue
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized
+    return None
 
 
 async def request_api_key(
@@ -18,6 +46,10 @@ async def request_api_key(
     description: Optional[str] = None,
     required: Annotated[bool, "Whether key is required to proceed."] = True,
     mask_input: Annotated[bool, "Whether to mask characters in UI input field."] = True,
+    service_display_name: Annotated[
+        Optional[str],
+        "Human-friendly service label shown to the user (e.g. 'OpenAI', 'Anthropic Claude'). Defaults to a title-cased version of the identifier.",
+    ] = None,
     # AG2-native context injection
     context_variables: Annotated[Optional[Any], "Context variables provided by AG2"] = None,
 ) -> Dict[str, Any]:
@@ -45,10 +77,12 @@ async def request_api_key(
     # Extract parameters from AG2 ContextVariables
     chat_id: Optional[str] = None
     workflow_name: Optional[str] = None
+    agent_name: Optional[str] = None
     
     if context_variables and hasattr(context_variables, 'get'):
         chat_id = context_variables.get('chat_id')
         workflow_name = context_variables.get('workflow_name')
+        agent_name = _extract_agent_name(context_variables)
 
     if not workflow_name:
         return {"status": "error", "message": "workflow_name is required for request_api_key"}
@@ -57,11 +91,17 @@ async def request_api_key(
     if not isinstance(service, str) or not service.strip():
         return {"status": "error", "message": "service is required"}
     service_norm = service.strip().lower().replace(" ", "_")
+    display_name = service_display_name.strip() if isinstance(service_display_name, str) else None
+    if not display_name:
+        # Preserve original casing when available; fall back to prettified identifier.
+        display_name = service.strip() if isinstance(service, str) else service_norm
+        if display_name == service_norm:
+            display_name = service_norm.replace("_", " ").title()
     # Optional: tool-scoped logger
     try:
         from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
         tlog = _get_tool_logger(tool_name="RequestAPIKey", chat_id=chat_id, workflow_name=workflow_name)
-        _log_tool_event(tlog, action="start", status="ok", service=service_norm)
+        _log_tool_event(tlog, action="start", status="ok", service=service_norm, service_display=display_name)
     except Exception:
         tlog = None  # type: ignore
 
@@ -69,22 +109,27 @@ async def request_api_key(
 
     payload: Dict[str, Any] = {
         "service": service_norm,
-        "label": f"{service_norm.replace('_', ' ').title()} API Key",
-        "agent_message": agent_message or f"Please provide your {service_norm} API key to continue.",
-        "description": description or f"Enter your {service_norm} API key to continue",
-        "placeholder": f"Enter your {service_norm.upper()} API key...",
+        "service_display_name": display_name,
+        "label": f"{display_name} API Key",
+        "agent_message": agent_message or f"Please provide your {display_name} API key to continue.",
+        "description": description or f"Enter your {display_name} API key to continue",
+        "placeholder": f"Enter your {display_name} API key...",
         "required": required,
         "maskInput": mask_input,
         "agent_message_id": agent_message_id,
     }
+    if agent_name:
+        payload["agent_name"] = agent_name
+        payload["agentName"] = agent_name
+        payload["agent"] = agent_name
 
     # Optimized path: use unified helper to emit + wait
     try:
-        # Emit UI tool and wait for inline response
+        # Emit UI tool and wait for response (display mode auto-resolved from tools.json)
         if 'tlog' in locals() and tlog:
             try:
                 from logs.tools_logs import log_tool_event as _log_tool_event  # type: ignore
-                _log_tool_event(tlog, action="emit_ui", status="start", display="inline")
+                _log_tool_event(tlog, action="emit_ui", status="start")
             except Exception:
                 pass
         response = await use_ui_tool(
@@ -92,12 +137,18 @@ async def request_api_key(
             payload,
             chat_id=chat_id,
             workflow_name=str(workflow_name),
-            display="inline",
+            # display parameter omitted - auto-resolved from tools.json
         )
         if 'tlog' in locals() and tlog:
             try:
                 from logs.tools_logs import log_tool_event as _log_tool_event  # type: ignore
-                _log_tool_event(tlog, action="emit_ui", status="done", result_status=(response or {}).get("status", "unknown"))
+                _log_tool_event(
+                    tlog,
+                    action="emit_ui",
+                    status="done",
+                    result_status=(response or {}).get("status", "unknown"),
+                    service_display=display_name,
+                )
             except Exception:
                 pass
     except UIToolError as e:
@@ -114,6 +165,7 @@ async def request_api_key(
         return {
             "status": "cancelled",
             "service": service_norm,
+            "service_display_name": display_name,
             "agent_message_id": agent_message_id,
             "ui_event_id": (response or {}).get("event_id"),
         }
@@ -122,6 +174,7 @@ async def request_api_key(
             "status": "error",
             "service": service_norm,
             "message": (response or {}).get("error") or "User submission error",
+            "service_display_name": display_name,
             "agent_message_id": agent_message_id,
             "ui_event_id": (response or {}).get("event_id"),
         }
@@ -141,6 +194,7 @@ async def request_api_key(
     result = {
         "status": "success",
         "service": service_norm,
+        "service_display_name": display_name,
         "agent_message_id": agent_message_id,
         "ui_event_id": (response or {}).get("event_id"),
         "has_key": bool(api_key),
@@ -167,6 +221,7 @@ async def request_api_key(
                 # Prepare secure metadata document (no sensitive data)
                 metadata = {
                     "api_key_service": service_norm,
+                    "api_key_service_display": display_name,
                     "key_length": key_length,
                     "is_valid": key_length is not None and key_length > 10,  # Basic validation
                     "requested_by_user": True,
@@ -211,3 +266,4 @@ async def request_api_key(
         result["metadata_saved"] = False
 
     return result
+

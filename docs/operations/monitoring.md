@@ -12,7 +12,7 @@ MozaiksAI provides multi-layer observability:
 - **Structured Logging**: Unified JSON logging with secret redaction and emoji-enhanced console output
 - **Health Endpoints**: HTTP APIs for liveness, readiness, and performance aggregation
 - **AG2 Runtime Logs**: Native Autogen file/SQLite logging for agent interactions
-- **External Integration**: Prometheus metrics, ELK stack, Grafana dashboards
+- **External Integration**: Custom metrics endpoints, log aggregation, monitoring dashboards
 
 ```mermaid
 graph TB
@@ -26,12 +26,10 @@ graph TB
     subgraph "Metrics Endpoints"
         HEALTH[/health/active-runs]
         METRICS[/metrics/perf/aggregate]
-        PROM[/metrics/prometheus]
     end
     
     subgraph "External Monitoring"
         UPTIME[Uptime Monitoring<br/>UptimeRobot/Pingdom]
-        PROMETHEUS[Prometheus<br/>Time-Series DB]
         GRAFANA[Grafana<br/>Dashboards]
         ELK[ELK Stack<br/>Log Aggregation]
     end
@@ -41,15 +39,12 @@ graph TB
     APP --> AG2
     PERF --> HEALTH
     PERF --> METRICS
-    PERF --> PROM
     
     HEALTH --> UPTIME
-    PROM --> PROMETHEUS
-    PROMETHEUS --> GRAFANA
+    METRICS --> GRAFANA
     LOGS --> ELK
     
     style PERF fill:#4a90e2
-    style PROMETHEUS fill:#e24a4a
     style GRAFANA fill:#f39c12
     style ELK fill:#47a047
 ```
@@ -226,286 +221,6 @@ curl http://localhost:8000/metrics/perf/aggregate | jq
 **Example:**
 ```bash
 curl http://localhost:8000/metrics/perf/chats/chat_abc123 | jq
-```
-
----
-
-### Prometheus Metrics
-
-**Endpoint:** `GET /metrics/prometheus`
-
-**Purpose:** Expose metrics in Prometheus exposition format for scraping.
-
-**Response (plain text):**
-```prometheus
-# HELP mozaiks_active_chats Number of currently active chat sessions
-# TYPE mozaiks_active_chats gauge
-mozaiks_active_chats 3
-
-# HELP mozaiks_tracked_chats Total number of tracked chat sessions
-# TYPE mozaiks_tracked_chats gauge
-mozaiks_tracked_chats 25
-
-# HELP mozaiks_chat_agent_turns_total Total agent turns per chat
-# TYPE mozaiks_chat_agent_turns_total counter
-mozaiks_chat_agent_turns_total{chat_id="chat_abc123",workflow="Generator",enterprise="acme_corp"} 18
-mozaiks_chat_agent_turns_total{chat_id="chat_def456",workflow="DataAnalysis",enterprise="acme_corp"} 22
-
-# HELP mozaiks_chat_tool_calls_total Total tool calls per chat
-# TYPE mozaiks_chat_tool_calls_total counter
-mozaiks_chat_tool_calls_total{chat_id="chat_abc123",workflow="Generator"} 9
-
-# HELP mozaiks_chat_prompt_tokens_total Total prompt tokens per chat
-# TYPE mozaiks_chat_prompt_tokens_total counter
-mozaiks_chat_prompt_tokens_total{chat_id="chat_abc123",workflow="Generator"} 28000
-
-# HELP mozaiks_chat_completion_tokens_total Total completion tokens per chat
-# TYPE mozaiks_chat_completion_tokens_total counter
-mozaiks_chat_completion_tokens_total{chat_id="chat_abc123",workflow="Generator"} 14000
-
-# HELP mozaiks_chat_cost_usd_total Total cost in USD per chat
-# TYPE mozaiks_chat_cost_usd_total counter
-mozaiks_chat_cost_usd_total{chat_id="chat_abc123",workflow="Generator"} 0.85
-```
-
-**Use Cases:**
-- Prometheus scraping for time-series storage
-- Grafana dashboards with PromQL queries
-- Alertmanager rules for cost/error thresholds
-
----
-
-## Prometheus Integration
-
-### Setup Prometheus Server
-
-**1. Install Prometheus:**
-
-```bash
-# Ubuntu/Debian
-wget https://github.com/prometheus/prometheus/releases/download/v2.45.0/prometheus-2.45.0.linux-amd64.tar.gz
-tar xvfz prometheus-2.45.0.linux-amd64.tar.gz
-cd prometheus-2.45.0.linux-amd64
-
-# Create systemd service
-sudo cp prometheus /usr/local/bin/
-sudo cp promtool /usr/local/bin/
-sudo mkdir -p /etc/prometheus /var/lib/prometheus
-```
-
-**2. Configure Prometheus (`/etc/prometheus/prometheus.yml`):**
-
-```yaml
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
-
-scrape_configs:
-  - job_name: 'mozaiksai'
-    static_configs:
-      - targets: ['localhost:8000']
-    metrics_path: '/metrics/prometheus'
-    scrape_interval: 10s
-    scrape_timeout: 5s
-```
-
-**3. Start Prometheus:**
-
-```bash
-# Systemd service (/etc/systemd/system/prometheus.service)
-[Unit]
-Description=Prometheus Monitoring
-After=network.target
-
-[Service]
-User=prometheus
-Group=prometheus
-Type=simple
-ExecStart=/usr/local/bin/prometheus \
-  --config.file=/etc/prometheus/prometheus.yml \
-  --storage.tsdb.path=/var/lib/prometheus \
-  --web.console.templates=/etc/prometheus/consoles \
-  --web.console.libraries=/etc/prometheus/console_libraries
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable prometheus
-sudo systemctl start prometheus
-```
-
-**4. Verify Scraping:**
-
-- **Prometheus UI**: http://localhost:9090
-- **Targets**: http://localhost:9090/targets (should show `mozaiksai` endpoint as UP)
-- **Query**: `mozaiks_active_chats` in expression browser
-
----
-
-### Key PromQL Queries
-
-**Active Chats:**
-```promql
-mozaiks_active_chats
-```
-
-**Total Cost (Last 24h):**
-```promql
-increase(mozaiks_chat_cost_usd_total[24h])
-```
-
-**Average Agent Turns per Workflow:**
-```promql
-avg by (workflow) (mozaiks_chat_agent_turns_total)
-```
-
-**Error Rate (%):**
-```promql
-(sum(mozaiks_chat_errors_total) / sum(mozaiks_chat_agent_turns_total)) * 100
-```
-
-**Token Usage by Enterprise:**
-```promql
-sum by (enterprise) (mozaiks_chat_prompt_tokens_total + mozaiks_chat_completion_tokens_total)
-```
-
----
-
-## Grafana Dashboards
-
-### Install Grafana
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install -y software-properties-common
-sudo add-apt-repository "deb https://packages.grafana.com/oss/deb stable main"
-wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
-sudo apt-get update
-sudo apt-get install grafana
-
-# Start Grafana
-sudo systemctl enable grafana-server
-sudo systemctl start grafana-server
-
-# Access: http://localhost:3000 (admin/admin)
-```
-
----
-
-### MozaiksAI Dashboard Template
-
-**Dashboard JSON (import into Grafana):**
-
-```json
-{
-  "dashboard": {
-    "title": "MozaiksAI Performance Dashboard",
-    "panels": [
-      {
-        "title": "Active Chats",
-        "type": "stat",
-        "targets": [
-          {
-            "expr": "mozaiks_active_chats",
-            "legendFormat": "Active"
-          }
-        ]
-      },
-      {
-        "title": "Total Cost (24h)",
-        "type": "stat",
-        "targets": [
-          {
-            "expr": "increase(mozaiks_chat_cost_usd_total[24h])",
-            "legendFormat": "Cost USD"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD"
-          }
-        }
-      },
-      {
-        "title": "Agent Turns Over Time",
-        "type": "graph",
-        "targets": [
-          {
-            "expr": "rate(mozaiks_chat_agent_turns_total[5m])",
-            "legendFormat": "{{workflow}}"
-          }
-        ]
-      },
-      {
-        "title": "Token Usage by Workflow",
-        "type": "graph",
-        "targets": [
-          {
-            "expr": "sum by (workflow) (rate(mozaiks_chat_prompt_tokens_total[5m]) + rate(mozaiks_chat_completion_tokens_total[5m]))",
-            "legendFormat": "{{workflow}}"
-          }
-        ]
-      },
-      {
-        "title": "Error Rate (%)",
-        "type": "graph",
-        "targets": [
-          {
-            "expr": "(sum(rate(mozaiks_chat_errors_total[5m])) / sum(rate(mozaiks_chat_agent_turns_total[5m]))) * 100",
-            "legendFormat": "Errors"
-          }
-        ],
-        "alert": {
-          "conditions": [
-            {
-              "evaluator": {
-                "params": [5],
-                "type": "gt"
-              },
-              "query": {
-                "params": ["A", "5m", "now"]
-              },
-              "type": "query"
-            }
-          ],
-          "message": "Error rate exceeded 5%"
-        }
-      }
-    ]
-  }
-}
-```
-
-**Import Steps:**
-
-1. Navigate to Grafana UI → Dashboards → Import
-2. Paste JSON above or upload file
-3. Select Prometheus data source
-4. Save dashboard
-
----
-
-### Custom Dashboard Panels
-
-**Panel 1: Cost per Enterprise**
-
-```promql
-sum by (enterprise) (increase(mozaiks_chat_cost_usd_total[1h]))
-```
-
-**Panel 2: Average Turn Duration**
-
-```promql
-avg(mozaiks_chat_last_turn_duration_sec)
-```
-
-**Panel 3: Tool Call Success Rate**
-
-```promql
-(sum(mozaiks_chat_tool_calls_total) / (sum(mozaiks_chat_tool_calls_total) + sum(mozaiks_chat_errors_total))) * 100
 ```
 
 ---

@@ -1,4 +1,11 @@
-﻿from __future__ import annotations
+# ==============================================================================
+# FILE: resume_groupchat.py
+# DESCRIPTION: 
+# ==============================================================================
+
+# === MOZAIKS-CORE-HEADER ===
+
+from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -257,10 +264,11 @@ class GroupChatResumer:
 
     async def _ensure_persistence_manager(self):
         if self._persistence_manager is None:
-            from core.data.persistence_manager import AG2PersistenceManager
+            from core.data.persistence.persistence_manager import AG2PersistenceManager
 
             self._persistence_manager = AG2PersistenceManager()
         return self._persistence_manager
 
 
 __all__ = ["GroupChatResumer"]
+

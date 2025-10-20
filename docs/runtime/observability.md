@@ -11,7 +11,7 @@
 1. **PerformanceManager** (`core/observability/performance_manager.py`)
    - In-memory metrics tracking
    - HTTP endpoints for metrics aggregation
-   - Prometheus exposition format
+   - Custom metrics for chat sessions
 
 2. **AG2RuntimeLogger** (`core/observability/ag2_runtime_logger.py`)
    - Shim around AG2's native file/sqlite logger
@@ -242,22 +242,6 @@ aggregate = await perf_mgr.aggregate()
 
 ---
 
-#### Prometheus Metrics
-```python
-prometheus_text = await perf_mgr.prometheus_metrics()
-
-# Returns text in Prometheus exposition format:
-# # TYPE mozaiks_active_chats gauge
-# mozaiks_active_chats 3
-# # TYPE mozaiks_tracked_chats gauge
-# mozaiks_tracked_chats 10
-# # TYPE mozaiks_chat_agent_turns_total counter
-# mozaiks_chat_agent_turns_total{chat_id="chat_abc123",workflow="Generator"} 15
-# ...
-```
-
----
-
 ### HTTP Endpoints
 
 #### Aggregate Metrics
@@ -315,31 +299,6 @@ GET /metrics/perf/chats/{chat_id}
   "agent_turns": 15,
   "cost": 0.75
 }
-```
-
----
-
-#### Prometheus Exposition
-```http
-GET /metrics/prometheus
-```
-
-**Response:** (text/plain)
-```
-# TYPE mozaiks_active_chats gauge
-mozaiks_active_chats 3
-# TYPE mozaiks_chat_agent_turns_total counter
-mozaiks_chat_agent_turns_total{chat_id="chat_abc123",workflow="Generator"} 15
-```
-
-**Usage:**
-```yaml
-# Prometheus scrape config
-scrape_configs:
-  - job_name: 'mozaiks'
-    static_configs:
-      - targets: ['localhost:8000']
-    metrics_path: '/metrics/prometheus'
 ```
 
 ---
@@ -576,7 +535,6 @@ setup_production_logging()
 | Snapshot chat | <1ms | In-memory state access |
 | Aggregate all chats | <10ms | Iterates all in-memory states |
 | Flush to MongoDB | 20-50ms | Async write, non-blocking |
-| Prometheus metrics generation | <10ms | String concatenation |
 | Log write (file) | <5ms | Async file handler |
 | Log write (JSON) | <10ms | JSON serialization + file write |
 
@@ -610,8 +568,11 @@ rate(mozaiks_chat_errors_total[5m])
 
 ### Alert Rules (Example)
 
+Custom alerting rules can be configured based on metrics endpoints:
+
 ```yaml
-# Prometheus alerting rules
+# Example alerting configuration
+alerts:
 groups:
   - name: mozaiks_alerts
     rules:

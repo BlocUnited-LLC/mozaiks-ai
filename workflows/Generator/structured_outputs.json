@@ -58,10 +58,6 @@
             "type": "str",
             "description": "Human-readable workflow name"
           },
-          "model": {
-            "type": "str",
-            "description": "Primary model or API key used by agents in this workflow (e.g., gpt-5)."
-          },
           "description": {
             "type": "str",
             "description": "Paragraph-length summary (400-600 chars) explaining when the workflow triggers, what it does, and what business value it delivers. MUST follow trigger-specific patterns defined in ActionPlanArchitect instructions."
@@ -148,6 +144,10 @@
           "MermaidSequenceDiagram": {
             "type": "MermaidSequenceDiagram",
             "description": "Diagram payload rendered after the Action Plan is approved."
+          },
+          "workflow": {
+            "type": "WorkflowSpec",
+            "description": "The action plan workflow to merge with the diagram (required for diagram enrichment)."
           },
           "agent_message": {
             "type": "str",
@@ -382,16 +382,143 @@
           }
         }
       },
+      "ContextVariableSource": {
+        "type": "model",
+        "fields": {
+          "type": {
+            "type": "literal",
+            "values": [
+              "database",
+              "environment",
+              "static",
+              "derived"
+            ],
+            "description": "Source classification for the context variable."
+          },
+          "database_name": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Mongo database name (database sources only)."
+          },
+          "collection": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Mongo collection name (database sources only)."
+          },
+          "search_by": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Field used to locate the document (database sources)."
+          },
+          "field": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Field extracted from the database document."
+          },
+          "env_var": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Environment variable name (environment sources)."
+          },
+          "default": {
+            "type": "union",
+            "variants": [
+              "str",
+              "int",
+              "bool",
+              "null"
+            ],
+            "description": "Fallback value when the source is unavailable."
+          },
+          "value": {
+            "type": "union",
+            "variants": [
+              "str",
+              "int",
+              "bool",
+              "null"
+            ],
+            "description": "Literal value for static sources."
+          },
+          "triggers": {
+            "type": "list",
+            "items": "DerivedTrigger",
+            "description": "Trigger definitions for derived sources. Use [] for non-derived types.",
+            "default": []
+          }
+        }
+      },
+      "ContextVariableDefinitionEntry": {
+        "type": "model",
+        "fields": {
+          "name": {
+            "type": "str",
+            "description": "Unique snake_case variable name."
+          },
+          "type": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Canonical data type for downstream casting (string|integer|boolean etc.)."
+          },
+          "description": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Human readable description explaining the variable purpose."
+          },
+          "source": {
+            "type": "ContextVariableSource",
+            "description": "Source metadata describing where the value originates."
+          }
+        }
+      },
+      "ContextVariableAgentExposure": {
+        "type": "model",
+        "fields": {
+          "agent": {
+            "type": "str",
+            "description": "Agent name receiving these variables."
+          },
+          "variables": {
+            "type": "list",
+            "items": "str",
+            "description": "Variables exposed to the agent (empty list permitted).",
+            "default": []
+          }
+        }
+      },
       "ContextVariablesPlan": {
         "type": "model",
         "fields": {
           "definitions": {
-            "type": "dict",
-            "description": "Dictionary of all context variables keyed by variable name. Each value has type, description, and source (source.type = database|environment|static|derived). Derived variables have triggers array with type (agent_text|ui_response)."
+            "type": "list",
+            "items": "ContextVariableDefinitionEntry",
+            "description": "Ordered list of context variable definitions (each entry includes name, type, description, and source metadata)."
           },
           "agents": {
-            "type": "dict",
-            "description": "Dictionary mapping agent names to objects containing a variables array (which variables each agent sees via AG2 UpdateSystemMessage)."
+            "type": "list",
+            "items": "ContextVariableAgentExposure",
+            "description": "Agent exposure entries describing which variables are visible to each agent."
           }
         }
       },
@@ -510,7 +637,12 @@
           "tools": {
             "type": "list",
             "items": "AgentTool",
-            "description": "List of backend tools, each with its Python source (path inferred downstream)"
+            "description": "List of backend agent tools, each with its Python source (path inferred downstream)"
+          },
+          "lifecycle_tools": {
+            "type": "list",
+            "items": "AgentTool",
+            "description": "List of lifecycle hook implementations, each with its Python source. Use [] if no lifecycle tools are defined in the manifest."
           }
         }
       },
@@ -669,7 +801,7 @@
               "condition",
               "after_work"
             ],
-            "description": "Type of handoff"
+            "description": "Type of handoff: 'condition' for immediate evaluation (context or LLM-based), 'after_work' for post-agent-completion evaluation"
           },
           "condition": {
             "type": "union",
@@ -677,15 +809,23 @@
               "str",
               "null"
             ],
-            "description": "Condition for conditional handoffs"
+            "description": "Condition text: null for unconditional after_work, expression string with ${var} for context conditions, natural language for LLM conditions"
           },
           "condition_type": {
-            "type": "literal",
-            "values": [
-              "expression",
-              "string_llm"
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
             ],
-            "description": "Optional override: use 'expression' for context expressions or omit to fall back to LLM evaluation. Use null in registry to indicate omitted."
+            "description": "Condition evaluation method: 'expression' for context variable expressions (${...}), 'string_llm' for LLM natural language evaluation, null to auto-detect (${} triggers expression, else LLM)"
+          },
+          "condition_scope": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Evaluation timing for context conditions: 'pre' for pre-reply evaluation (re-checks every turn, ideal for UI interactions), 'post' for post-reply evaluation, null for default (LLM conditions ignore this field)"
           },
           "transition_target": {
             "type": "literal",
@@ -694,9 +834,15 @@
               "RevertToUserTarget",
               "TerminateTarget"
             ],
-            "description": "Type of transition"
+            "description": "Type of transition target"
           }
-        }
+        },
+        "required": [
+          "source_agent",
+          "target_agent",
+          "handoff_type",
+          "transition_target"
+        ]
       },
       "HandoffsAgentOutput": {
         "type": "model",

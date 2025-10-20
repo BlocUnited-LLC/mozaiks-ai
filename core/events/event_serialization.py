@@ -1,3 +1,10 @@
+# ==============================================================================
+# FILE: event_serialization.py
+# DESCRIPTION: 
+# ==============================================================================
+
+# === MOZAIKS-CORE-HEADER ===
+
 """AG2 Runtime Event Serialization - Third Event Type Handler
 
 This module handles the THIRD type of event in MozaiksAI's event system:
@@ -25,7 +32,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from dataclasses import dataclass
 
-from core.workflow.tool_validation import (
+from core.workflow.validation.tools import (
 	SENTINEL_AGENT_KEY,
 	SENTINEL_ERRORS_KEY,
 	SENTINEL_EXPECTED_MODEL_KEY,
@@ -180,14 +187,14 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 		# Structured outputs (best-effort)
 		try:
 			if sender and ctx.workflow_name:
-				from core.workflow.structured_outputs import (
+				from core.workflow.outputs.structured import (
 					agent_has_structured_output,
 					get_structured_output_model_fields,
 				)
 				if agent_has_structured_output(ctx.workflow_name, sender):
 					ctx.wf_logger.debug(f" [STRUCTURED_DEBUG] agent={sender} has_structured_output=True, clean_content_len={len(clean_content) if clean_content else 0}")
 					ctx.wf_logger.debug(f" [STRUCTURED_DEBUG] clean_content_preview: {clean_content[:200] if clean_content else 'None'}...")
-					from core.data.persistence_manager import AG2PersistenceManager as _PM  # lazy import
+					from core.data.persistence.persistence_manager import AG2PersistenceManager as _PM  # lazy import
 					if hasattr(_PM, '_extract_json_from_text'):
 						structured = _PM._extract_json_from_text(clean_content)  # type: ignore
 						ctx.wf_logger.debug(f" [STRUCTURED_DEBUG] _extract_json_from_text result: {structured is not None}")
@@ -397,7 +404,7 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 
 	# Custom: InputTimeoutEvent (imported lazily if present) -----------
 	try:
-		from core.workflow.ui_tools import InputTimeoutEvent as _ITE  # type: ignore
+		from core.workflow.outputs.ui_tools import InputTimeoutEvent as _ITE  # type: ignore
 		if isinstance(ev, _ITE):
 			payload.update({
 				"kind": "input_timeout",

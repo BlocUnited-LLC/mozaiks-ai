@@ -1,10 +1,9 @@
-# ==============================================================================
+# ============================================================================== 
 # FILE: workflows/Generator/tools/action_plan.py
-# DESCRIPTION: UI tool for presenting an ActionPlanArchitect-produced Action Plan
+# DESCRIPTION: Normalize and cache ActionPlanArchitect output for Mermaid enrichment
 # CONTRACT:
 #   - INPUT: action_plan (matches ActionPlan schema) from ActionPlanArchitect
-#   - OUTPUT: emits the "ActionPlan" UI artifact, waits for user response,
-#             and returns the response along with the (normalized) action_plan
+#   - OUTPUT: stores normalized workflow + metadata in context for downstream UI tool
 # ==============================================================================
 
 from typing import Any, Dict, List, Optional, Annotated
@@ -15,11 +14,11 @@ import logging
 import copy
 
 from logs.logging_config import get_workflow_logger
-from core.workflow.ui_tools import UIToolError, use_ui_tool
 
 
 MAX_IDENTIFIER_LENGTH = 32
 _logger = logging.getLogger("tools.action_plan")
+PLAN_SNAPSHOT_MAX_CHARS = 8000
 
 
 # ---------------------------
@@ -171,47 +170,11 @@ def _agent_tool_labels(agent: Dict[str, Any]) -> List[str]:
     return labels
 
 
-def _ensure_flowchart(mermaid_value: Any, phases: List[Dict[str, Any]], workflow_name: str) -> str:
-    raw = _coerce_str(mermaid_value).strip()
-    if raw:
-        lines = raw.splitlines()
-        if lines:
-            header = lines[0].strip().lower()
-            if header.startswith("flowchart"):
-                lines[0] = "flowchart LR"
-                return "\n".join(lines)
-    lines: List[str] = ["flowchart LR"]
-    seen: set[str] = set()
-    previous_phase_id: Optional[str] = None
-    for phase_index, phase in enumerate(phases):
-        phase_label = _clean_label(phase.get("name") or f"Phase {phase_index + 1}") or f"Phase {phase_index + 1}"
-        phase_id = _make_identifier(phase_label, "Phase", phase_index + 1, seen)
-        lines.append(f"    {phase_id}[{phase_label}]")
-        if previous_phase_id:
-            lines.append(f"    {previous_phase_id} --> {phase_id}")
-        previous_phase_id = phase_id
-        for agent_index, agent in enumerate(phase.get("agents", [])):
-            agent_label = _clean_label(agent.get("name") or f"Agent {phase_index + 1}-{agent_index + 1}") or f"Agent {phase_index + 1}-{agent_index + 1}"
-            agent_id = _make_identifier(agent_label, f"Agent{phase_index + 1}", agent_index + 1, seen)
-            lines.append(f"    {phase_id} --> {agent_id}" + "{" + agent_label + "}")
-            tool_labels = _agent_tool_labels(agent)
-            for tool_index, tool_label_raw in enumerate(tool_labels):
-                tool_label = _clean_label(tool_label_raw or f"Tool {tool_index + 1}") or f"Tool {tool_index + 1}"
-                tool_id = _make_identifier(tool_label, f"Tool{phase_index + 1}{agent_index + 1}", tool_index + 1, seen)
-                lines.append(f"    {agent_id} --> {tool_id}[" + tool_label + "]")
-    if len(lines) == 1:
-        title = _clean_label(workflow_name) or "Workflow"
-        lines.append(f"    start([{title}])")
-        lines.append("    start --> review((Review))")
-    return "\n".join(lines)
-
-
 def _normalize_workflow(raw_workflow: Dict[str, Any]) -> Dict[str, Any]:
     workflow_name = _coerce_str(raw_workflow.get("name"), "Generated Workflow").strip()
     initiated_by = _coerce_str(raw_workflow.get("initiated_by"), "user").strip()
     trigger_type = _coerce_str(raw_workflow.get("trigger_type"), "chat_start").strip()
     interaction_mode = _coerce_str(raw_workflow.get("interaction_mode"), "conversational").strip()
-    model = _coerce_str(raw_workflow.get("model"), "gpt-4o-mini").strip()
     description = _coerce_str(raw_workflow.get("description"))
     phases = _normalize_phases(raw_workflow.get("phases"))
     return {
@@ -219,7 +182,6 @@ def _normalize_workflow(raw_workflow: Dict[str, Any]) -> Dict[str, Any]:
         "initiated_by": initiated_by,
         "trigger_type": trigger_type,
         "interaction_mode": interaction_mode,
-        "model": model,
         "description": description,
         "phases": phases,
     }
@@ -257,6 +219,18 @@ def _normalize_action_plan(ap: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _serialize_plan_snapshot(workflow: Dict[str, Any]) -> str:
+    """Serialize a trimmed snapshot of the workflow for debugging/context storage."""
+    try:
+        snapshot = json.dumps(workflow, default=str)
+    except Exception:
+        snapshot = str(workflow)
+    if len(snapshot) > PLAN_SNAPSHOT_MAX_CHARS:
+        snapshot = snapshot[:PLAN_SNAPSHOT_MAX_CHARS] + "..."
+    return snapshot
+
+
+
 # ---------------------------
 # Public tool entrypoint (canonical: ActionPlan + agent_message)
 # ---------------------------
@@ -272,12 +246,12 @@ async def action_plan(
     # AG2-native context injection
     context_variables: Annotated[Optional[Any], "Context variables provided by AG2"] = None,
 ) -> dict[str, Any]:
-    """Render the Action Plan artifact with optional Mermaid sequence diagram and await approval.
+    """Normalize and cache Action Plan data for downstream Mermaid-based UI rendering.
 
     Summary:
         Normalize the ActionPlan payload, merge any provided Mermaid diagram (either via
-        explicit MermaidSequenceDiagram argument or context cache), emit the ActionPlan UI
-        artifact, and persist the user's acceptance decision to context variables.
+        explicit MermaidSequenceDiagram argument or context cache), and persist the merged
+        artifact state to context variables so `mermaid_sequence_diagram.py` can emit the UI.
 
     Payload Contract:
         field | type | description
@@ -295,7 +269,6 @@ async def action_plan(
                         "initiated_by": "user"|"system"|"external_event",
                         "trigger_type": "form_submit"|"chat_start"|"cron_schedule"|"webhook"|"database_condition",
                         "interaction_mode": "autonomous"|"checkpoint_approval"|"conversational",
-                        "model": str,
                         "description": str,
                         "phases": [
                             {
@@ -320,6 +293,7 @@ async def action_plan(
                 - "integrations" contains third-party APIs/services (PascalCase)
                 - "operations" contains internal workflow logic (snake_case)
                 - "human_interaction" is agent-level field: none=automated, context=info gathering, approval=decision gate
+                - LLM/runtime model metadata is intentionally excluded from the normalized workflow payload
                 - UI presentation derives display labels from structured lists
 
             Tolerated variants (auto-normalized):
@@ -478,6 +452,7 @@ async def action_plan(
     if context_variables and hasattr(context_variables, "set"):
         try:
             context_variables.set("action_plan", copy.deepcopy(plan_workflow))  # type: ignore[attr-defined]
+            context_variables.set("action_plan_snapshot", _serialize_plan_snapshot(plan_workflow))  # type: ignore[attr-defined]
             context_variables.set("action_plan_acceptance", "pending")  # type: ignore[attr-defined]
 
             if diagram_ready:
@@ -509,94 +484,28 @@ async def action_plan(
 
     agent_message_id = f"ap_{uuid.uuid4().hex[:12]}"
 
-    ui_payload: Dict[str, Any] = {
-        "workflow": plan_workflow,
-        "agent_message": final_agent_message,
-        "workflow_name": wf_name,
-        "agent_message_id": agent_message_id,
-    }
-    if legacy_mermaid_flow:
-        ui_payload["legacy_mermaid_flow"] = legacy_mermaid_flow
-    if diagram_text:
-        ui_payload["diagram"] = diagram_text
-    if legend_items:
-        ui_payload["legend"] = legend_items
-    if notes_text:
-        ui_payload["notes"] = notes_text
-    if diagram_metadata:
-        ui_payload["mermaid"] = {**diagram_metadata, "diagram": diagram_text}
-    if agent_name:
-        ui_payload["agent_name"] = agent_name
-        ui_payload["agentName"] = agent_name
-        ui_payload["agent"] = agent_name
-
-    try:
-        if tlog and _log_tool_event:
-            _log_tool_event(tlog, action="emit_ui", status="start", display="artifact", agent_message_id=agent_message_id)
-
-        response = await use_ui_tool(
-            tool_id="ActionPlan",
-            payload=ui_payload,
-            chat_id=chat_id,
-            workflow_name=wf_name,
-            display="artifact",
-        )
-
-        wf_logger.info("Action Plan artifact displayed; awaiting user decision", extra={"diagram": bool(diagram_text)})
-
-        if tlog and _log_tool_event:
+    if tlog and _log_tool_event:
+        try:
             _log_tool_event(
                 tlog,
-                action="emit_ui",
+                action="cache",
                 status="done",
-                result_status=response.get("status", "unknown"),
+                diagram_ready=True,
                 agent_message_id=agent_message_id,
             )
-    except UIToolError as exc:
-        wf_logger.error("Action Plan UI interaction failure: %s", exc)
-        return {
-            "status": "error",
-            "message": str(exc),
-            "workflow_name": wf_name,
-            "agent_message_id": agent_message_id,
-        }
-    except Exception as exc:  # pragma: no cover - defensive logging
-        wf_logger.exception("Unexpected failure while rendering Action Plan UI: %s", exc)
-        return {
-            "status": "error",
-            "message": "Unexpected error while rendering Action Plan UI",
-            "workflow_name": wf_name,
-            "agent_message_id": agent_message_id,
-        }
-
-    plan_acceptance = bool(response.get("plan_acceptance"))
-    action_name = _coerce_str(response.get("action"))
-    acceptance_state = "accepted" if plan_acceptance or action_name == "accept_workflow" else "pending"
-
-    if action_name in {"request_changes", "request_revision", "revise_workflow"}:
-        acceptance_state = "adjustments_requested"
-
-    if context_variables and hasattr(context_variables, "set"):
-        try:
-            context_variables.set("action_plan_acceptance", acceptance_state)  # type: ignore[attr-defined]
-            context_variables.set("action_plan_ui_response", response)  # type: ignore[attr-defined]
-        except Exception as ctx_err:  # pragma: no cover - defensive logging
-            wf_logger.debug("Failed to persist action plan acceptance state: %s", ctx_err)
+        except Exception:  # pragma: no cover - telemetry best-effort
+            pass
 
     wf_logger.info(
-        "Action Plan review completed",
+        "Action plan cached for Mermaid enrichment",
         extra={
-            "plan_acceptance": acceptance_state,
-            "ui_status": response.get("status"),
-            "action": action_name or "",
+            "diagram_ready": True,
+            "workflow": wf_name,
         },
     )
 
     return {
-        "status": response.get("status", "success"),
-        "plan_acceptance": plan_acceptance,
-        "acceptance_state": acceptance_state,
-        "ui_response": response,
+        "status": "success",
         "action_plan": ap_norm,
         "workflow_name": wf_name,
         "diagram_ready": True,
@@ -606,3 +515,4 @@ async def action_plan(
         "agent_message": final_agent_message,
         "agent_message_id": agent_message_id,
     }
+

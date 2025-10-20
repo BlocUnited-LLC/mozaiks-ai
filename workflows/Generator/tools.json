@@ -51,7 +51,12 @@
       "agent": "ContextVariablesAgent",
       "file": "collect_api_keys.py",
       "function": "collect_api_keys_from_action_plan",
-      "description": "Collect API keys for third-party services before context variable planning"
+      "description": "Collect API keys for third-party services before context variable planning",
+      "tool_type": "UI_Tool",
+      "ui": {
+        "component": "AgentAPIKeyInput",
+        "mode": "inline"
+      }
     }
   ]
 }

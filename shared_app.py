@@ -23,8 +23,8 @@ from pydantic import BaseModel
 from core.core_config import get_mongo_client
 from core.transport.simple_transport import SimpleTransport
 from core.workflow.workflow_manager import workflow_status_summary, get_workflow_transport, get_workflow_tools
-from core.data.persistence_manager import AG2PersistenceManager, InvalidEnterpriseIdError
-from core.data.theme_manager import ThemeManager, ThemeResponse, ThemeUpdateRequest
+from core.data.persistence.persistence_manager import AG2PersistenceManager, InvalidEnterpriseIdError
+from core.data.themes.theme_manager import ThemeManager, ThemeResponse, ThemeUpdateRequest
 
 # Initialize persistence manager (handles lean chat session storage internally)
 persistence_manager = AG2PersistenceManager()
@@ -235,22 +235,6 @@ async def metrics_perf_chat(chat_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to collect chat metric: {e}")
 
-@app.get("/metrics/prometheus")
-async def metrics_prometheus():
-    """Prometheus exposition format (subset) for quick scraping.
-
-    Note: Lightweight hand-crafted output; not a full client library export.
-    """
-    try:
-        perf_mgr = await get_performance_manager()
-        text = await perf_mgr.prometheus_metrics()
-        return Response(content=text, media_type="text/plain; version=0.0.4")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate prometheus metrics: {e}")
-
-
-
-
 
 # # ------------------------------------------------------------------------------
 # # SERVICE REGISTRY (backend-agnostic routing for artifact modules)
@@ -294,7 +278,7 @@ async def startup():
     try:
         clear_tools = _env_bool("CLEAR_TOOL_CACHE_ON_START", default=(env != "production"))
         if clear_tools:
-            from core.workflow.agent_tools import clear_tool_cache
+            from core.workflow.agents.tools import clear_tool_cache
             cleared = clear_tool_cache()  # clear all workflow tool modules
             wf_logger.info(f"🧹 TOOL_CACHE: Cleared {cleared} cached tool modules on startup")
         else:
@@ -305,7 +289,7 @@ async def startup():
     # Optional: clear LLM caches on startup (default OFF)
     try:
         if _env_bool("CLEAR_LLM_CACHES_ON_START", default=False):
-            from core.workflow.llm_config import clear_llm_caches
+            from core.workflow.validation.llm_config import clear_llm_caches
             clear_llm_caches(raw=True, built=True)
             wf_logger.info("🧹 LLM_CACHE: Cleared raw and built llm_config caches on startup")
         # Log effective TTL to aid ops visibility

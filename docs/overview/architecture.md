@@ -15,7 +15,7 @@ The platform is designed around a **strategically lean** philosophy: every compo
 ```
 ┌─────────────────────────────────────────────────────────┐
 │              ChatUI (React Frontend)                    │
-│  - WebSocket/SSE Transport                              │
+│  - WebSocket Transport                                  │
 │  - Artifact Design System                               │
 │  - Dynamic Component Rendering                          │
 └──────────────────┬──────────────────────────────────────┘
@@ -23,7 +23,7 @@ The platform is designed around a **strategically lean** philosophy: every compo
 ┌──────────────────▼──────────────────────────────────────┐
 │         MozaiksAI Runtime (FastAPI + AG2)               │
 │  ┌────────────────────────────────────────────────┐     │
-│  │  SimpleTransport (WebSocket/SSE Management)    │     │
+│  │  SimpleTransport (WebSocket Management)        │     │
 │  └────────────────────────────────────────────────┘     │
 │  ┌────────────────────────────────────────────────┐     │
 │  │  UnifiedEventDispatcher (Business/UI/AG2)      │     │

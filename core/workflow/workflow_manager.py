@@ -151,9 +151,13 @@ class UnifiedWorkflowManager:
                     if not fn_name and isinstance(module_path, str) and ':' in module_path:
                         fn_name = module_path.split(':', 1)[1].strip() or None
 
+                    # Use component name as tool_id if available (tools call use_ui_tool with component name)
+                    # Otherwise fall back to function name
+                    lookup_id = component if component else tool_id
+
                     rec = {
                         'workflow_name': workflow_name,
-                        'tool_id': tool_id,          # possibly suffixed for uniqueness
+                        'tool_id': lookup_id,        # component name for lookup (ActionPlan, AgentAPIKeyInput, etc.)
                         'fn': fn_name,               # raw function name for runtime event matching
                         'agent': agent,
                         'path': module_path,
@@ -163,7 +167,7 @@ class UnifiedWorkflowManager:
                         'tool_type': tool_type,
                     }
 
-                    key = f"{workflow_name}.{tool_id}"
+                    key = f"{workflow_name}.{lookup_id}"
                     self._ui_registry[key] = rec
                     if module_path:
                         self._ui_tool_path_cache[module_path] = key
@@ -171,6 +175,73 @@ class UnifiedWorkflowManager:
 
 
                 # Non-UI tools are ignored here on purpose
+
+            # Process lifecycle_tools section (same UI detection logic)
+            lifecycle_entries = data.get('lifecycle_tools', [])
+            if isinstance(lifecycle_entries, list):
+                for entry in lifecycle_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    
+                    file_name = entry.get('file')
+                    function = entry.get('function')
+                    if not (isinstance(file_name, str) and file_name.strip() and isinstance(function, str) and function.strip()):
+                        continue
+                    
+                    tool_id = function.strip()
+                    if not tool_id:
+                        continue
+                    
+                    # Ensure uniqueness
+                    base_tool_id = tool_id
+                    suffix = 2
+                    while tool_id in seen_ids:
+                        tool_id = f"{base_tool_id}_{suffix}"
+                        suffix += 1
+                    seen_ids.add(tool_id)
+                    
+                    mod = file_name.replace('\\', '/').split('/')[-1].rsplit('.', 1)[0]
+                    module_path = f"workflows.{workflow_name}.tools.{mod}:{function}"
+                    agent = entry.get('agent')
+                    
+                    # UI detection for lifecycle tools
+                    ui_block = entry.get('ui') if isinstance(entry.get('ui'), dict) else None
+                    tool_type = entry.get('tool_type') or entry.get('type')
+                    has_meaningful_ui = bool(ui_block and (ui_block.get('component') or ui_block.get('mode')))
+                    if not tool_type and has_meaningful_ui:
+                        tool_type = 'UI_Tool'
+                    
+                    if has_meaningful_ui or tool_type == 'UI_Tool':
+                        ui_ct += 1
+                        component = None
+                        mode = 'inline'
+                        if ui_block:
+                            component = ui_block.get('component')
+                            mode = ui_block.get('mode', 'inline')
+                        
+                        fn_name = function
+                        
+                        # Use component name as tool_id if available (tools call use_ui_tool with component name)
+                        # Otherwise fall back to function name
+                        lookup_id = component if component else tool_id
+                        
+                        rec = {
+                            'workflow_name': workflow_name,
+                            'tool_id': lookup_id,        # component name for lookup
+                            'fn': fn_name,
+                            'agent': agent,
+                            'path': module_path,
+                            'component': component,
+                            'mode': mode,
+                            'classification': 'ui',
+                            'tool_type': tool_type,
+                            'trigger': entry.get('trigger'),  # preserve lifecycle metadata
+                        }
+                        
+                        key = f"{workflow_name}.{lookup_id}"
+                        self._ui_registry[key] = rec
+                        if module_path:
+                            self._ui_tool_path_cache[module_path] = key
 
             self._ui_loaded_workflows.add(workflow_name)
             logger.info(f"Tools loaded for {workflow_name}: ui={ui_ct}")
@@ -803,7 +874,7 @@ class UnifiedWorkflowManager:
             return []
 
         try:
-            from .hooks_loader import register_hooks_for_workflow
+            from .execution.hooks import register_hooks_for_workflow
             registered = register_hooks_for_workflow(workflow_name, agents, base_path=str(self.workflows_base_path))
             if registered:
                 self._hooks_loaded_workflows.add(workflow_name)
@@ -911,3 +982,4 @@ __all__ = [
     "workflow_status_summary",
     "get_workflow_tools",
 ]
+

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Dict, Any, List, Optional
+from functools import wraps
 from autogen.agentchat.group import (
     AgentTarget,
     RevertToUserTarget,
@@ -13,6 +14,7 @@ from autogen.agentchat.group import (
 )
 from .workflow_manager import workflow_manager
 from logs.logging_config import get_workflow_logger
+from core.events.handoff_events import emit_handoff_event, sanitize_identifier
 
 log = get_workflow_logger("handoffs")
 
@@ -137,8 +139,8 @@ class HandoffManager:
                             if scope in {"pre", "before_reply", "immediate", "context_pre"}:
                                 context_list.append(context_condition)
                                 self._log_expression_condition_debug(source, target, expr_text, "add_context_condition")
-                                log.debug(
-                                    f"[HANDOFFS] Added context handoff {source}->{t_name}: expr={expr_text!r} scope={scope or 'after'} cond_type={cond_type or 'auto-expression'}"
+                                log.info(
+                                    f"✅ [HANDOFFS] Added PRE-REPLY context handoff {source}->{t_name}: expr={expr_text!r} scope={scope or 'pre'} cond_type={cond_type or 'auto-expression'}"
                                 )
                             else:
                                 conditional_after_list.append(context_condition)
@@ -152,13 +154,14 @@ class HandoffManager:
                     elif use_llm:
                         llm_prompt = cond_text if isinstance(cond_text, str) else str(cond_text)
                         try:
+                            llm_condition = StringLLMCondition(prompt=llm_prompt)
                             llm_list.append(
                                 OnCondition(
                                     target=target,
-                                    condition=StringLLMCondition(prompt=llm_prompt)
+                                    condition=llm_condition
                                 )
                             )
-                            log.debug(f"[HANDOFFS] Added llm condition {source}->{t_name}: prompt={llm_prompt!r} cond_type={cond_type or 'auto-llm'}")
+                            log.info(f"[HANDOFFS] Added LLM condition {source}->{t_name}: prompt={llm_prompt!r} cond_type={cond_type or 'auto-llm'}")
                         except Exception as e:
                             summary["errors"].append(f"LLM condition build failed ({source}): {e}")
                             log.error(f"❌ [HANDOFFS] LLM condition build failed for {source}: {e}")
@@ -166,12 +169,14 @@ class HandoffManager:
                         log.warning(f"⚠️ [HANDOFFS] Unsupported condition_type '{cond_type_raw}' for {source}->{t_name}; defaulting to LLM evaluation")
                         llm_prompt = cond_text if isinstance(cond_text, str) else str(cond_text)
                         try:
+                            llm_condition = StringLLMCondition(prompt=llm_prompt)
                             llm_list.append(
                                 OnCondition(
                                     target=target,
-                                    condition=StringLLMCondition(prompt=llm_prompt)
+                                    condition=llm_condition
                                 )
                             )
+                            log.info(f"[HANDOFFS] Added LLM condition {source}->{t_name}: prompt={llm_prompt!r} (fallback)")
                         except Exception as e:
                             summary["errors"].append(f"LLM condition build failed ({source}): {e}")
                             log.error(f"❌ [HANDOFFS] LLM condition build failed for {source}: {e}")
@@ -328,6 +333,188 @@ class HandoffManager:
 
 handoff_manager = HandoffManager()
 
+###################################################################
+# HANDOFF EVENT #
+###################################################################
+def _describe_target(obj: Any) -> str:
+    if obj is None:
+        return "None"
+    if isinstance(obj, str):
+        return obj
+    name = getattr(obj, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    label = getattr(obj, "agent_name", None)
+    if isinstance(label, str) and label:
+        return label
+    if hasattr(obj, "__class__"):
+        return obj.__class__.__name__
+    return str(obj)
+
+
+def _extract_context_metadata(agent: Any) -> Dict[str, Any]:
+    """Pull workflow/chat identifiers from the agent's context variables if present."""
+    metadata: Dict[str, Any] = {}
+    try:
+        context_variables = getattr(agent, "context_variables", None)
+        if context_variables and hasattr(context_variables, "get"):
+            workflow_name = context_variables.get("workflow_name")  # type: ignore[call-arg]
+            chat_id = context_variables.get("chat_id")  # type: ignore[call-arg]
+            if workflow_name:
+                metadata["workflow_name"] = workflow_name
+            if chat_id:
+                metadata["chat_id"] = chat_id
+    except Exception:  # pragma: no cover - defensive guard
+        return metadata
+    return metadata
+
+
+def _patch_autogen_handoff_logging() -> None:
+    """Enable lightweight runtime logging for AG2 handoff evaluation."""
+    if getattr(_patch_autogen_handoff_logging, "_applied", False):
+        return
+    try:
+        from autogen.agentchat.group import group_utils as ag_group_utils  # type: ignore
+    except Exception as exc:  # pragma: no cover - defensive guard
+        log.warning(f"⚠️ [HANDOFFS] Unable to import AG2 group_utils for logging patch: {exc}")
+        return
+
+    try:
+        original_ctx = ag_group_utils._run_oncontextconditions
+        if not getattr(original_ctx, "__mozaiks_instrumented__", False):
+
+            @wraps(original_ctx)
+            def _mozaiks_run_oncontextconditions(agent, messages=None, sender=None, config=None):  # type: ignore[override]
+                agent_name = sanitize_identifier(agent) or agent.__class__.__name__
+                handoffs_obj = getattr(agent, "handoffs", None)
+                context_conditions = getattr(handoffs_obj, "context_conditions", []) or []
+                log.info(f"[HANDOFFS][CTX] Evaluating context handoffs | agent={agent_name} count={len(context_conditions)}")
+
+                try:
+                    for idx, on_condition in enumerate(context_conditions):
+                        available = (
+                            on_condition.available.is_available(agent, messages if messages else [])
+                            if getattr(on_condition, "available", None)
+                            else True
+                        )
+                        condition_expr = None
+                        condition_obj = getattr(on_condition, "condition", None)
+                        if getattr(condition_obj, "expression", None) is not None:
+                            condition_expr = getattr(condition_obj.expression, "expression", None)
+
+                        if not available:
+                            continue
+
+                        condition_result = True
+                        if condition_obj is not None:
+                            condition_result = condition_obj.evaluate(agent.context_variables)
+
+                        if condition_result:
+                            target = on_condition.target
+                            try:
+                                target.activate_target(agent._group_manager.groupchat)  # type: ignore[attr-defined]
+                            except Exception as exc:  # pragma: no cover - safety fallback
+                                log.error(f"❌ [HANDOFFS][CTX] Failed to activate target for {agent_name}: {exc}")
+                                raise
+
+                            transfer_name = _describe_target(target)
+                            payload = {
+                                "source_agent": agent_name,
+                                "target": transfer_name,
+                                "condition_index": idx,
+                                "condition_expression": condition_expr,
+                                "available": available,
+                                "trigger": "context",
+                            }
+                            payload.update(_extract_context_metadata(agent))
+                            emit_handoff_event("context", payload)
+                            log.info(f"[HANDOFFS][CTX] Triggered handoff {agent_name}->{transfer_name}")
+                            return True, "[Handing off to " + transfer_name + "]"
+
+                    log.info(f"[HANDOFFS][CTX] No context handoff matched for agent={agent_name}")
+                    return False, None
+
+                except Exception as exc:  # pragma: no cover - revert to original on failure
+                    log.warning(f"⚠️ [HANDOFFS][CTX] Instrumentation fallback due to error: {exc}")
+                    return original_ctx(agent, messages=messages, sender=sender, config=config)
+
+            setattr(_mozaiks_run_oncontextconditions, "__mozaiks_instrumented__", True)
+            ag_group_utils._run_oncontextconditions = _mozaiks_run_oncontextconditions
+
+        original_after = ag_group_utils._evaluate_after_works_conditions
+        if not getattr(original_after, "__mozaiks_instrumented__", False):
+
+            @wraps(original_after)
+            def _mozaiks_evaluate_after_works(agent, groupchat, user_agent=None):  # type: ignore[override]
+                agent_name = sanitize_identifier(agent) or agent.__class__.__name__
+                handoffs_obj = getattr(agent, "handoffs", None)
+                after_work_conditions = getattr(handoffs_obj, "after_works", []) or []
+                log.info(f"[HANDOFFS][AFTER] Evaluating after-work handoffs | agent={agent_name} count={len(after_work_conditions)}")
+
+                if not after_work_conditions:
+                    return None
+
+                try:
+                    for idx, after_work_condition in enumerate(after_work_conditions):
+                        available = (
+                            after_work_condition.available.is_available(agent, groupchat.messages)
+                            if getattr(after_work_condition, "available", None)
+                            else True
+                        )
+                        condition_expr = None
+                        condition_obj = getattr(after_work_condition, "condition", None)
+                        if getattr(condition_obj, "expression", None) is not None:
+                            condition_expr = getattr(condition_obj.expression, "expression", None)
+
+                        if not available:
+                            continue
+
+                        condition_result = True
+                        if condition_obj is not None:
+                            condition_result = condition_obj.evaluate(agent.context_variables)
+
+                        if condition_result:
+                            resolved = after_work_condition.target.resolve(
+                                groupchat,
+                                agent,
+                                user_agent,
+                            ).get_speaker_selection_result(groupchat)
+
+                            payload = {
+                                "source_agent": agent_name,
+                                "target": _describe_target(after_work_condition.target),
+                                "resolved_target": _describe_target(resolved),
+                                "condition_index": idx,
+                                "condition_expression": condition_expr,
+                                "available": available,
+                                "trigger": "after_work",
+                            }
+                            payload.update(_extract_context_metadata(agent))
+                            emit_handoff_event("after_work", payload)
+                            log.info(
+                                f"[HANDOFFS][AFTER] Resolved after-work target for {agent_name}: {_describe_target(resolved)}"
+                            )
+                            return resolved
+
+                    log.info(f"[HANDOFFS][AFTER] No after-work condition matched for agent={agent_name}")
+                    return None
+
+                except Exception as exc:  # pragma: no cover - fallback to original
+                    log.warning(f"⚠️ [HANDOFFS][AFTER] Instrumentation fallback due to error: {exc}")
+                    return original_after(agent, groupchat, user_agent)
+
+            setattr(_mozaiks_evaluate_after_works, "__mozaiks_instrumented__", True)
+            ag_group_utils._evaluate_after_works_conditions = _mozaiks_evaluate_after_works
+
+        setattr(_patch_autogen_handoff_logging, "_applied", True)
+        log.info("[HANDOFFS] Runtime handoff instrumentation enabled")
+    except Exception as exc:  # pragma: no cover - defensive guard
+        log.warning(f"⚠️ [HANDOFFS] Failed to patch AG2 handoff logging: {exc}")
+
+
+_patch_autogen_handoff_logging()
+###################################################################
+###################################################################
 
 def wire_handoffs(workflow_name: str, agents: Dict[str, Any]) -> None:
     try:

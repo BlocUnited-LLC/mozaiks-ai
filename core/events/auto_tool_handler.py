@@ -1,3 +1,10 @@
+# ==============================================================================
+# FILE: auto_tool_handler.py
+# DESCRIPTION: 
+# ==============================================================================
+
+# === MOZAIKS-CORE-HEADER ===
+
 from __future__ import annotations
 
 import asyncio
@@ -10,11 +17,11 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 from pydantic import ValidationError
 
-from core.workflow.agent_tools import load_agent_tool_functions
-from core.workflow.structured_outputs import get_structured_outputs_for_workflow
+from core.workflow.agents.tools import load_agent_tool_functions
+from core.workflow.outputs.structured import get_structured_outputs_for_workflow
 from core.events.event_serialization import serialize_event_content
 from core.transport.simple_transport import SimpleTransport
-from core.workflow.context_adapter import create_context_container
+from core.workflow.context.adapter import create_context_container
 
 logger = logging.getLogger("auto_tool_handler")
 
@@ -275,6 +282,21 @@ class AutoToolEventHandler:
             matched = param_lookup.get(str(key).lower())
             if matched:
                 kwargs[matched] = value
+        # Provide contextual metadata when the tool function explicitly accepts it.
+        context_fallbacks = {
+            "chat_id": context.get("chat_id"),
+            "enterprise_id": context.get("enterprise_id"),
+            "workflow_name": context.get("workflow_name"),
+            "turn_idempotency_key": context.get("turn_idempotency_key"),
+            "agent_name": context.get("agent_name"),
+            "agent": context.get("agent_name") or context.get("agent"),
+        }
+        for key, value in context_fallbacks.items():
+            if value is None:
+                continue
+            matched = param_lookup.get(key)
+            if matched and matched not in kwargs:
+                kwargs[matched] = value
         if binding.accepts_context:
             # Prefer using the pattern's actual context reference if available
             if pattern_context_ref and hasattr(pattern_context_ref, "get") and hasattr(pattern_context_ref, "set"):
@@ -328,6 +350,17 @@ class AutoToolEventHandler:
         if not transport:
             return
         arg_payload = {k: serialize_event_content(v) for k, v in kwargs.items() if k != "context_variables"}
+        try:
+            await transport.send_event_to_ui(
+                {
+                    "kind": "select_speaker",
+                    "agent": agent_name,
+                    "selected_speaker": agent_name,
+                },
+                chat_id,
+            )
+        except Exception:
+            logger.debug("[AUTO_TOOL] Failed to emit select_speaker for agent=%s", agent_name)
         event_payload = {
             "kind": "tool_call",
             "agent": agent_name,
@@ -343,6 +376,9 @@ class AutoToolEventHandler:
                 "workflow_name": binding.ui_config.get("workflow_name"),
             },
         }
+        agent_message = kwargs.get("agent_message")
+        if isinstance(agent_message, str) and agent_message.strip():
+            event_payload["payload"]["agent_message"] = agent_message.strip()
         try:
             logger.info("[AUTO_TOOL] Emitting chat.tool_call for agent=%s tool=%s turn=%s", agent_name, binding.tool_name, turn_key)
             await transport.send_event_to_ui(event_payload, chat_id)
@@ -414,3 +450,4 @@ class AutoToolEventHandler:
 
 
 __all__ = ["AutoToolEventHandler", "AutoToolBinding"]
+

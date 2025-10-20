@@ -7,13 +7,18 @@ import UIToolRenderer from "../../core/ui/UIToolRenderer";
 // UI Tool Renderer - handles workflow-agnostic UI tool events
 // NOTE: Hooks must run unconditionally; define state first, then early-return.
 const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRequest }) => {
-  // Local completion indicator for inline components only
   const [completed, setCompleted] = React.useState(false);
+  const [hasInteracted, setHasInteracted] = React.useState(false);
 
-  // Early return AFTER hook so hook order is stable
   if (!uiToolEvent || !uiToolEvent.ui_tool_id) {
     return null;
   }
+
+  const displayMode =
+    uiToolEvent.display ||
+    uiToolEvent.payload?.display ||
+    uiToolEvent.payload?.mode ||
+    'inline';
 
   const handleResponse = async (resp) => {
     try {
@@ -21,58 +26,45 @@ const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRe
         await onResponse(resp);
       }
     } finally {
-      // Non-clickable "Completed" state for inline tools
-      const displayMode = uiToolEvent.display || uiToolEvent.payload?.display || uiToolEvent.payload?.mode || 'inline';
       if (displayMode === 'inline') {
         setCompleted(true);
       }
     }
   };
 
-  // Extract agent message from payload
-  const agentMessage = uiToolEvent.payload?.agent_message || uiToolEvent.payload?.description;
+  const handleUserInteraction = () => {
+    if (!hasInteracted) {
+      setHasInteracted(true);
+    }
+  };
 
   return (
-    <div>
-      {/* Agent message displayed above UI tool */}
-      {agentMessage && (
-        <div className="flex justify-start px-0 message-container mb-2">
-          <div className="mt-1 agent-message message">
-            <div className="flex flex-col">
-              <div className="message-header">
-                <span className="name-pill agent">
-                  <span className="pill-avatar" aria-hidden>🤖</span> Agent
-                </span>
-              </div>
-              <div className="message-body w-full flex">
-                <div className="w-full">
-                  {agentMessage}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* UI Tool Component */}
-  <div className="my-4 p-4 border border-[rgba(var(--color-primary-light-rgb),0.2)] rounded-lg bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)]">
-        {/* Inline-only completion chip */}
-        {completed && ((uiToolEvent.display || uiToolEvent.payload?.display || uiToolEvent.payload?.mode || 'inline') === 'inline') && (
-          <div className="mb-2">
+    <div className="flex justify-center px-0 message-container">
+      <div className="mt-1 w-full max-w-2xl">
+        <div className="flex flex-col gap-3 w-full items-center">
+          {completed && displayMode === 'inline' && (
             <span
               aria-label="Completed"
               className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded-full bg-[rgba(var(--color-success-rgb),0.15)] text-[var(--color-success)] border border-[rgba(var(--color-success-rgb),0.3)] select-none"
             >
               ✓ Completed
             </span>
+          )}
+          <div 
+            className={`inline-block ${displayMode === 'inline' && !completed && !hasInteracted ? 'inline-component-attention' : ''} ${hasInteracted ? 'interacted' : ''}`}
+            onClick={handleUserInteraction}
+            onFocus={handleUserInteraction}
+            onMouseDown={handleUserInteraction}
+            onKeyDown={handleUserInteraction}
+          >
+            <UIToolRenderer
+              event={uiToolEvent}
+              onResponse={handleResponse}
+              submitInputRequest={submitInputRequest}
+              className="ui-tool-in-chat"
+            />
           </div>
-        )}
-        <UIToolRenderer
-          event={uiToolEvent}
-          onResponse={handleResponse}
-          submitInputRequest={submitInputRequest}
-          className="ui-tool-in-chat"
-        />
+        </div>
       </div>
     </div>
   );
@@ -250,8 +242,7 @@ const ModernChatInterface = ({
                   ARTIFACT TRIGGER LOGIC:
                   The button below manually triggers the artifact panel visibility via the `onArtifactToggle` prop,
                   which is connected to the `toggleSidePanel` function in `ChatPage.js`.
-
-                  FUTURE ENHANCEMENT:
+=
                   To make the artifact panel appear automatically based on an agent's output,
                   you would call the `onArtifactToggle` function programmatically. This could be done
                   by listening for a specific type of agent message in `ChatPage.js` and then
@@ -309,7 +300,7 @@ const ModernChatInterface = ({
               const hasStructured = !!(chat.structuredOutput && typeof chat.structuredOutput === 'object');
               const hasUITool = !!chat.uiToolEvent;
               const isSystem = chat.isTokenMessage || chat.isWarningMessage;
-              if (isEmptyContent && !hasStructured && !hasUITool && !isSystem) {
+              if (isEmptyContent && !chat.isThinking && !hasStructured && !hasUITool && !isSystem) {
                 return null;
               }
             

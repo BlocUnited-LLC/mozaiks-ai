@@ -5,13 +5,17 @@
                 "source_agent": "user",
                 "target_agent": "InterviewAgent",
                 "handoff_type": "condition",
-                "condition": "When the user responds to the initial intake prompt.",
+                "condition_type": "expression",
+                "condition_scope": null,
+                "condition": "${interview_complete} == False",
                 "transition_target": "AgentTarget"
             },
             {
                 "source_agent": "InterviewAgent",
                 "target_agent": "user",
                 "handoff_type": "after_work",
+                "condition_scope": null,
+                "condition_type": null,
                 "condition": null,
                 "transition_target": "RevertToUserTarget"
             },
@@ -20,20 +24,16 @@
                 "target_agent": "ActionPlanArchitect",
                 "handoff_type": "condition",
                 "condition_type": "expression",
+                "condition_scope": null,
                 "condition": "${interview_complete} == True",
-                "transition_target": "AgentTarget"
-            },
-            {
-                "source_agent": "user",
-                "target_agent": "ActionPlanArchitect",
-                "handoff_type": "condition",
-                "condition": "When the user requests adjustments to the proposed workflow plan.",
                 "transition_target": "AgentTarget"
             },
             {
                 "source_agent": "ActionPlanArchitect",
                 "target_agent": "ProjectOverviewAgent",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "AgentTarget"
             },
@@ -41,28 +41,62 @@
                 "source_agent": "ProjectOverviewAgent",
                 "target_agent": "user",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "RevertToUserTarget"
             },
             {
-                "source_agent": "ProjectOverviewAgent",
+                "source_agent": "user",
                 "target_agent": "ContextVariablesAgent",
                 "handoff_type": "condition",
                 "condition_type": "expression",
+                "condition_scope": "pre",
                 "condition": "${action_plan_acceptance} == \"accepted\"",
+                "transition_target": "AgentTarget"
+            },
+            {
+                "source_agent": "user",
+                "target_agent": "ActionPlanArchitect",
+                "handoff_type": "condition",
+                "condition_type": "expression",
+                "condition_scope": "pre",
+                "condition": "${action_plan} != None and ${action_plan_acceptance} != \"accepted\"",
                 "transition_target": "AgentTarget"
             },
             {
                 "source_agent": "user",
                 "target_agent": "ContextVariablesAgent",
                 "handoff_type": "condition",
-                "condition": "When the user approves the action plan and is ready to proceed with context planning.",
+                "condition_type": "expression",
+                "condition_scope": "after",
+                "condition": "${action_plan_acceptance} == \"accepted\"",
+                "transition_target": "AgentTarget"
+            },
+            {
+                "source_agent": "user",
+                "target_agent": "ActionPlanArchitect",
+                "handoff_type": "condition",
+                "condition_type": "expression",
+                "condition_scope": "after",
+                "condition": "${action_plan} != None and ${action_plan_acceptance} != \"accepted\"",
+                "transition_target": "AgentTarget"
+            },
+            {
+                "source_agent": "user",
+                "target_agent": "ActionPlanArchitect",
+                "handoff_type": "condition",
+                "condition_type": "string_llm",
+                "condition_scope": null,
+                "condition": "When the user provides feedback, suggestions, changes, or critique about the workflow, action plan, phases, agents, operations, integrations, or any aspect of the proposed solution.",
                 "transition_target": "AgentTarget"
             },
             {
                 "source_agent": "ContextVariablesAgent",
                 "target_agent": "ToolsManagerAgent",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "AgentTarget"
             },
@@ -70,6 +104,8 @@
                 "source_agent": "ToolsManagerAgent",
                 "target_agent": "UIFileGenerator",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "AgentTarget"
             },
@@ -77,6 +113,8 @@
                 "source_agent": "UIFileGenerator",
                 "target_agent": "AgentToolsFileGenerator",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "AgentTarget"
             },
@@ -84,6 +122,8 @@
                 "source_agent": "AgentToolsFileGenerator",
                 "target_agent": "AgentsAgent",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "AgentTarget"
             },
@@ -91,6 +131,8 @@
                 "source_agent": "AgentsAgent",
                 "target_agent": "StructuredOutputsAgent",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "AgentTarget"
             },
@@ -98,6 +140,8 @@
                 "source_agent": "StructuredOutputsAgent",
                 "target_agent": "HookAgent",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "AgentTarget"
             },
@@ -105,6 +149,8 @@
                 "source_agent": "HookAgent",
                 "target_agent": "HandoffsAgent",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "AgentTarget"
             },
@@ -112,6 +158,8 @@
                 "source_agent": "HandoffsAgent",
                 "target_agent": "OrchestratorAgent",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "AgentTarget"
             },
@@ -119,6 +167,8 @@
                 "source_agent": "OrchestratorAgent",
                 "target_agent": "DownloadAgent",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "AgentTarget"
             },
@@ -126,6 +176,8 @@
                 "source_agent": "DownloadAgent",
                 "target_agent": "user",
                 "handoff_type": "after_work",
+                "condition_type": null,
+                "condition_scope": null,
                 "condition": null,
                 "transition_target": "RevertToUserTarget"
             },
@@ -133,6 +185,8 @@
                 "source_agent": "user",
                 "target_agent": "InterviewAgent",
                 "handoff_type": "condition",
+                "condition_type": "string_llm",
+                "condition_scope": null,
                 "condition": "When the user requests further changes after reviewing the delivered bundle.",
                 "transition_target": "AgentTarget"
             },
@@ -140,6 +194,8 @@
                 "source_agent": "user",
                 "target_agent": "terminate",
                 "handoff_type": "condition",
+                "condition_type": "string_llm",
+                "condition_scope": null,
                 "condition": "When the user confirms the download is complete and no further changes are needed.",
                 "transition_target": "TerminateTarget"
             }

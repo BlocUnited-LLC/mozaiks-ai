@@ -77,7 +77,7 @@ Follow these operational guides:
 |----------|-------------|
 | **[Runtime Overview](runtime/runtime_overview.md)** | Workflow manager, orchestration engine, AG2 patterns, execution flow |
 | **[Event Pipeline](runtime/event_pipeline.md)** | UnifiedEventDispatcher, business events, UI tool events, AG2 serialization |
-| **[Transport & Streaming](runtime/transport_and_streaming.md)** | WebSocket/SSE, message filtering, event envelopes, correlation IDs |
+| **[Transport & Streaming](runtime/transport_and_streaming.md)** | WebSocket, message filtering, event envelopes, correlation IDs |
 | **[Persistence & Resume](runtime/persistence_and_resume.md)** | MongoDB integration, AG2 state serialization, session resume |
 | **[Observability](runtime/observability.md)** | Structured logging, performance metrics, AG2 runtime logger, Prometheus |
 | **[Token Management](runtime/token_management.md)** | Real-time token tracking, cost calculation, billing integration |

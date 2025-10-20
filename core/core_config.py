@@ -1,4 +1,11 @@
 # ==============================================================================
+# FILE: core_config.py
+# DESCRIPTION: 
+# ==============================================================================
+
+# === MOZAIKS-CORE-HEADER ===
+
+# ==============================================================================
 # FILE: config.py
 # DESCRIPTION: Configuration for Azure Key Vault, MongoDB, LLMs, and Tokens API
 # NOTES: Avoid module-level cloud calls; build credentials lazily and prefer
@@ -135,7 +142,7 @@ def get_free_trial_config() -> Dict[str, Any]:
 # Low balance (token) prompt helper (emits standardized UI tool event)
 # -----------------------------------------------------------------------------
 async def prompt_low_balance(chat_id: str, workflow_name: str, needed_tokens: int, current_balance: int) -> dict:
-    from core.workflow.ui_tools import use_ui_tool
+    from core.workflow.outputs.ui_tools import use_ui_tool
     """Display a low-balance UI prompt and return user response (single-call helper)."""
     return await use_ui_tool(
         tool_id="token_top_up_prompt",
@@ -155,3 +162,4 @@ __all__ = [
     "get_secret",
     "get_mongo_client",
 ]
+

@@ -26,6 +26,7 @@ const ChatPage = () => {
   const messagesRef = useRef([]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   const [ws, setWs] = useState(null);
+  const wsRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const setMessagesWithLogging = useCallback(updater => setMessages(prev => typeof updater==='function'?updater(prev):updater), []);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
@@ -143,8 +144,9 @@ const ChatPage = () => {
       // Create a response callback that uses the WebSocket connection
       const sendResponse = (responseData) => {
         console.log('🔌 ChatPage: Sending WebSocket response:', responseData);
-        if (ws && ws.send) {
-          return ws.send(responseData);
+        const activeWs = wsRef.current;
+        if (activeWs && activeWs.send) {
+          return activeWs.send(responseData);
         } else {
           console.warn('⚠️ No WebSocket connection available for UI tool response');
           return false;
@@ -610,6 +612,15 @@ const ChatPage = () => {
           const derivedDisplay = envelope.display || envelope.display_type || envelope.mode || detail.display || detail.display_type || detail.mode || basePayload.display || basePayload.mode || null;
           const eventId = envelope.tool_call_id || envelope.corr || detail.tool_call_id || detail.corr || null;
           const awaiting = envelope.awaiting_response !== undefined ? envelope.awaiting_response : detail.awaiting_response;
+          const sendResponse = (responseData) => {
+            console.log('dY"O ChatPage: Sending WebSocket response for tool_call:', responseData);
+            const activeWs = wsRef.current;
+            if (activeWs && activeWs.send) {
+              return activeWs.send(responseData);
+            }
+            console.warn('���s������,? No WebSocket connection available for UI tool response (tool_call)');
+            return false;
+          };
           dynamicUIHandler.processUIEvent({
             type: 'ui_tool_event',
             ui_tool_id: toolName,
@@ -624,9 +635,40 @@ const ChatPage = () => {
               awaiting_response: awaiting,
               ...(derivedDisplay ? { display: derivedDisplay } : {})
             }
-          });
+          }, sendResponse);
         } else {
           setMessagesWithLogging(prev => [...prev, { id: data.tool_call_id || `tool-call-${Date.now()}`, sender:'system', agentName:'System', content:`🔧 Tool Call: ${data.tool_name}`, isStreaming:false }]);
+        }
+        return;
+      }
+      case 'ui_tool_dismiss':
+      case 'chat.ui_tool_dismiss': {
+        const envelope = data || {};
+        const detail = envelope.data || {};
+        const dismissedId = detail.event_id || envelope.event_id || detail.eventId || envelope.eventId || null;
+        const dismissedTool = detail.ui_tool_id || envelope.ui_tool_id || detail.tool_name || envelope.tool_name || null;
+        console.log('🧩 [UI] Received ui_tool_dismiss event:', { dismissedId, dismissedTool });
+
+        if (dismissedId) {
+          setMessagesWithLogging((prev) =>
+            prev.filter(
+              (msg) => !(msg?.metadata?.eventId === dismissedId && msg?.metadata?.type === 'ui_tool_agent_message')
+            )
+          );
+        }
+
+        if (lastArtifactEventRef.current && (!dismissedId || dismissedId === lastArtifactEventRef.current)) {
+          try { console.log('🧹 [UI] Backend-dismissed artifact event -> collapsing panel'); } catch {}
+          setIsSidePanelOpen(false);
+          lastArtifactEventRef.current = null;
+          artifactCacheValidRef.current = false;
+          setCurrentArtifactMessages([]);
+          if (currentChatId) {
+            try {
+              localStorage.removeItem(`mozaiks.current_artifact.${currentChatId}`);
+              localStorage.removeItem(`mozaiks.last_artifact.${currentChatId}`);
+            } catch {}
+          }
         }
         return;
       }
@@ -742,7 +784,7 @@ const ChatPage = () => {
       default:
         return;
     }
-  }, [currentChatId, currentWorkflowName, setMessagesWithLogging, extractAgentName, ws, isSidePanelOpen, showInitSpinner]);
+  }, [currentChatId, currentWorkflowName, setMessagesWithLogging, extractAgentName, isSidePanelOpen, showInitSpinner]);
 
   // Debug: Log spinner state changes
   useEffect(() => {
@@ -962,6 +1004,8 @@ useEffect(() => {
           onClose: () => {
             // console.debug('WebSocket connection closed');
             setConnectionStatus('disconnected');
+            wsRef.current = null;
+            setWs(null);
           }
         },
         workflowName,
@@ -969,12 +1013,14 @@ useEffect(() => {
       );
 
       setWs(connection);
+      wsRef.current = connection;
   // console.debug('WebSocket connection established:', !!ws);
       return () => {
         if (connection) {
           connection.close();
           // console.debug('WebSocket connection closed');
         }
+        wsRef.current = null;
       };
     };
 
@@ -1067,10 +1113,11 @@ useEffect(() => {
       const agentText = payload.agent_message || payload.description || null;
       if (agentText) {
         setMessagesWithLogging((prev) => {
-          const hasExisting = prev.some(msg => msg?.metadata?.eventId === (eventId || ui_tool_id) && msg?.metadata?.type === 'ui_tool_agent_message');
-          if (hasExisting) return prev;
+          const withoutThinking = prev.filter(msg => !msg.isThinking);
+          const hasExisting = withoutThinking.some(msg => msg?.metadata?.eventId === (eventId || ui_tool_id) && msg?.metadata?.type === 'ui_tool_agent_message');
+          if (hasExisting) return withoutThinking;
           return [
-            ...prev,
+            ...withoutThinking,
             {
               id: `ui-msg-${eventId || Date.now()}`,
               sender: 'agent',
@@ -1139,8 +1186,9 @@ useEffect(() => {
               console.log('💭 [THINKING] UI tool event (inline) received - removing', thinkingMessages.length, 'thinking bubble(s)');
             }
             
+            const withoutThinking = prev.filter(m => !m.isThinking); // Remove thinking bubbles when UI tool event arrives
             return [
-              ...prev.filter(m => !m.isThinking), // Remove thinking bubbles when UI tool event arrives
+              ...withoutThinking,
               {
                 id: `ui-${eventId || Date.now()}`,
                 sender: 'agent',
@@ -1240,16 +1288,17 @@ useEffect(() => {
 
   // Submit a pending input request via WebSocket control message
   const submitInputRequest = useCallback((input_request_id, text) => {
-    if (!ws || !ws.socket || ws.socket.readyState !== WebSocket.OPEN) {
+    const activeWs = wsRef.current;
+    if (!activeWs || !activeWs.socket || activeWs.socket.readyState !== WebSocket.OPEN) {
       console.warn('⚠️ Cannot submit input request; socket not open');
       return false;
     }
-    return ws.send({
+    return activeWs.send({
       type: 'user.input.submit',
       input_request_id,
       text
     });
-  }, [ws]);
+  }, []);
 
   // Handle agent UI actions
   const handleAgentAction = async (action) => {

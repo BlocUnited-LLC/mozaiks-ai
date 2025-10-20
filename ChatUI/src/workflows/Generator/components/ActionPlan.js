@@ -5,7 +5,7 @@
 // ============================================================================
 
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronDown, ChevronRight, Layers, Plug, UserCheck, Bot, Sparkles, Zap, Activity, GitBranch, Cpu } from 'lucide-react';
+import { ChevronDown, ChevronRight, Layers, Plug, UserCheck, Bot, Sparkles, Zap, Activity, GitBranch } from 'lucide-react';
 import { createToolsLogger } from '../../../core/toolsLogger';
 // Use centralized design system tokens (incremental migration)
 import { typography, components, colors } from '../../../styles/artifactDesignSystem';
@@ -46,15 +46,6 @@ const SemanticChip = ({ value, mapping, icon: Icon = Sparkles, prefix }) => {
   return (
     <span className={`${badgeClasses[meta.color] || components.badge.neutral}`} title={meta.desc}>
       <Icon className="h-3.5 w-3.5" /> {prefix}: {meta.label}
-    </span>
-  );
-};
-
-const ModelChip = ({ model }) => {
-  const modelName = String(model || 'gpt-4o-mini');
-  return (
-    <span className={components.badge.neutral}>
-      <Cpu className="h-3.5 w-3.5" /> Model: {modelName}
     </span>
   );
 };
@@ -165,7 +156,7 @@ const AgentAccordionRow = ({ agent, index, isOpen, onToggle }) => {
       bgClass: 'bg-[rgba(var(--color-secondary-rgb),0.2)] ring-2 ring-[rgba(var(--color-secondary-light-rgb),0.5)]',
       iconColor: 'text-[var(--color-secondary-light)]',
       badgeClass: 'bg-[var(--color-secondary)] text-white shadow-lg [box-shadow:0_0_0_rgba(var(--color-secondary-rgb),0.5)]',
-      badgeText: 'COLLECTS INPUT'
+      badgeText: 'Human in the Loop'
     },
     approval: {
       icon: UserCheck,
@@ -273,7 +264,7 @@ const PhaseAccordion = ({ phase, index, open, onToggle }) => {
           </div>
           {contextCount > 0 && (
             <span className="rounded-lg bg-[var(--color-secondary)] px-4 py-2.5 font-bold text-white shadow-lg [box-shadow:0_0_0_rgba(var(--color-secondary-rgb),0.5)]">
-              {contextCount} Input {contextCount === 1 ? 'Point' : 'Points'}
+              {contextCount} Human In The Loop
             </span>
           )}
           {approvalCount > 0 && (
@@ -782,7 +773,6 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
           <SemanticChip value={safeWorkflow?.initiated_by} mapping={INITIATED_BY} prefix="Initiated By" />
           <SemanticChip value={safeWorkflow?.trigger_type} mapping={TRIGGER_TYPE} prefix="Trigger" />
           <SemanticChip value={safeWorkflow?.interaction_mode} mapping={INTERACTION_MODE} prefix="Mode" />
-          <ModelChip model={safeWorkflow?.model} />
           <div className="flex items-center gap-3 rounded-lg border-2 border-slate-600 bg-slate-800 px-5 py-3 text-base font-bold text-white">
             <span className="text-2xl text-[var(--color-primary-light)]">{phases.length}</span> 
             <span className="text-slate-300">{phases.length === 1 ? 'Phase' : 'Phases'}</span>

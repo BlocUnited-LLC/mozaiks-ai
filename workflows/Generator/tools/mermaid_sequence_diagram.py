@@ -12,7 +12,7 @@ import logging
 import uuid
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
-from core.workflow.ui_tools import UIToolError, use_ui_tool
+from core.workflow.outputs.ui_tools import UIToolError, use_ui_tool
 from logs.logging_config import get_workflow_logger
 
 _logger = logging.getLogger("tools.mermaid_sequence_diagram")
@@ -33,36 +33,6 @@ def _coerce_list_of_str(value: Any) -> List[str]:
                     result.append(trimmed)
         return result
     return []
-
-
-def _extract_agent_from_context(container: Any) -> Tuple[Optional[str], Optional[str]]:
-    """Best-effort agent name extraction from context container."""
-    if not container or not hasattr(container, "get"):
-        return None, None
-
-    candidate_keys = (
-        "agent_name",
-        "agentName",
-        "turn_agent_name",
-        "turn_agent",
-        "auto_tool_agent_name",
-        "auto_tool_agent",
-        "last_agent_name",
-        "speaker",
-        "sender",
-    )
-
-    for key in candidate_keys:
-        try:
-            value = container.get(key)
-        except Exception:  # pragma: no cover - defensive access
-            continue
-        normalized = _coerce_str(value)
-        if normalized:
-            return normalized, key
-
-    return None, None
-
 
 def _normalize_mermaid_diagram(diagram_text: str) -> str:
     """Normalize Mermaid diagram text and enforce required prefix/spacing."""
@@ -486,6 +456,36 @@ async def mermaid_sequence_diagram(
                     context_variables.set("action_plan_ui_response", response)  # type: ignore[attr-defined]
                 except Exception as ctx_err:
                     wf_logger.debug("Failed to persist action plan acceptance state: %s", ctx_err)
+            lifecycle_triggered = False
+            if acceptance_state == "accepted" and context_variables and hasattr(context_variables, "get"):
+                try:
+                    already_complete = bool(context_variables.get("api_keys_collection_complete"))
+                except Exception:
+                    already_complete = False
+                if not already_complete:
+                    try:
+                        from core.workflow.execution.lifecycle import get_lifecycle_manager
+
+                        lifecycle_workflow_name = None
+                        try:
+                            lifecycle_workflow_name = context_variables.get("workflow_name")  # type: ignore[attr-defined]
+                        except Exception:
+                            lifecycle_workflow_name = None
+                        lifecycle_manager = get_lifecycle_manager(lifecycle_workflow_name or "Generator")
+                        await lifecycle_manager.trigger_before_agent(
+                            agent_name="ContextVariablesAgent",
+                            context_variables=context_variables,
+                        )
+                        lifecycle_triggered = True
+                        wf_logger.info(
+                            "[MERMAID] Triggered before_agent lifecycle for ContextVariablesAgent after plan acceptance",
+                            extra={"workflow": payload_workflow_name, "chat_id": chat_id},
+                        )
+                    except Exception as lc_err:  # pragma: no cover - defensive logging
+                        wf_logger.warning(
+                            "[MERMAID] Failed to trigger ContextVariablesAgent lifecycle after acceptance: %s",
+                            lc_err,
+                        )
 
             return {
                 "status": response.get("status", "success"),
@@ -501,6 +501,7 @@ async def mermaid_sequence_diagram(
                 "agent_message_id": agent_message_id,
                 "diagram_ready": True,
                 "diagram_source": diagram_source,
+                "lifecycle_triggered": lifecycle_triggered,
             }
         except UIToolError as exc:
             wf_logger.error("ActionPlan UI interaction failed during diagram merge: %s", exc)
@@ -520,3 +521,4 @@ async def mermaid_sequence_diagram(
             "agent_message_id": agent_message_id,
             "diagram_source": diagram_source if "diagram_source" in locals() else "unknown",
         }
+

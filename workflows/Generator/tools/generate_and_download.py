@@ -12,8 +12,8 @@ import shutil
 import time
 
 from logs.logging_config import get_workflow_logger
-from core.data.persistence_manager import AG2PersistenceManager
-from core.workflow.ui_tools import use_ui_tool, UIToolError
+from core.data.persistence.persistence_manager import AG2PersistenceManager
+from core.workflow.outputs.ui_tools import use_ui_tool, UIToolError
 from workflows.Generator.tools.workflow_converter import create_workflow_files
 try:
     from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
@@ -96,41 +96,66 @@ Parameters:
     wf_logger = get_workflow_logger(workflow_name=wf_name, chat_id=chat_id, enterprise_id=enterprise_id)
 
     # Build aggregation payload (used later if/when we create files)
+    # Map all Generator workflow agent outputs according to structured_outputs.json registry
     payload: Dict[str, Any] = {
         "workflow_name": wf_name,
-        "orchestrator_output": collected.get("orchestrator_output", {}),
-        "agents_output": collected.get("agents_output", {}),
-        "handoffs_output": collected.get("handoffs_output", {}),
-        "context_variables_output": collected.get("context_variables_output", {}),
-        "structured_outputs": collected.get("structured_outputs", {}),
     }
-
-    # Optional: integrate tools / ui config
-    tools_manager = collected.get("ToolsManagerAgent") or collected.get("tools_manager_agent")
-    if isinstance(tools_manager, dict):
-        for k, key in (("tools_config", "tools_config"), ("ui_config", "ui_config")):
-            val = tools_manager.get(key)
-            if isinstance(val, str):
-                try:
-                    val = json.loads(val)
-                except Exception:
-                    val = None
-            if isinstance(val, dict):
-                payload[key] = val
-
-    # UIToolsAgent + ToolsAgent extra files (both may contribute file stubs)
-    ui_tools_agent = collected.get("UIToolsAgent") or collected.get("ui_tools_agent")
-    std_tools_agent = collected.get("ToolsAgent") or collected.get("tools_agent")
-    merged_extra: List[Dict[str, Any]] = []
-    for agent_blob in (ui_tools_agent, std_tools_agent):
-        if isinstance(agent_blob, dict):
-            extra_files = agent_blob.get("files")
-            if isinstance(extra_files, list):
-                for f in extra_files:
-                    if isinstance(f, dict):
-                        merged_extra.append(f)
-    if merged_extra:
-        payload["extra_files"] = merged_extra
+    
+    # Map agent outputs by their structured output names
+    # OrchestratorAgent -> OrchestratorAgentOutput
+    orchestrator_data = collected.get("OrchestratorAgent") or collected.get("orchestrator_output", {})
+    if isinstance(orchestrator_data, dict):
+        payload["orchestrator_output"] = orchestrator_data
+    
+    # AgentsAgent -> AgentsAgentOutput  
+    agents_data = collected.get("AgentsAgent") or collected.get("agents_output", {})
+    if isinstance(agents_data, dict):
+        payload["agents_output"] = agents_data
+    
+    # HandoffsAgent -> HandoffsAgentOutput
+    handoffs_data = collected.get("HandoffsAgent") or collected.get("handoffs_output", {})
+    if isinstance(handoffs_data, dict):
+        payload["handoffs_output"] = handoffs_data
+    
+    # ContextVariablesAgent -> ContextVariablesAgentOutput
+    context_vars_data = collected.get("ContextVariablesAgent") or collected.get("context_variables_output", {})
+    if isinstance(context_vars_data, dict):
+        payload["context_variables_output"] = context_vars_data
+    
+    # ToolsManagerAgent -> ToolsManagerAgentOutput (tools + lifecycle_tools manifest)
+    tools_manager_data = collected.get("ToolsManagerAgent") or collected.get("tools_manager_output", {})
+    if isinstance(tools_manager_data, dict):
+        payload["tools_manager_output"] = tools_manager_data
+    
+    # UIFileGenerator -> UIFileGeneratorOutput (UI tool implementations)
+    ui_file_gen_data = collected.get("UIFileGenerator") or collected.get("ui_file_generator_output", {})
+    if isinstance(ui_file_gen_data, dict):
+        payload["ui_file_generator_output"] = ui_file_gen_data
+    
+    # AgentToolsFileGenerator -> AgentToolsFileGeneratorOutput (agent tools + lifecycle tools)
+    agent_tools_data = collected.get("AgentToolsFileGenerator") or collected.get("agent_tools_file_generator_output", {})
+    if isinstance(agent_tools_data, dict):
+        payload["agent_tools_file_generator_output"] = agent_tools_data
+    
+    # HookAgent -> HookAgentOutput (lifecycle hooks metadata + files)
+    hooks_data = collected.get("HookAgent") or collected.get("hooks_output", {})
+    if isinstance(hooks_data, dict):
+        payload["hooks_output"] = hooks_data
+    
+    # StructuredOutputsAgent -> StructuredOutputsAgentOutput (dynamic models)
+    structured_dynamic = collected.get("StructuredOutputsAgent") or collected.get("structured_outputs_agent_output", {})
+    if isinstance(structured_dynamic, dict):
+        payload["structured_outputs_agent_output"] = structured_dynamic
+    
+    # Static structured outputs from Generator workflow itself
+    static_structured = collected.get("structured_outputs", {})
+    if isinstance(static_structured, dict):
+        payload["structured_outputs"] = static_structured
+    
+    # UI Config (visual_agents, visual_agent arrays)
+    ui_config_data = collected.get("ui_config", {})
+    if isinstance(ui_config_data, dict):
+        payload["ui_config"] = ui_config_data
 
     # Generic discovery of code_files in any agent output
     def _discover_code_files(col: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -242,16 +267,16 @@ Parameters:
         "agent_message_id": agent_message_id,
     }
 
-    # 5. Emit UI + wait
+    # 5. Emit UI + wait (display mode auto-resolved from tools.json)
     try:
         if tlog and _log_tool_event:
-            _log_tool_event(tlog, action="emit_ui", status="start", display="inline", agent_message_id=agent_message_id)
+            _log_tool_event(tlog, action="emit_ui", status="start", agent_message_id=agent_message_id)
         response = await use_ui_tool(
             tool_id="FileDownloadCenter",
             payload=ui_payload,
             chat_id=chat_id,
             workflow_name=wf_name,
-            display="inline",
+            # display parameter omitted - auto-resolved from tools.json
         )
         wf_logger.info(f"📥 File download UI completed with status: {response.get('status', 'unknown')}")
         if tlog and _log_tool_event:
@@ -407,3 +432,4 @@ async def _store_files_local(
     except Exception as e:
         wf_logger.error(f"❌ Local storage failed: {e}")
         return {"status": "error", "message": f"Failed to copy files: {e}"}
+

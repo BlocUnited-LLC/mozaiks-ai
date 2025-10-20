@@ -1,4 +1,11 @@
 # ==============================================================================
+# FILE: simple_transport.py
+# DESCRIPTION: 
+# ==============================================================================
+
+# === MOZAIKS-CORE-HEADER ===
+
+# ==============================================================================
 # FILE: core/transport/simple_transport.py
 # DESCRIPTION: Lean transport system for real-time UI communication
 # ==============================================================================
@@ -135,6 +142,7 @@ class SimpleTransport:
 
         # UI tool response correlation
         self.pending_ui_tool_responses: Dict[str, asyncio.Future] = {}
+        self._ui_tool_metadata: Dict[str, Dict[str, Any]] = {}
 
         self._initialized = True
         logger.info("🚀 SimpleTransport singleton initialized")
@@ -288,7 +296,7 @@ class SimpleTransport:
             return
         index: Optional[int] = None
         try:
-            from core.data.persistence_manager import AG2PersistenceManager
+            from core.data.persistence.persistence_manager import AG2PersistenceManager
             pm = getattr(self, '_persistence_manager', None)
             if not pm:
                 pm = AG2PersistenceManager()
@@ -347,7 +355,7 @@ class SimpleTransport:
                         logger.debug(f"Context set failed for {k}: {ce}")
                 # Persist a lightweight snapshot of changed keys ONLY
                 try:
-                    from core.data.persistence_manager import AG2PersistenceManager
+                    from core.data.persistence.persistence_manager import AG2PersistenceManager
                     pm = getattr(self, '_persistence_manager', None) or AG2PersistenceManager()
                     self._persistence_manager = pm
                     coll = await pm._coll()  # type: ignore[attr-defined]
@@ -417,6 +425,17 @@ class SimpleTransport:
                 logger.debug(f"🚫 Filtered out AG2 event from agent '{agent_name}' for chat {chat_id}")
                 return
 
+            # Apply visibility filtering for dict events (post-envelope) as well
+            if not agent_name:
+                data_payload = envelope.get('data') if isinstance(envelope, dict) else None
+                if isinstance(data_payload, dict):
+                    agent_name = data_payload.get('agent') or data_payload.get('agent_name')
+                    if not agent_name and isinstance(event, dict):
+                        agent_name = event.get('agent') or event.get('agent_name')
+                if agent_name and not self.should_show_to_user(agent_name, chat_id):
+                    logger.debug(f"🚫 Filtered out event from agent '{agent_name}' for chat {chat_id} (visual_agents gate)")
+                    return
+                
             # Record performance metrics for tool calls (best-effort)
             try:
                 et_name = type(event).__name__
@@ -661,7 +680,7 @@ class SimpleTransport:
         the WebSocket consumer a minimal, deterministic replay mechanism.
         """
         try:
-            from core.data.persistence_manager import AG2PersistenceManager
+            from core.data.persistence.persistence_manager import AG2PersistenceManager
             if not hasattr(self, '_persistence_manager'):
                 self._persistence_manager = AG2PersistenceManager()
             conn_meta = self.connections.get(chat_id) or {}
@@ -1090,7 +1109,7 @@ class SimpleTransport:
         """Return cached AG2PersistenceManager instance (lazy import)."""
         pm = getattr(self, "_persistence_manager", None)
         if pm is None:
-            from core.data.persistence_manager import AG2PersistenceManager
+            from core.data.persistence.persistence_manager import AG2PersistenceManager
             pm = AG2PersistenceManager()
             self._persistence_manager = pm
         return pm
@@ -1257,6 +1276,12 @@ class SimpleTransport:
             )
         except Exception as persist_exc:  # pragma: no cover
             logger.debug(f"🧩 [UI_TOOL] Persist hook raised for chat {chat_id}: {persist_exc}")
+        if event_id:
+            self._ui_tool_metadata[event_id] = {
+                "chat_id": chat_id,
+                "tool_name": tool_name,
+                "display": display_type,
+            }
 
         # Delegate to core event sender for namespacing and sequence handling
         await self.send_event_to_ui(event, chat_id)
@@ -1300,8 +1325,19 @@ class SimpleTransport:
             if not future.done():
                 future.set_result(response_data)
                 logger.info(f"✅ [UI_TOOL] Submitted response for event {event_id}")
+                metadata = self._ui_tool_metadata.pop(event_id, None)
+                if metadata:
+                    display_mode = (metadata.get("display") or "").lower()
+                    chat_ref = metadata.get("chat_id")
+                    if display_mode == "artifact":
+                        try:
+                            await self.send_event_to_ui({"kind": "ui_tool_dismiss", "event_id": event_id, "ui_tool_id": metadata.get("tool_name")}, chat_ref)
+                            logger.debug(f"🧹 [UI_TOOL] Emitted dismiss event for artifact {event_id}")
+                        except Exception as dismiss_err:
+                            logger.debug(f"⚠️ [UI_TOOL] Failed to emit dismiss event for {event_id}: {dismiss_err}")
                 return True
             else:
+                self._ui_tool_metadata.pop(event_id, None)
                 logger.warning(f"⚠️ [UI_TOOL] Event {event_id} already completed")
                 return False
         else:
@@ -1387,7 +1423,7 @@ class SimpleTransport:
         """Get MongoDB chat collection for persistence operations."""
         # Production: connect to actual persistence layer
         try:
-            from core.data.persistence_manager import AG2PersistenceManager
+            from core.data.persistence.persistence_manager import AG2PersistenceManager
             if not hasattr(self, '_persistence_manager'):
                 self._persistence_manager = AG2PersistenceManager()
             
@@ -1546,7 +1582,7 @@ class SimpleTransport:
                 logger.debug(f"[AUTO_RESUME] No enterprise_id for {chat_id}, skipping auto-resume")
                 return
 
-            from core.data.persistence_manager import AG2PersistenceManager
+            from core.data.persistence.persistence_manager import AG2PersistenceManager
             if not hasattr(self, '_persistence_manager'):
                 self._persistence_manager = AG2PersistenceManager()
 
@@ -1639,5 +1675,6 @@ class SimpleTransport:
             logger.info(f"⏸️ Emitted session paused event to {chat_id}")
         except Exception as e:
             logger.error(f"Failed to emit session paused event to {chat_id}: {e}")
+
 
 

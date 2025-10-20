@@ -150,9 +150,16 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
     """Save a workflow config as modular JSON files"""
     try:
         wf_logger = get_workflow_logger(workflow_name=workflow_name)
+        
+        # Backend workflow directory (workflows/{workflow}/)
         workflows_base_dir = Path(__file__).parent.parent.parent
         workflow_dir = workflows_base_dir / workflow_name
         workflow_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Frontend workflow directory (ChatUI/src/workflows/{workflow}/)
+        project_root = workflows_base_dir.parent  # Go up from workflows/ to project root
+        chatui_workflow_dir = project_root / 'ChatUI' / 'src' / 'workflows' / workflow_name
+        chatui_components_dir = chatui_workflow_dir / 'components'
 
         sections = _split_config_into_sections(config)
         saved_files = []
@@ -202,7 +209,57 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
                 saved_files.append(filename)
                 wf_logger.info(f"📄 [SAVE] {section_name} saved → {filename}")
 
-        wf_logger.info(f"✅ [SAVE] Saved {len(saved_files)} sections for workflow={workflow_name}")
+        # Handle extra files (tools, UI components, lifecycle hooks, etc.)
+        extra_files = config.get('extra_files')
+        if isinstance(extra_files, list) and extra_files:
+            tools_dir = workflow_dir / 'tools'
+            tools_dir.mkdir(parents=True, exist_ok=True)
+            
+            extra_saved = 0
+            js_files_saved = 0
+            py_files_saved = 0
+            
+            for item in extra_files:
+                if not isinstance(item, dict):
+                    continue
+                    
+                # Support both 'path' and 'filename' fields
+                rel_path = item.get('path') or item.get('filename')
+                content = item.get('content') or item.get('filecontent')
+                
+                if not rel_path or content is None:
+                    continue
+                    
+                # Normalize path separators and remove leading slashes
+                rel_path = str(rel_path).replace('\\', '/').lstrip('/')
+                
+                # Route files based on path prefix
+                if rel_path.startswith('ChatUI/'):
+                    # Frontend file - save relative to project root
+                    file_path = project_root / rel_path
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.write_text(content, encoding='utf-8')
+                    js_files_saved += 1
+                    saved_files.append(rel_path)
+                    wf_logger.info(f"📄 [SAVE] Frontend file saved → {rel_path}")
+                else:
+                    # Backend file - save relative to workflow directory
+                    file_path = workflow_dir / rel_path
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.write_text(content, encoding='utf-8')
+                    py_files_saved += 1
+                    saved_files.append(rel_path)
+                    wf_logger.info(f"📄 [SAVE] Backend file saved → {rel_path}")
+                
+                extra_saved += 1
+            
+            if js_files_saved > 0:
+                wf_logger.info(f"✅ [SAVE] Saved {js_files_saved} React component files to ChatUI/src/workflows/{workflow_name}/components/")
+            if py_files_saved > 0:
+                wf_logger.info(f"✅ [SAVE] Saved {py_files_saved} Python files to workflows/{workflow_name}/tools/")
+            wf_logger.info(f"✅ [SAVE] Saved {extra_saved} total extra files")
+
+        wf_logger.info(f"✅ [SAVE] Saved {len(saved_files)} total files for workflow={workflow_name}")
         return True
 
     except Exception as e:
@@ -251,8 +308,9 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                 'hooks_output': {...},               # HookAgent (metadata + optional files)
                 'structured_outputs': {...},         # Static base (model library + default registry)
                 'structured_outputs_agent_output': {...}, # StructuredOutputsAgent (dynamic)
-                'tools_manager_output': {...},       # ToolsManagerAgent (tools_config string)
-                'tools_agent_output': {...},         # Legacy/other tools provider
+                'tools_manager_output': {...},       # ToolsManagerAgent (tools + lifecycle_tools manifest)
+                'ui_file_generator_output': {...},   # UIFileGenerator (UI tool implementations)
+                'agent_tools_file_generator_output': {...}, # AgentToolsFileGenerator (agent tools + lifecycle tools implementations)
                 'ui_config': {...},                  # UI config (visual_agents, visual_agent)
                 'extra_files': [...]                 # Additional arbitrary files
             }
@@ -357,10 +415,17 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         tools_manager_output = data.get('tools_manager_output', {})
         if isinstance(tools_manager_output, dict):
             # Directly structured output case
-            if "tools" in tools_manager_output and isinstance(tools_manager_output["tools"], list):
-                config["tools"] = {"tools": tools_manager_output["tools"]}
-                wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration (tools_list={len(tools_manager_output['tools'])})")
-            # tools_config string case
+            if "tools" in tools_manager_output or "lifecycle_tools" in tools_manager_output:
+                tools_config = {}
+                if "tools" in tools_manager_output and isinstance(tools_manager_output["tools"], list):
+                    tools_config["tools"] = tools_manager_output["tools"]
+                    wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration (tools_list={len(tools_manager_output['tools'])})")
+                if "lifecycle_tools" in tools_manager_output and isinstance(tools_manager_output["lifecycle_tools"], list):
+                    tools_config["lifecycle_tools"] = tools_manager_output["lifecycle_tools"]
+                    wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added lifecycle_tools configuration (lifecycle_tools_list={len(tools_manager_output['lifecycle_tools'])})")
+                if tools_config:
+                    config["tools"] = tools_config
+            # tools_config string case (legacy fallback)
             elif "tools_config" in tools_manager_output:
                 tools_config_str = tools_manager_output["tools_config"]
                 parsed = None
@@ -371,11 +436,18 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                         wf_logger.error(f"❌ [CREATE_WORKFLOW_FILES] Invalid tools_config JSON: {e}")
                 elif isinstance(tools_config_str, dict):
                     parsed = tools_config_str
-                if isinstance(parsed, dict) and isinstance(parsed.get("tools"), list):
-                    config["tools"] = {"tools": parsed["tools"]}
-                    wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration (tools_list={len(parsed['tools'])})")
-                else:
-                    wf_logger.warning("⚠️ [CREATE_WORKFLOW_FILES] tools_config missing 'tools' list; no tools saved")
+                if isinstance(parsed, dict):
+                    tools_config = {}
+                    if isinstance(parsed.get("tools"), list):
+                        tools_config["tools"] = parsed["tools"]
+                        wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added tools configuration (tools_list={len(parsed['tools'])})")
+                    if isinstance(parsed.get("lifecycle_tools"), list):
+                        tools_config["lifecycle_tools"] = parsed["lifecycle_tools"]
+                        wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added lifecycle_tools configuration (lifecycle_tools_list={len(parsed['lifecycle_tools'])})")
+                    if tools_config:
+                        config["tools"] = tools_config
+                    else:
+                        wf_logger.warning("⚠️ [CREATE_WORKFLOW_FILES] tools_config missing 'tools'/'lifecycle_tools' lists; no tools saved")
 
         # Add UI configuration
         ui_config = data.get('ui_config', {})
@@ -386,20 +458,82 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         # Add extra files to config so they can be saved
         extra_files = data.get('extra_files')
 
-        # Extract files from ToolsAgent output
-        tools_agent_output = data.get('tools_agent_output', {})
-        if tools_agent_output and 'files' in tools_agent_output:
-            tools_files = tools_agent_output['files']
-            if isinstance(tools_files, list):
-                if extra_files:
-                    extra_files.extend(tools_files)
-                else:
-                    extra_files = tools_files
-                wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(tools_files)} files from ToolsAgent")
+        # Extract files from UIFileGenerator output (UI tools - Python + React)
+        ui_file_generator_output = data.get('ui_file_generator_output', {})
+        if ui_file_generator_output:
+            ui_tools = ui_file_generator_output.get('tools', [])
+            if isinstance(ui_tools, list) and ui_tools:
+                ui_tool_files = []
+                for tool_obj in ui_tools:
+                    if not isinstance(tool_obj, dict):
+                        continue
+                    tool_name = tool_obj.get('tool_name')
+                    if not tool_name:
+                        continue
+                    
+                    # Python backend file
+                    py_content = tool_obj.get('py_content')
+                    if py_content:
+                        ui_tool_files.append({
+                            'path': f"tools/{tool_name}.py",
+                            'content': py_content
+                        })
+                    
+                    # React component file (goes to ChatUI/src/workflows/{workflow}/components/)
+                    js_content = tool_obj.get('js_content')
+                    if js_content:
+                        ui_tool_files.append({
+                            'path': f"ChatUI/src/workflows/{workflow_name}/components/{tool_name}.jsx",
+                            'content': js_content
+                        })
+                
+                if ui_tool_files:
+                    if extra_files:
+                        extra_files.extend(ui_tool_files)
+                    else:
+                        extra_files = ui_tool_files
+                    wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(ui_tool_files)} UI tool files from UIFileGenerator (Python + React)")
+
+        # Extract files from AgentToolsFileGenerator output
+        agent_tools_output = data.get('agent_tools_file_generator_output', {})
+        if agent_tools_output:
+            # Process agent tools
+            agent_tools = agent_tools_output.get('tools', [])
+            if isinstance(agent_tools, list) and agent_tools:
+                tool_files = []
+                for tool_obj in agent_tools:
+                    if isinstance(tool_obj, dict) and 'tool_name' in tool_obj and 'py_content' in tool_obj:
+                        tool_files.append({
+                            'path': f"tools/{tool_obj['tool_name']}.py",
+                            'content': tool_obj['py_content']
+                        })
+                if tool_files:
+                    if extra_files:
+                        extra_files.extend(tool_files)
+                    else:
+                        extra_files = tool_files
+                    wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(tool_files)} agent tool .py files from AgentToolsFileGenerator")
+
+            # Process lifecycle tools
+            lifecycle_tools = agent_tools_output.get('lifecycle_tools', [])
+            if isinstance(lifecycle_tools, list) and lifecycle_tools:
+                lifecycle_files = []
+                for tool_obj in lifecycle_tools:
+                    if isinstance(tool_obj, dict) and 'tool_name' in tool_obj and 'py_content' in tool_obj:
+                        lifecycle_files.append({
+                            'path': f"tools/{tool_obj['tool_name']}.py",
+                            'content': tool_obj['py_content']
+                        })
+                if lifecycle_files:
+                    if extra_files:
+                        extra_files.extend(lifecycle_files)
+                    else:
+                        extra_files = lifecycle_files
+                    wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(lifecycle_files)} lifecycle tool .py files from AgentToolsFileGenerator")
 
         if isinstance(extra_files, list) and extra_files:
             config['extra_files'] = extra_files
-            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(extra_files)} extra files")
+            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Total extra files to save: {len(extra_files)}")
 
         # Apply backend defaults for orchestrator fields if missing
         def _apply_orchestrator_defaults(cfg: Dict[str, Any]):

@@ -1,3 +1,10 @@
+# ==============================================================================
+# FILE: ag2_runtime_logger.py
+# DESCRIPTION: 
+# ==============================================================================
+
+# === MOZAIKS-CORE-HEADER ===
+
 from __future__ import annotations
 
 import os
@@ -221,3 +228,4 @@ def ag2_logging_session(
 ):
     with get_ag2_runtime_logger().session_context(chat_id, workflow_name, enterprise_id, user_id):
         yield
+

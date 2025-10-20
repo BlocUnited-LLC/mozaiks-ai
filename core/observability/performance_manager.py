@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Union
 
 from logs.logging_config import get_workflow_logger
-from core.data.persistence_manager import AG2PersistenceManager
+from core.data.persistence.persistence_manager import AG2PersistenceManager
 from core.data.models import WorkflowStatus
 
 logger = get_workflow_logger("performance_manager")
@@ -113,36 +113,6 @@ class PerformanceManager:
             "total_cost": total_cost,
             "chats": snaps,
         }
-
-    async def prometheus_metrics(self) -> str:
-        """Return minimal Prometheus exposition text for in-memory counters.
-
-        Metric names prefixed with mozaiks_. This is *not* using the official
-        client library to keep dependencies lean; suitable for low-volume scrape.
-        """
-        snaps = await self.snapshot_all()
-        lines: List[str] = []
-        def esc(val: str) -> str:
-            return val.replace("\\", "\\\\").replace("\"", "\\\"")
-        lines.append("# TYPE mozaiks_active_chats gauge")
-        lines.append(f"mozaiks_active_chats {sum(1 for s in snaps if s['ended_at'] is None)}")
-        lines.append("# TYPE mozaiks_tracked_chats gauge")
-        lines.append(f"mozaiks_tracked_chats {len(snaps)}")
-        lines.append("# TYPE mozaiks_chat_agent_turns_total counter")
-        lines.append("# TYPE mozaiks_chat_tool_calls_total counter")
-        lines.append("# TYPE mozaiks_chat_errors_total counter")
-        lines.append("# TYPE mozaiks_chat_prompt_tokens_total counter")
-        lines.append("# TYPE mozaiks_chat_completion_tokens_total counter")
-        lines.append("# TYPE mozaiks_chat_cost_total counter")
-        for s in snaps:
-            labels = f"chat_id=\"{esc(str(s['chat_id']))}\",workflow=\"{esc(str(s['workflow_name']))}\""
-            lines.append(f"mozaiks_chat_agent_turns_total{{{labels}}} {s['agent_turns']}")
-            lines.append(f"mozaiks_chat_tool_calls_total{{{labels}}} {s['tool_calls']}")
-            lines.append(f"mozaiks_chat_errors_total{{{labels}}} {s['errors']}")
-            lines.append(f"mozaiks_chat_prompt_tokens_total{{{labels}}} {s['prompt_tokens']}")
-            lines.append(f"mozaiks_chat_completion_tokens_total{{{labels}}} {s['completion_tokens']}")
-            lines.append(f"mozaiks_chat_cost_total{{{labels}}} {s['cost']}")
-        return "\n".join(lines) + "\n"
 
     async def _get_coll(self):
         if self._chat_coll is None:
@@ -390,3 +360,4 @@ class _PerformanceManagerSingleton:
 
 async def get_performance_manager() -> PerformanceManager:
     return await _PerformanceManagerSingleton.get_instance()
+

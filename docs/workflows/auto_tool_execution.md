@@ -6,6 +6,8 @@ This document explains the automatic tool invocation system in MozaiksAI, coveri
 
 ## Overview
 
+**Prroblem** is that if you have an agent who requires structured outputs to call a tool, this is not possible within the AG2 framework. 
+
 **Auto-tool execution** is the runtime mechanism that **automatically invokes UI tools** when agents with `auto_tool_mode: true` emit structured outputs. This eliminates the need for agents to manually call tools, reducing prompt complexity and ensuring consistent tool invocation patterns.
 
 **Key Benefits:**

@@ -1348,6 +1348,79 @@
   to { opacity: 1; transform: translateX(0); }
 }
 
+/* ✨ Inline Component Attention Animation - Signals User Interaction Needed */
+@keyframes inline-attention-pulse {
+  0%, 100% {
+    box-shadow: 
+      0 0 0 0 rgba(var(--color-primary-rgb), 0.7),
+      0 0 20px rgba(var(--color-primary-rgb), 0.3),
+      inset 0 0 20px rgba(var(--color-primary-rgb), 0.1);
+    border-color: rgba(var(--color-primary-rgb), 0.6);
+  }
+  50% {
+    box-shadow: 
+      0 0 0 8px rgba(var(--color-primary-rgb), 0),
+      0 0 35px rgba(var(--color-primary-rgb), 0.5),
+      inset 0 0 30px rgba(var(--color-primary-rgb), 0.2);
+    border-color: rgba(var(--color-primary-rgb), 0.9);
+  }
+}
+
+@keyframes inline-attention-glow {
+  0%, 100% {
+    filter: brightness(1) drop-shadow(0 0 8px rgba(var(--color-primary-rgb), 0.4));
+  }
+  50% {
+    filter: brightness(1.1) drop-shadow(0 0 16px rgba(var(--color-primary-rgb), 0.7));
+  }
+}
+
+/* Inline component attention state - applies to UI tool inline components */
+.inline-component-attention {
+  animation: 
+    inline-attention-pulse 2.5s ease-in-out infinite,
+    inline-attention-glow 2.5s ease-in-out infinite;
+  position: relative;
+  isolation: isolate;
+}
+
+/* Subtle shimmer overlay for inline components */
+.inline-component-attention::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    transparent 0%,
+    rgba(var(--color-primary-rgb), 0.15) 25%,
+    transparent 50%,
+    rgba(var(--color-primary-rgb), 0.15) 75%,
+    transparent 100%
+  );
+  background-size: 200% 200%;
+  animation: shimmer-sweep 3s linear infinite;
+  pointer-events: none;
+  z-index: -1;
+  opacity: 0.8;
+}
+
+@keyframes shimmer-sweep {
+  0% { background-position: 200% 0%; }
+  100% { background-position: -200% 0%; }
+}
+
+/* Stop animations after user interacts (add .interacted class) */
+.inline-component-attention.interacted {
+  animation: none;
+}
+
+.inline-component-attention.interacted::before {
+  animation: none;
+  opacity: 0;
+  transition: opacity 0.5s ease-out;
+}
+
 /* 📊 Galactic Grid - Data Tables */
 .cosmic-galactic-grid {
   background: rgba(0, 0, 0, 0.2);

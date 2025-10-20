@@ -24,28 +24,22 @@ import logging
 import time
 from time import perf_counter
 import asyncio
-import inspect
-import re
+import inspect  # used in _build_context_blocking
+import os as _os
 import json
 from collections import Counter
 
 from pydantic import ValidationError
 
 from autogen import ConversableAgent, UserProxyAgent
-from autogen.agentchat.group.patterns import (
-    DefaultPattern as AG2DefaultPattern,
-    AutoPattern as AG2AutoPattern,
-    RoundRobinPattern as AG2RoundRobinPattern,
-    RandomPattern as AG2RandomPattern,
-)
 from autogen.events.agent_events import (
     TextEvent,
     InputRequestEvent,
     SelectSpeakerEvent,
     RunCompletionEvent,
 )
-from core.workflow.structured_outputs import agent_has_structured_output, get_structured_output_model_fields, get_structured_outputs_for_workflow
-from core.data.persistence_manager import AG2PersistenceManager as _PM
+from core.workflow.outputs import get_structured_outputs_for_workflow
+from core.data.persistence import AG2PersistenceManager as _PM
 from core.events.event_serialization import (
     build_ui_event_payload as unified_build_ui_event_payload,
     EventBuildContext as UnifiedEventBuildContext,
@@ -53,16 +47,26 @@ from core.events.event_serialization import (
     serialize_event_content,
 )
 
-from ..data.persistence_manager import AG2PersistenceManager
-from .termination_handler import create_termination_handler
-from .derived_context import DerivedContextManager
+from ..data.persistence import AG2PersistenceManager
+from .execution import create_termination_handler, LifecycleTrigger
+from .context import DerivedContextManager
 from logs.logging_config import get_workflow_logger
 from core.observability.ag2_runtime_logger import ag2_logging_session
 from core.observability.performance_manager import get_performance_manager
 from core.events.unified_event_dispatcher import get_event_dispatcher
 
-from .tool_validation import SENTINEL_STATUS
-from .ui_tools import InputTimeoutEvent
+from .validation import SENTINEL_STATUS
+from .outputs import InputTimeoutEvent
+
+# Extracted modules for separation of concerns
+from .messages import (
+    normalize_to_strict_ag2 as _normalize_to_strict_ag2,
+    normalize_text_content as _normalize_text_content,
+    extract_agent_name as _extract_agent_name,
+    safe_context_snapshot as _safe_context_snapshot,
+)
+from .execution import create_ag2_pattern
+
 logger = logging.getLogger(__name__)
 
 # Consolidated logging with optimized workflow logger
@@ -76,39 +80,6 @@ __all__ = [
     'create_ag2_pattern',
     'InputTimeoutEvent'
 ]
-
-# -------------------------------------------------------------------
-# Helper: safe snapshot for verbose context logging (avoids secrets)
-# -------------------------------------------------------------------
-def _safe_context_snapshot(ctx) -> Dict[str, Any]:  # pragma: no cover (diagnostic)
-    out: Dict[str, Any] = {}
-    try:
-        data = None
-        if ctx is None:
-            return {}
-        if hasattr(ctx, 'data') and isinstance(getattr(ctx, 'data'), dict):
-            data = getattr(ctx, 'data')
-        elif hasattr(ctx, 'to_dict') and callable(getattr(ctx, 'to_dict')):
-            data = ctx.to_dict()
-        elif isinstance(ctx, dict):
-            data = ctx
-        if not isinstance(data, dict):
-            return {"_repr": str(ctx)[:200]}
-        for k, v in data.items():
-            lk = k.lower()
-            if any(s in lk for s in ("secret", "api", "key", "token", "password")):
-                out[k] = "<redacted>"
-                continue
-            try:
-                sv = v if isinstance(v, (int, float, bool)) else str(v)
-            except Exception:
-                sv = "<unserializable>"
-            if isinstance(sv, str) and len(sv) > 300:
-                sv = sv[:300] + "�?�"
-            out[k] = sv
-    except Exception as _snap_err:
-        out["_error"] = f"snapshot_failed:{_snap_err}"  # pragma: no cover
-    return out
 
 # ===================================================================
 # AG2 INTERNAL LOGGING CONFIGURATION
@@ -131,481 +102,16 @@ def get_run_registry_summary() -> Dict[str, Any]:
     }
 
 # ===================================================================
-# HELPERS: message normalization
+# NOTE: Helper functions have been extracted to separate modules:
+# - message_utils.py: Message normalization, text extraction, agent name resolution
+# - event_payload_builder.py: UI event payload construction
+# - pattern_factory.py: AG2 pattern creation
+# This refactoring reduces orchestration_patterns.py from 2800+ to ~2000 lines
+# and improves maintainability through separation of concerns.
 # ===================================================================
 
-def _normalize_to_strict_ag2(
-    raw_msgs: Optional[List[Any]],
-    *,
-    default_user_name: str = "user",
-) -> List[Dict[str, Any]]:
-    """
-    Ensure every message is in strict AG2 shape:
-      {"role": "user"|"assistant", "name": "<exact agent name>", "content": <str|dict|list>}
-    Assumes persisted messages already follow this; mainly fixes locally-seeded items.
-    """
-    if not raw_msgs:
-        return []
-    out: List[Dict[str, Any]] = []
-    for m in raw_msgs:
-        if not isinstance(m, dict):
-            # ignore non-dicts
-            continue
-
-        role = m.get("role")
-        name = m.get("name")
-        content = m.get("content")
-
-        # Accept strict messages as-is
-        if role in ("user", "assistant") and isinstance(name, str) and name and content is not None:
-            out.append({"role": role, "name": name, "content": content})
-            continue
-
-        # Try minimal fix-up for messages missing name/role (only for new seeds we add)
-        # - If role == "user" and name missing -> set name to "user"
-        # - If role missing but name == "user" -> set role to "user"
-        # - Otherwise, if assistant-like seed comes through without name, we skip (cannot guess agent)
-        if role == "user" and not name:
-            name = default_user_name
-        if not role and name == default_user_name:
-            role = "user"
-
-        if role in ("user", "assistant") and name and content is not None:
-            out.append({"role": role, "name": name, "content": content})
-        # else drop silently; strictness prevents bad resume
-    return out
-
-# -------------------------------------------------------------------
-# Helper: robust agent name extraction for events/messages
-# -------------------------------------------------------------------
-def _normalize_text_content(raw: Any) -> str:
-    """Convert AG2 text payloads (which may be dicts/BaseModels) into displayable strings."""
-    if raw is None:
-        return ""
-    if isinstance(raw, str):
-        return raw
-    if hasattr(raw, 'model_dump') and callable(getattr(raw, 'model_dump')):
-        try:
-            return _normalize_text_content(raw.model_dump())
-        except Exception:
-            pass
-    if isinstance(raw, dict):
-        for key in ('content', 'text', 'message'):
-            value = raw.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-    if isinstance(raw, (list, tuple)):
-        try:
-            return ' '.join(str(x) for x in raw)
-        except Exception:
-            pass
-    return str(raw)
-
-
-def _serialize_event_content(raw: Any) -> Any:
-    """Best-effort conversion of AG2 event content into JSON-serializable structures."""
-    if raw is None or isinstance(raw, (str, int, float, bool)):
-        return raw
-    try:
-        if hasattr(raw, 'model_dump') and callable(getattr(raw, 'model_dump')):
-            return _serialize_event_content(raw.model_dump())
-    except Exception:
-        pass
-    try:
-        if hasattr(raw, 'dict') and callable(getattr(raw, 'dict')):
-            return _serialize_event_content(raw.dict())
-    except Exception:
-        pass
-    if isinstance(raw, dict):
-        return {k: _serialize_event_content(v) for k, v in raw.items()}
-    if isinstance(raw, (list, tuple, set)):
-        return [_serialize_event_content(v) for v in list(raw)]
-    if hasattr(raw, '__dict__'):
-        try:
-            return _serialize_event_content(vars(raw))
-        except Exception:
-            pass
-    return str(raw)
-
-def _extract_agent_name(obj: Any) -> Optional[str]:
-    """Best-effort extraction of an agent/sender name from AG2 event/message objects.
-
-    Traverses nested structures (dicts, lists, dataclasses) and falls back to string pattern
-    matching so that tool and agent messages surface their logical speaker in the UI.
-    """
-
-    def _scan(candidate: Any) -> Optional[str]:
-        if candidate is None:
-            return None
-        if isinstance(candidate, str):
-            value = candidate.strip()
-            if not value:
-                return None
-            match = re.search(r"sender(?:=|\"\s*:)['\"]([^'\"\\]+)['\"]", value)
-            if match:
-                return match.group(1).strip()
-            if ' ' not in value and len(value) <= 64:
-                return value
-            return None
-        if isinstance(candidate, dict):
-            for key in ("sender", "agent", "agent_name", "name"):
-                value = candidate.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-            for key in ("sender", "agent", "agent_name", "name", "content"):
-                value = candidate.get(key)
-                result = _scan(value)
-                if result:
-                    return result
-            return None
-        if isinstance(candidate, (list, tuple, set)):
-            for item in candidate:
-                result = _scan(item)
-                if result:
-                    return result
-            return None
-        for key in ("sender", "agent", "agent_name", "name"):
-            attr = getattr(candidate, key, None)
-            if isinstance(attr, str) and attr.strip():
-                return attr.strip()
-            result = _scan(attr)
-            if result:
-                return result
-        content = getattr(candidate, "content", None)
-        if content is not None:
-            return _scan(content)
-        return None
-
-    try:
-        return _scan(obj)
-    except Exception:  # pragma: no cover
-        return None
- 
 # ===================================================================
-# NEW HELPER (extracted to reduce complexity in _stream_events)
-# ===================================================================
-def _build_ui_event_payload(
-    *,
-    ev: Any,
-    workflow_name: str,
-    turn_agent: Optional[str],
-    wf_logger: logging.Logger,
-    tool_call_initiators: Dict[str, str],
-    tool_names_by_id: Dict[str, str],
-    workflow_name_upper: str,
-) -> Optional[Dict[str, Any]]:
-    """Build the UI event payload for a single AG2 event.
-
-    This function contains logic extracted from the original monolithic if/elif block
-    inside `_stream_events`. Behavior is intentionally identical; only structure changed.
-    """
-    try:
-        from autogen.events.agent_events import (
-            TextEvent as _T,
-            InputRequestEvent as _IR,
-            RunCompletionEvent as _RC,
-            ErrorEvent as _EE,
-            FunctionCallEvent as _FCe,
-            ToolCallEvent as _TCe,
-            FunctionResponseEvent as _FRe,
-            ToolResponseEvent as _TRe,
-            SelectSpeakerEvent as _SS,
-            GroupChatResumeEvent as _GR,
-            GroupChatRunChatEvent as _GRCE,
-        )
-        from autogen.events.client_events import UsageSummaryEvent as _US
-        try:
-            from autogen.events.print_event import PrintEvent as _PE
-        except Exception:  # pragma: no cover
-            _PE = object  # type: ignore
-    except Exception:
-        return {"event_type": ev.__class__.__name__, "kind": "unknown"}
-
-    et_name = ev.__class__.__name__
-    payload: Dict[str, Any] = {"event_type": et_name}
-
-    if isinstance(ev, _T):
-        sender = _extract_agent_name(ev)
-        raw_content_obj = getattr(ev, "content", None)
-        clean_content = _normalize_text_content(raw_content_obj)
-        serialized_raw = _serialize_event_content(raw_content_obj) if raw_content_obj is not None else None
-        payload.update({"kind": "text", "agent": sender, "content": clean_content})
-        if serialized_raw is not None and not isinstance(serialized_raw, str):
-            payload["raw_content"] = serialized_raw
-        if not payload.get("agent"):
-            fallback_agent = _extract_agent_name(serialized_raw) if serialized_raw is not None else None
-            if not fallback_agent:
-                fallback_agent = _extract_agent_name(getattr(ev, "sender", None))
-            if not fallback_agent:
-                fallback_agent = str(turn_agent) if turn_agent else None
-            payload["agent"] = fallback_agent or "Assistant"
-        try:
-            if sender and workflow_name and agent_has_structured_output(workflow_name, sender):
-                structured = _PM._extract_json_from_text(clean_content) if hasattr(_PM, '_extract_json_from_text') else None
-                if structured:
-                    payload["structured_output"] = structured
-                    schema_fields = get_structured_output_model_fields(workflow_name, sender)
-                    if schema_fields:
-                        payload["structured_schema"] = schema_fields
-                    try:
-                        import json as _json
-                        if isinstance(structured, dict):
-                            so_keys = list(structured.keys())
-                        elif isinstance(structured, list):
-                            so_keys = [f"list[{len(structured)}]"]
-                        else:
-                            so_keys = [type(structured).__name__]
-                        so_json = _json.dumps(structured, ensure_ascii=False)
-                        max_len = 2000
-                        if len(so_json) > max_len:
-                            so_json = so_json[:max_len] + "...<truncated>"
-                        wf_logger.info(f" [STRUCTURED_OUTPUT] agent={sender} keys={so_keys} json={so_json}")
-                    except Exception as _so_log_err:  # pragma: no cover
-                        wf_logger.debug(f"[STRUCTURED_OUTPUT] log skipped: {_so_log_err}")
-        except Exception as so_err:  # pragma: no cover
-            wf_logger.debug(f"Structured output attach failed sender={sender}: {so_err}")
-        return payload
-
-    if isinstance(ev, _PE):
-        payload.update({
-            "kind": "print",
-            "agent": _extract_agent_name(ev),
-            "content": _normalize_text_content(getattr(ev, "content", None)),
-        })
-        return payload
-
-    if isinstance(ev, _IR):
-        agent_name = _extract_agent_name(ev)
-        request_obj = getattr(ev, "content", None)
-        prompt_text = getattr(ev, "_mozaiks_prompt", None) or getattr(ev, "prompt", None)
-        component_hint = None
-        raw_payload = None
-        if request_obj is not None:
-            try:
-                if prompt_text is None:
-                    if hasattr(request_obj, "prompt"):
-                        prompt_text = getattr(request_obj, "prompt")
-                    elif isinstance(request_obj, dict):
-                        prompt_text = request_obj.get("prompt") or request_obj.get("message")
-                if hasattr(request_obj, "ui_tool_id"):
-                    component_hint = getattr(request_obj, "ui_tool_id")
-                elif isinstance(request_obj, dict):
-                    component_hint = request_obj.get("ui_tool_id") or request_obj.get("component") or request_obj.get("component_type")
-                if hasattr(request_obj, "model_dump"):
-                    raw_payload = request_obj.model_dump()  # type: ignore[attr-defined]
-                elif isinstance(request_obj, dict):
-                    raw_payload = request_obj
-            except Exception as prompt_err:
-                wf_logger.debug(f"InputRequest prompt extraction failed: {prompt_err}")
-        request_id = getattr(ev, "_mozaiks_request_id", None)
-        if not request_id:
-            request_id = getattr(ev, "uuid", None) or getattr(ev, "id", None)
-        if request_id:
-            request_id = str(request_id)
-        payload.update({
-            "kind": "input_request",
-            "agent": agent_name,
-            "request_id": request_id,
-            "prompt": (prompt_text or ""),
-        })
-        payload["password"] = bool(getattr(ev, "password", False))
-        if component_hint:
-            payload["component_type"] = component_hint
-        if raw_payload is not None:
-            payload["raw_payload"] = raw_payload
-        return payload
-
-    if isinstance(ev, InputTimeoutEvent):
-        agent_name = _extract_agent_name(ev)
-        payload.update({
-            "kind": "input_timeout",
-            "agent": agent_name,
-            "input_request_id": getattr(ev, "input_request_id", None),
-            "timeout_seconds": getattr(ev, "timeout_seconds", None),
-        })
-        return payload
-
-    if isinstance(ev, _SS):
-        agent_name = _extract_agent_name(ev)
-        next_agent_obj = getattr(ev, "agent", None)
-        next_agent = None
-        if next_agent_obj:
-            next_agent = getattr(next_agent_obj, "name", None) or str(next_agent_obj)
-        payload.update({
-            "kind": "select_speaker",
-            "agent": agent_name,
-            "next": next_agent,
-        })
-        return payload
-
-    if isinstance(ev, _GR):
-        payload.update({"kind": "resume_boundary"})
-        return payload
-
-    # GroupChatRunChatEvent -------------------------------------------
-    if isinstance(ev, _GRCE):
-        payload.update({"kind": "unknown"})
-        return payload
-
-    if isinstance(ev, (_FCe, _TCe)):
-        content_obj = None
-        tool_name = None
-        tool_calls = getattr(ev, "tool_calls", None)
-        if isinstance(tool_calls, list) and tool_calls:
-            first_call = tool_calls[0]
-            fn = getattr(first_call, "function", None)
-            name_attr = getattr(fn, "name", None)
-            if isinstance(name_attr, str):
-                tool_name = name_attr
-        if not tool_name:
-            function_call = getattr(ev, "function_call", None)
-            fn_name = getattr(function_call, "name", None)
-            if isinstance(fn_name, str):
-                tool_name = fn_name
-        if not tool_name:
-            content_obj = getattr(ev, "content", None)
-            tool_name = (
-                getattr(ev, "tool_name", None)
-                or getattr(content_obj, "name", None)
-                or getattr(content_obj, "tool_name", None)
-            )
-            if not tool_name and content_obj:
-                tool_calls = getattr(content_obj, "tool_calls", None)
-                if isinstance(tool_calls, list) and tool_calls:
-                    first_tool = tool_calls[0]
-                    function_obj = getattr(first_tool, "function", None)
-                    if function_obj:
-                        tool_name = getattr(function_obj, "name", None)
-                        if tool_name:
-                            wf_logger.debug(f" [TOOL_EXTRACT] Found tool name: {tool_name}")
-        if not tool_name:
-            tool_name = "unknown_tool"
-        tool_call_id = (
-            getattr(ev, "id", None)
-            or getattr(ev, "uuid", None)
-            or f"tool_{tool_name}"
-        )
-        extracted_args: Dict[str, Any] = {}
-        try:
-            if isinstance(tool_calls, list) and tool_calls:
-                first_tool = tool_calls[0]
-                f_fn = getattr(first_tool, "function", None)
-                if f_fn is not None:
-                    poss_args = getattr(f_fn, "arguments", None)
-                    if isinstance(poss_args, dict):
-                        extracted_args = poss_args
-            if not extracted_args:
-                function_call = getattr(ev, "function_call", None)
-                if function_call is not None:
-                    poss_args = getattr(function_call, "arguments", None)
-                    if isinstance(poss_args, dict):
-                        extracted_args = poss_args
-            if not extracted_args and content_obj is None:
-                content_obj = getattr(ev, "content", None)
-            if not extracted_args and content_obj is not None:
-                poss_args = getattr(content_obj, "arguments", None)
-                if isinstance(poss_args, dict):
-                    extracted_args = poss_args
-        except Exception as arg_ex:
-            wf_logger.debug(f"[TOOL_ARGS] extraction failed for {tool_name}: {arg_ex}")
-        agent_for_tool = _extract_agent_name(ev) or turn_agent or getattr(ev, "sender", None)
-        if tool_call_id:
-            tool_names_by_id[str(tool_call_id)] = str(tool_name)
-        init_agent = agent_for_tool or payload.get("agent")
-        if init_agent and tool_call_id:
-            tool_call_initiators[str(tool_call_id)] = init_agent
-        if extracted_args:
-            payload.update({
-                "kind": "tool_call",
-                "agent": agent_for_tool,
-                "tool_name": str(tool_name),
-                "tool_call_id": str(tool_call_id),
-                "corr": str(tool_call_id),
-                "component_type": "inline",
-                "awaiting_response": True,
-                "payload": {
-                    "tool_args": extracted_args,
-                    "interaction_type": "input",
-                    "agent_name": agent_for_tool,
-                },
-            })
-            logger.info(f" [TOOL_CALL] agent={agent_for_tool} tool={tool_name} id={tool_call_id} args_keys={list(extracted_args.keys())}")
-        else:
-            logger.debug(f" [TOOL_CALL_SUPPRESSED] tool={tool_name} id={tool_call_id} (no args)")
-        return payload
-
-    if isinstance(ev, (_FRe, _TRe)):
-        tool_name = getattr(ev, "tool_name", None)
-        content_obj = getattr(ev, "content", None)
-        if not tool_name and content_obj:
-            tool_name = (
-                getattr(content_obj, "tool_name", None)
-                or getattr(content_obj, "name", None)
-            )
-        if not tool_name and content_obj:
-            tool_calls = getattr(content_obj, "tool_calls", None)
-            if isinstance(tool_calls, list) and tool_calls:
-                first_tool = tool_calls[0]
-                function_obj = getattr(first_tool, "function", None)
-                if function_obj:
-                    tool_name = getattr(function_obj, "name", None)
-                    if tool_name:
-                        wf_logger.debug(f" [TOOL_EXTRACT_RESPONSE] Found tool name: {tool_name}")
-        if not tool_name:
-            tool_name = "unknown_tool"
-        agent_name = _extract_agent_name(ev)
-        tool_response_id = (
-            getattr(ev, "id", None)
-            or getattr(ev, "uuid", None)
-            or getattr(ev, "tool_call_id", None)
-        )
-        if not agent_name and tool_response_id:
-            fallback_agent = tool_call_initiators.get(str(tool_response_id))
-            if fallback_agent:
-                agent_name = fallback_agent
-                logger.debug(f" [TOOL_RESPONSE_AGENT_FALLBACK] Using initiator agent={agent_name} for tool_response id={tool_response_id}")
-        if (not tool_name or tool_name == "unknown_tool") and tool_response_id:
-            tool_name = tool_names_by_id.get(str(tool_response_id), tool_name)
-        payload.update({
-            "kind": "tool_response",
-            "tool_name": str(tool_name),
-            "agent": agent_name,
-            "tool_call_id": str(tool_response_id) if tool_response_id else None,
-            "corr": str(tool_response_id) if tool_response_id else None,
-            "content": getattr(ev, "content", None),
-        })
-        wf_logger.debug(f" [TOOL_RESPONSE] agent={agent_name} tool={tool_name} id={tool_response_id}")
-        return payload
-
-    if isinstance(ev, _US):
-        for f in ("total_tokens", "prompt_tokens", "completion_tokens", "cost", "model"):
-            if hasattr(ev, f):
-                payload[f] = getattr(ev, f)
-        payload.update({"kind": "usage_summary"})
-        return payload
-
-    if isinstance(ev, _EE):
-        agent_name = _extract_agent_name(ev)
-        payload.update({
-            "kind": "error",
-            "agent": agent_name,
-            "message": getattr(ev, "message", None) or getattr(ev, "content", None) or str(ev),
-        })
-        return payload
-
-    if isinstance(ev, _RC):
-        rc_agent = _extract_agent_name(ev) or getattr(ev, "agent", None) or "workflow"
-        payload.update({
-            "kind": "run_complete",
-            "agent": rc_agent,
-        })
-        return payload
-
-    payload.update({"kind": "unknown"})
-    return payload
-    
-# ===================================================================
-# SINGLE ENTRY POINT
+# ORCHESTRATION HELPERS
 # ===================================================================
 
 def _normalize_human_in_the_loop(value) -> bool:
@@ -741,13 +247,13 @@ async def _resume_or_initialize_chat(
 
 
 async def _load_llm_config(workflow_name: str, wf_logger, workflow_name_upper: str, *, cache_seed: Optional[int] = None):
-    from .structured_outputs import get_llm_for_workflow
+    from .outputs.structured import get_llm_for_workflow
     try:
         extra = {"cache_seed": cache_seed} if cache_seed is not None else None
         _, llm_config = await get_llm_for_workflow(workflow_name, "base", extra_config=extra)
         wf_logger.info(f" [{workflow_name_upper}] Using workflow-specific LLM config")
     except (ValueError, FileNotFoundError):
-        from .llm_config import get_llm_config
+        from .validation.llm_config import get_llm_config
         extra = {"cache_seed": cache_seed} if cache_seed is not None else None
         _, llm_config = await get_llm_config(extra_config=extra)
         wf_logger.info(f" [{workflow_name_upper}] Using default LLM config")
@@ -773,7 +279,7 @@ async def _build_context_blocking(
             if inspect.isawaitable(result):
                 return await result
             return result
-        from .context_variables import _load_context_async
+        from .context.variables import _load_context_async
         # Use the internal async loader directly to ensure blocking population
         return await _load_context_async(workflow_name, enterprise_id)
     except Exception as e:
@@ -966,7 +472,7 @@ async def _create_ag2_pattern(
             if handoffs_factory:
                 await handoffs_factory(agents)
             else:
-                from .handoffs import wire_handoffs_with_debugging
+                from .agents.handoffs import wire_handoffs_with_debugging
                 wire_handoffs_with_debugging(workflow_name, agents)
         except Exception as he:
             wf_logger.warning(f"Handoffs wiring failed: {he}")
@@ -985,18 +491,18 @@ async def _stream_events(
     wf_logger,
     workflow_name_upper: str,
     transport,
-    termination_handler,
     user_id: Optional[str],
     persistence_manager: AG2PersistenceManager,
     perf_mgr,
     derived_context_manager: Optional[DerivedContextManager] = None,
+    lifecycle_manager = None,
 ):
     """Stream AG2 events, forwarding them to transport/UI and persisting as needed.
 
     NOTE: This function was previously extremely complex with a very large if/elif
     ladder for event-type specific payload construction. To reduce cyclomatic complexity
     (and satisfy static analysis warnings around line ~582), the payload construction
-    logic has been extracted into the helper `_build_ui_event_payload`. All original
+    logic has been extracted into the helper `unified_build_ui_event_payload`. All original
     behavior, field names, and logging semantics are preserved. Only structural
     refactoring (no functional changes) has been performed.
     """
@@ -1004,7 +510,7 @@ async def _stream_events(
     from autogen.agentchat import a_run_group_chat
     from autogen.events.client_events import UsageSummaryEvent
 
-    # pattern.context_variables provided by AG2 pattern if needed
+    # pattern\.context.variables provided by AG2 pattern if needed
 
     try:
         structured_registry = get_structured_outputs_for_workflow(workflow_name)
@@ -1021,9 +527,8 @@ async def _stream_events(
     if auto_tool_agents:
         wf_logger.info(f" [{workflow_name_upper}] Auto-tool agents detected: {sorted(auto_tool_agents)}")
     
-    # Load lifecycle tools for this workflow
-    from core.workflow.lifecycle_tools import get_lifecycle_manager
-    lifecycle_manager = get_lifecycle_manager(workflow_name)
+    # lifecycle_manager is now passed as a parameter (initialized in run_workflow_orchestration)
+    # No need to reload here - use the parameter version
 
     resumed_mode = bool(resumed_messages)
     # Log which context keys are present at stream start for diagnostics
@@ -1202,7 +707,7 @@ async def _stream_events(
     except Exception as e:
         logger.debug(f"Failed to register orchestration input registry for {chat_id}: {e}")
 
-    from .ui_tools import handle_tool_call_for_ui_interaction
+    from .outputs.ui_tools import handle_tool_call_for_ui_interaction
     from autogen.events.agent_events import FunctionCallEvent as _FC, ToolCallEvent as _TC
     try:
         executed_agents: set[str] = set()
@@ -1284,7 +789,7 @@ async def _stream_events(
                                 # Try to extract structured output from message content
                                 structured_blob = None
                                 try:
-                                    from core.data.persistence_manager import AG2PersistenceManager as _PM
+                                    from core.data.persistence.persistence_manager import AG2PersistenceManager as _PM
                                     if hasattr(_PM, '_extract_json_from_text'):
                                         structured_blob = _PM._extract_json_from_text(message_content)
                                         wf_logger.info(f" [{workflow_name_upper}] JSON extraction result for {sender_name}: {structured_blob is not None}")
@@ -1464,18 +969,19 @@ async def _stream_events(
                         logger.warning(f"Failed to record turn for {turn_agent}: {perf_err}")
                     
                     # Execute after_agent lifecycle tools
-                    try:
-                        gm_ctx = getattr(pattern, "group_manager", None)
-                        active_ctx = getattr(gm_ctx, "context_variables", None) if gm_ctx else None
-                        if not active_ctx and hasattr(pattern, "context_variables"):
-                            active_ctx = getattr(pattern, "context_variables")
-                        
-                        await lifecycle_manager.trigger_after_agent(
-                            agent_name=str(turn_agent),
-                            context_variables=active_ctx,
-                        )
-                    except Exception as lc_err:
-                        wf_logger.debug(f" [{workflow_name_upper}] after_agent lifecycle tools failed for {turn_agent}: {lc_err}")
+                    if lifecycle_manager:
+                        try:
+                            gm_ctx = getattr(pattern, "group_manager", None)
+                            active_ctx = getattr(gm_ctx, "context_variables", None) if gm_ctx else None
+                            if not active_ctx and hasattr(pattern, "context_variables"):
+                                active_ctx = getattr(pattern, "context_variables")
+                            
+                            await lifecycle_manager.trigger_after_agent(
+                                agent_name=str(turn_agent),
+                                context_variables=active_ctx,
+                            )
+                        except Exception as lc_err:
+                            wf_logger.warning(f" [{workflow_name_upper}] after_agent lifecycle tools failed for {turn_agent}: {lc_err}")
 
                 turn_agent = getattr(ev, "sender", None) or getattr(ev, "agent", None)
                 if turn_agent:
@@ -1483,18 +989,19 @@ async def _stream_events(
                     
                     # LIFECYCLE TRIGGER: before_agent (for new agent)
                     # Execute before_agent lifecycle tools when an agent's turn begins
-                    try:
-                        gm_ctx = getattr(pattern, "group_manager", None)
-                        active_ctx = getattr(gm_ctx, "context_variables", None) if gm_ctx else None
-                        if not active_ctx and hasattr(pattern, "context_variables"):
-                            active_ctx = getattr(pattern, "context_variables")
-                        
-                        await lifecycle_manager.trigger_before_agent(
-                            agent_name=str(turn_agent),
-                            context_variables=active_ctx,
-                        )
-                    except Exception as lc_err:
-                        wf_logger.debug(f" [{workflow_name_upper}] before_agent lifecycle tools failed for {turn_agent}: {lc_err}")
+                    if lifecycle_manager:
+                        try:
+                            gm_ctx = getattr(pattern, "group_manager", None)
+                            active_ctx = getattr(gm_ctx, "context_variables", None) if gm_ctx else None
+                            if not active_ctx and hasattr(pattern, "context_variables"):
+                                active_ctx = getattr(pattern, "context_variables")
+                            
+                            await lifecycle_manager.trigger_before_agent(
+                                agent_name=str(turn_agent),
+                                context_variables=active_ctx,
+                            )
+                        except Exception as lc_err:
+                            wf_logger.warning(f" [{workflow_name_upper}] before_agent lifecycle tools failed for {turn_agent}: {lc_err}")
                     
                 turn_started = time.perf_counter()
                 wf_logger.debug(
@@ -1837,7 +1344,7 @@ async def _stream_events(
 
             if isinstance(ev, RunCompletionEvent):
                 try:
-                    from .handoffs import handoff_manager  # noqa: F401 (for side-effects / attr access)
+                    from .agents.handoffs import handoff_manager  # noqa: F401 (for side-effects / attr access)
                     remaining_after_work = []
                     for a_name, a_obj in agents.items():
                         tgt = None
@@ -2080,7 +1587,7 @@ async def run_workflow_orchestration(
             # 3.5) Structured outputs preload (blocking)
             # -----------------------------------------------------------------
             try:
-                from .structured_outputs import load_workflow_structured_outputs as _preload_so
+                from .outputs.structured import load_workflow_structured_outputs as _preload_so
                 _preload_so(workflow_name)
                 wf_logger.info(f" [{workflow_name_upper}] Structured outputs preloaded")
             except Exception as so_err:
@@ -2164,7 +1671,7 @@ async def run_workflow_orchestration(
                 derived_context_manager = None
 
             # Get tool binding data for summary
-            from .agent_tools import load_agent_tool_functions
+            from .agents.tools import load_agent_tool_functions
             agent_tools = load_agent_tool_functions(workflow_name)
 
             try:
@@ -2344,7 +1851,7 @@ async def run_workflow_orchestration(
             # 10.5) Lifecycle Tools: before_chat trigger
             # -----------------------------------------------------------------
             try:
-                from core.workflow.lifecycle_tools import get_lifecycle_manager
+                from core.workflow.execution.lifecycle import get_lifecycle_manager
                 lifecycle_manager = get_lifecycle_manager(workflow_name)
                 await lifecycle_manager.trigger_before_chat(context_variables=ag2_context)
                 wf_logger.info(f" [{workflow_name_upper}] Lifecycle before_chat triggers completed")
@@ -2376,11 +1883,11 @@ async def run_workflow_orchestration(
                 wf_logger=wf_logger,
                 workflow_name_upper=workflow_name_upper,
                 transport=transport,
-                termination_handler=termination_handler,
                 user_id=user_id,
                 persistence_manager=persistence_manager,
                 perf_mgr=perf_mgr,
                 derived_context_manager=derived_context_manager,
+                lifecycle_manager=lifecycle_manager,
             )
             response = stream_state["response"]
             turn_agent = stream_state["turn_agent"]
@@ -2516,7 +2023,7 @@ async def run_workflow_orchestration(
             # 12) Lifecycle Tools: after_chat trigger
             # -----------------------------------------------------------------
             try:
-                from core.workflow.lifecycle_tools import get_lifecycle_manager
+                from core.workflow.execution.lifecycle import get_lifecycle_manager
                 lifecycle_manager = get_lifecycle_manager(workflow_name)
                 await lifecycle_manager.trigger_after_chat(context_variables=ag2_context)
                 wf_logger.info(f" [{workflow_name_upper}] Lifecycle after_chat triggers completed")
@@ -2579,116 +2086,10 @@ async def run_workflow_orchestration(
 
 
 # ==============================================================================
-# AG2 PATTERN FACTORY - Direct AG2 Pattern Usage
+# NOTE: create_ag2_pattern function has been extracted to pattern_factory.py
+# This refactoring improves modularity and maintainability.
+# Import: from .pattern_factory import create_ag2_pattern
 # ==============================================================================
-
-def create_ag2_pattern(
-    pattern_name: str,
-    initial_agent: ConversableAgent,
-    agents: List[ConversableAgent],
-    user_agent: Optional[UserProxyAgent] = None,
-    context_variables: Optional[Any] = None,
-    group_manager_args: Optional[Dict[str, Any]] = None,
-    **pattern_kwargs
-) -> Any:
-    """
-    Create AG2 Pattern following proper constructor signature.
-    
-    AG2 Pattern constructor signature:
-    - initial_agent: ConversableAgent
-    - agents: List[ConversableAgent] 
-    - user_agent: Optional[ConversableAgent]
-    - context_variables: Optional[ContextVariables]
-    - group_manager_args: Optional[Dict[str, Any]]
-    """
-    pattern_map = {
-        "AutoPattern": AG2AutoPattern,
-        "DefaultPattern": AG2DefaultPattern,
-        "RoundRobinPattern": AG2RoundRobinPattern,
-        "RandomPattern": AG2RandomPattern
-    }
-
-    if pattern_name not in pattern_map:
-        # Fail fast so misconfiguration is visible instead of silently defaulting
-        raise ValueError(f"Unknown orchestration pattern: {pattern_name}")
-
-    pattern_class = pattern_map[pattern_name]
-
-    logger.info(f" Creating {pattern_name} using AG2's native implementation")
-    logger.info(f" Pattern setup - initial_agent: {initial_agent.name}")
-    logger.info(f" Pattern setup - agents count: {len(agents)}")
-    logger.info(f" Pattern setup - user_agent included: {user_agent is not None}")
-    if context_variables is not None:
-        try:
-            # Best-effort context diagnostics
-            cv_type = type(context_variables).__name__
-            cv_keys = []
-            if hasattr(context_variables, 'to_dict'):
-                cv_keys = list(context_variables.to_dict().keys())
-            elif hasattr(context_variables, 'data') and isinstance(getattr(context_variables, 'data', None), dict):
-                cv_keys = list(context_variables.data.keys())
-            elif isinstance(context_variables, dict):
-                cv_keys = list(context_variables.keys())
-            logger.info(f" Pattern setup - context_variables: True | type={cv_type} | keys={cv_keys}")
-        except Exception as _log_err:
-            logger.info(f" Pattern setup - context_variables: True (keys unavailable: {_log_err})")
-    else:
-        logger.info(" Pattern setup - context_variables: False")
-
-    # Build AG2 Pattern constructor arguments following proper signature
-    pattern_args = {
-        "initial_agent": initial_agent,
-        "agents": agents,
-        "context_variables": context_variables,  # AG2 ContextVariables instance
-    }
-
-    # Add user_agent if provided (AG2 handles human-in-the-loop logic)
-    if user_agent is not None:
-        pattern_args["user_agent"] = user_agent
-        logger.info(" User agent included in AG2 pattern")
-
-    # Add group_manager_args for GroupChatManager configuration
-    if group_manager_args is not None:
-        pattern_args["group_manager_args"] = group_manager_args
-
-    # Add any additional pattern-specific kwargs
-    pattern_args.update(pattern_kwargs)
-
-    try:
-        pattern = pattern_class(**pattern_args)
-        logger.info(f" {pattern_name} AG2 pattern created successfully")
-        # Verify context presence on the created pattern/manager
-        try:
-            gm = getattr(pattern, 'group_manager', None)
-            cv = getattr(gm, 'context_variables', None) if gm else None
-            if cv is not None:
-                try:
-                    keys = list(cv.data.keys()) if hasattr(cv, 'data') else list(cv.to_dict().keys()) if hasattr(cv, 'to_dict') else []
-                except Exception:
-                    keys = []
-                logger.info(f" Pattern created with ContextVariables attached to group_manager | keys={keys}")
-            else:
-                logger.debug("Pattern created; group_manager.context_variables not exposed at pattern level (will be set up in prepare_group_chat)")
-        except Exception as _post_err:
-            logger.debug(f"ContextVariables post-create check skipped: {_post_err}")
-        return pattern
-    except Exception as e:
-        logger.warning(f" Failed to create {pattern_name} with all args, trying minimal: {e}")
-        minimal_args = {
-            "initial_agent": initial_agent,
-            "agents": agents,
-        }
-        if user_agent is not None:
-            minimal_args["user_agent"] = user_agent
-
-        # Include context_variables in minimal args if available
-        if context_variables is not None:
-            minimal_args["context_variables"] = context_variables
-            
-        minimal_pattern = pattern_class(**minimal_args)
-        logger.info(f" {pattern_name} AG2 pattern created with minimal args")
-        
-        return minimal_pattern
 
 # ==============================================================================
 # LOGGING HELPERS
@@ -2783,6 +2184,7 @@ async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str
     except Exception as e:
         logger.error(f" Failed to log conversation to agent chat file for {chat_id}: {e}")
         # Do not raise
+
 
 
 

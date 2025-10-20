@@ -156,7 +156,7 @@ async def send_event_to_ui(self, event: Dict[str, Any], chat_id: str) -> None:
         logger.debug(f"Filtered out message from {agent_name} (not in visual_agents)")
         return
     
-    # Send event to WebSocket/SSE
+    # Send event to WebSocket
     await self._send_to_connection(chat_id, event)
 ```
 
@@ -175,7 +175,7 @@ async def send_event_to_ui(
     *,
     skip_filter: bool = False
 ) -> None:
-    """Send event to frontend via WebSocket/SSE.
+    """Send event to frontend via WebSocket.
     
     Args:
         event: Event payload (must include 'kind' field)

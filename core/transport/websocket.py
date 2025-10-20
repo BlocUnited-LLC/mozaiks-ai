@@ -1,4 +1,11 @@
-﻿from __future__ import annotations
+# ==============================================================================
+# FILE: websocket.py
+# DESCRIPTION: 
+# ==============================================================================
+
+# === MOZAIKS-CORE-HEADER ===
+
+from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
@@ -228,3 +235,4 @@ class WebSocketSessionManager:
 
 
 __all__ = ["WebSocketSessionManager"]
+

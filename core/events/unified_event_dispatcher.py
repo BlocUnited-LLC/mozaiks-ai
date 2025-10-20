@@ -1,4 +1,11 @@
 # ==============================================================================
+# FILE: unified_event_dispatcher.py
+# DESCRIPTION: 
+# ==============================================================================
+
+# === MOZAIKS-CORE-HEADER ===
+
+# ==============================================================================
 # FILE: core/events/unified_event_dispatcher.py
 # DESCRIPTION: Centralized event dispatcher for all event types in MozaiksAI
 # ==============================================================================
@@ -384,7 +391,7 @@ class UnifiedEventDispatcher:
             'print': 'chat.print', 'text': 'chat.text', 'input_request': 'chat.input_request', 'input_ack': 'chat.input_ack',
             'input_timeout': 'chat.input_timeout', 'select_speaker': 'chat.select_speaker', 'resume_boundary': 'chat.resume_boundary',
             'usage_summary': 'chat.usage_summary', 'run_complete': 'chat.run_complete', 'error': 'chat.error', 'tool_call': 'chat.tool_call', 'tool_response': 'chat.tool_response',
-            'structured_output_ready': 'chat.structured_output_ready', 'run_start': 'chat.run_start'
+            'structured_output_ready': 'chat.structured_output_ready', 'run_start': 'chat.run_start', 'ui_tool_dismiss': 'chat.ui_tool_dismiss'
         }
         mapped_type = kind if kind.startswith('chat.') else ns_map.get(kind, kind)
         
@@ -443,4 +450,5 @@ async def emit_ui_tool_event(
     """
     dispatcher = get_event_dispatcher()
     return await dispatcher.emit_ui_tool_event(ui_tool_id, payload, workflow_name, display, chat_id)
+
 

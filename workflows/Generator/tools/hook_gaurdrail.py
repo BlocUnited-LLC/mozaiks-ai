@@ -2,7 +2,8 @@
 # FILE: workflows\Generator\tools\hook_gaurdrail.py
 # PURPOSE: If the last inbound message appears to ask for dangerous actions, prepend a policy tag to guide the agent's reply.
 # HOOK TYPE: process_last_received_message
-# SIGNATURE: def your_function_name(content: Union[str, list[dict[str, Any]]]) -> str:
+# SIGNATURE: def your_function_name(content: Union[str, list[dict[str, Any]]], sender: Any = None) -> str:
+# NOTE: AG2 passes 'sender' as a kwarg, so we must accept it even if unused
 # ==============================================================================
 
 from typing import Union, List, Dict, Any
@@ -12,10 +13,14 @@ DANGEROUS_HINTS = ("exploit", "malware", "bypass", "jailbreak", "phish", "ddos",
                    "hack into", "break into", "steal data", "illegal", "piracy", "fraud", "create virus",
                    "build weapon", "bomb making", "terrorist", "assassination")
 
-def soft_policy_label(content: Union[str, List[Dict[str, Any]]]) -> str:
+def soft_policy_label(content: Union[str, List[Dict[str, Any]]], sender: Any = None) -> str:
     """
     Prepends [policy: restricted] to dangerous requests to guide agent responses away from harmful content.
     This helps prevent users from creating workflows that could be used for malicious purposes.
+    
+    Args:
+        content: The message content (string or list of message dicts)
+        sender: The sender agent (passed by AG2 but not used here)
     
     Returns a modified string that will permanently change the chat messages for this agent.
     """
