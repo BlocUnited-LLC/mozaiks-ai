@@ -215,8 +215,17 @@ class AutoToolEventHandler:
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            tool_type = entry.get("tool_type") or entry.get("type")
-            if tool_type and str(tool_type).upper() != "UI_TOOL":
+            tool_type_raw = entry.get("tool_type") or entry.get("type")
+            tool_type = str(tool_type_raw).upper() if tool_type_raw else ""
+            auto_invoke_flag = entry.get("auto_invoke")
+            if auto_invoke_flag is None:
+                should_auto_invoke = tool_type == "UI_TOOL"
+            else:
+                try:
+                    should_auto_invoke = bool(auto_invoke_flag)
+                except Exception:
+                    should_auto_invoke = False
+            if not should_auto_invoke:
                 continue
             function_name = entry.get("function")
             if not isinstance(function_name, str) or not function_name:

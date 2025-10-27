@@ -37,7 +37,7 @@
 4. **Theme Configuration:**
    - Collection: `enterprise_themes`
    - Document `_id`: `enterprise_id`
-   - API: `GET /api/themes/{enterprise_id}`, `PUT /api/themes/{enterprise_id}`
+    - API: `GET /api/themes/{enterprise_id}`
 
 **Validation:**
 ```python

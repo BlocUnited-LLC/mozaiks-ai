@@ -241,7 +241,7 @@ workflows/Generator/
 
 **Key Files:**
 
-- **`workflow.json`:** Defines `visual_agents`, `visual_agent`, `max_turns`, `human_in_the_loop`, startup mode
+- **`workflow.json`:** Defines `visual_agents`, `max_turns`, `human_in_the_loop`, startup mode
 - **`agents.json`:** System messages with `[ROLE]`, `[OBJECTIVE]`, `[CONTEXT]`, `[GUIDELINES]`, `[INSTRUCTIONS]` sections
 - **`tools.json`:** Registers both backend tools (`Agent_Tool`) and UI components (`UI_Tool`)
 - **`structured_outputs.json`:** Maps agents to Pydantic models for validated output

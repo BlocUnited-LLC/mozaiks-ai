@@ -1,10 +1,3 @@
-# ==============================================================================
-# FILE: theme_manager.py
-# DESCRIPTION: 
-# ==============================================================================
-
-# === MOZAIKS-CORE-HEADER ===
-
 # ============================================================================
 # FILE: core/data/theme_manager.py
 # DESCRIPTION: Persistence and validation for enterprise theme configuration

@@ -12,11 +12,24 @@
       }
     },
     {
-      "agent": "ActionPlanArchitect",
-      "file": "action_plan.py",
-      "function": "action_plan",
-      "description": "Normalize and cache the action plan before Mermaid enrichment.",
+      "agent": "WorkflowStrategyAgent",
+      "file": "workflow_strategy.py",
+      "function": "workflow_strategy",
+      "description": "Cache high-level workflow architecture (pattern, trigger, phases) in context variables.",
+      "tool_type": "Agent_Tool",
+      "auto_invoke": true,
+      "ui": {
+        "component": null,
+        "mode": null
+      }
+    },
+    {
+      "agent": "WorkflowImplementationAgent",
+      "file": "phase_agents_plan.py",
+      "function": "phase_agents_plan",
+      "description": "Submit agent specifications that merge with workflow strategy phases.",
       "tool_type": "UI_Tool",
+      "auto_invoke": true,
       "ui": {
         "component": "ActionPlan",
         "mode": "artifact"
@@ -32,17 +45,6 @@
         "component": "ActionPlan",
         "mode": "artifact"
       }
-    },
-    {
-      "agent": "OrchestratorAgent",
-      "file": "echo.py",
-      "function": "echo",
-      "description": "Testing tool that echoes back.",
-      "tool_type": "Agent_Tool",
-      "ui": {
-        "component": null,
-        "mode": null
-      }
     }
   ],
   "lifecycle_tools": [
@@ -54,7 +56,7 @@
       "description": "Collect API keys for third-party services before context variable planning",
       "tool_type": "UI_Tool",
       "ui": {
-        "component": "AgentAPIKeyInput",
+        "component": "AgentAPIKeysBundleInput",
         "mode": "inline"
       }
     }

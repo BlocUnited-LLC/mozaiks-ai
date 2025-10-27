@@ -431,9 +431,9 @@ Runtime configuration controlling workflow startup, execution limits, and visual
 
 **Visual Agents (Deprecated in orchestrator.json):**
 
-Earlier workflows included `visual_agents` and `visual_agent` arrays. Current implementations derive these from:
-- **visual_agents**: Agents whose text appears in UI (default: all agents)
-- **visual_agent**: Agents that can emit UI tools (derived from `tools.json` where `tool_type = "UI_Tool"`)
+Earlier workflows included `visual_agents` arrays. Current implementations derive these from:
+- **Agents whose text appears in UI (default: all agents)** 
+- **Agents that can emit UI tools (derived from `tools.json` where `tool_type = "UI_Tool"`)**
 
 Runtime calculates these dynamically from manifests; no need to declare in `orchestrator.json`.
 

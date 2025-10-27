@@ -364,6 +364,24 @@ def setup_logging(
     )
     root.addHandler(file_handler)
     ch = logging.StreamHandler(); ch.setLevel(getattr(logging, console_level.upper())); ch.setFormatter(console_fmt); root.addHandler(ch)
+    
+    # Dedicated handler for agent conversation messages
+    agent_conv_file = LOGS_DIR / "agent_conversations.log"
+    agent_conv_handler = _make_handler(
+        agent_conv_file,
+        logging.INFO,
+        PrettyConsoleFormatter(no_color=True),  # Human-readable format for conversations
+        log_filter=None,
+        max_bytes=max_file_size,
+        backup_count=backup_count
+    )
+    # Only attach to the agent_messages logger (created in log_conversation_to_agent_chat_file)
+    agent_messages_logger = logging.getLogger("mozaiks.workflow.agent_messages")
+    agent_messages_logger.addHandler(agent_conv_handler)
+    agent_messages_logger.setLevel(logging.INFO)
+    # Don't propagate to root to avoid duplication in mozaiks.log
+    agent_messages_logger.propagate = False
+    
     for noisy in ("openai","httpx","urllib3","azure","motor","pymongo","uvicorn.access","msal","autogen","autogen.logger.file_logger"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.getLogger(__name__).info(

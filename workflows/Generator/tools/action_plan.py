@@ -237,7 +237,22 @@ def _serialize_plan_snapshot(workflow: Dict[str, Any]) -> str:
 
 async def action_plan(
     *,
-    ActionPlan: Annotated[Optional[dict[str, Any]], "Action Plan object with workflow details. Expected keys: { 'workflow': { name, trigger, description, phases[...] } }"] = None,
+    ActionPlan: Annotated[
+        Optional[dict[str, Any]],
+        (
+            "DEPRECATED - Use phase_agents instead. Legacy Action Plan object with workflow details. "
+            "Expected keys: { 'workflow': { name, trigger, description, phases[...] } } "
+            "and a phases list that mirrors the upstream WorkflowStrategyCall output exactly (Phase N labels, order, and approvals)."
+        ),
+    ] = None,
+    phase_agents: Annotated[
+        Optional[List[Dict[str, Any]]],
+        (
+            "NEW FORMAT: Array of {phase_index, agents[]} objects from WorkflowImplementationAgent. "
+            "Will be merged with workflow_strategy from context to build complete ActionPlan. "
+            "Each entry must have phase_index (int) and agents (list of WorkflowAgent specs)."
+        ),
+    ] = None,
     MermaidSequenceDiagram: Annotated[
         Optional[Dict[str, Any]],
         "Optional Mermaid sequence diagram payload merged into the Action Plan before display.",
@@ -289,6 +304,8 @@ async def action_plan(
                 }
 
             Notes:
+                - Phases MUST preserve the exact names, ordering, and approval flags provided by the upstream WorkflowStrategyCall output (e.g., "Phase 1: Discovery", "Phase 2: Drafting").
+                - Multi-phase workflows are expected; do not collapse loops or approvals into single entries.
                 - Semantic model uses three orthogonal dimensions: initiated_by, trigger_type, interaction_mode
                 - "integrations" contains third-party APIs/services (PascalCase)
                 - "operations" contains internal workflow logic (snake_case)
@@ -320,6 +337,7 @@ async def action_plan(
     stored_diagram: Optional[str] = None
     stored_diagram_ready = False
     stored_diagram_meta: Dict[str, Any] = {}
+    workflow_strategy: Optional[Dict[str, Any]] = None
 
     if context_variables and hasattr(context_variables, "get"):
         try:
@@ -338,12 +356,95 @@ async def action_plan(
             meta_candidate = context_variables.get("mermaid_diagram_metadata")
             if isinstance(meta_candidate, dict):
                 stored_diagram_meta = meta_candidate
+            
+            # NEW: Extract workflow_strategy for phase merging
+            strategy_candidate = context_variables.get("workflow_strategy")
+            if isinstance(strategy_candidate, dict):
+                workflow_strategy = strategy_candidate
         except Exception as ctx_err:  # pragma: no cover - defensive logging
             _logger.debug("Unable to read planning context: %s", ctx_err)
 
     if not chat_id or not enterprise_id:
         _logger.warning("Missing routing keys: chat_id or enterprise_id not present on context_variables")
         return {"status": "error", "message": "chat_id and enterprise_id are required"}
+
+    # --- NEW: Phase Agents Merge Logic ---------------------------------------------
+    # If phase_agents is provided, merge with workflow_strategy to build ActionPlan
+    if phase_agents is not None and workflow_strategy is not None:
+        _logger.info("Merging phase_agents with workflow_strategy to construct ActionPlan")
+        
+        strategy_phases = workflow_strategy.get("phases", [])
+        if not isinstance(strategy_phases, list):
+            _logger.error("workflow_strategy.phases is not a list")
+            return {"status": "error", "message": "Invalid workflow_strategy: phases must be a list"}
+        
+        if not isinstance(phase_agents, list):
+            _logger.error("phase_agents is not a list")
+            return {"status": "error", "message": "Invalid phase_agents: must be a list"}
+        
+        if len(phase_agents) != len(strategy_phases):
+            _logger.error(
+                "Phase count mismatch: strategy has %d phases, implementation has %d phase_agents",
+                len(strategy_phases),
+                len(phase_agents)
+            )
+            return {
+                "status": "error",
+                "message": f"Phase count mismatch: strategy has {len(strategy_phases)} phases, implementation has {len(phase_agents)} phase_agents"
+            }
+        
+        # Build merged phases
+        merged_phases = []
+        for idx, strategy_phase in enumerate(strategy_phases):
+            if not isinstance(strategy_phase, dict):
+                _logger.warning("Skipping non-dict strategy phase at index %d", idx)
+                continue
+            
+            # Find matching phase_agents entry
+            phase_agent_entry = None
+            for pa in phase_agents:
+                if isinstance(pa, dict) and pa.get("phase_index") == idx:
+                    phase_agent_entry = pa
+                    break
+            
+            if phase_agent_entry is None:
+                _logger.error("No phase_agents entry found for phase_index %d", idx)
+                return {"status": "error", "message": f"Missing phase_agents entry for phase_index {idx}"}
+            
+            agents_list = phase_agent_entry.get("agents", [])
+            if not isinstance(agents_list, list):
+                _logger.error("phase_agents[%d].agents is not a list", idx)
+                return {"status": "error", "message": f"Invalid agents for phase_index {idx}: must be a list"}
+            
+            # Merge: phase metadata from strategy + agents from implementation
+            merged_phase = {
+                "name": strategy_phase.get("phase_name", f"Phase {idx+1}"),
+                "description": strategy_phase.get("phase_description", ""),
+                "agents": agents_list
+            }
+            merged_phases.append(merged_phase)
+            _logger.debug(
+                "Merged phase %d: %s with %d agents",
+                idx,
+                merged_phase["name"],
+                len(agents_list)
+            )
+        
+        # Construct ActionPlan from merged data
+        ActionPlan = {
+            "workflow": {
+                "name": workflow_strategy.get("workflow_name", "Generated Workflow"),
+                "description": workflow_strategy.get("workflow_description", ""),
+                "trigger_type": workflow_strategy.get("trigger", "chat_start"),
+                "interaction_mode": workflow_strategy.get("interaction_mode", "conversational"),
+                "pattern": workflow_strategy.get("pattern", "Pipeline"),
+                "phases": merged_phases
+            }
+        }
+        _logger.info(
+            "Successfully merged %d phases from strategy + implementation",
+            len(merged_phases)
+        )
 
     # --- Action Plan normalization -------------------------------------------------
     plan_input: Any = ActionPlan

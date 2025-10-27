@@ -5,7 +5,6 @@ Public entry points for running and registering workflows.
 Exports (stable surface):
  - run_workflow_orchestration: Execute a workflow instance (async orchestration engine)
  - create_ag2_pattern: Factory for AG2 patterns
- - InputTimeoutEvent: UI transport helper event type
  - register_workflow / get_workflow_handler: Registry for custom workflow handlers
  - get_workflow_transport / get_workflow_tools / workflow_status_summary: Introspection utilities
  - initialize_workflow_ui_components: Optional UI component bootstrap
@@ -17,7 +16,6 @@ Internal symbols are intentionally not re-exported to keep namespace clean.
 from .orchestration_patterns import (
 	run_workflow_orchestration,
 	create_ag2_pattern,
-	InputTimeoutEvent,
 )
 
 from .workflow_manager import (
@@ -32,7 +30,6 @@ __all__ = [
 	# Orchestration engine / patterns
 	"run_workflow_orchestration",
 	"create_ag2_pattern",
-	"InputTimeoutEvent",
 	# Registry APIs
 	"register_workflow",
 	"get_workflow_handler",

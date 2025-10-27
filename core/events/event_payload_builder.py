@@ -26,7 +26,6 @@ from core.workflow.outputs.structured import (
     get_structured_output_model_fields,
 )
 from core.data.persistence.persistence_manager import AG2PersistenceManager as _PM
-from core.workflow.outputs.ui_tools import InputTimeoutEvent
 from ..workflow.messages.utils import (
     extract_agent_name,
     normalize_text_content,
@@ -197,17 +196,6 @@ def build_ui_event_payload(
         if raw_payload is not None:
             payload["raw_payload"] = raw_payload
             
-        return payload
-
-    # InputTimeoutEvent - User input timeout
-    if isinstance(ev, InputTimeoutEvent):
-        agent_name = extract_agent_name(ev)
-        payload.update({
-            "kind": "input_timeout",
-            "agent": agent_name,
-            "input_request_id": getattr(ev, "input_request_id", None),
-            "timeout_seconds": getattr(ev, "timeout_seconds", None),
-        })
         return payload
 
     # SelectSpeakerEvent - Next speaker selected
@@ -403,10 +391,32 @@ def build_ui_event_payload(
     # ErrorEvent - Error notification
     if isinstance(ev, _EE):
         agent_name = extract_agent_name(ev)
+        # Prefer explicit message field, then any attached error object, then content
+        raw_msg = None
+        if hasattr(ev, 'message') and getattr(ev, 'message'):
+            raw_msg = getattr(ev, 'message')
+        elif hasattr(ev, 'error') and getattr(ev, 'error'):
+            # Some AG2 ErrorEvent use 'error' to carry exception objects
+            try:
+                raw_msg = str(getattr(ev, 'error'))
+            except Exception:
+                raw_msg = None
+        elif hasattr(ev, 'content') and getattr(ev, 'content'):
+            raw_msg = getattr(ev, 'content')
+        else:
+            raw_msg = str(ev)
+
+        # Clean up known AG2 UUID-wrapped content patterns if present
+        try:
+            from core.transport.simple_transport import _extract_clean_content
+            cleaned = _extract_clean_content(raw_msg)
+        except Exception:
+            cleaned = raw_msg
+
         payload.update({
             "kind": "error",
             "agent": agent_name,
-            "message": getattr(ev, "message", None) or getattr(ev, "content", None) or str(ev),
+            "message": cleaned or "Unknown error",
         })
         return payload
 

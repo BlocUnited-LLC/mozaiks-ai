@@ -3,7 +3,7 @@
 // DESCRIPTION: Generator workflow component for file downloads with AG2 integration
 // ==============================================================================
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { createToolsLogger } from '../../../core/toolsLogger';
 import { colors as designColors, typography as designTypography, components as designComponents } from '../../../styles/artifactDesignSystem';
 
@@ -23,6 +23,7 @@ const FileDownloadCenter = ({
   componentId = 'FileDownloadCenter'
 }) => {
   const files = Array.isArray(payload.files) ? payload.files : [];
+  const totalFiles = files.length;
   const agentMessageId = payload.agent_message_id;
   const resolvedWorkflowName = generatedWorkflowName || sourceWorkflowName || payload.generatedWorkflowName || payload.sourceWorkflowName || null;
   const config = {
@@ -31,51 +32,188 @@ const FileDownloadCenter = ({
     description: payload.agent_message || payload.description || 'Would you like to download the generated workflow bundle now?'
   };
   const tlog = createToolsLogger({ tool: ui_tool_id || componentId, eventId, workflowName: resolvedWorkflowName, agentMessageId });
-  const [decision, setDecision] = useState(null); // 'yes' | 'no'
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [hasDownloaded, setHasDownloaded] = useState(false);
+  const [downloadErrors, setDownloadErrors] = useState([]);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [showCompletion, setShowCompletion] = useState(false);
+
+  const backendOrigin = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    // Allow runtime override from window or build-time env when available
+    const envOverride = process.env.REACT_APP_RUNTIME_API_BASE;
+    if (envOverride) return envOverride.replace(/\/$/, '');
+    const windowOverride = window.__MOZAIKS_RUNTIME_API_BASE__ || window.__MOZAIKS_BACKEND_ORIGIN__;
+    if (windowOverride) return String(windowOverride).replace(/\/$/, '');
+
+    const { protocol, hostname, port } = window.location;
+    if (port === '3000') {
+      return `${protocol}//${hostname}:8000`;
+    }
+    return `${protocol}//${hostname}${port ? `:${port}` : ''}`;
+  }, []);
+
+  const buildDownloadUrl = (filePath) => {
+    if (!backendOrigin) {
+      return `/api/download/workflow-file?file_path=${encodeURIComponent(filePath)}`;
+    }
+    const url = new URL('/api/download/workflow-file', backendOrigin);
+    url.searchParams.set('file_path', filePath);
+    return url.href;
+  };
 
   const containerClasses = [designComponents.panel.inline, 'file-download-center inline-file-download w-full max-w-lg mx-auto'].join(' ');
-  const yesInactiveClasses = designComponents.button.primary;
-  const yesActiveClasses = [designComponents.button.primary, designColors.status.success.bg, designColors.status.success.text].join(' ');
-  const noInactiveClasses = designComponents.button.secondary;
-  const noActiveClasses = [designComponents.button.secondary, designColors.status.error.bg, designColors.status.error.text].join(' ');
+  const downloadButtonClasses = designComponents.button.primary;
+  const closeButtonClasses = designComponents.button.secondary;
 
-  const decide = async (answer) => {
-    if (decision) return; // idempotent
-    const yes = answer === 'yes';
-    setDecision(answer);
-    tlog.event('decision', 'start', { answer, fileCount: config.files.length });
-    const response = yes ? {
-      status: 'success',
-      action: 'confirm_download',
+  const handleDownloadAll = async () => {
+    if (isDownloading || totalFiles === 0) return;
+
+    setIsDownloading(true);
+    setHasDownloaded(false);
+    setDownloadErrors([]);
+    setDownloadProgress(0);
+    tlog.event('download', 'start', { fileCount: totalFiles });
+
+    const errors = [];
+
+    await Promise.all(
+      files.map(async (file) => {
+        try {
+          const downloadUrl = buildDownloadUrl(file.path);
+          const response = await fetch(downloadUrl, {
+            method: 'GET',
+            credentials: 'include',
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const blob = await response.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = blobUrl;
+          link.download = file.name;
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(blobUrl);
+        } catch (err) {
+          errors.push({ name: file.name, error: err?.message || 'unknown' });
+          console.error(`Failed to download ${file.name}:`, err);
+          tlog.error('individual download failed', { fileName: file.name, error: err?.message });
+        } finally {
+          setDownloadProgress((prev) => {
+            const next = prev + 1;
+            return next > totalFiles ? totalFiles : next;
+          });
+        }
+      })
+    );
+
+    if (errors.length) {
+      setDownloadErrors(errors);
+    }
+
+    setIsDownloading(false);
+    setHasDownloaded(errors.length === 0);
+
+    // Show completion UI instead of calling onResponse immediately
+    if (errors.length === 0) {
+      setShowCompletion(true);
+      tlog.event('download', 'complete_ui_shown', { fileCount: totalFiles });
+      return;
+    }
+
+    const response = {
+      status: errors.length ? 'partial_failure' : 'success',
+      action: 'download_complete',
       data: {
         ui_tool_id,
         eventId,
         workflowName: resolvedWorkflowName,
-        sourceWorkflowName,
-        generatedWorkflowName,
-        agent_message_id: agentMessageId,
-        fileCount: config.files.length
+        files,
+        fileCount: totalFiles,
+        errors,
       },
-      agentContext: { confirmation: 'yes', proceed: true }
-    } : {
-      status: 'cancelled',
-      action: 'decline_download',
-      data: {
-        ui_tool_id,
-        eventId,
-        workflowName: resolvedWorkflowName,
-        sourceWorkflowName,
-        generatedWorkflowName,
-        agent_message_id: agentMessageId,
-        fileCount: config.files.length
-      },
-      agentContext: { confirmation: 'no', proceed: false }
+      agentContext: { downloaded: errors.length === 0, errors },
     };
     try {
       if (onResponse) await onResponse(response);
-      tlog.event('decision', 'done', { answer, ok: true, fileCount: config.files.length });
+      tlog.event('download', 'done', { ok: errors.length === 0, fileCount: totalFiles, errors });
     } catch (e) {
-      tlog.error('decision failed', { error: e?.message });
+      tlog.error('download failed', { error: e?.message });
+    }
+  };
+
+  const buttonLabel = (() => {
+    if (isDownloading) {
+      const completed = Math.min(downloadProgress, totalFiles);
+      if (!totalFiles) return 'Preparing downloads…';
+      const remaining = totalFiles - completed;
+      return remaining > 0
+        ? `Preparing downloads (${completed}/${totalFiles})…`
+        : 'Finalizing downloads…';
+    }
+    if (hasDownloaded && !downloadErrors.length) {
+      return 'Download Again';
+    }
+    return 'Download All Files';
+  })();
+
+  const handleContinue = async () => {
+    tlog.event('completion', 'continue_clicked', { fileCount: totalFiles });
+
+    // Send analytics placeholder
+    try {
+      await fetch(`${backendOrigin}/api/analytics/workflow-generated`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          workflow_name: resolvedWorkflowName,
+          file_count: totalFiles,
+          event_id: eventId,
+          ui_tool_id,
+          timestamp: new Date().toISOString(),
+        }),
+      });
+      tlog.event('analytics', 'sent', { workflow: resolvedWorkflowName });
+    } catch (err) {
+      // Placeholder API - don't block on error
+      tlog.warn('analytics call failed', { error: err?.message });
+    }
+
+    // Signal download acceptance and trigger workflow termination
+    const response = {
+      status: 'success',
+      action: 'download_complete',
+      download_accepted: true,
+      data: {
+        ui_tool_id,
+        eventId,
+        workflowName: resolvedWorkflowName,
+        files,
+        fileCount: totalFiles,
+        errors: [],
+      },
+      agentContext: { downloaded: true, accepted: true, errors: [] },
+    };
+    try {
+      if (onResponse) await onResponse(response);
+      tlog.event('completion', 'accepted', { fileCount: totalFiles });
+      
+      // Redirect to mozaiks.ai after successful completion
+      setTimeout(() => {
+        window.location.href = 'https://www.mozaiks.ai/';
+      }, 500); // Short delay to ensure analytics/response completes
+      
+    } catch (e) {
+      tlog.error('completion response failed', { error: e?.message });
     }
   };
 
@@ -86,56 +224,107 @@ const FileDownloadCenter = ({
     data-display-mode="inline"
     aria-label="Workflow file downloads"
   >
-      <div className="download-header mb-2">
-        <h3 className={`${designTypography.label.md} ${designColors.brand.primaryLight.text}`}>
-          {config.title}
-        </h3>
-      </div>
-      
-      {config.description && (
-        <p className={`${designTypography.body.md} ${designColors.text.secondary} mb-3 leading-relaxed`}>
-          {config.description}
-        </p>
-      )}
+      {showCompletion ? (
+        // Completion state UI
+        <>
+          <div className="download-header mb-4 text-center">
+            <div className="text-5xl mb-3">🎉</div>
+            <h3 className={`${designTypography.label.lg} ${designColors.brand.primaryLight.text} mb-2`}>
+              Congratulations!
+            </h3>
+            <p className={`${designTypography.body.md} ${designColors.text.secondary} leading-relaxed`}>
+              Your workflow is ready and all files have been downloaded successfully.
+            </p>
+          </div>
+          
+          <div className="mb-3 p-4 bg-gray-800 rounded text-center">
+            <div className={`${designTypography.label.md} ${designColors.text.primary} mb-1`}>
+              {files.length} {files.length === 1 ? 'File' : 'Files'} Downloaded
+            </div>
+            <div className={`${designTypography.body.sm} ${designColors.text.muted}`}>
+              {resolvedWorkflowName || 'Your workflow'} is ready to use
+            </div>
+          </div>
 
-      <div className="flex gap-3 mb-1">
-        <button
-          onClick={() => decide('yes')}
-          disabled={!!decision}
-          className={[decision === 'yes' ? yesActiveClasses : yesInactiveClasses, 'flex flex-1 items-center justify-center', !!decision && 'opacity-80 cursor-default'].filter(Boolean).join(' ')}
-        >
-          {decision === 'yes' ? '✓ Yes' : 'Yes'}
-        </button>
-        <button
-          onClick={() => decide('no')}
-          disabled={!!decision}
-          className={[decision === 'no' ? noActiveClasses : noInactiveClasses, 'flex flex-1 items-center justify-center', !!decision && 'opacity-80 cursor-default'].filter(Boolean).join(' ')}
-        >
-          {decision === 'no' ? '✕ No' : 'No'}
-        </button>
-      </div>
+          <button 
+            onClick={handleContinue}
+            className={[downloadButtonClasses, 'w-full flex items-center justify-center'].filter(Boolean).join(' ')}
+          >
+            Continue
+          </button>
+        </>
+      ) : (
+        // Normal download UI
+        <>
+          <div className="download-header mb-2">
+            <h3 className={`${designTypography.label.md} ${designColors.brand.primaryLight.text}`}>
+              {config.title}
+            </h3>
+          </div>
+          
+          {config.description && (
+            <p className={`${designTypography.body.md} ${designColors.text.secondary} mb-3 leading-relaxed`}>
+              {config.description}
+            </p>
+          )}
 
-      {decision && (
-        <div className={`mt-2 ${designTypography.body.sm} ${designColors.text.muted}`}>
-          {decision === 'yes' ? 'Preparing download...' : 'Download skipped.'}
-        </div>
-      )}
-
-      {/* Original file list UI removed for simplified confirmation flow */}
-
-      {/* Debug info (only in development) */}
-      {process.env.NODE_ENV === 'development' && (
-        <div
-          className={[
-            'debug-info mt-3 rounded-lg border p-2 text-[10px] tracking-wide',
-            designColors.border.subtle,
-            designColors.surface.raisedOverlay,
-            designColors.text.muted,
-          ].join(' ')}
-        >
-          <div>Tool: {ui_tool_id} • Event: {eventId} • Flow: {resolvedWorkflowName}</div>
-          <div>Files: {config.files.length} • Component: {componentId} • Mode: inline-confirmation</div>
-        </div>
+          {/* File count and download button */}
+          {files.length > 0 && (
+            <div className="mb-3">
+              <div className="mb-3 p-3 bg-gray-800 rounded">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className={`${designTypography.label.md} ${designColors.text.primary}`}>
+                      {files.length} {files.length === 1 ? 'File' : 'Files'} Ready
+                    </div>
+                    <div className={`${designTypography.body.sm} ${designColors.text.muted} mt-1`}>
+                      Workflow bundle package
+                    </div>
+                  </div>
+                  <div className={`${designTypography.label.lg} ${designColors.brand.primaryLight.text}`}>
+                    📦
+                  </div>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <button 
+                  onClick={handleDownloadAll} 
+                  disabled={isDownloading || totalFiles === 0} 
+                  className={[downloadButtonClasses, 'flex flex-1 items-center justify-center'].filter(Boolean).join(' ')}
+                >
+                  {buttonLabel}
+                </button>
+                <button 
+                  onClick={() => onResponse && onResponse({ status: 'complete', action: 'close' })} 
+                  className={[closeButtonClasses, 'flex flex-1 items-center justify-center'].filter(Boolean).join(' ')}
+                >
+                  Close
+                </button>
+              </div>
+              {isDownloading && totalFiles > 0 && (
+                <div className="mt-3 text-sm text-gray-300">
+                  Preparing downloads ({Math.min(downloadProgress, totalFiles)}/{totalFiles})…
+                </div>
+              )}
+              {!isDownloading && hasDownloaded && !downloadErrors.length && (
+                <div className="mt-3 text-sm text-emerald-300">
+                  All files were sent to your browser. Large bundles can take a few moments to appear in your downloads tray.
+                </div>
+              )}
+              {downloadErrors.length > 0 && (
+                <div className="mt-3 text-sm text-red-400">
+                  Some files failed to download: {downloadErrors.map((entry) => entry.name).join(', ')}. Please check the runtime logs or try again.
+                </div>
+              )}
+            </div>
+          )}
+          
+          {files.length === 0 && (
+            <div className={`${designTypography.body.sm} ${designColors.text.muted}`}>
+              No files available for download.
+            </div>
+          )}
+        </>
       )}
     </div>
   );

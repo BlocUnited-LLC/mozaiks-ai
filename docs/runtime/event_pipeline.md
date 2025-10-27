@@ -587,6 +587,7 @@ await dispatcher.dispatch(event)
 
 ## Next Steps
 
+- **[Synthetic Events](synthetic_events.md)** - Runtime event stream compensation for AG2 resume gaps
 - **[Transport & Streaming](transport_and_streaming.md)** - How events are forwarded to frontend via WebSocket
 - **[Observability](observability.md)** - Metrics collection, logging configuration, performance tracking
 - **[Workflow Authoring](../workflows/workflow_authoring.md)** - Creating workflows that emit custom events

@@ -9,12 +9,9 @@ from .structured import (
     get_structured_output_model_fields,
     get_structured_outputs_for_workflow,
 )
-from .ui_tools import InputTimeoutEvent
-
 __all__ = [
     'agent_has_structured_output',
     'get_structured_output_model_fields',
     'get_structured_outputs_for_workflow',
-    'InputTimeoutEvent',
 ]
 

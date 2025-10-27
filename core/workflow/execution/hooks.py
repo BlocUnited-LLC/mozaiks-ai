@@ -178,23 +178,33 @@ def register_hooks_for_workflow(workflow_name: str, agents: Dict[str, Any], *, b
             hook_agent = entry.get("hook_agent")
             file_value = entry.get("filename")  # Updated to use "filename" instead of "file"
             fn_value = entry.get("function")
+
             if hook_type not in VALID_HOOK_TYPES:
                 skipped_unknown_type += 1
-                logger.warning(f"Unknown hook_type {hook_type}; skipping")
+                logger.warning(f"Unknown hook_type '{hook_type}' in workflow {workflow_name}; skipping entry")
                 continue
-            if not hook_agent or hook_agent not in agents:
+
+            if not hook_agent:
                 skipped_missing_agent += 1
-                logger.warning(f"Hook agent {hook_agent} not found among instantiated agents; skipping {hook_type}")
+                logger.warning(f"Missing hook_agent for hook_type '{hook_type}' in workflow {workflow_name}; skipping entry")
                 continue
+
+            agent_obj = agents.get(hook_agent)
+            if agent_obj is None:
+                skipped_missing_agent += 1
+                logger.warning(f"Hook agent '{hook_agent}' not found for workflow {workflow_name}; skipping entry")
+                continue
+
             if not fn_value:
                 skipped_missing_function += 1
-                logger.warning(f"Missing function for hook {hook_type} on {hook_agent}")
+                logger.warning(f"Missing function for hook_type '{hook_type}' (agent={hook_agent}) in workflow {workflow_name}; skipping entry")
                 continue
+
             fn, qual = _resolve_import(workflow_name, file_value, fn_value, workflow_path)
-            if not fn:
+            if fn is None:
                 import_failures += 1
-                logger.warning(f"Could not resolve/import function {fn_value} (file={file_value}) for {hook_agent}.{hook_type}")
                 continue
+
             _validate_signature(hook_type, fn)
 
             # ------------------------------------------------------------------
@@ -202,28 +212,55 @@ def register_hooks_for_workflow(workflow_name: str, agents: Dict[str, Any], *, b
             # We wrap only once (idempotent) to avoid stacking decorators if
             # register_hooks is forced multiple times.
             # ------------------------------------------------------------------
-            if not getattr(fn, "_mozaiks_hook_wrapped", False):
+            if getattr(fn, "_mozaiks_hook_wrapped", False):
+                wrapped_fn = getattr(fn, "_mozaiks_hook_wrapper", fn)
+            else:
                 orig_fn = fn
+
                 @wraps(orig_fn)
-                def _wrapped_hook(*args, __wf=workflow_name, __agent=hook_agent, __type=hook_type, **kwargs):  # type: ignore[override]
+                def _wrapped_hook(*args, __wf=workflow_name, __agent=hook_agent, __type=hook_type, __orig=orig_fn, **kwargs):  # type: ignore[override]
                     start = time.perf_counter()
-                    logger.debug(f"🪝 [HOOK_EXEC] start type={__type} agent={__agent} workflow={__wf}")
+                    logger.info(
+                        "🪝 [HOOK_EXEC] status=start type=%s agent=%s workflow=%s function=%s",
+                        __type,
+                        __agent,
+                        __wf,
+                        f"{__orig.__module__}.{__orig.__name__}",
+                    )
                     try:
-                        result = orig_fn(*args, **kwargs)
+                        result = __orig(*args, **kwargs)
                         duration = (time.perf_counter() - start) * 1000.0
-                        logger.debug(f"🪝 [HOOK_EXEC] done type={__type} agent={__agent} workflow={__wf} duration_ms={duration:.2f}")
+                        logger.info(
+                            "🪝 [HOOK_EXEC] status=done type=%s agent=%s workflow=%s duration_ms=%.2f",
+                            __type,
+                            __agent,
+                            __wf,
+                            duration,
+                        )
                         return result
                     except Exception as hook_err:  # pragma: no cover
                         duration = (time.perf_counter() - start) * 1000.0
-                        logger.error(f"🪝 [HOOK_EXEC] error type={__type} agent={__agent} workflow={__wf} duration_ms={duration:.2f} err={hook_err}", exc_info=True)
+                        logger.error(
+                            "🪝 [HOOK_EXEC] status=error type=%s agent=%s workflow=%s duration_ms=%.2f err=%s",
+                            __type,
+                            __agent,
+                            __wf,
+                            duration,
+                            hook_err,
+                            exc_info=True,
+                        )
                         raise
+
                 setattr(_wrapped_hook, "_mozaiks_hook_wrapped", True)
+                try:
+                    setattr(orig_fn, "_mozaiks_hook_wrapped", True)
+                    setattr(orig_fn, "_mozaiks_hook_wrapper", _wrapped_hook)
+                except Exception:  # pragma: no cover - some callables may deny attribute assignment
+                    pass
                 wrapped_fn = _wrapped_hook
-            else:
-                wrapped_fn = fn
 
             try:
-                agents[hook_agent].register_hook(hook_type, wrapped_fn)  # type: ignore[attr-defined]
+                agent_obj.register_hook(hook_type, wrapped_fn)  # type: ignore[attr-defined]
                 registered.append(RegisteredHook(workflow=workflow_name, agent=hook_agent, hook_type=hook_type, function_qualname=qual))
                 logger.debug(f"Registered hook {hook_type} -> {qual} for agent {hook_agent}")
             except Exception as e:  # pragma: no cover

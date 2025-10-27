@@ -1,11 +1,4 @@
 # ==============================================================================
-# FILE: simple_transport.py
-# DESCRIPTION: 
-# ==============================================================================
-
-# === MOZAIKS-CORE-HEADER ===
-
-# ==============================================================================
 # FILE: core/transport/simple_transport.py
 # DESCRIPTION: Lean transport system for real-time UI communication
 # ==============================================================================
@@ -22,62 +15,42 @@ try:  # pymongo optional in some test environments
     from pymongo import ReturnDocument  # type: ignore
 except Exception:  # pragma: no cover
     class ReturnDocument:  # minimal fallback so attribute exists
-        BEFORE = 0
         AFTER = 1
 
 # AG2 imports for event type checking
 from autogen.events import BaseEvent
 
-# Guarded AG2 event class imports (top-level, no lazy inside hot path)
-try:  # Core frequently used
-    from autogen.events.agent_events import TextEvent as AG2TextEvent  # type: ignore
-except Exception:  # pragma: no cover
-    AG2TextEvent = None  # type: ignore
-try:
-    from autogen.events.agent_events import ToolCallEvent as AG2ToolCallEvent  # type: ignore
-except Exception:  # pragma: no cover
-    AG2ToolCallEvent = None  # type: ignore
-try:
-    from autogen.events.agent_events import ToolResponseEvent as AG2ToolResponseEvent  # type: ignore
-except Exception:  # pragma: no cover
-    AG2ToolResponseEvent = None  # type: ignore
-try:
-    from autogen.events.agent_events import InputRequestEvent as AG2InputRequestEvent  # type: ignore
-except Exception:  # pragma: no cover
-    AG2InputRequestEvent = None  # type: ignore
-try:
-    from autogen.events.agent_events import UsageSummaryEvent as AG2UsageSummaryEvent  # type: ignore
-except Exception:  # pragma: no cover
-    AG2UsageSummaryEvent = None  # type: ignore
-try:
-    from autogen.events.agent_events import ErrorEvent as AG2ErrorEvent  # type: ignore
-except Exception:  # pragma: no cover
-    AG2ErrorEvent = None  # type: ignore
-try:
-    from autogen.events.agent_events import SelectSpeakerEvent as AG2SelectSpeakerEvent  # type: ignore
-except Exception:  # pragma: no cover
-    AG2SelectSpeakerEvent = None  # type: ignore
-try:
-    from autogen.events.agent_events import RunCompletionEvent as AG2RunCompletionEvent  # type: ignore
-except Exception:  # pragma: no cover
-    AG2RunCompletionEvent = None  # type: ignore
-
-# Print / streaming output event may live in a different module in some AG2 versions
-try:  # pragma: no cover - optional
-    from autogen.events.print_event import PrintEvent as AG2PrintEvent  # type: ignore
-except Exception:  # pragma: no cover
-    AG2PrintEvent = None  # type: ignore
-
 # Import workflow configuration for agent visibility filtering
 from core.workflow.workflow_manager import workflow_manager
 
 # Enhanced logging setup
-from logs.logging_config import get_core_logger, get_workflow_logger
+from logs.logging_config import get_core_logger
 
 # Get our enhanced loggers
 logger = get_core_logger("simple_transport")
-# Context-aware logger for agent messages category (used where applicable)
-chat_logger = get_workflow_logger("agent_messages")
+
+
+# Module-level content cleaner to allow reuse without constructing SimpleTransport
+def _extract_clean_content(message: Union[str, Dict[str, Any], Any]) -> str:
+    """Extract clean content from AG2 UUID-formatted messages or other formats.
+
+    This is the same logic previously implemented as an instance method; moving it
+    to module-level allows other modules to call it without instantiating the
+    transport singleton.
+    """
+    # Handle string messages (most common case)
+    if isinstance(message, str):
+        # Check for AG2's UUID format and extract only the 'content' part
+        match = re.search(r"content='(.*?)'", message, re.DOTALL)
+        if match:
+            return match.group(1)
+        return message  # Return original string if not in UUID format
+    elif isinstance(message, dict):
+        # Handle dictionary messages
+        return message.get('content', str(message))
+    else:
+        # Handle any other type by converting to string
+        return str(message)
 
 # ==================================================================================
 # COMMUNICATION CHANNEL WRAPPER & MESSAGE FILTERING
@@ -124,9 +97,7 @@ class SimpleTransport:
         # AG2-aligned input request callback registry
         self._input_request_registries: Dict[str, Dict[str, Any]] = {}
 
-        # T1-T5: WebSocket protocol support structures
-        self._input_callbacks: Dict[str, Any] = {}            # T1
-        self._ui_tool_futures: Dict[str, Any] = {}            # T4
+    # T-series: WebSocket protocol support structures
         self._sequence_counters: Dict[str, int] = {}          # T3
 
         # H1-H2: Hardening features
@@ -150,28 +121,6 @@ class SimpleTransport:
     # ==================================================================================
     # USER INPUT COLLECTION (Production-Ready)
     # ==================================================================================
-    
-    async def send_user_input_request(
-        self,
-        input_request_id: str,
-        chat_id: str,
-        payload: Dict[str, Any]
-    ) -> None:
-        """
-        Send a dedicated user input request to the frontend.
-        """
-        event_data = {
-            "type": "user_input_request",
-            "data": {
-                "input_request_id": input_request_id,
-                "chat_id": chat_id,
-                "payload": payload,
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        await self._broadcast_to_websockets(event_data, chat_id)
-        logger.info(f"📤 Sent user input request {input_request_id} to chat {chat_id}")
-
     
     async def submit_user_input(self, input_request_id: str, user_input: str) -> bool:
         """
@@ -234,13 +183,19 @@ class SimpleTransport:
         self._input_request_registries[chat_id][normalized_id] = respond_cb
         logger.debug(f"Registered input request {normalized_id} for chat {chat_id}")
         return normalized_id
+
+    def _build_resume_signal(self, chat_id: str, request_id: str) -> str:
+        """Produce a non-empty fallback message when resuming pending input requests.
+
+        Ensures downstream ChatCompletion payloads always contain valid user content even when
+        lifecycle tools resume execution without explicit text input.
+        
+        Note: This is an internal coordination signal for AG2 continuation. It should never
+        be persisted to the database or shown in the UI as it has no semantic meaning to users.
+        """
+        return "[SYSTEM_RESUME_SIGNAL] Continue workflow execution after UI tool response."
     
     
-    @classmethod
-    async def reset_instance(cls):
-        async with cls._lock:
-            cls._instance = None
-            
     def should_show_to_user(self, agent_name: Optional[str], chat_id: Optional[str] = None) -> bool:
         """Check if a message should be shown to the user interface"""
         if not agent_name:
@@ -393,6 +348,16 @@ class SimpleTransport:
         This is the primary method for forwarding AG2 native events.
         """
         try:
+            # Allow callers to provide a fully-formed transport envelope (e.g., ack.ui_tool_response)
+            # without forcing another serialization pass through the dispatcher.
+            if isinstance(event, dict) and 'type' in event and 'data' in event and 'kind' not in event:
+                logger.info(
+                    "🔁 [TRANSPORT] Forwarding pre-built envelope without re-serialization: %s",
+                    event.get('type')
+                )
+                await self._broadcast_to_websockets(event, chat_id)
+                return
+
             from core.events.unified_event_dispatcher import get_event_dispatcher  # local import to avoid cycle
             dispatcher = get_event_dispatcher()
             workflow_name = None
@@ -416,13 +381,30 @@ class SimpleTransport:
             if not envelope:
                 logger.warning(f"❌ [TRANSPORT] No envelope created for event type={event_type}")
                 return
+            
+            logger.info(f"✅ [TRANSPORT] Envelope created successfully: type={envelope.get('type')}, has_data={bool(envelope.get('data'))}")
+
+            envelope_type = envelope.get('type') if isinstance(envelope, dict) else None
+            
+            # Determine if this is a UI tool event (requires user interaction)
+            is_ui_tool_event = False
+            if envelope_type == 'chat.tool_call' and isinstance(envelope.get('data'), dict):
+                data_payload = envelope.get('data')
+                # UI tool events have awaiting_response=True and component_type
+                is_ui_tool_event = data_payload.get('awaiting_response') and data_payload.get('component_type')
+            
+            # Skip visibility filtering for select_speaker and UI tool events
+            skip_visibility_filter = envelope_type == 'chat.select_speaker' or is_ui_tool_event
+            
+            if is_ui_tool_event:
+                logger.info(f"🎯 [TRANSPORT] UI tool event detected - bypassing agent visibility filter (component={envelope.get('data', {}).get('component_type')})")
 
             # Additional filtering (agent visibility) only for BaseEvent path where needed
             agent_name = None
             if isinstance(event, BaseEvent) and hasattr(event, 'sender') and getattr(event.sender, 'name', None):  # type: ignore
                 agent_name = event.sender.name  # type: ignore
-            if agent_name and not self.should_show_to_user(agent_name, chat_id):
-                logger.debug(f"🚫 Filtered out AG2 event from agent '{agent_name}' for chat {chat_id}")
+            if not skip_visibility_filter and agent_name and not self.should_show_to_user(agent_name, chat_id):
+                logger.info(f"🚫 [TRANSPORT] Filtered out AG2 event from agent '{agent_name}' for chat {chat_id} (should_show_to_user=False)")
                 return
 
             # Apply visibility filtering for dict events (post-envelope) as well
@@ -432,8 +414,8 @@ class SimpleTransport:
                     agent_name = data_payload.get('agent') or data_payload.get('agent_name')
                     if not agent_name and isinstance(event, dict):
                         agent_name = event.get('agent') or event.get('agent_name')
-                if agent_name and not self.should_show_to_user(agent_name, chat_id):
-                    logger.debug(f"🚫 Filtered out event from agent '{agent_name}' for chat {chat_id} (visual_agents gate)")
+                if not skip_visibility_filter and agent_name and not self.should_show_to_user(agent_name, chat_id):
+                    logger.info(f"🚫 [TRANSPORT] Filtered out event from agent '{agent_name}' for chat {chat_id} (visual_agents gate, should_show_to_user=False)")
                     return
                 
             # Record performance metrics for tool calls (best-effort)
@@ -464,39 +446,8 @@ class SimpleTransport:
             logger.error(f"❌ Failed to serialize or send UI event: {e}\n{traceback.format_exc()}")
 
     def _extract_clean_content(self, message: Union[str, Dict[str, Any], Any]) -> str:
-        """Extract clean content from AG2 UUID-formatted messages or other formats."""
-        
-        # Handle string messages (most common case)
-        if isinstance(message, str):
-            # Check for AG2's UUID format and extract only the 'content' part
-            match = re.search(r"content='(.*?)'", message, re.DOTALL)
-            if match:
-                return match.group(1)
-            return message  # Return original string if not in UUID format
-        elif isinstance(message, dict):
-            # Handle dictionary messages
-            return message.get('content', str(message))
-        else:
-            # Handle any other type by converting to string
-            return str(message)
-        
-    def _extract_agent_name_from_uuid_content(self, content: str) -> Optional[str]:
-        """Extract actual agent name from AG2 UUID-formatted message content."""
-        import re
-        
-        # AG2 format: "uuid=UUID('...') content='...' sender='AgentName' recipient='...'"
-        # Look for sender='AgentName' pattern
-        sender_match = re.search(r"sender='([^']+)'", content)
-        if sender_match:
-            return sender_match.group(1)
-        
-        # Fallback patterns if above doesn't work
-        sender_match_quotes = re.search(r'sender="([^"]+)"', content)
-        if sender_match_quotes:
-            return sender_match_quotes.group(1)
-        
-        return None  # no agent found
-        
+        """Instance wrapper around the module-level cleaner."""
+        return _extract_clean_content(message)
     async def _broadcast_to_websockets(self, event_data: Dict[str, Any], target_chat_id: Optional[str] = None) -> None:
         """Broadcast event data to relevant WebSocket connections."""
         active_connections = list(self.connections.items())
@@ -546,11 +497,11 @@ class SimpleTransport:
     def _serialize_ag2_events(self, obj: Any) -> Any:
         """Convert AG2 event objects to JSON-serializable format."""
         try:
-            # Lazy imports (wrapped) so absence of autogen doesn't break app start.
+            # Lazy import so absence of autogen doesn't break app start.
             try:
-                from autogen.events.agent_events import TextEvent, InputRequestEvent  # type: ignore
+                from autogen.events.agent_events import InputRequestEvent  # type: ignore
             except Exception:  # pragma: no cover - autogen optional
-                TextEvent = InputRequestEvent = tuple()  # type: ignore
+                InputRequestEvent = tuple()  # type: ignore
 
             # Optional tool events (some versions place them elsewhere)
             ToolResponseEvent = None  # default
@@ -805,26 +756,6 @@ class SimpleTransport:
         await self._broadcast_to_websockets(event_data, chat_id)
         logger.error(f"❌ Error: {error_message}")
         
-    async def send_status(
-        self,
-        status_message: str,
-        status_type: str = "info",
-        chat_id: Optional[str] = None
-    ) -> None:
-        """Send status update to UI via WebSocket"""
-        event_data = {
-            "type": "status",
-            "data": {
-                "message": status_message,
-                "status_type": status_type,
-                "chat_id": chat_id
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        
-        await self._broadcast_to_websockets(event_data, chat_id)
-        logger.info(f"ℹ️ Status: {status_message}")
-    
     # ==================================================================================
     # CONNECTION MANAGEMENT METHODS
     # ==================================================================================
@@ -1018,11 +949,29 @@ class SimpleTransport:
                     # Get the first available request_id
                     request_id = next(iter(registry.keys()))
 
-                    # Submit the input directly to the existing AG2 session - no UI echo needed
-                    success = await self.submit_user_input(request_id, message or "")
+                    normalized_message = message
+                    resume_signal = False
+                    if not normalized_message or (isinstance(normalized_message, str) and not normalized_message.strip()):
+                        normalized_message = self._build_resume_signal(chat_id, request_id)
+                        resume_signal = True
+
+                    success = await self.submit_user_input(request_id, str(normalized_message))
 
                     if success:
-                        return {"status": "success", "chat_id": chat_id, "message": "Input passed to existing AG2 session.", "route": "existing_session"}
+                        route = "existing_session_resume" if resume_signal else "existing_session"
+                        # Don't persist/echo resume signal messages - they're internal coordination only
+                        if not resume_signal:
+                            # Only persist actual user messages to database
+                            try:
+                                await self.process_incoming_user_message(
+                                    chat_id=chat_id,
+                                    user_id=user_id,
+                                    content=message,
+                                    source='http'
+                                )
+                            except Exception as persist_err:
+                                logger.debug(f"User message persistence failed (non-fatal): {persist_err}")
+                        return {"status": "success", "chat_id": chat_id, "message": "Input passed to existing AG2 session.", "route": route}
                     else:
                         logger.warning(f"⚠️ [SMART_ROUTING] Failed to submit input to existing session, falling back to new workflow")
 
@@ -1091,15 +1040,6 @@ class SimpleTransport:
         logger.info(f"💬 Sending chat message: kind={event_data['kind']} agent='{agent_name}' content_len={len(message)} content_preview='{message[:50]}...'")
 
         await self.send_event_to_ui(event_data, chat_id)
-    
-    async def send_simple_text_message(self, content: str, chat_id: Optional[str] = None, agent_name: Optional[str] = None) -> None:
-        """
-        Send simple text message using AG2's official approach with agent context.
-        Based on: https://docs.ag2.ai/latest/docs/_blogs/2025-01-10-WebSockets/
-        """
-        if chat_id and chat_id in self.connections:
-            # This method is now simplified as the main send_to_ui handles formatting
-            await self.send_chat_message(content, agent_name or "Assistant", chat_id)
     
     # ==================================================================================
     # UI TOOL EVENT HANDLING (Companion to user input)
@@ -1344,68 +1284,6 @@ class SimpleTransport:
             logger.warning(f"⚠️ [UI_TOOL] No pending event found for {event_id}")
             return False
 
-    # T1: WebSocket message handling for input requests
-    async def _handle_websocket_message(self, websocket, message_data: dict, session) -> None:
-        """Handle inbound WebSocket messages from client."""
-        if not self._validate_inbound_message(message_data):
-            await self._send_error(websocket, "SCHEMA_VALIDATION_FAILED", "Invalid message format")
-            return
-        
-        message_type = message_data.get("type")
-        chat_id = message_data.get("chat_id")
-        
-        if message_type == "user.input.submit":
-            # Handle user input submission
-            request_id_raw = message_data.get("request_id")
-            request_id: Optional[str] = request_id_raw if isinstance(request_id_raw, str) and request_id_raw else None
-            text = message_data.get("text", "")
-
-            # Find and invoke callback
-            callback = self._input_callbacks.get(request_id) if request_id else None
-            if callback and request_id:
-                try:
-                    await callback(text)
-                except Exception as e:
-                    logger.error(f"Error invoking input callback for {request_id}: {e}")
-                finally:
-                    # Clean up after use
-                    if request_id in self._input_callbacks:
-                        self._input_callbacks.pop(request_id, None)
-            else:
-                logger.warning(f"No callback found for input request {request_id}")
-        
-        
-        elif message_type == "client.resume":
-            # Handle resume request using canonical lastClientIndex
-            last_client_index = message_data.get("lastClientIndex")
-            if not isinstance(last_client_index, int):
-                logger.warning(f"Invalid resume payload (lastClientIndex missing or non-int): {message_data}")
-                await self._send_error(websocket, "RESUME_FAILED", "Invalid lastClientIndex for resume request")
-                return
-            if not chat_id:
-                logger.warning(f"Resume request missing chat_id: {message_data}")
-                await self._send_error(websocket, "RESUME_FAILED", "Missing chat_id for resume request")
-                return
-            await self._handle_resume_request(chat_id, last_client_index, websocket)
-        
-        else:
-            logger.warning(f"Unknown message type: {message_type}")
-
-    async def _send_error(self, websocket, error_code: str, message: str) -> None:
-        """Send error message to client."""
-        error_data = {
-            "type": "chat.error",
-            "data": {
-                "message": message,
-                "error_code": error_code,
-                "recoverable": True
-            }
-        }
-        try:
-            await websocket.send_json(error_data)
-        except Exception as e:
-            logger.error(f"Failed to send error message: {e}")
-
     # T3: Sequence tracking methods for resume capability
     def _get_next_sequence(self, chat_id: str) -> int:
         """Get the next sequence number for a chat session."""
@@ -1414,29 +1292,6 @@ class SimpleTransport:
         self._sequence_counters[chat_id] += 1
         return self._sequence_counters[chat_id]
     
-    def _reset_sequence_after_resume(self, chat_id: str, last_seq: int) -> None:
-        """Reset sequence counter after resume to continue from last sequence."""
-        self._sequence_counters[chat_id] = last_seq
-        logger.info(f"Reset sequence counter for {chat_id} to {last_seq}")
-    
-    async def _get_chat_coll(self):
-        """Get MongoDB chat collection for persistence operations."""
-        # Production: connect to actual persistence layer
-        try:
-            from core.data.persistence.persistence_manager import AG2PersistenceManager
-            if not hasattr(self, '_persistence_manager'):
-                self._persistence_manager = AG2PersistenceManager()
-            
-            await self._persistence_manager.persistence._ensure_client()
-            client = self._persistence_manager.persistence.client
-            if client is None:
-                logger.warning("MongoDB client unavailable for chat collection")
-                return None
-            return client["MozaiksAI"]["ChatSessions"]
-        except Exception as e:
-            logger.error(f"Failed to get chat collection: {e}")
-            return None
- 
     # H1: Server backpressure implementation
     async def _check_backpressure(self, chat_id: str) -> bool:
         """Check if connection should be throttled due to backpressure."""
@@ -1473,6 +1328,8 @@ class SimpleTransport:
         if chat_id not in self._message_queues or not self._message_queues[chat_id]:
             return
         
+        logger.info(f"🔄 [TRANSPORT] Flushing message queue for chat_id={chat_id}, queue_size={len(self._message_queues[chat_id])}")
+        
         if chat_id in self.connections:
             websocket = self.connections[chat_id]["websocket"]
             messages_to_send = self._message_queues[chat_id].copy()
@@ -1501,6 +1358,7 @@ class SimpleTransport:
                                 payload_keys = list(payload_obj.keys()) if isinstance(payload_obj, dict) else []
                                 logger.info('TRANSPORT payload keys before send: %s', payload_keys[:12])
                             await websocket.send_json(safe_message)
+                            logger.info(f"✅ [TRANSPORT] WebSocket send_json completed for envelope type={safe_message.get('type')}, chat_id={chat_id}")
                         except Exception:
                             # Fallback: attempt to serialize whole message as a last resort
                             try:
@@ -1647,34 +1505,5 @@ class SimpleTransport:
         await self._stop_heartbeat(chat_id)
         logger.info(f"🧹 Cleaned up connection resources for {chat_id}")
     
-    async def emit_session_paused(self, event) -> None:
-        """Emit session paused event to client WebSocket."""
-        from core.events.unified_event_dispatcher import SessionPausedEvent
-        if not isinstance(event, SessionPausedEvent):
-            return
-            
-        chat_id = event.chat_id
-        if chat_id not in self.connections:
-            logger.warning(f"No active connection for chat_id {chat_id} to emit session paused")
-            return
-            
-        try:
-            websocket = self.connections[chat_id]["websocket"]
-            message = {
-                "type": "session.paused",
-                "data": {
-                    "chat_id": chat_id,
-                    "reason": event.reason,
-                    "required_tokens": event.required_tokens,
-                    "message": "Session paused due to insufficient tokens. Please top up your balance to continue.",
-                    "timestamp": event.timestamp.isoformat()
-                },
-                "timestamp": event.timestamp.isoformat()
-            }
-            await websocket.send_json(message)
-            logger.info(f"⏸️ Emitted session paused event to {chat_id}")
-        except Exception as e:
-            logger.error(f"Failed to emit session paused event to {chat_id}: {e}")
-
 
 

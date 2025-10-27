@@ -125,6 +125,18 @@ const normalizeStringList = (value) => (
 const mapToolStrings = (items, purpose) =>
   items.map((name) => ({ name, purpose }));
 
+// Minimal inference helper: derive trigger_type from a raw trigger string when missing.
+const inferTriggerTypeFrom = (trigger) => {
+  if (!trigger || typeof trigger !== 'string') return undefined;
+  const s = trigger.toLowerCase();
+  if (s.includes('webhook')) return 'webhook';
+  if (s.includes('cron') || s.includes('schedule')) return 'cron_schedule';
+  if (s.includes('form') || s.includes('submit')) return 'form_submit';
+  if (s.includes('chat') || s.includes('conversation') || s.includes('user_initiated')) return 'chat_start';
+  if (s.includes('db') || s.includes('database')) return 'database_condition';
+  return undefined;
+};
+
 const AgentAccordionRow = ({ agent, index, isOpen, onToggle }) => {
   const integrationNames = normalizeStringList(agent?.integrations);
   const operationNames = normalizeStringList(agent?.operations);
@@ -771,7 +783,8 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
             </h1>
             <div className="flex flex-wrap items-center gap-4">
           <SemanticChip value={safeWorkflow?.initiated_by} mapping={INITIATED_BY} prefix="Initiated By" />
-          <SemanticChip value={safeWorkflow?.trigger_type} mapping={TRIGGER_TYPE} prefix="Trigger" />
+          {/** Use normalized trigger_type when available, otherwise infer from raw trigger string */}
+          <SemanticChip value={safeWorkflow?.trigger_type || inferTriggerTypeFrom(safeWorkflow?.trigger)} mapping={TRIGGER_TYPE} prefix="Trigger" />
           <SemanticChip value={safeWorkflow?.interaction_mode} mapping={INTERACTION_MODE} prefix="Mode" />
           <div className="flex items-center gap-3 rounded-lg border-2 border-slate-600 bg-slate-800 px-5 py-3 text-base font-bold text-white">
             <span className="text-2xl text-[var(--color-primary-light)]">{phases.length}</span> 

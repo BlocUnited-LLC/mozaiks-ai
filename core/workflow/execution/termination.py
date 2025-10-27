@@ -143,16 +143,10 @@ class AG2TerminationHandler:
                     if not status_updated:
                         wf_logger.error("❌ Failed to update workflow status to completed")
 
-                    # Emit a dedicated event to the UI to signal completion
-                    if self.transport:
-                        completion_event = {
-                            "kind": "run_complete",
-                            "chat_id": self.chat_id,
-                            "status": 1,
-                            "timestamp": datetime.now(UTC).isoformat()
-                        }
-                        await self.transport.send_event_to_ui(completion_event, self.chat_id)
-                        wf_logger.info(f"✅ Sent 'workflow_completed' event to UI for chat {self.chat_id}")
+                    # Note: run_complete event is sent by AG2's RunCompletionEvent
+                    # The orchestration layer handles forwarding it to the UI
+                    # We only manage database status updates here
+                    wf_logger.info(f"✅ Workflow status updated to completed for chat {self.chat_id}")
 
                     # Create termination result
                     session_summary = {

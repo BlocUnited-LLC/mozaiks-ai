@@ -56,7 +56,6 @@ from core.observability.performance_manager import get_performance_manager
 from core.events.unified_event_dispatcher import get_event_dispatcher
 
 from .validation import SENTINEL_STATUS
-from .outputs import InputTimeoutEvent
 
 # Extracted modules for separation of concerns
 from .messages import (
@@ -75,10 +74,13 @@ workflow_logger = get_workflow_logger("orchestration")
 performance_logger = get_workflow_logger("performance.orchestration")
 
 
+# Known internal system coordination markers to ensure consistent UI labeling.
+_SYSTEM_SIGNAL_MARKERS: tuple[str, ...] = ("[SYSTEM_RESUME_SIGNAL]",)
+
+
 __all__ = [
     'run_workflow_orchestration',
-    'create_ag2_pattern',
-    'InputTimeoutEvent'
+    'create_ag2_pattern'
 ]
 
 # ===================================================================
@@ -709,6 +711,13 @@ async def _stream_events(
 
     from .outputs.ui_tools import handle_tool_call_for_ui_interaction
     from autogen.events.agent_events import FunctionCallEvent as _FC, ToolCallEvent as _TC
+    
+    # Initialize stream state tracking
+    stream_state: Dict[str, Any] = {
+        "run_completed": False,
+        "completion_event": None,
+    }
+    
     try:
         executed_agents: set[str] = set()
         async for ev in response.events:  # type: ignore[attr-defined]
@@ -748,6 +757,31 @@ async def _stream_events(
                         transport = await SimpleTransport.get_instance()
                         if transport:
                             sender_name = _extract_agent_name(ev)
+                            
+                            # SYNTHETIC SELECT_SPEAKER: When AG2 doesn't emit SelectSpeakerEvent (e.g., after lifecycle resume),
+                            # we synthesize one to ensure thinking bubbles appear in the UI
+                            if sender_name and sender_name != turn_agent:
+                                try:
+                                    # Check if this is a system resume signal (internal coordination message)
+                                    message_content = _normalize_text_content(getattr(ev, 'content', None))
+                                    is_internal_signal = (
+                                        isinstance(message_content, str)
+                                        and any(marker in message_content for marker in _SYSTEM_SIGNAL_MARKERS)
+                                    )
+                                    
+                                    # Use 'system' instead of resume sender for internal coordination signals
+                                    display_agent = 'system' if is_internal_signal else sender_name
+                                    
+                                    synthetic_select_event = {
+                                        "kind": "select_speaker",
+                                        "agent": display_agent,
+                                        "source": "synthetic",
+                                        "_synthetic": True,
+                                    }
+                                    await transport.send_event_to_ui(synthetic_select_event, chat_id)
+                                    wf_logger.debug(f"🎭 [SYNTHETIC_SPEAKER] Emitted synthetic select_speaker for {display_agent}")
+                                except Exception as synth_err:
+                                    wf_logger.warning(f"Failed to emit synthetic select_speaker event: {synth_err}")
                             if not sender_name:
                                 sender_attr = getattr(ev, 'sender', None)
                                 if isinstance(sender_attr, str) and sender_attr.strip():
@@ -808,6 +842,44 @@ async def _stream_events(
                                     if structured_blob and isinstance(structured_blob, dict):
                                         # We have valid structured output - process it
                                         wf_logger.info(f" [{workflow_name_upper}] Structured output detected for {sender_name}, keys: {list(structured_blob.keys())}")
+                                        
+                                        # Save full structured output to dedicated agent outputs file
+                                        try:
+                                            from pathlib import Path
+                                            from datetime import datetime
+                                            import json as _json
+                                            
+                                            agent_outputs_dir = Path("logs/agent_outputs")
+                                            agent_outputs_dir.mkdir(parents=True, exist_ok=True)
+                                            
+                                            # One file per chat session for all agent outputs
+                                            output_file = agent_outputs_dir / f"agent_outputs_{chat_id}.jsonl"
+                                            
+                                            # Append as JSONL (one JSON object per line)
+                                            output_entry = {
+                                                "timestamp": datetime.now().isoformat(),
+                                                "chat_id": chat_id,
+                                                "workflow_name": workflow_name,
+                                                "agent_name": sender_name,
+                                                "sequence": sequence_counter,
+                                                "output": structured_blob
+                                            }
+                                            
+                                            with open(output_file, 'a', encoding='utf-8') as f:
+                                                f.write(_json.dumps(output_entry, ensure_ascii=False) + '\n')
+                                            
+                                            wf_logger.debug(f" [{workflow_name_upper}] 💾 Saved {sender_name} output to {output_file}")
+                                        except Exception as save_err:
+                                            wf_logger.debug(f" [{workflow_name_upper}] Failed to save agent output: {save_err}")
+                                        
+                                        # Log preview to console
+                                        try:
+                                            import json
+                                            preview = json.dumps(structured_blob, indent=2)[:1000]
+                                            wf_logger.info(f" [{workflow_name_upper}] 📋 STRUCTURED OUTPUT from {sender_name}:")
+                                            wf_logger.info(f" {preview}{'...' if len(json.dumps(structured_blob)) > 1000 else ''}")
+                                        except Exception:
+                                            pass
                                         
                                         # Extract friendly message from structured output
                                         agent_message = structured_blob.get("agent_message")
@@ -941,6 +1013,14 @@ async def _stream_events(
             # Tools emit UI artifacts via use_ui_tool() calls
 
             if isinstance(ev, SelectSpeakerEvent):
+                # Forward SelectSpeakerEvent to UI transport for thinking bubbles
+                try:
+                    if transport:
+                        transport.send_event_to_ui(ev, chat_id, workflow_name, sequence_counter)
+                        wf_logger.debug(f"🎭 [SPEAKER_SELECT] Forwarded to UI: {getattr(ev, 'agent', None)}")
+                except Exception as transport_err:
+                    wf_logger.warning(f"Failed to forward SelectSpeakerEvent to UI: {transport_err}")
+
                 # Update realtime logger context when speaker changes
                 try:
                     next_agent = getattr(ev, "agent", None)
@@ -1366,9 +1446,16 @@ async def _stream_events(
                     wf_logger.debug(
                         f"Early termination diagnostics failed: {diag_err}"
                     )
+                
+                # Log completion with execution summary
                 wf_logger.info(
                     f" [{workflow_name_upper}] Run complete chat_id={chat_id} events={sequence_counter} executed_agents={sorted(executed_agents)}"
                 )
+                
+                # Store completion metadata in stream state for final processing
+                stream_state['run_completed'] = True
+                stream_state['completion_event'] = ev
+                
                 break
 
             # After processing event, compute diff if verbose enabled
@@ -1456,7 +1543,9 @@ async def _stream_events(
         "turn_agent": turn_agent,
         "turn_started": turn_started,
         "sequence_counter": sequence_counter,
-            }
+        "run_completed": stream_state.get("run_completed", False),
+        "completion_event": stream_state.get("completion_event"),
+    }
 
 
 async def run_workflow_orchestration(
@@ -2078,6 +2167,26 @@ async def run_workflow_orchestration(
         # Single consolidated completion log instead of multiple lines
         chat_logger.info(f"[{workflow_name_upper}] WORKFLOW_COMPLETED chat_id={chat_id} duration={duration:.2f}s agents={len(agents)}")
         
+        # Log agent outputs file location
+        try:
+            from pathlib import Path
+            agent_outputs_file = Path("logs/agent_outputs") / f"agent_outputs_{chat_id}.jsonl"
+            if agent_outputs_file.exists():
+                file_size = agent_outputs_file.stat().st_size
+                with open(agent_outputs_file, 'r', encoding='utf-8') as f:
+                    line_count = sum(1 for _ in f)
+                
+                abs_path = agent_outputs_file.resolve()
+                print("\n" + "=" * 80)
+                print(f"📋 AGENT OUTPUTS LOG:")
+                print(f"   File: {abs_path}")
+                print(f"   Agent outputs captured: {line_count}")
+                print(f"   Size: {file_size:,} bytes")
+                print("=" * 80 + "\n")
+                chat_logger.info(f"[{workflow_name_upper}] Agent outputs saved: {abs_path} ({line_count} outputs, {file_size:,} bytes)")
+        except Exception:
+            pass
+        
     finally:
         # Keeping block to preserve structure for future extension (e.g., tracing export hooks).
         pass
@@ -2089,24 +2198,6 @@ async def run_workflow_orchestration(
 # NOTE: create_ag2_pattern function has been extracted to pattern_factory.py
 # This refactoring improves modularity and maintainability.
 # Import: from .pattern_factory import create_ag2_pattern
-# ==============================================================================
-
-# ==============================================================================
-# LOGGING HELPERS
-# ==============================================================================
-
-def log_agent_message_details(message, sender_name, recipient_name):
-    """Logs agent message details for tracking."""
-    message_content = getattr(message, 'content', None) or str(message)
-
-    if message_content and sender_name != 'unknown':
-        summary = message_content[:150] + '...' if len(message_content) > 150 else message_content
-        chat_logger.info(f" [AGENT] {sender_name}  {recipient_name}: {summary}")
-        chat_logger.debug(f" [FULL] {sender_name} complete message:\n{'-'*50}\n{message_content}\n{'-'*50}")
-        chat_logger.debug(f" [META] Length: {len(message_content)} chars | Type: {type(message).__name__}")
-    return message
-
-
 async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str, enterprise_id: str, workflow_name: str):
     """
     Log the complete AG2 conversation to the agent chat log file.

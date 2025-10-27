@@ -341,11 +341,14 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 	# SelectSpeakerEvent ----------------------------------------------
 	if isinstance(ev, _SS):
 		selected = getattr(ev, "selected", None) or getattr(ev, "next", None)
+		current_agent = extract_agent_name(ev) or ctx.turn_agent
 		payload.update({
 			"kind": "select_speaker",
-			"agent": extract_agent_name(ev) or ctx.turn_agent,
-			"selected": selected,
+			"agent": current_agent,
+			"selected_speaker": selected,  # Include both for clarity
 		})
+		# Enhanced logging to trace handoffs
+		ctx.wf_logger.info(f"🎭 [SPEAKER_SELECT] {current_agent} → {selected} (turn handoff)")
 		return payload
 
 	# GroupChatResumeEvent --------------------------------------------
@@ -383,11 +386,31 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 
 	# RunCompletionEvent -----------------------------------------------
 	if isinstance(ev, _RC):
+		# Extract comprehensive completion metadata from AG2's RunCompletionEvent
+		summary = getattr(ev, "summary", None)
+		history = getattr(ev, "history", None)
+		cost = getattr(ev, "cost", None)
+		last_speaker = getattr(ev, "last_speaker", None)
+		context_vars = getattr(ev, "context_variables", None)
+		
 		payload.update({
 			"kind": "run_complete",
-			"agent": extract_agent_name(ev) or ctx.turn_agent,
-			"status": getattr(ev, "status", None) or getattr(ev, "state", None),
+			"agent": last_speaker or extract_agent_name(ev) or ctx.turn_agent,
+			"status": 1,  # Workflow completed successfully
 		})
+		
+		# Add optional metadata if available
+		if summary:
+			payload["summary"] = summary
+		if cost:
+			payload["cost"] = serialize_event_content(cost)
+		
+		# Extract duration and token usage from cost if available
+		if isinstance(cost, dict):
+			total_tokens = cost.get("total_tokens") or cost.get("usage", {}).get("total_tokens")
+			if total_tokens:
+				payload["total_tokens"] = total_tokens
+		
 		return payload
 
 	# ErrorEvent -------------------------------------------------------
@@ -401,19 +424,6 @@ def build_ui_event_payload(*, ev: Any, ctx: EventBuildContext) -> Optional[Dict[
 			"code": code,
 		})
 		return payload
-
-	# Custom: InputTimeoutEvent (imported lazily if present) -----------
-	try:
-		from core.workflow.outputs.ui_tools import InputTimeoutEvent as _ITE  # type: ignore
-		if isinstance(ev, _ITE):
-			payload.update({
-				"kind": "input_timeout",
-				"agent": getattr(ev, "agent", None) or ctx.turn_agent,
-				"request_id": getattr(ev, "request_id", None),
-			})
-			return payload
-	except Exception:
-		pass
 
 	# Fallback marker
 	payload.update({"kind": "unknown"})

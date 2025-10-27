@@ -239,7 +239,7 @@ export class DynamicUIHandler {
       
     } catch (error) {
       console.error(`Failed to load workflow config: ${workflowname}`, error);
-      return { visual_agent: [] };
+      return { visual_agents: [] };
     }
   }
 
@@ -254,15 +254,31 @@ export class DynamicUIHandler {
     try {
       const config = await this.getWorkflowConfig(workflowname);
       
-      // Search through visual_agent for the component
-      for (const agent of config.visual_agent || []) {
-        const component = agent.components?.find(c => c.name === componentName);
-        if (component) {
-          return {
-            ...component,
-            agentName: agent.name,
-            agentRole: agent.role
-          };
+      const agentCollections = [];
+      if (Array.isArray(config?.inline_component_agents)) {
+        agentCollections.push(config.inline_component_agents);
+      }
+      if (Array.isArray(config?.artifact_component_agents)) {
+        agentCollections.push(config.artifact_component_agents);
+      }
+      if (Array.isArray(config?.visual_agents_metadata)) {
+        agentCollections.push(config.visual_agents_metadata);
+      }
+
+      for (const collection of agentCollections) {
+        for (const agent of collection) {
+          if (!agent || typeof agent !== 'object') {
+            continue;
+          }
+          const components = Array.isArray(agent.components) ? agent.components : [];
+          const component = components.find(c => c?.name === componentName);
+          if (component) {
+            return {
+              ...component,
+              agentName: agent.name,
+              agentRole: agent.role
+            };
+          }
         }
       }
       

@@ -1,10 +1,3 @@
-# ==============================================================================
-# FILE: theme_validation.py
-# DESCRIPTION: 
-# ==============================================================================
-
-# === MOZAIKS-CORE-HEADER ===
-
 # =============================================================================
 # FILE: core/data/theme_validation.py
 # DESCRIPTION: Shared utilities for validating enterprise theme configurations

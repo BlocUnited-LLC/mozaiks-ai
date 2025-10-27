@@ -95,12 +95,10 @@ def get_tool_logger(
     # Ensure dedicated tools file logging is attached once
     _ensure_tools_file_handler()
     name = f"core.tools.{tool_name}"
-    if base_logger is not None:
-        logger = base_logger
-    elif get_workflow_logger and (workflow_name or chat_id or enterprise_id):
-        logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id, enterprise_id=enterprise_id)  # type: ignore
-    else:
-        logger = logging.getLogger(name)
+    
+    # Always use standard logger for tools, not ContextLogger
+    # This ensures compatibility with ToolLoggerAdapter
+    logger = base_logger if base_logger is not None else logging.getLogger(name)
 
     extra = {
         "logger_type": "tool",

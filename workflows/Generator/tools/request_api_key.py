@@ -5,11 +5,94 @@
 # RUNTIME PARAMS (injected via **runtime): chat_id, enterprise_id, workflow_name, context_variables.
 # ==============================================================================
 import uuid
-from typing import Any, Dict, Optional, Annotated
+from typing import Any, Dict, Optional, Annotated, List
 from datetime import datetime, timezone
 
 from logs.logging_config import get_workflow_logger
 from core.workflow.outputs.ui_tools import use_ui_tool, UIToolError
+
+
+__all__ = ["request_api_key", "request_api_keys_bundle"]
+
+
+async def _persist_api_key_metadata(
+    *,
+    service_norm: str,
+    display_name: str,
+    key_length: Optional[int],
+    context_variables: Optional[Any],
+    workflow_name: Optional[str],
+    chat_id: Optional[str],
+    agent_message_id: Optional[str],
+    ui_event_id: Optional[str],
+    wf_logger,
+) -> Dict[str, Any]:
+    """Persist sanitized API key metadata to MongoDB (never the secret)."""
+
+    result: Dict[str, Any] = {
+        "saved": False,
+        "metadata_id": None,
+        "database_info": None,
+        "error": None,
+    }
+
+    if not key_length or key_length <= 0:
+        key_length = 0
+
+    try:
+        from core.core_config import get_mongo_client
+        from bson import ObjectId
+    except Exception as import_err:  # pragma: no cover - defensive guard
+        wf_logger.warning(f"⚠️ Database client import failed (non-critical): {import_err}")
+        result["error"] = str(import_err)
+        return result
+
+    try:
+        client = get_mongo_client()
+        db_name = "autogen_ai_agents"
+        coll_name = "APIKeys"
+        db = client[db_name]
+        collection = db[coll_name]
+
+        now_dt = datetime.now(timezone.utc)
+        metadata: Dict[str, Any] = {
+            "api_key_service": service_norm,
+            "api_key_service_display": display_name,
+            "key_length": key_length,
+            "is_valid": key_length > 10,
+            "requested_by_user": True,
+            "requested_at": now_dt.isoformat(),
+            "validation_method": "length_check",
+            "source": "ui_interaction",
+            "agent_message_id": agent_message_id,
+            "ui_event_id": ui_event_id,
+            "chat_id": context_variables.get("chat_id") if context_variables and hasattr(context_variables, "get") else None,
+            "workflow_name": workflow_name,
+            "created_at": now_dt,
+            "updated_at": now_dt,
+        }
+
+        enterprise_id = None
+        if context_variables and hasattr(context_variables, "get"):
+            enterprise_id = context_variables.get("enterprise_id")
+        if enterprise_id:
+            try:
+                metadata["enterprise_id"] = ObjectId(enterprise_id)
+            except Exception:
+                metadata["enterprise_id"] = enterprise_id
+
+        insert_result = await collection.insert_one(metadata)
+        inserted_id = str(insert_result.inserted_id)
+        wf_logger.info(f"✅ API key metadata saved to {db_name}.{coll_name}: {inserted_id}")
+
+        result["saved"] = True
+        result["metadata_id"] = inserted_id
+        result["database_info"] = {"database": db_name, "collection": coll_name}
+        return result
+    except Exception as persist_err:
+        wf_logger.warning(f"⚠️ Database save failed (non-critical): {persist_err}")
+        result["error"] = str(persist_err)
+        return result
 
 
 def _extract_agent_name(container: Any) -> Optional[str]:
@@ -202,68 +285,270 @@ async def request_api_key(
     }
 
     # Save metadata to database (NEVER the actual key)
-    if api_key:  # Only save if we got a key
-        try:
-            # Database configuration - hardcoded in tool
-            from core.core_config import get_mongo_client
-            from bson import ObjectId
-            
-            database_enabled = True
-            db_name = "autogen_ai_agents"  # Hardcoded database name
-            coll_name = "APIKeys"          # Hardcoded collection name
-            
-            if database_enabled:
-                # Connect to MongoDB
-                client = get_mongo_client()
-                db = client[db_name]
-                collection = db[coll_name]
-                
-                # Prepare secure metadata document (no sensitive data)
-                metadata = {
-                    "api_key_service": service_norm,
-                    "api_key_service_display": display_name,
-                    "key_length": key_length,
-                    "is_valid": key_length is not None and key_length > 10,  # Basic validation
-                    "requested_by_user": True,
-                    "requested_at": datetime.now(timezone.utc).isoformat(),
-                    "validation_method": "length_check",
-                    "source": "ui_interaction",
-                    "agent_message_id": agent_message_id,
-                    "ui_event_id": (response or {}).get("event_id"),
-                    "chat_id": context_variables.get("chat_id") if context_variables else None,
-                    "workflow_name": workflow_name,
-                    "created_at": datetime.now(timezone.utc),
-                    "updated_at": datetime.now(timezone.utc)
-                }
-                
-                # Add enterprise_id context
-                enterprise_id = context_variables.get("enterprise_id") if context_variables else None
-                if enterprise_id:
-                    try:
-                        metadata["enterprise_id"] = ObjectId(enterprise_id)
-                    except:
-                        metadata["enterprise_id"] = enterprise_id
-                
-                # Insert document
-                insert_result = await collection.insert_one(metadata)
-                inserted_id = str(insert_result.inserted_id)
-                
-                wf_logger.info(f"✅ API key metadata saved to {db_name}.{coll_name}: {inserted_id}")
-                result["metadata_saved"] = True
-                result["metadata_id"] = inserted_id
-                result["database_info"] = {
-                    "database": db_name,
-                    "collection": coll_name
-                }
-            else:
-                result["metadata_saved"] = False
-                
-        except Exception as e:
-            wf_logger.warning(f"⚠️ Database save failed (non-critical): {e}")
-            result["metadata_saved"] = False
-            result["metadata_error"] = str(e)
+    if api_key:
+        persist_result = await _persist_api_key_metadata(
+            service_norm=service_norm,
+            display_name=display_name,
+            key_length=key_length,
+            context_variables=context_variables,
+            workflow_name=workflow_name,
+            chat_id=chat_id,
+            agent_message_id=agent_message_id,
+            ui_event_id=(response or {}).get("event_id"),
+            wf_logger=wf_logger,
+        )
+        result["metadata_saved"] = persist_result.get("saved", False)
+        if persist_result.get("metadata_id"):
+            result["metadata_id"] = persist_result["metadata_id"]
+        if persist_result.get("database_info"):
+            result["database_info"] = persist_result["database_info"]
+        if persist_result.get("error"):
+            result["metadata_error"] = persist_result["error"]
     else:
         result["metadata_saved"] = False
+
+    return result
+
+
+async def request_api_keys_bundle(
+    services: List[Dict[str, Any]],
+    *,
+    agent_message: Optional[str] = None,
+    description: Optional[str] = None,
+    context_variables: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Collect multiple API keys via a single UI tool interaction."""
+
+    if not services:
+        return {"status": "no_services", "services": []}
+
+    chat_id: Optional[str] = None
+    workflow_name: Optional[str] = None
+    agent_name: Optional[str] = None
+
+    if context_variables and hasattr(context_variables, "get"):
+        chat_id = context_variables.get("chat_id")
+        workflow_name = context_variables.get("workflow_name")
+        agent_name = _extract_agent_name(context_variables)
+
+    if not workflow_name:
+        return {"status": "error", "message": "workflow_name is required"}
+
+    wf_logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id)
+
+    normalized_services: List[Dict[str, Any]] = []
+    agent_message_id = f"bundle_{uuid.uuid4().hex[:10]}"
+
+    for idx, raw_service in enumerate(services):
+        identifier = str(raw_service.get("service", "")).strip()
+        if not identifier:
+            continue
+        service_norm = identifier.lower().replace(" ", "_")
+        display_name = raw_service.get("display_name") or raw_service.get("displayName")
+        if not display_name:
+            display_name = identifier.replace("_", " ").title()
+
+        required = bool(raw_service.get("required", True))
+        mask_input = bool(raw_service.get("mask_input", raw_service.get("maskInput", True)))
+        placeholder = raw_service.get("placeholder") or f"Enter your {display_name} API key..."
+        per_service_agent_msg_id = raw_service.get("agent_message_id") or f"{agent_message_id}:{service_norm}:{idx}"
+
+        normalized_services.append(
+            {
+                "service": service_norm,
+                "display_name": display_name,
+                "required": required,
+                "mask_input": mask_input,
+                "placeholder": placeholder,
+                "description": raw_service.get("description") or f"API key for {display_name}",
+                "label": raw_service.get("label") or f"{display_name} API Key",
+                "agent_message_id": per_service_agent_msg_id,
+            }
+        )
+
+    if not normalized_services:
+        wf_logger.info("No valid services resolved for API key bundle request")
+        return {"status": "no_services", "services": []}
+
+    payload_services = [
+        {
+            "service": svc["service"],
+            "service_display_name": svc["display_name"],
+            "required": svc["required"],
+            "maskInput": svc["mask_input"],
+            "placeholder": svc["placeholder"],
+            "description": svc["description"],
+            "label": svc["label"],
+            "agent_message_id": svc["agent_message_id"],
+        }
+        for svc in normalized_services
+    ]
+
+    payload: Dict[str, Any] = {
+        "agent_message_id": agent_message_id,
+        "agent_message": agent_message
+        or "Provide the required API keys so the workflow can continue.",
+        "description": description
+        or "Your keys are not persisted by the runtime; only metadata is logged.",
+        "services": payload_services,
+    }
+    if agent_name:
+        payload["agent_name"] = agent_name
+        payload["agentName"] = agent_name
+
+    try:
+        from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
+
+        tlog = _get_tool_logger(
+            tool_name="RequestAPIKeysBundle",
+            chat_id=chat_id,
+            workflow_name=workflow_name,
+        )
+        _log_tool_event(
+            tlog,
+            action="start",
+            status="ok",
+            services=[svc["service"] for svc in normalized_services],
+        )
+    except Exception:
+        tlog = None  # type: ignore
+
+    try:
+        response = await use_ui_tool(
+            "AgentAPIKeysBundleInput",
+            payload,
+            chat_id=chat_id,
+            workflow_name=str(workflow_name),
+        )
+        if tlog:
+            try:
+                from logs.tools_logs import log_tool_event as _log_tool_event  # type: ignore
+
+                _log_tool_event(
+                    tlog,
+                    action="emit_ui",
+                    status="done",
+                    event_id=response.get("ui_event_id"),
+                )
+            except Exception:
+                pass
+    except UIToolError as exc:
+        return {"status": "error", "message": f"UI interaction failed: {exc}"}
+    except Exception as exc:  # pragma: no cover - defensive guard
+        wf_logger.error(f"❌ API key bundle UI interaction failed: {exc}")
+        return {"status": "error", "message": "UI interaction failure"}
+
+    status = (response or {}).get("status") or (response or {}).get("data", {}).get("status")
+    data_block = response.get("data") if isinstance(response, dict) else {}
+    submitted_services = data_block.get("services") if isinstance(data_block, dict) else None
+
+    if status in {"cancelled", "canceled"}:
+        return {
+            "status": "cancelled",
+            "services": [
+                {
+                    "service": svc["service"],
+                    "display_name": svc["display_name"],
+                    "required": svc["required"],
+                }
+                for svc in normalized_services
+            ],
+        }
+
+    if status == "error":
+        return {
+            "status": "error",
+            "message": (response or {}).get("error") or "User submission error",
+            "services": [],
+        }
+
+    submitted_lookup: Dict[str, Dict[str, Any]] = {}
+    if isinstance(submitted_services, list):
+        for item in submitted_services:
+            service_id = str(item.get("service", "")).strip().lower().replace(" ", "_")
+            if service_id:
+                submitted_lookup[service_id] = item
+
+    sanitized_services: List[Dict[str, Any]] = []
+    missing_required: List[str] = []
+    collected: List[str] = []
+
+    for svc in normalized_services:
+        entry = submitted_lookup.get(svc["service"], {})
+        raw_key = entry.get("apiKey") or entry.get("api_key")
+        trimmed_key = raw_key.strip() if isinstance(raw_key, str) else ""
+        key_length = len(trimmed_key) if trimmed_key else 0
+        has_key = bool(trimmed_key)
+
+        metadata_out: Dict[str, Any] = {"saved": False, "metadata_id": None, "error": None}
+        if has_key:
+            metadata_out = await _persist_api_key_metadata(
+                service_norm=svc["service"],
+                display_name=svc["display_name"],
+                key_length=key_length,
+                context_variables=context_variables,
+                workflow_name=workflow_name,
+                chat_id=chat_id,
+                agent_message_id=svc["agent_message_id"],
+                ui_event_id=response.get("ui_event_id"),
+                wf_logger=wf_logger,
+            )
+
+        status_value = "success" if has_key else ("missing" if svc["required"] else "skipped")
+        if svc["required"] and not has_key:
+            missing_required.append(svc["service"])
+        if has_key:
+            collected.append(svc["service"])
+
+        sanitized_entry: Dict[str, Any] = {
+            "service": svc["service"],
+            "display_name": svc["display_name"],
+            "required": svc["required"],
+            "status": status_value,
+            "has_key": has_key,
+            "key_length": key_length,
+            "metadata_saved": metadata_out.get("saved", False),
+            "metadata_id": metadata_out.get("metadata_id"),
+        }
+        if metadata_out.get("database_info"):
+            sanitized_entry["database_info"] = metadata_out["database_info"]
+        if metadata_out.get("error"):
+            sanitized_entry["metadata_error"] = metadata_out["error"]
+        if not has_key:
+            sanitized_entry["reason"] = entry.get("reason") or (
+                "missing required key" if svc["required"] else "not provided"
+            )
+
+        sanitized_services.append(sanitized_entry)
+
+        # Ensure sensitive value is not kept alive in memory longer than necessary
+        if isinstance(entry, dict) and "apiKey" in entry:
+            entry["apiKey"] = None
+
+    overall_status = "success" if not missing_required else ("partial" if collected else "no_keys")
+
+    result: Dict[str, Any] = {
+        "status": overall_status,
+        "services": sanitized_services,
+        "collected": collected,
+        "missing_required": missing_required,
+        "submitted_at": data_block.get("submissionTime") if isinstance(data_block, dict) else None,
+        "ui_event_id": response.get("ui_event_id"),
+    }
+
+    if tlog:
+        try:
+            from logs.tools_logs import log_tool_event as _log_tool_event  # type: ignore
+
+            _log_tool_event(
+                tlog,
+                action="complete",
+                status=overall_status,
+                collected=len(collected),
+                missing=len(missing_required),
+            )
+        except Exception:
+            pass
 
     return result
 

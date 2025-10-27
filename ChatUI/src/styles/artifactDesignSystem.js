@@ -69,8 +69,8 @@ const createGradientStopVar = (stop, varName, fallback = '') => {
  */
 const FALLBACKS = {
   brand: {
-    primary: { bg: 'bg-[var(--color-primary)]', border: 'border-[var(--color-primary)]', text: 'text-white', ring: 'ring-[var(--color-primary-light)]' },
-    primaryLight: { bg: 'bg-[var(--color-primary-light)]', border: 'border-[var(--color-primary-light)]', text: 'text-slate-900', ring: 'ring-[var(--color-primary-light)]' },
+  primary: { bg: 'bg-[var(--color-primary)]', border: 'border-[var(--color-primary)]', text: 'text-white', ring: 'ring-[var(--color-primary-light)]' },
+  primaryLight: { bg: 'bg-[var(--color-primary-light)]', border: 'border-[var(--color-primary-light)]', text: 'text-cyan-100', ring: 'ring-[var(--color-primary-light)]' },
     primaryDark: { bg: 'bg-[var(--color-primary-dark)]', border: 'border-[var(--color-primary-dark)]', text: 'text-white', ring: 'ring-[var(--color-primary-dark)]' },
     secondary: { bg: 'bg-[var(--color-secondary)]', border: 'border-[var(--color-secondary)]', text: 'text-white', ring: 'ring-[var(--color-secondary-light)]' },
     accent: { bg: 'bg-[var(--color-accent)]', border: 'border-[var(--color-accent)]', text: 'text-slate-900', ring: 'ring-[var(--color-accent-light)]' },

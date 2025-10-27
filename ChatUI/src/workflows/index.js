@@ -139,7 +139,7 @@ class WorkflowRegistry {
             initialMessage: config.initial_message,
             uiTools: config.ui_tools || {}
           },
-          visualAgents: config.visual_agents || {},
+          visualAgents: Array.isArray(config.visual_agents) ? config.visual_agents : [],
           tools: config.tools || {},
           loadedAt: new Date().toISOString()
         };
@@ -201,7 +201,7 @@ class WorkflowRegistry {
         name: w.name,
         displayName: w.displayName,
         version: w.version,
-        agentCount: Object.keys(w.visualAgents || {}).length,
+  agentCount: Array.isArray(w.visualAgents) ? w.visualAgents.length : 0,
         hasHumanInLoop: w.metadata.humanInTheLoop
       }))
     };

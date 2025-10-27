@@ -2,9 +2,6 @@
 # FILE: models.py
 # DESCRIPTION: 
 # ==============================================================================
-
-# === MOZAIKS-CORE-HEADER ===
-
 """Unified Pydantic schemas + rollup for ChatSessions & WorkflowSummaries.
 
 This module now ONLY defines:

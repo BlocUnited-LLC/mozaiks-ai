@@ -144,12 +144,12 @@ class WorkflowConfig {
    */
   hasUserProxyComponent(workflowname) {
     const config = this.configs.get(workflowname);
-    // Check if any visual_agent have UserProxy-related components
-    return config?.visual_agent?.some(agent => 
-      agent.name?.toLowerCase().includes('user') ||
-      agent.role?.includes('user_') ||
-      agent.components?.some(comp => comp.name?.toLowerCase().includes('user'))
-    ) || false;
+    const visualAgents = Array.isArray(config?.visual_agents) ? config.visual_agents : [];
+    return visualAgents.some(agentName => {
+      if (typeof agentName !== 'string') return false;
+      const lowered = agentName.toLowerCase();
+      return lowered.includes('user') || lowered.includes('proxy');
+    });
   }
 
   /**
@@ -157,18 +157,12 @@ class WorkflowConfig {
    */
   getUserProxyComponents(workflowname) {
     const config = this.configs.get(workflowname);
-    const userComponents = [];
-    
-    if (config?.visual_agent) {
-      config.visual_agent.forEach(agent => {
-        if (agent.name?.toLowerCase().includes('user') || 
-            agent.role?.includes('user_')) {
-          userComponents.push(...(agent.components || []));
-        }
-      });
-    }
-    
-    return userComponents;
+    const visualAgents = Array.isArray(config?.visual_agents) ? config.visual_agents : [];
+    return visualAgents.filter(agentName => {
+      if (typeof agentName !== 'string') return false;
+      const lowered = agentName.toLowerCase();
+      return lowered.includes('user') || lowered.includes('proxy');
+    });
   }
 
   /**

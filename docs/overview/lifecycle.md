@@ -24,21 +24,24 @@ This document traces each step with the actual module and function involved.
 
 **Trigger:** Frontend sends `{"type": "user.input.submit", "content": "Create a workflow", "chat_id": "chat_abc123"}`
 
-**Handler:** `core/transport/simple_transport.py` → `SimpleTransport.handle_websocket_message()`
+**Handler:** `core/transport/simple_transport.py` → `SimpleTransport.handle_websocket()`
 
 **Logic:**
 ```python
-async def handle_websocket_message(self, message_data: dict, ws: WebSocket):
-    msg_type = message_data.get('type')
-    if msg_type == 'user.input.submit':
-        content = message_data.get('content')
-        chat_id = message_data.get('chat_id')
-        await self.process_incoming_user_message(
-            chat_id=chat_id, 
-            user_id=None, 
-            content=content, 
-            source='ws'
-        )
+async def handle_websocket(self, websocket: WebSocket, chat_id: str, user_id: str, workflow_name: str, enterprise_id: Optional[str] = None) -> None:
+  ...
+  if mtype in ("user.input.submit", "user_input_submit"):
+    req_id = data.get('input_request_id') or data.get('request_id')
+    text = (data.get('text') or data.get('user_input') or "").strip()
+    if req_id:
+      await self.submit_user_input(req_id, text)
+    else:
+      await self.process_incoming_user_message(
+        chat_id=chat_id,
+        user_id=self.connections.get(chat_id, {}).get('user_id'),
+        content=text,
+        source='ws'
+      )
 ```
 
 **Alternate Path (HTTP):** `POST /api/input/submit` → `shared_app.py` → `submit_user_input()` → same `process_incoming_user_message()` call
@@ -169,6 +172,12 @@ async def on_event(event: BaseEvent):
     # Persist to MongoDB
     await persistence_manager.append_message(chat_id, serialized)
 ```
+
+**Synthetic Event Compensation:**
+
+When AG2 resumes after pausing for user input (e.g., lifecycle tool execution), it does NOT re-emit `SelectSpeakerEvent` for the next agent. The runtime compensates by detecting speaker changes and emitting synthetic `select_speaker` events to maintain frontend thinking bubble continuity.
+
+**See**: [Synthetic Events Documentation](../runtime/synthetic_events.md) for technical details.
 
 ---
 

@@ -20,10 +20,20 @@ def get_free_trial_config() -> Dict[str, Any]:
         "enabled": os.getenv("FREE_TRIAL_ENABLED", "true").lower() == "true"
     }
 
-def _append_footer(content: str, free_trial: bool) -> str:
-    if free_trial and FOOTER_TRIAL not in content:
-        return content + FOOTER_TRIAL
-    return content
+def _normalize_content(value: Any) -> str:
+    """Safely coerce hook message payloads to a string."""
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else str(value)
+
+
+def _append_footer(content: Any, free_trial: bool) -> str:
+    text = _normalize_content(content)
+    if not text:
+        return text
+    if free_trial and FOOTER_TRIAL not in text:
+        return text + FOOTER_TRIAL
+    return text
 
 def add_usage_footer(
     sender: ConversableAgent,
@@ -44,8 +54,8 @@ def add_usage_footer(
     free_trial_enabled = free_trial_config.get("enabled", False)
 
     if isinstance(message, dict):
-        content = message.get("content", "")
+        content = message.get("content")
         message["content"] = _append_footer(content, free_trial_enabled)
         return message
 
-    return _append_footer(str(message), free_trial_enabled)
+    return _append_footer(message, free_trial_enabled)

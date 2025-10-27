@@ -2,13 +2,15 @@ import React from 'react';
 import UIToolRenderer from '../../core/ui/UIToolRenderer';
 
 const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
-  const containerClasses = isMobile 
-    ? "fixed inset-0 z-50" 
+  const containerClasses = isMobile
+    ? "fixed inset-0 z-50"
     : "flex flex-col w-full transition-all duration-500 ease-in-out";
-    
+
+  // Content uses transform and opacity for smooth entrance/exit; when used as a desktop side-panel
+  // the outer wrapper controls width/visibility. Keep visual styles consistent but reduce abrupt shadow changes.
   const contentClasses = isMobile
     ? "relative w-full h-full flex flex-col"
-  : "flex flex-col h-full rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] overflow-hidden shadow-2xl bg-gradient-to-br from-white/5 to-[rgba(var(--color-primary-rgb),0.05)] backdrop-blur-sm cosmic-ui-module artifact-panel animate-in slide-in-from-right";
+    : "flex flex-col h-full rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] overflow-hidden shadow-lg bg-gradient-to-br from-white/5 to-[rgba(var(--color-primary-rgb),0.05)] backdrop-blur-sm cosmic-ui-module artifact-panel transform transition-transform duration-500 ease-in-out will-change-transform";
 
   return (
     <div className={containerClasses}>

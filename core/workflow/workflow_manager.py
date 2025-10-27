@@ -406,41 +406,18 @@ class UnifiedWorkflowManager:
         config = self.get_config(workflow_name)
         return config.get("initial_message")
     
-    def get_visual_agent(self, workflow_name: str) -> List[Dict[str, Any]]:
-        """Get agents with UI capabilities"""
-        config = self.get_config(workflow_name)
-        return config.get("visual_agent", [])
-
     def get_visual_agents(self, workflow_name: str) -> List[str]:
         """Return list of agents considered 'visual' for chat rendering.
 
-        Supports either a dedicated 'visual_agents' list or falls back to
-        projecting names from 'visual_agent' entries that declare
-        visual/display capabilities.
+        The canonical representation is the top-level "visual_agents" list in the
+        workflow configuration. Each entry should be a string agent name that is
+        allowed to surface text/UI artifacts to the end user.
         """
         config = self.get_config(workflow_name)
-        
-        # First try dedicated visual_agents list
         visual_agents = config.get("visual_agents")
-        if isinstance(visual_agents, list):
-            return [str(agent) for agent in visual_agents if isinstance(agent, str)]
-        
-        config = self.get_config(workflow_name)
-        visual = visual_agents
-        if isinstance(visual, list) and all(isinstance(a, str) for a in visual):
-            return visual
-        ui_list = self.get_visual_agent(workflow_name)
-        derived: List[str] = []
-        for entry in ui_list:
-            if not isinstance(entry, dict):
-                continue
-            agent = entry.get('agent') or entry.get('name')
-            if isinstance(agent, str):
-                # Heuristic: treat any UI-capable agent as visual unless explicitly disabled
-                if entry.get('visual') is False:
-                    continue
-                derived.append(agent)
-        return derived
+        if not isinstance(visual_agents, list):
+            return []
+        return [str(agent) for agent in visual_agents if isinstance(agent, str)]
 
     def get_auto_tool_agents(self, workflow_name: str) -> Set[str]:
         """Return set of agent names with auto_tool_mode enabled.
@@ -770,7 +747,7 @@ class UnifiedWorkflowManager:
         # ui_config.json
         ui_data = self._load_json_if_exists(workflow_path / 'ui_config.json')
         if ui_data:
-            # Merge UI config keys at root (e.g., visual_agent)
+            # Merge UI config keys at root (e.g., visual_agents)
             config.update(ui_data)
         return config
 

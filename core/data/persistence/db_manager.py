@@ -1,11 +1,4 @@
 # ==============================================================================
-# FILE: db_manager.py
-# DESCRIPTION: 
-# ==============================================================================
-
-# === MOZAIKS-CORE-HEADER ===
-
-# ==============================================================================
 # FILE: core/workflow/db_manager.py
 # DESCRIPTION: Agent-friendly database operations manager 
 # PURPOSE: Provides simple CRUD operations for agents via json configuration

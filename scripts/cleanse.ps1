@@ -37,16 +37,16 @@ if (-not $KeepLogs) {
     Write-Host "`n Keeping logs (-KeepLogs flag set)" -ForegroundColor Gray
 }
 
-# MongoDB collections cleanup (optional - clears documents, not the database itself)
-if (-not $KeepDB -and $Full) {
-    Write-Host "`n🗄️  Clearing MongoDB collections..." -ForegroundColor Yellow
+# MongoDB collections cleanup (clears documents only, preserves collections/indexes)
+if (-not $KeepDB) {
+    Write-Host "`n🗄️  Clearing MongoDB collections (documents only)..." -ForegroundColor Yellow
     $clearScript = Join-Path -Path $PSScriptRoot -ChildPath "clear_collections.py"
     if (Test-Path $clearScript) {
         # Run with .venv Python to ensure pymongo is available
         $pythonCmd = if (Test-Path ".venv\Scripts\python.exe") { ".venv\Scripts\python.exe" } else { "python" }
         $output = & $pythonCmd $clearScript --action delete --yes 2>&1
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "   ✅ Cleared MongoDB collections (documents deleted)" -ForegroundColor Green
+            Write-Host "   ✅ Cleared MongoDB documents (collections/indexes preserved)" -ForegroundColor Green
         } else {
             Write-Host "   ⚠️  Failed to clear collections:" -ForegroundColor Yellow
             Write-Host "      $output" -ForegroundColor Gray
@@ -54,34 +54,36 @@ if (-not $KeepDB -and $Full) {
     } else {
         Write-Host "   ⚠️  clear_collections.py not found, skipping collection cleanup" -ForegroundColor Gray
     }
-} elseif ($KeepDB) {
-    Write-Host "`n🗄️  Keeping MongoDB collections (-KeepDB flag set)" -ForegroundColor Gray
 } else {
-    Write-Host "`n🗄️  Keeping MongoDB collections (use -Full flag to clear)" -ForegroundColor Gray
+    Write-Host "`n🗄️  Keeping MongoDB data (-KeepDB flag set)" -ForegroundColor Gray
 }
 
 # Docker cleanup (optional - VERY DESTRUCTIVE)
 if ($Full) {
     Write-Host "`n Cleaning Docker containers and images..." -ForegroundColor Yellow
     
-    # Stop and remove MozaiksAI containers
-    $containers = docker ps -a --filter "name=mozaiksai" --format "{{.Names}}" 2>$null
-    if ($containers) {
-        docker stop $containers 2>$null | Out-Null
-        docker rm $containers 2>$null | Out-Null
-        Write-Host "    Stopped and removed MozaiksAI containers" -ForegroundColor Green
+    # Stop and remove ALL containers (running or stopped)
+    $allContainers = docker ps -aq 2>$null
+    if ($allContainers) {
+        docker stop $allContainers 2>$null | Out-Null
+        docker rm $allContainers 2>$null | Out-Null
+        Write-Host "    Stopped and removed all Docker containers" -ForegroundColor Green
+    } else {
+        Write-Host "    No containers to remove" -ForegroundColor Gray
     }
     
-    # Remove MozaiksAI images
-    $images = docker images --filter "reference=mozaiksai*" --format "{{.Repository}}:{{.Tag}}" 2>$null
-    if ($images) {
-        docker rmi -f $images 2>$null | Out-Null
-        Write-Host "    Removed MozaiksAI Docker images" -ForegroundColor Green
+    # Remove ALL images
+    $allImages = docker images -q 2>$null
+    if ($allImages) {
+        docker rmi -f $allImages 2>$null | Out-Null
+        Write-Host "    Removed all Docker images" -ForegroundColor Green
+    } else {
+        Write-Host "    No images to remove" -ForegroundColor Gray
     }
     
-    # Prune build cache
-    docker builder prune -f 2>$null | Out-Null
-    Write-Host "    Docker build cache pruned" -ForegroundColor Green
+    # Prune everything (containers, networks, images, build cache)
+    docker system prune -af --volumes 2>$null | Out-Null
+    Write-Host "    Docker system pruned (build cache, networks, volumes)" -ForegroundColor Green
 }
 
 # Optional: .venv cache (Python pip cache)

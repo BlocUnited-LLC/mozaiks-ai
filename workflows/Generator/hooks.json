@@ -8,7 +8,7 @@
     },
     {
       "hook_type": "process_last_received_message",
-      "hook_agent": "ActionPlanArchitect",
+      "hook_agent": "WorkflowImplementationAgent",
       "filename": "hook_gaurdrail.py",
       "function": "soft_policy_label"
     }

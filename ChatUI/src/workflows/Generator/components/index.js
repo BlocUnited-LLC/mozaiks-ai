@@ -4,7 +4,7 @@
 // ==============================================================================
 
 // Import Generator-specific components
-import AgentAPIKeyInput from './AgentAPIKeyInput';
+import AgentAPIKeysBundleInput from './AgentAPIKeysBundleInput';
 import FileDownloadCenter from './FileDownloadCenter';
 import ActionPlan from './ActionPlan';
 import MermaidSequenceDiagram from './MermaidSequenceDiagram';
@@ -15,26 +15,24 @@ import MermaidSequenceDiagram from './MermaidSequenceDiagram';
  * This module exports ONLY Generator workflow-specific UI components.
  * 
  * Components exported here:
- * - AgentAPIKeyInput: Handles API key requests for Generator workflow
+ * - AgentAPIKeysBundleInput: Handles consolidated API key requests for multiple services
  * - FileDownloadCenter: Handles file downloads for Generator workflow
  * - ActionPlan: Visualizes workflow steps and status
  * - MermaidSequenceDiagram: Presents the post-approval sequence diagram artifact
  */
 
 const GeneratorComponents = {
-  AgentAPIKeyInput,
+  AgentAPIKeysBundleInput,
   FileDownloadCenter,
   ActionPlan,
   MermaidSequenceDiagram
 };
 
-
-
 export default GeneratorComponents;
 
 // Named exports for convenience
 export {
-  AgentAPIKeyInput,
+  AgentAPIKeysBundleInput,
   FileDownloadCenter,
   ActionPlan,
   MermaidSequenceDiagram

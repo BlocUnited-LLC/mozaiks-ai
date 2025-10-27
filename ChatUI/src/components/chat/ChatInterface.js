@@ -6,9 +6,66 @@ import UIToolRenderer from "../../core/ui/UIToolRenderer";
 
 // UI Tool Renderer - handles workflow-agnostic UI tool events
 // NOTE: Hooks must run unconditionally; define state first, then early-return.
-const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRequest }) => {
-  const [completed, setCompleted] = React.useState(false);
+const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRequest, isCompleted }) => {
+  const [completed, setCompleted] = React.useState(isCompleted || false);
   const [hasInteracted, setHasInteracted] = React.useState(false);
+  const rootRef = React.useRef(null);
+  
+  // Sync with external completion status (from backend completion event)
+  React.useEffect(() => {
+    if (isCompleted && !completed) {
+      setCompleted(true);
+    }
+  }, [isCompleted, completed]);
+
+  // Ensure the inline UI tool is fully visible when it mounts and when it changes state
+  // NOTE: place hooks before any early return to satisfy react-hooks rules
+  React.useEffect(() => {
+    try {
+      const el = rootRef.current;
+      if (!el) return;
+
+      // Use a small timeout to allow the component to finish layout before scrolling
+      const EXTRA_MARGIN = 64; // px - make sure bottom of component has breathing room above the input
+      const t = setTimeout(() => {
+        // Find the nearest scrollable ancestor (chat container)
+        let ancestor = el.parentElement;
+        while (ancestor && ancestor !== document.body) {
+          try {
+            const cs = window.getComputedStyle(ancestor);
+            const overflowY = cs.overflowY;
+            if ((overflowY === 'auto' || overflowY === 'scroll') && ancestor.scrollHeight > ancestor.clientHeight) {
+              break;
+            }
+          } catch (err) {
+            // ignore compute errors and continue climbing
+          }
+          ancestor = ancestor.parentElement;
+        }
+
+        if (ancestor && ancestor !== document.body) {
+          const elRect = el.getBoundingClientRect();
+          const ancRect = ancestor.getBoundingClientRect();
+          // How far the bottom of element extends past the bottom of the container (positive means overflow)
+          const delta = elRect.bottom - ancRect.bottom;
+          // If element's bottom is near or beyond the container bottom, scroll the container by delta + margin
+          if (delta > -EXTRA_MARGIN) {
+            const toScroll = Math.max(0, delta + EXTRA_MARGIN);
+            try { ancestor.scrollBy({ top: toScroll, behavior: 'smooth' }); } catch (e) { ancestor.scrollTop += toScroll; }
+          } else {
+            // Fallback: ensure element is visible at end
+            try { el.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' }); } catch (e) { /* ignore */ }
+          }
+        } else {
+          // No ancestor found; fall back to window scrolling
+          try { el.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' }); } catch (e) { /* ignore */ }
+        }
+      }, 80);
+      return () => clearTimeout(t);
+    } catch (e) {
+      // swallow errors - non-critical UI behavior
+    }
+  }, [completed, hasInteracted, uiToolEvent?.ui_tool_id]);
 
   if (!uiToolEvent || !uiToolEvent.ui_tool_id) {
     return null;
@@ -39,7 +96,7 @@ const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRe
   };
 
   return (
-    <div className="flex justify-center px-0 message-container">
+    <div ref={rootRef} className="flex justify-center px-0 message-container">
       <div className="mt-1 w-full max-w-2xl">
         <div className="flex flex-col gap-3 w-full items-center">
           {completed && displayMode === 'inline' && (
@@ -47,23 +104,26 @@ const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRe
               aria-label="Completed"
               className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded-full bg-[rgba(var(--color-success-rgb),0.15)] text-[var(--color-success)] border border-[rgba(var(--color-success-rgb),0.3)] select-none"
             >
-              ✓ Completed
+              ✓ {uiToolEvent?.ui_tool_id || 'UI Tool'} completed
             </span>
           )}
-          <div 
-            className={`inline-block ${displayMode === 'inline' && !completed && !hasInteracted ? 'inline-component-attention' : ''} ${hasInteracted ? 'interacted' : ''}`}
-            onClick={handleUserInteraction}
-            onFocus={handleUserInteraction}
-            onMouseDown={handleUserInteraction}
-            onKeyDown={handleUserInteraction}
-          >
-            <UIToolRenderer
-              event={uiToolEvent}
-              onResponse={handleResponse}
-              submitInputRequest={submitInputRequest}
-              className="ui-tool-in-chat"
-            />
-          </div>
+          {/* Hide the component when completed (auto-vanish effect) */}
+          {!completed && (
+            <div 
+              className={`inline-block ${displayMode === 'inline' && !completed && !hasInteracted ? 'inline-component-attention' : ''} ${hasInteracted ? 'interacted' : ''}`}
+              onClick={handleUserInteraction}
+              onFocus={handleUserInteraction}
+              onMouseDown={handleUserInteraction}
+              onKeyDown={handleUserInteraction}
+            >
+              <UIToolRenderer
+                event={uiToolEvent}
+                onResponse={handleResponse}
+                submitInputRequest={submitInputRequest}
+                className="ui-tool-in-chat"
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -343,6 +403,7 @@ const ModernChatInterface = ({
                   <UIToolEventRenderer 
                     uiToolEvent={chat.uiToolEvent}
                     submitInputRequest={submitInputRequest}
+                    isCompleted={chat.ui_tool_completed || false}
                     onResponse={(response) => {
                       // console.debug('UI tool response from chat');
                       // Use the handleAgentAction function to process the response

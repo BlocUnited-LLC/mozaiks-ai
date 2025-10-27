@@ -2,7 +2,6 @@
 # FILE: core/workflow/ui_tools.py
 # DESCRIPTION: Centralized helper utilities for agent-driven UI interactions.
 #   - UI tool emission + response handling
-#   - InputTimeoutEvent (kept lightweight)
 #   - (Normalization & event translation removed; orchestration handles streaming payloads)
 # ==============================================================================
 
@@ -17,45 +16,9 @@ from core.workflow.workflow_manager import workflow_manager
 logger = logging.getLogger(__name__)
 
 
-try:  # Prefer pydantic if available
-    from pydantic import BaseModel as _PydanticBase
-    BaseModel = _PydanticBase  # type: ignore
-except Exception:  # pragma: no cover
-    class BaseModel:  # minimal fallback
-        def model_dump(self, *a, **k):
-            return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
-
-class InputTimeoutEvent(BaseModel):
-    input_request_id: str
-    timeout_seconds: float
-    chat_id: str
-    occurred_at: str = _dt.datetime.now(_dt.timezone.utc).isoformat()
-    reason: str = "input_timeout"
-
-    def dict(self, *a, **kw):  # pragma: no cover
-        if hasattr(super(), "model_dump"):
-            try:
-                return super().model_dump(*a, **kw)  # type: ignore
-            except Exception:
-                return self.__dict__
-        return self.__dict__
-
 class UIToolError(Exception):
     """Custom exception for UI tool errors."""
     pass
-
-def is_ui_tool(tool_id: str) -> bool:
-    """Return True if tool_id is registered as a UI tool in any workflow.
-
-    Thin wrapper over workflow_manager registry; keeps runtime surface minimal.
-    """
-    try:
-        for rec in workflow_manager.iter_ui_tools():
-            if rec.get('tool_id') == tool_id or rec.get('fn') == tool_id:
-                return True
-    except Exception:
-        return False
-    return False
 
 async def _emit_ui_tool_event_core(
     tool_id: str,
@@ -151,8 +114,19 @@ async def use_ui_tool(
     wf_logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id)
     start = _dt.datetime.now(_dt.timezone.utc)
     
-    # Extract agent_name from payload for proper attribution
-    agent_name = payload.get("agent_name") if isinstance(payload, dict) else None
+    # Get the ACTUAL agent owner from tools.json (not from conversation context)
+    agent_name = None
+    try:
+        tool_record = workflow_manager.get_ui_tool_record(tool_id)
+        if tool_record:
+            agent_name = tool_record.get('agent')  # This is the correct tool owner!
+            wf_logger.debug(f"🔍 Tool '{tool_id}' owned by agent: {agent_name}")
+    except Exception as e:
+        wf_logger.warning(f"⚠️ Failed to resolve tool owner for '{tool_id}': {e}")
+    
+    # Fallback: Extract from payload if not found in registry
+    if not agent_name and isinstance(payload, dict):
+        agent_name = payload.get("agent_name")
     
     # Auto-resolve display mode from workflow_manager if not explicitly provided
     resolved_display = display
@@ -202,6 +176,28 @@ async def use_ui_tool(
             _log_tool_event(_tlog, action="ui_response", status=str(resp.get('status', 'unknown')), event_id=event_id)
         except Exception:
             pass
+        
+        # Auto-vanish inline components after completion
+        if resolved_display == 'inline':
+            try:
+                from core.transport.simple_transport import SimpleTransport
+                transport = await SimpleTransport.get_instance()
+                completion_event = {
+                    "type": "chat.ui_tool_complete",
+                    "data": {
+                        "eventId": event_id,
+                        "ui_tool_id": tool_id,
+                        "display": "inline",
+                        "status": resp.get("status", "completed"),
+                        "summary": f"{tool_id} completed"
+                    },
+                    "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat()
+                }
+                await transport.send_event_to_ui(completion_event, chat_id=chat_id)
+                wf_logger.debug(f"🧹 Sent completion event for inline tool: {event_id}")
+            except Exception as vanish_err:
+                wf_logger.warning(f"⚠️ Failed to send completion event for {event_id}: {vanish_err}")
+        
         return resp
     except Exception as e:
         duration_ms = (_dt.datetime.now(_dt.timezone.utc) - start).total_seconds() * 1000.0
@@ -349,7 +345,6 @@ __all__ = [
     "use_ui_tool",
     "handle_tool_call_for_ui_interaction",
     "emit_tool_progress_event",
-    "InputTimeoutEvent",
     "UIToolError",
 ]
 

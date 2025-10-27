@@ -3,6 +3,7 @@ import Header from "../components/layout/Header";
 import Footer from "../components/layout/Footer";
 import ChatInterface from "../components/chat/ChatInterface";
 import ArtifactPanel from "../components/chat/ArtifactPanel";
+import WorkflowCompletion from "../components/chat/WorkflowCompletion";
 import { useParams } from "react-router-dom";
 import { useChatUI } from "../context/ChatUIContext";
 import workflowConfig from '../config/workflowConfig';
@@ -53,6 +54,9 @@ const ChatPage = () => {
   const artifactCacheValidRef = useRef(false);
   const currentEnterpriseId = enterpriseId || config?.chat?.defaultEnterpriseId || '68542c1109381de738222350';
   const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
+  // Workflow completion state
+  const [workflowCompleted, setWorkflowCompleted] = useState(false);
+  const [completionData, setCompletionData] = useState(null);
   // Helper function to get default workflow from registry
   const getDefaultWorkflowFromRegistry = () => {
     const workflows = getLoadedWorkflows();
@@ -627,6 +631,8 @@ const ChatPage = () => {
             eventId: eventId || undefined,
             workflow_name: currentWorkflowName,
             display: derivedDisplay,
+            agent: envelope.agent || detail.agent || envelope.agent_name || detail.agent_name,
+            agentName: envelope.agent || detail.agent || envelope.agent_name || detail.agent_name,
             payload: {
               ...basePayload,
               tool_name: toolName,
@@ -638,6 +644,34 @@ const ChatPage = () => {
           }, sendResponse);
         } else {
           setMessagesWithLogging(prev => [...prev, { id: data.tool_call_id || `tool-call-${Date.now()}`, sender:'system', agentName:'System', content:`🔧 Tool Call: ${data.tool_name}`, isStreaming:false }]);
+        }
+        return;
+      }
+      case 'ui_tool_complete':
+      case 'chat.ui_tool_complete': {
+        const envelope = data || {};
+        const detail = envelope.data || {};
+        const completedId = detail.event_id || envelope.event_id || detail.eventId || envelope.eventId || null;
+        const completedTool = detail.ui_tool_id || envelope.ui_tool_id || detail.tool_name || envelope.tool_name || null;
+        const status = detail.status || envelope.status || 'completed';
+        
+        console.log('✓ [UI_COMPLETE] Inline tool completed:', { completedId, completedTool, status });
+
+        if (completedId) {
+          // Mark the message as completed so it renders as a collapsed badge
+          setMessagesWithLogging((prev) =>
+            prev.map((msg) => {
+              if (msg?.metadata?.eventId === completedId && msg?.metadata?.display === 'inline') {
+                return {
+                  ...msg,
+                  ui_tool_completed: true,
+                  ui_tool_status: status,
+                  ui_tool_summary: `${completedTool || 'Tool'} completed`
+                };
+              }
+              return msg;
+            })
+          );
         }
         return;
       }
@@ -767,7 +801,31 @@ const ChatPage = () => {
         return;
       }
       case 'run_complete': {
-        setMessagesWithLogging(prev => [...prev, { id:`run-complete-${Date.now()}`, sender:'system', agentName:'System', content:`✅ Run complete (${data.reason||'finished'})`, isStreaming:false }]);
+        console.log('🎉 [COMPLETION] Workflow completed:', data);
+        
+        // Extract completion metadata
+        const reason = data.reason || data.data?.reason || 'finished';
+        const status = data.status || data.data?.status || 1;
+        const duration = data.duration_sec || data.data?.duration_sec;
+        const tokensUsed = data.total_tokens || data.data?.total_tokens;
+        
+        // Set completion state to show WorkflowCompletion component
+        setWorkflowCompleted(true);
+        setCompletionData({
+          reason,
+          status,
+          duration: duration ? `${Math.round(duration)}s` : null,
+          tokensUsed: tokensUsed ? tokensUsed.toLocaleString() : null,
+        });
+        
+        // Also add a system message to chat history
+        setMessagesWithLogging(prev => [...prev, { 
+          id:`run-complete-${Date.now()}`, 
+          sender:'system', 
+          agentName:'System', 
+          content:`✅ Workflow complete (${reason})`, 
+          isStreaming:false 
+        }]);
         return;
       }
       case 'error': {
@@ -1514,41 +1572,63 @@ useEffect(() => {
       
       {/* Main content area that fills remaining screen height - no scrolling */}
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden pt-16 sm:pt-20 md:pt-16">{/* Extra padding on mobile for cleaner spacing */}
-  <div className={`flex flex-col md:flex-row flex-1 w-full min-h-0 overflow-hidden transition-all duration-300`}>
-          {/* Chat Pane - lock to 50% width when artifact is open, 100% when closed */}
-          <div className={`flex flex-col px-4 min-h-0 overflow-hidden transition-all duration-300 ${isSidePanelOpen ? 'md:w-2/5 md:flex-none' : 'w-full flex-1'}`}>
-            
-            <ChatInterface 
-              messages={messages} 
-              onSendMessage={sendMessage} 
-              loading={loading}
-              onAgentAction={handleAgentAction}
-              onArtifactToggle={toggleSidePanel}
-              connectionStatus={connectionStatus}
-              transportType={transportType}
+        {workflowCompleted ? (
+          /* Workflow Completion Screen */
+          <div className="flex-1 flex items-center justify-center px-4">
+            <WorkflowCompletion
               workflowName={currentWorkflowName}
-              structuredOutputs={getWorkflow(currentWorkflowName)?.structuredOutputs || {}}
-              startupMode={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.startup_mode}
-              initialMessageToUser={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.initial_message_to_user}
-              onRetry={retryConnection}
-              tokensExhausted={tokensExhausted}
-              submitInputRequest={submitInputRequest}
+              completionMessage={`Your ${currentWorkflowName} workflow has completed successfully!`}
+              summary={{
+                duration: completionData?.duration,
+                tokensUsed: completionData?.tokensUsed,
+              }}
+              onContinue={() => {
+                console.log('🎉 [COMPLETION] User continuing to Mozaiks');
+                // Optional: Send analytics event here
+              }}
             />
           </div>
-          
-          {/* Artifact Panel - 50% width, slides in from right (desktop only when not forcing overlay) */}
-          {isSidePanelOpen && !forceOverlay && (
-            <div className="hidden md:flex md:w-3/5 md:flex-none min-h-0 h-full px-4">
+        ) : (
+          /* Normal Chat Interface */
+          <div className={`flex flex-col md:flex-row flex-1 w-full min-h-0 overflow-hidden transition-all duration-300`}>
+            {/* Chat Pane - lock to 50% width when artifact is open, 100% when closed */}
+            <div className={`flex flex-col px-4 min-h-0 overflow-hidden transition-all duration-300 ${isSidePanelOpen ? 'md:w-2/5 md:flex-none' : 'w-full flex-1'}`}>
+              
+              <ChatInterface 
+                messages={messages} 
+                onSendMessage={sendMessage} 
+                loading={loading}
+                onAgentAction={handleAgentAction}
+                onArtifactToggle={toggleSidePanel}
+                connectionStatus={connectionStatus}
+                transportType={transportType}
+                workflowName={currentWorkflowName}
+                structuredOutputs={getWorkflow(currentWorkflowName)?.structuredOutputs || {}}
+                startupMode={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.startup_mode}
+                initialMessageToUser={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.initial_message_to_user}
+                onRetry={retryConnection}
+                tokensExhausted={tokensExhausted}
+                submitInputRequest={submitInputRequest}
+              />
+            </div>
+            
+            {/* Artifact Panel wrapper - always present on desktop to allow smooth CSS-driven transitions */}
+            <div
+              className={`hidden md:flex min-h-0 h-full px-4 md:flex-none transition-all duration-500 ease-in-out`
+                + ` ${isSidePanelOpen && !forceOverlay ? 'md:w-3/5 opacity-100 visible translate-x-0' : 'md:w-0 opacity-0 invisible -translate-x-4'}`
+              }
+              aria-hidden={!isSidePanelOpen || forceOverlay}
+            >
               <ArtifactPanel onClose={toggleSidePanel} messages={currentArtifactMessages} />
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Mobile full-screen Artifact modal (md:hidden handled inside component) */}
-        {isSidePanelOpen && forceOverlay && (
-      <ArtifactPanel onClose={toggleSidePanel} isMobile={true} messages={currentArtifactMessages} />
-        )}
+      {!workflowCompleted && isSidePanelOpen && forceOverlay && (
+        <ArtifactPanel onClose={toggleSidePanel} isMobile={true} messages={currentArtifactMessages} />
+      )}
 
       {/* Footer - positioned at bottom without affecting flex layout */}
       <div className="flex-shrink-0">

@@ -12,19 +12,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import json
 import asyncio
-from fastapi import FastAPI, HTTPException, Request, WebSocket, Response
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from starlette.middleware.cors import CORSMiddleware
 from bson.objectid import ObjectId
 from uuid import uuid4
 import autogen
-from pydantic import BaseModel
-
-
 from core.core_config import get_mongo_client
 from core.transport.simple_transport import SimpleTransport
 from core.workflow.workflow_manager import workflow_status_summary, get_workflow_transport, get_workflow_tools
 from core.data.persistence.persistence_manager import AG2PersistenceManager, InvalidEnterpriseIdError
-from core.data.themes.theme_manager import ThemeManager, ThemeResponse, ThemeUpdateRequest
+from core.data.themes.theme_manager import ThemeManager, ThemeResponse
 
 # Initialize persistence manager (handles lean chat session storage internally)
 persistence_manager = AG2PersistenceManager()
@@ -34,10 +31,6 @@ async def _chat_coll():
     """Return the new lean chat_sessions collection (lowercase)."""
     # Delegate to the persistence manager's internal helper (ensures client)
     return await persistence_manager._coll()
-
-# Request model for starting a chat session
-class StartChatRequest(BaseModel):
-    user_id: str
 
 # Import our custom logging setup
 from logs.logging_config import (
@@ -67,7 +60,6 @@ logging.getLogger('autogen').setLevel(logging.DEBUG)
 
 # Get specialized loggers
 wf_logger = get_workflow_logger("shared_app")
-chat_logger = get_workflow_logger("shared_app")
 performance_logger = get_workflow_logger("performance.shared_app")
 logger = logging.getLogger(__name__)
 
@@ -183,18 +175,6 @@ async def get_enterprise_theme(enterprise_id: str):
         logger.exception("THEME_FETCH_FAILED")
         raise HTTPException(status_code=500, detail="Failed to load theme") from exc
 
-
-@app.put("/api/themes/{enterprise_id}", response_model=ThemeResponse)
-async def upsert_enterprise_theme(enterprise_id: str, payload: ThemeUpdateRequest):
-    try:
-        return await theme_manager.upsert_theme(enterprise_id, payload)
-    except InvalidEnterpriseIdError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.exception("THEME_SAVE_FAILED")
-        raise HTTPException(status_code=500, detail="Failed to save theme") from exc
 
 @app.get("/health/active-runs")
 async def health_active_runs():
@@ -1097,7 +1077,7 @@ async def get_workflow_ui_tools_manifest(workflow_name: str):
 # ==============================================================================
 
 @app.get("/api/tokens/{user_id}/balance")
-async def get_user_token_balance(user_id: str, appid: str = "default", enterprise_id: Optional[str] = None):
+async def get_user_token_balance(user_id: str, enterprise_id: Optional[str] = None):
     """Get user token balance from wallets collection"""
     try:
         if not enterprise_id:
@@ -1276,3 +1256,74 @@ async def submit_ui_tool_response(request: Request):
     except Exception as e:
         logger.error(f"? Error submitting UI tool response: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to submit UI tool response: {e}")
+
+@app.get("/api/download/workflow-file")
+async def download_workflow_file(file_path: str):
+    """
+    Download a single workflow file.
+    
+    Args:
+        file_path: Absolute path to the file to download
+    
+    Returns:
+        File content with proper download headers
+    """
+    from fastapi.responses import FileResponse
+    import mimetypes
+    
+    try:
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path query parameter is required")
+
+        file = Path(file_path)
+        workflows_base = Path(__file__).parent / "workflows"
+
+        if not file.is_absolute():
+            file = workflows_base / file
+        
+        try:
+            file_resolved = file.resolve()
+            workflows_base_resolved = workflows_base.resolve()
+            if not str(file_resolved).startswith(str(workflows_base_resolved)):
+                raise HTTPException(status_code=403, detail="Access denied: File outside workflow directories")
+        except Exception:
+            raise HTTPException(status_code=403, detail="Invalid file path")
+        
+        if not file.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        if not file.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+        
+        # Determine proper MIME type based on file extension
+        mime_type, _ = mimetypes.guess_type(file.name)
+        if not mime_type:
+            # Default MIME types for common workflow files
+            if file.suffix == '.json':
+                mime_type = 'application/json'
+            elif file.suffix == '.env':
+                mime_type = 'text/plain'
+            elif file.suffix == '.py':
+                mime_type = 'text/x-python'
+            elif file.suffix == '.js':
+                mime_type = 'text/javascript'
+            elif file.suffix == '.jsx':
+                mime_type = 'text/javascript'
+            else:
+                mime_type = 'application/octet-stream'
+        
+        # Return file with download headers
+        return FileResponse(
+            path=str(file_resolved),
+            filename=file.name,
+            media_type=mime_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{file.name}"',
+                "X-Content-Type-Options": "nosniff"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ File download failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {e}")

@@ -39,42 +39,166 @@ def _wrap_with_validation(
     func: Callable,
     enforce_schema: bool,
 ) -> Callable:
-    """Wrap tool callables with structured-output validation when applicable."""
-
-    if not enforce_schema:
-        return func
-
+    """Wrap tool callables with structured-output validation and runtime logging.
+    
+    This wrapper:
+    1. Logs tool execution start/completion/errors to tools.log (workflow-agnostic)
+    2. Validates structured outputs when enforce_schema=True
+    3. Captures execution timing and parameters
+    """
+    from logs.tools_logs import get_tool_logger, log_tool_event
     from ..validation.tools import validate_tool_call
+    import time
 
     if inspect.iscoroutinefunction(func):
 
         @wraps(func)
         async def _async_wrapper(*args, **kwargs):
-            payload = dict(kwargs)
-            outcome = validate_tool_call(
-                workflow_name=workflow_name,
-                agent_name=agent_name,
+            # Extract context for logging
+            chat_id = kwargs.get('chat_id') or (kwargs.get('context_variables', {}) or {}).get('chat_id')
+            enterprise_id = kwargs.get('enterprise_id') or (kwargs.get('context_variables', {}) or {}).get('enterprise_id')
+            
+            # Get workflow-agnostic logger
+            tool_logger = get_tool_logger(
                 tool_name=tool_name,
-                raw_payload=payload,
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
+                workflow_name=workflow_name
             )
-            if not outcome.is_valid and outcome.error_payload is not None:
-                return outcome.error_payload
-            return await func(*args, **kwargs)
+            
+            # Log tool execution start
+            start_time = time.time()
+            payload = dict(kwargs)
+            log_tool_event(
+                tool_logger,
+                action="start",
+                status="info",
+                message=f"Tool '{tool_name}' invoked by agent '{agent_name}'",
+                agent_name=agent_name,
+                args_count=len(payload)
+            )
+            
+            try:
+                # Schema validation if enabled
+                if enforce_schema:
+                    outcome = validate_tool_call(
+                        workflow_name=workflow_name,
+                        agent_name=agent_name,
+                        tool_name=tool_name,
+                        raw_payload=payload,
+                    )
+                    if not outcome.is_valid and outcome.error_payload is not None:
+                        log_tool_event(
+                            tool_logger,
+                            action="validation_failed",
+                            status="error",
+                            message=f"Schema validation failed for '{tool_name}'",
+                            level=logging.ERROR
+                        )
+                        return outcome.error_payload
+                
+                # Execute tool
+                result = await func(*args, **kwargs)
+                
+                # Log successful completion
+                duration_ms = (time.time() - start_time) * 1000
+                log_tool_event(
+                    tool_logger,
+                    action="complete",
+                    status="success",
+                    message=f"Tool '{tool_name}' completed successfully",
+                    duration_ms=round(duration_ms, 2)
+                )
+                return result
+                
+            except Exception as e:
+                # Log error
+                duration_ms = (time.time() - start_time) * 1000
+                log_tool_event(
+                    tool_logger,
+                    action="error",
+                    status="error",
+                    message=f"Tool '{tool_name}' failed: {str(e)}",
+                    level=logging.ERROR,
+                    error_type=type(e).__name__,
+                    duration_ms=round(duration_ms, 2)
+                )
+                raise
 
         return _async_wrapper
 
     @wraps(func)
     def _sync_wrapper(*args, **kwargs):
-        payload = dict(kwargs)
-        outcome = validate_tool_call(
-            workflow_name=workflow_name,
-            agent_name=agent_name,
+        # Extract context for logging
+        chat_id = kwargs.get('chat_id') or (kwargs.get('context_variables', {}) or {}).get('chat_id')
+        enterprise_id = kwargs.get('enterprise_id') or (kwargs.get('context_variables', {}) or {}).get('enterprise_id')
+        
+        # Get workflow-agnostic logger
+        tool_logger = get_tool_logger(
             tool_name=tool_name,
-            raw_payload=payload,
+            chat_id=chat_id,
+            enterprise_id=enterprise_id,
+            workflow_name=workflow_name
         )
-        if not outcome.is_valid and outcome.error_payload is not None:
-            return outcome.error_payload
-        return func(*args, **kwargs)
+        
+        # Log tool execution start
+        start_time = time.time()
+        payload = dict(kwargs)
+        log_tool_event(
+            tool_logger,
+            action="start",
+            status="info",
+            message=f"Tool '{tool_name}' invoked by agent '{agent_name}'",
+            agent_name=agent_name,
+            args_count=len(payload)
+        )
+        
+        try:
+            # Schema validation if enabled
+            if enforce_schema:
+                outcome = validate_tool_call(
+                    workflow_name=workflow_name,
+                    agent_name=agent_name,
+                    tool_name=tool_name,
+                    raw_payload=payload,
+                )
+                if not outcome.is_valid and outcome.error_payload is not None:
+                    log_tool_event(
+                        tool_logger,
+                        action="validation_failed",
+                        status="error",
+                        message=f"Schema validation failed for '{tool_name}'",
+                        level=logging.ERROR
+                    )
+                    return outcome.error_payload
+            
+            # Execute tool
+            result = func(*args, **kwargs)
+            
+            # Log successful completion
+            duration_ms = (time.time() - start_time) * 1000
+            log_tool_event(
+                tool_logger,
+                action="complete",
+                status="success",
+                message=f"Tool '{tool_name}' completed successfully",
+                duration_ms=round(duration_ms, 2)
+            )
+            return result
+            
+        except Exception as e:
+            # Log error
+            duration_ms = (time.time() - start_time) * 1000
+            log_tool_event(
+                tool_logger,
+                action="error",
+                status="error",
+                message=f"Tool '{tool_name}' failed: {str(e)}",
+                level=logging.ERROR,
+                error_type=type(e).__name__,
+                duration_ms=round(duration_ms, 2)
+            )
+            raise
 
     return _sync_wrapper
 
@@ -88,6 +212,12 @@ def load_agent_tool_functions(workflow_name: str) -> Dict[str, List[Callable]]:
     Loads ALL tools (both Agent_Tool and UI_Tool types) as agent functions.
     UI_Tools get special handling during execution but still need to be
     registered with their agents for proper function binding.
+    
+    All tools are automatically wrapped with runtime logging that captures:
+    - Tool execution start/completion/errors
+    - Execution timing
+    - Validation failures (when schema enforcement is enabled)
+    - Logs to logs/logs/tools.log (workflow-agnostic)
     """
     mapping: Dict[str, List[Callable]] = {}
     base_dir = Path('workflows') / workflow_name

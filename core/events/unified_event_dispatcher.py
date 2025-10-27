@@ -312,6 +312,17 @@ class UnifiedEventDispatcher:
             
             logger.info(f"🔍 [UI_HIDDEN_DEBUG] Checking message: agent={agent_name}, content='{content[:50] if content else 'EMPTY'}...'")
             
+            # Check 0: System resume signals (always suppress)
+            if isinstance(content, str) and '[SYSTEM_RESUME_SIGNAL]' in content:
+                event_dict['_mozaiks_hide'] = True
+                logger.info(f"🚫 [SYSTEM_SIGNAL] Suppressing internal resume signal from {agent_name}")
+                return {
+                    "type": f"chat.{base_kind}",
+                    "data": event_dict,
+                    "chat_id": chat_id,
+                    "timestamp": timestamp
+                }
+            
             if agent_name and isinstance(content, str):
                 # Check 1: UI_HIDDEN triggers (exact match suppression)
                 try:

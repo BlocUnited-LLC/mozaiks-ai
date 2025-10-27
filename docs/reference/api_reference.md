@@ -52,7 +52,6 @@ Simple health check endpoint.
   "timestamp": "2025-10-02T14:30:15.123Z"
 }
 ```
-
 **Status Codes:**
 - `200`: Service healthy
 - `500`: Service unhealthy
@@ -65,37 +64,6 @@ curl http://localhost:8000/api/health
 ---
 
 ### GET /health/active-runs
-
-Get active workflow runs and transport status.
-
-**Response:**
-```json
-{
-  "active_runs": 3,
-  "transport_groups": {
-    "Generator": 2,
-    "CustomerSupport": 1
-  },
-  "tools_available": true,
-  "total_tools": 12,
-  "health_check_time_ms": 5.23
-}
-```
-
-**Example:**
-```bash
-curl http://localhost:8000/health/active-runs
-```
-
----
-
-### GET /metrics/perf/aggregate
-
-Get aggregated performance metrics across all chats.
-
-**Response:**
-```json
-{
   "active_chats": 5,
   "total_agent_turns": 127,
   "total_tool_calls": 43,
@@ -591,7 +559,6 @@ Get user token balance.
 
 **Query Parameters:**
 - `enterprise_id` (string, required): Enterprise identifier
-- `appid` (string, optional): App identifier (default: `"default"`)
 
 **Response:**
 ```json

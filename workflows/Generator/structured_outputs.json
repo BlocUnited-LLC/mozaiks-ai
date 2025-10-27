@@ -94,7 +94,7 @@
           "phases": {
             "type": "list",
             "items": "WorkflowPhase",
-            "description": "Ordered list of phases that make up the workflow."
+            "description": "Ordered list of phases that make up the workflow. MUST mirror the phases list from WorkflowStrategyCall exactly (same count, same phase names including 'Phase N:' prefix, same order, same approval flags). Multi-phase workflows are expected; do not collapse phases."
           }
         }
       },
@@ -588,6 +588,11 @@
             "type": "list",
             "items": "ToolSpec",
             "description": "List of tool entries (mirrors tools.json format)"
+          },
+          "lifecycle_tools": {
+            "type": "list",
+            "items": "ToolSpec",
+            "description": "List of lifecycle tool entries (optional, can be empty array or omitted). These are workflow-level hooks that execute at orchestration boundaries (before_chat, after_chat, before_agent, after_agent)."
           }
         }
       },
@@ -698,6 +703,18 @@
             "type": "str",
             "description": "Agent display name"
           },
+          "agent_type": {
+            "type": "str",
+            "allowed_values": [
+              "Standard",
+              "Context",
+              "Approval",
+              "Knowledge",
+              "Tool"
+            ],
+            "description": "Agent specialization type. Standard = general-purpose agent; Context = collects user information; Approval = gates requiring human decision; Knowledge = research/analysis agent with NO tools (provides context for downstream agents); Tool = execution agent with tools (performs operations using upstream knowledge).",
+            "default": "Standard"
+          },
           "system_message": {
             "type": "str",
             "description": "Complete system message for the agent"
@@ -713,6 +730,11 @@
           "structured_outputs_required": {
             "type": "bool",
             "description": "True when the agent must produce structured outputs (Pydantic model enforced); false otherwise."
+          },
+          "image_generation_enabled": {
+            "type": "bool",
+            "description": "True when the agent should have AG2's ImageGeneration capability attached (enables conversational DALL-E image generation). Default: false.",
+            "default": false
           }
         }
       },
@@ -776,11 +798,6 @@
             "type": "list",
             "items": "str",
             "description": "Agents whose messages are visible in UI"
-          },
-          "visual_agent": {
-            "type": "list",
-            "items": "str",
-            "description": "Agents that can emit UI tool events"
           }
         }
       },
@@ -913,11 +930,145 @@
             "items": "AgentRegistryEntry"
           }
         }
+      },
+      "DownloadRequest": {
+        "type": "model",
+        "fields": {
+          "confirmation_only": {
+            "type": "bool",
+            "description": "If true, show confirmation UI before creating files; if false, create files immediately then show download UI. Recommended: true for user control."
+          },
+          "storage_backend": {
+            "type": "str",
+            "description": "Storage backend for uploads: 'none' (default, browser download only), 's3' (future: S3 upload), 'local' (future: server-side copy). Use 'none' unless specific storage required."
+          },
+          "description": {
+            "type": "optional_str",
+            "description": "Optional description for download (currently unused; reserve for future metadata). Use null unless specific requirement."
+          }
+        }
+      },
+      "DownloadRequestCall": {
+        "type": "model",
+        "fields": {
+          "DownloadRequest": {
+            "type": "DownloadRequest",
+            "description": "Download configuration specifying confirmation mode and storage backend."
+          },
+          "agent_message": {
+            "type": "str",
+            "description": "Concise message (≤140 chars) shown to user in download UI. Example: 'Ready to download your workflow bundle?' Keep action-oriented and brief."
+          }
+        }
+      },
+      "WorkflowStrategyPhase": {
+        "type": "model",
+        "fields": {
+          "phase_name": {
+            "type": "str",
+            "description": "Phase name in format 'Phase N: Strategic Purpose'"
+          },
+          "phase_description": {
+            "type": "str",
+            "description": "Strategic description of what happens in this phase and why"
+          },
+          "approval_required": {
+            "type": "bool",
+            "description": "Whether this phase requires human approval (if interaction_mode=checkpoint_approval)"
+          },
+          "agents_needed": {
+            "type": "str",
+            "description": "Agent coordination pattern: 'single', 'parallel', or 'sequential'"
+          },
+          "specialist_domains": {
+            "type": "list",
+            "items": "str",
+            "description": "List of specialist domains needed for this phase (guides WorkflowImplementationAgent)"
+          }
+        }
+      },
+      "WorkflowStrategy": {
+        "type": "model",
+        "fields": {
+          "workflow_name": {
+            "type": "str",
+            "description": "Human-readable workflow name in Title Case With Spaces"
+          },
+          "workflow_description": {
+            "type": "str",
+            "description": "Description: When [TRIGGER], workflow [ACTIONS], resulting in [VALUE]"
+          },
+          "pattern": {
+            "type": "str",
+            "description": "AG2 orchestration pattern"
+          },
+          "trigger": {
+            "type": "str",
+            "description": "Workflow trigger mechanism (chat, form_submit, or schedule)"
+          },
+          "interaction_mode": {
+            "type": "str",
+            "description": "User interaction pattern"
+          },
+          "phases": {
+            "type": "list",
+            "items": "WorkflowStrategyPhase",
+            "description": "Complete multi-phase roadmap. Must contain ALL phases implied by the user request (minimum 3 for complex workflows). Each phase must have unique numbered prefix (Phase 1:, Phase 2:, etc.) in sequential order."
+          },
+          "strategy_notes": {
+            "type": "str",
+            "description": "Additional implementation context"
+          }
+        }
+      },
+      "WorkflowStrategyCall": {
+        "type": "model",
+        "fields": {
+          "WorkflowStrategy": {
+            "type": "WorkflowStrategy",
+            "description": "High-level workflow architecture"
+          },
+          "agent_message": {
+            "type": "str",
+            "description": "Message confirming strategy completion"
+          }
+        }
+      },
+      "PhaseAgents": {
+        "type": "model",
+        "fields": {
+          "phase_index": {
+            "type": "int",
+            "description": "Zero-based index matching the phase position in WorkflowStrategy.phases (0 = Phase 1, 1 = Phase 2, etc.)"
+          },
+          "agents": {
+            "type": "list",
+            "items": "WorkflowAgent",
+            "description": "Agent specifications for this phase (at least one). Use specialist_domains from strategy phase to guide agent design."
+          }
+        }
+      },
+      "PhaseAgentsCall": {
+        "type": "model",
+        "fields": {
+          "phase_agents": {
+            "type": "list",
+            "items": "PhaseAgents",
+            "description": "Ordered list of agent specifications, one entry per phase from WorkflowStrategy. Array length MUST match strategy phase count."
+          },
+          "agent_message": {
+            "type": "union",
+            "variants": ["str", "null"],
+            "description": "Optional brief message confirming implementation (<=140 chars)",
+            "default": null
+          }
+        }
       }
     },
     "registry": {
       "InterviewAgent": null,
-      "ActionPlanArchitect": "ActionPlanCall",
+      "WorkflowStrategyAgent": "WorkflowStrategyCall",
+      "WorkflowImplementationAgent": "PhaseAgentsCall",
       "ProjectOverviewAgent": "MermaidSequenceDiagramCall",
       "ToolsManagerAgent": "ToolsManagerAgentOutput",
       "UIFileGenerator": "UIFileGeneratorOutput",
@@ -928,7 +1079,7 @@
       "OrchestratorAgent": "OrchestratorAgentOutput",
       "HandoffsAgent": "HandoffsAgentOutput",
       "StructuredOutputsAgent": "StructuredOutputsAgentOutput",
-      "DownloadAgent": null
+      "DownloadAgent": "DownloadRequestCall"
     }
   }
 }

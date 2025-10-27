@@ -399,6 +399,30 @@
     margin-top: 8px !important;
   }
 
+/* Smooth artifact panel transition helpers */
+.artifact-panel {
+  /* will-change helps the browser optimize the transform/opacity transitions */
+  will-change: transform, opacity;
+}
+
+/* Wrapper helper to reserve space smoothly: when the panel is hidden we keep a 0 width but avoid reflow via overflow hidden */
+.artifact-wrapper-hidden {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-8px);
+}
+
+.artifact-wrapper-visible {
+  pointer-events: auto;
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* Slight easing mismatch fix when chat area collapses: ensure chat gets a smooth width transition too */
+.chat-pane-transition {
+  transition: width 500ms cubic-bezier(.2,.8,.2,1), max-width 500ms cubic-bezier(.2,.8,.2,1);
+}
+
   /* Anchor name labels so they appear next to the bubble side */
   .user-name {
     text-align: right;

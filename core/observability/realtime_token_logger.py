@@ -23,17 +23,13 @@ import json
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Union, TYPE_CHECKING
+from typing import Any, Dict, Optional, Union
 from collections.abc import Coroutine
 import sqlite3
 
 from autogen.logger.base_logger import BaseLogger
 from logs.logging_config import get_workflow_logger
 from core.data.persistence.persistence_manager import AG2PersistenceManager
-
-if TYPE_CHECKING:  # pragma: no cover
-    from autogen.logger.base_logger import BaseLogger as _BaseLogger
-    from openai.types.chat import ChatCompletion
 
 import logging
 logger = logging.getLogger("core.observability.realtime_token_logger")
@@ -44,7 +40,7 @@ class RealtimeTokenLogger(BaseLogger):
 
     def __init__(self) -> None:
         super().__init__()
-        self._delegate: Optional["_BaseLogger"] = None
+        self._delegate: Optional[BaseLogger] = None
         self._session_id: Optional[str] = None
         self._chat_id: Optional[str] = None
         self._enterprise_id: Optional[str] = None
@@ -67,7 +63,7 @@ class RealtimeTokenLogger(BaseLogger):
         workflow_name: str,
         enterprise_id: Optional[str],
         user_id: Optional[str],
-        delegate: Optional["_BaseLogger"],
+        delegate: Optional[BaseLogger],
     ) -> None:
         """Set session metadata and optional downstream delegate."""
         self._chat_id = chat_id
@@ -136,7 +132,7 @@ class RealtimeTokenLogger(BaseLogger):
         wrapper_id: int,
         source: Any,
         request: Dict[str, Any],
-        response: Union[str, "ChatCompletion"],
+    response: Union[str, Any],
         is_cached: int,
         cost: float,
         start_time: str,

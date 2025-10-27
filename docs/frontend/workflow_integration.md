@@ -802,28 +802,28 @@ Each workflow's components bundled separately for optimal code splitting.
 **Backend (shared_app.py):**
 
 ```python
-@app.post("/api/chat/start")
-async def start_chat(request: StartChatRequest, enterprise_id: str):
-    chat_id = f"chat_{uuid4().hex[:16]}"
-    
-    # Generate cache_seed (timestamp-based for simplicity)
-    cache_seed = str(int(datetime.now(UTC).timestamp()))
-    
-    # Store in database
-    await persistence_manager.create_chat_session(
-        chat_id=chat_id,
-        enterprise_id=enterprise_id,
-        user_id=request.user_id,
-        workflow_name=workflow_name,
-        cache_seed=cache_seed
-    )
-    
-    return {
-        "chat_id": chat_id,
-        "cache_seed": cache_seed,
-        "workflow_name": workflow_name,
-        ...
-    }
+@app.post("/api/chats/{enterprise_id}/{workflow_name}/start")
+async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
+  payload = await request.json()
+  user_id = payload["user_id"]
+
+  chat_id = str(uuid4())
+  cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, enterprise_id)
+
+  await persistence_manager.create_chat_session(
+    chat_id=chat_id,
+    enterprise_id=enterprise_id,
+    user_id=user_id,
+    workflow_name=workflow_name,
+    cache_seed=cache_seed,
+  )
+
+  return {
+    "chat_id": chat_id,
+    "cache_seed": cache_seed,
+    "workflow_name": workflow_name,
+    "enterprise_id": enterprise_id,
+  }
 ```
 
 **Frontend (ChatPage.js):**

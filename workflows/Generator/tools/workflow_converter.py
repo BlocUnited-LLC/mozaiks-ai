@@ -47,7 +47,7 @@ def _split_config_into_sections(config: Dict[str, Any]) -> Dict[str, Dict[str, A
     sections['structured_outputs'] = config.get('structured_outputs', {})
     sections['hooks'] = config.get('hooks', {})
     sections['tools'] = config.get('tools', {})
-    sections['ui_config'] = {k: v for k, v in config.items() if k in ['visual_agents', 'visual_agent']}
+    sections['ui_config'] = {k: v for k, v in config.items() if k in ['visual_agents']}
 
     return sections
 
@@ -311,7 +311,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                 'tools_manager_output': {...},       # ToolsManagerAgent (tools + lifecycle_tools manifest)
                 'ui_file_generator_output': {...},   # UIFileGenerator (UI tool implementations)
                 'agent_tools_file_generator_output': {...}, # AgentToolsFileGenerator (agent tools + lifecycle tools implementations)
-                'ui_config': {...},                  # UI config (visual_agents, visual_agent)
+                'ui_config': {...},                  # UI config (visual_agents)
                 'extra_files': [...]                 # Additional arbitrary files
             }
         context_variables: AG2 ContextVariables for sharing state between agents
@@ -323,6 +323,41 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         workflow_name = data.get('workflow_name', 'Generated_Workflow')
         wf_logger = get_workflow_logger(workflow_name=workflow_name)
         wf_logger.info(f"📁 [CREATE_WORKFLOW_FILES] Creating modular JSON files for: {workflow_name}")
+        
+        # Log incoming data for debugging
+        wf_logger.info("=" * 80)
+        wf_logger.info("📦 RAW DATA RECEIVED BY workflow_converter:")
+        wf_logger.info("=" * 80)
+        
+        # Save detailed input to file for inspection
+        try:
+            from pathlib import Path
+            import json as _json
+            from datetime import datetime
+            
+            converter_logs_dir = Path("logs/workflow_converter")
+            converter_logs_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            input_file = converter_logs_dir / f"converter_input_{workflow_name}_{timestamp}.json"
+            
+            with open(input_file, 'w', encoding='utf-8') as f:
+                _json.dump(data, f, indent=2, ensure_ascii=False)
+            
+            wf_logger.info(f"📄 Saved converter input to: {input_file.resolve()}")
+        except Exception as e:
+            wf_logger.debug(f"Failed to save converter input: {e}")
+        
+        for key, value in data.items():
+            if key == 'workflow_name':
+                wf_logger.info(f"   workflow_name: {value}")
+            elif isinstance(value, dict):
+                wf_logger.info(f"   {key}: {list(value.keys())}")
+            elif isinstance(value, list):
+                wf_logger.info(f"   {key}: [{len(value)} items]")
+            else:
+                wf_logger.info(f"   {key}: {type(value).__name__}")
+        wf_logger.info("=" * 80)
 
         # Build the complete config from agent outputs
         config: Dict[str, Any] = {}
@@ -331,14 +366,21 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         orchestrator_output = data.get('orchestrator_output', {})
         if orchestrator_output:
             config.update(orchestrator_output)
-            wf_logger.info("📋 [CREATE_WORKFLOW_FILES] Added orchestrator config")
+            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added orchestrator config: {list(orchestrator_output.keys())}")
+        else:
+            wf_logger.warning("⚠️ [CREATE_WORKFLOW_FILES] No orchestrator_output provided")
 
-        # Extract agents from AgentsAgent output
+        # Extract agents from AgentsAgent output (already contains auto_tool_mode)
+        # AgentsAgent determines auto_tool_mode by analyzing the tools array
         agents_output = data.get('agents_output', {})
         agent_names = _extract_agent_names(agents_output)
         if agents_output and 'agents' in agents_output:
-            config['agents'] = agents_output['agents']
-            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(agents_output['agents'])} agents")
+            agents_list = agents_output['agents']
+            config['agents'] = agents_list
+            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(agents_list)} agents (auto_tool_mode determined by AgentsAgent)")
+            wf_logger.info(f"   Agent names: {agent_names}")
+        else:
+            wf_logger.warning("⚠️ [CREATE_WORKFLOW_FILES] No agents in agents_output")
 
         # Extract handoffs from HandoffsAgent output
         handoffs_output = data.get('handoffs_output', {})
@@ -394,6 +436,9 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
             config['context_variables'] = context_variables_output
             wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(context_variables_output['context_variables'])} context variables")
 
+        # Extract tools configuration from ToolsManagerAgent
+        tools_manager_output = data.get('tools_manager_output', {})
+
         # -----------------------------
         # Structured outputs (MERGE)
         # -----------------------------
@@ -412,7 +457,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         wf_logger.info("📋 [CREATE_WORKFLOW_FILES] Prepared structured_outputs (merged static+dynamic and completed registry)")
 
         # Add tools configuration from ToolsManagerAgent (authoritative)
-        tools_manager_output = data.get('tools_manager_output', {})
+        # Note: agent_modes extracted separately above and merged into agents.json
         if isinstance(tools_manager_output, dict):
             # Directly structured output case
             if "tools" in tools_manager_output or "lifecycle_tools" in tools_manager_output:
@@ -423,6 +468,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                 if "lifecycle_tools" in tools_manager_output and isinstance(tools_manager_output["lifecycle_tools"], list):
                     tools_config["lifecycle_tools"] = tools_manager_output["lifecycle_tools"]
                     wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added lifecycle_tools configuration (lifecycle_tools_list={len(tools_manager_output['lifecycle_tools'])})")
+                # NOTE: agent_modes intentionally NOT added to tools.json - it belongs in agents.json
                 if tools_config:
                     config["tools"] = tools_config
             # tools_config string case (legacy fallback)
@@ -444,6 +490,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                     if isinstance(parsed.get("lifecycle_tools"), list):
                         tools_config["lifecycle_tools"] = parsed["lifecycle_tools"]
                         wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added lifecycle_tools configuration (lifecycle_tools_list={len(parsed['lifecycle_tools'])})")
+                    # NOTE: agent_modes intentionally NOT added to tools.json - it belongs in agents.json
                     if tools_config:
                         config["tools"] = tools_config
                     else:
@@ -458,6 +505,28 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         # Add extra files to config so they can be saved
         extra_files = data.get('extra_files')
 
+        # Inject runtime-generated attachments (e.g., API key env snapshot) from context variables
+        if context_variables and hasattr(context_variables, 'get'):
+            try:
+                env_attachment = context_variables.get('api_keys_env_attachment')
+            except Exception:
+                env_attachment = None
+            if isinstance(env_attachment, dict):
+                env_filename = (env_attachment.get('filename') or 'api_keys.env').strip()
+                env_content = env_attachment.get('filecontent')
+                if env_content is None:
+                    env_content = env_attachment.get('content')
+                if env_filename and env_content is not None:
+                    if not isinstance(extra_files, list):
+                        extra_files = []
+                    already_present = any(
+                        isinstance(item, dict) and item.get('filename') == env_filename
+                        for item in extra_files
+                    )
+                    if not already_present:
+                        extra_files.append({'filename': env_filename, 'filecontent': env_content})
+                        wf_logger.info("🧩 [CREATE_WORKFLOW_FILES] Added API key env attachment to extra_files")
+
         # Extract files from UIFileGenerator output (UI tools - Python + React)
         ui_file_generator_output = data.get('ui_file_generator_output', {})
         if ui_file_generator_output:
@@ -471,7 +540,7 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                     if not tool_name:
                         continue
                     
-                    # Python backend file
+                    # Python backend file (tool_name is snake_case)
                     py_content = tool_obj.get('py_content')
                     if py_content:
                         ui_tool_files.append({
@@ -479,11 +548,25 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                             'content': py_content
                         })
                     
-                    # React component file (goes to ChatUI/src/workflows/{workflow}/components/)
+                    # React component file (extract PascalCase component name from js_content)
                     js_content = tool_obj.get('js_content')
                     if js_content:
+                        # Extract component name from "const ComponentName = ({" pattern
+                        component_name = None
+                        for line in js_content.split('\n'):
+                            if 'const ' in line and ' = ({' in line:
+                                # Extract: "const ActionPlan = ({" -> "ActionPlan"
+                                match = line.strip().split('const ')[1].split(' = ({')[0].strip()
+                                component_name = match
+                                break
+                        
+                        # Fallback: convert tool_name to PascalCase if pattern not found
+                        if not component_name:
+                            # Convert snake_case to PascalCase (e.g., "action_plan" -> "ActionPlan")
+                            component_name = ''.join(word.capitalize() for word in tool_name.split('_'))
+                        
                         ui_tool_files.append({
-                            'path': f"ChatUI/src/workflows/{workflow_name}/components/{tool_name}.jsx",
+                            'path': f"ChatUI/src/workflows/{workflow_name}/components/{component_name}.jsx",
                             'content': js_content
                         })
                 
@@ -554,7 +637,6 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                 cfg['initial_message_to_user'] = None
             # Ensure arrays
             cfg.setdefault('visual_agents', [])
-            cfg.setdefault('visual_agent', [])
             return cfg
 
         _apply_orchestrator_defaults(config)

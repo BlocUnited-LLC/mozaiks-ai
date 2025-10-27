@@ -341,6 +341,19 @@ Lifecycle tool execution emits business events through the unified event dispatc
 - Mutations to `context_variables.data` are visible to downstream tools and agents
 - No manual parameter injection needed (AG2 dependency injection handles it)
 
+### Event Stream Compensation (Synthetic Events)
+
+**Important**: Lifecycle tools that pause workflow execution (e.g., waiting for user input via `InputRequestEvent`) trigger the runtime's **synthetic event system** to maintain frontend visibility.
+
+**Why?**: When AG2 resumes after a pause (e.g., after `collect_api_keys_from_action_plan` completes), it does NOT re-emit `SelectSpeakerEvent` for the next agent. This would cause thinking bubbles to disappear in the frontend, breaking the user's sense of workflow progression.
+
+**Runtime Compensation**: The orchestration layer detects speaker changes after resume and automatically emits synthetic `select_speaker` events to fill the gap. This ensures:
+- Thinking bubbles appear for every agent turn (even after pauses)
+- Frontend receives unbroken event stream
+- User experience remains continuous across lifecycle tool execution
+
+**See**: [Synthetic Events Documentation](synthetic_events.md) for complete technical details on how the runtime compensates for AG2's resume behavior.
+
 ## Limitations
 
 1. **Sync Runtime**: Tools run in the main async event loop; blocking operations should use async

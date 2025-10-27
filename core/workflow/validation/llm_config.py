@@ -377,8 +377,64 @@ def clear_llm_caches(raw: bool = True, built: bool = True) -> None:
     logger.info(f"[LLM_CONFIG] Caches cleared raw={raw} built={built}")
 
 
+async def get_dalle_llm_config(
+    *,
+    dalle_model: str = "dall-e-3",
+    cache_seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Build LLM config specifically for DALL-E image generation.
+    
+    Uses the same OpenAI API key from the main config_list but with DALL-E model.
+    
+    Args:
+        dalle_model: DALL-E model to use (dall-e-2 or dall-e-3)
+        cache_seed: Optional cache seed override
+        
+    Returns:
+        llm_config dict compatible with DalleImageGenerator
+    """
+    logger.info(f"[DALLE_CONFIG] Building DALL-E config (model={dalle_model})")
+    
+    # Load base provider list
+    config_list = await _load_raw_config_list()
+    logger.debug(f"[DALLE_CONFIG] Loaded {len(config_list)} provider entries")
+    
+    # Look for explicit DALL-E entry first
+    dalle_entry = next(
+        (c for c in config_list if dalle_model in c.get('model', '').lower()),
+        None
+    )
+    
+    if dalle_entry:
+        logger.info(f"[DALLE_CONFIG] Found existing DALL-E entry: {dalle_entry.get('model')}")
+    else:
+        # Use first OpenAI key with specified DALL-E model
+        if not config_list:
+            logger.error("[DALLE_CONFIG] No provider entries found - cannot create DALL-E config")
+            raise ValueError("No LLM providers configured - cannot enable image generation")
+        
+        base_entry = config_list[0]
+        dalle_entry = {
+            "model": dalle_model,
+            "api_key": base_entry["api_key"]
+        }
+        logger.info(f"[DALLE_CONFIG] Created DALL-E entry using base OpenAI key (model={dalle_model})")
+    
+    selected_seed = cache_seed if cache_seed is not None else _DEFAULT_CACHE_SEED
+    
+    dalle_config = {
+        "config_list": [dalle_entry],
+        "cache_seed": selected_seed,
+        "timeout": 600,
+    }
+    
+    logger.debug(f"[DALLE_CONFIG] Final config: model={dalle_entry.get('model')}, seed={selected_seed}")
+    return dalle_config
+
+
 __all__ = [
     "get_llm_config",
+    "get_dalle_llm_config",
     "PRICE_MAP",
     "clear_llm_caches",
 ]

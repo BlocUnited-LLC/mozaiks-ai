@@ -18,6 +18,76 @@ from ..workflow_manager import workflow_manager
 logger = logging.getLogger(__name__)
 
 
+# ==============================================================================
+# IMAGE GENERATION UTILITIES
+# ==============================================================================
+
+def extract_images_from_conversation(sender: ConversableAgent, recipient: ConversableAgent):
+    """Extract PIL images from agent conversation history (for image generation capabilities).
+    
+    Parses GPT-4V format messages where content is an array with image_url entries.
+    
+    Args:
+        sender: Agent that sent messages (image generator)
+        recipient: Agent that received messages
+        
+    Returns:
+        List of PIL Image objects found in conversation
+        
+    Raises:
+        ValueError: If no images found in message history
+    """
+    try:
+        from autogen.agentchat.contrib import img_utils
+    except ImportError:
+        logger.error("[IMAGE_EXTRACT] Failed to import img_utils from autogen.agentchat.contrib")
+        raise ImportError("autogen.agentchat.contrib.img_utils not available - install ag2[lmm]")
+    
+    images = []
+    all_messages = sender.chat_messages.get(recipient, [])
+    
+    logger.debug(f"[IMAGE_EXTRACT] Scanning {len(all_messages)} messages from {sender.name} to {recipient.name}")
+    
+    for idx, message in enumerate(reversed(all_messages)):
+        contents = message.get("content", [])
+        
+        # Handle both string and array content formats
+        if isinstance(contents, str):
+            continue
+            
+        if not isinstance(contents, list):
+            logger.warning(f"[IMAGE_EXTRACT] Message {idx} has unexpected content type: {type(contents)}")
+            continue
+        
+        for content_idx, content in enumerate(contents):
+            if isinstance(content, str):
+                continue
+                
+            if not isinstance(content, dict):
+                continue
+                
+            if content.get("type") == "image_url":
+                img_data = content.get("image_url", {}).get("url")
+                if img_data:
+                    try:
+                        img = img_utils.get_pil_image(img_data)
+                        images.append(img)
+                        logger.info(f"[IMAGE_EXTRACT] Found image in message {idx}, content {content_idx}")
+                    except Exception as img_err:
+                        logger.warning(f"[IMAGE_EXTRACT] Failed to load image from message {idx}: {img_err}")
+    
+    if not images:
+        logger.error(f"[IMAGE_EXTRACT] No images found in {len(all_messages)} messages")
+        raise ValueError("No image data found in conversation history")
+    
+    logger.info(f"[IMAGE_EXTRACT] Successfully extracted {len(images)} images")
+    return images
+
+
+# ==============================================================================
+# CONTEXT UTILITIES
+# ==============================================================================
+
 def _context_to_dict(container: Any) -> Dict[str, Any]:
     try:
         if hasattr(container, "to_dict"):
@@ -375,6 +445,70 @@ async def create_agents(
             logger.error(f"[AGENTS] CRITICAL ERROR creating ConversableAgent {agent_name}: {err}")
             raise
 
+        # ==============================================================================
+        # IMAGE GENERATION CAPABILITY (AG2 addon)
+        # ==============================================================================
+        if agent_config.get("image_generation_enabled", False):
+            logger.info(f"[AGENTS][CAPABILITY] Image generation enabled for {agent_name} - attaching AG2 capability")
+            
+            try:
+                # Import AG2 image generation components
+                from autogen.agentchat.contrib.capabilities import generate_images
+                
+                logger.debug(f"[AGENTS][CAPABILITY] Imported AG2 generate_images module for {agent_name}")
+                
+                # Load DALL-E specific config
+                from ..validation.llm_config import get_dalle_llm_config
+                dalle_config = await get_dalle_llm_config(cache_seed=cache_seed)
+                
+                logger.info(
+                    f"[AGENTS][CAPABILITY] Built DALL-E config for {agent_name}: "
+                    f"model={dalle_config['config_list'][0].get('model')}"
+                )
+                
+                # Create DALL-E image generator
+                dalle_gen = generate_images.DalleImageGenerator(
+                    llm_config=dalle_config,
+                    resolution="1024x1024",  # Default, can be made configurable
+                    quality="standard",       # Default, can be made configurable
+                    num_images=1
+                )
+                
+                logger.debug(f"[AGENTS][CAPABILITY] Created DalleImageGenerator for {agent_name}")
+                
+                # Create image generation capability
+                image_capability = generate_images.ImageGeneration(
+                    image_generator=dalle_gen,
+                    text_analyzer_llm_config=llm_config,  # Use main config for text analysis
+                    verbosity=1  # Set to 2 for full debug logs
+                )
+                
+                logger.debug(f"[AGENTS][CAPABILITY] Created ImageGeneration capability for {agent_name}")
+                
+                # Attach capability to agent
+                image_capability.add_to_agent(agent)
+                
+                logger.info(
+                    f"[AGENTS][CAPABILITY] ✓ Successfully attached image generation capability to {agent_name} "
+                    f"(DALL-E model={dalle_config['config_list'][0].get('model')}, resolution=1024x1024)"
+                )
+                
+                # Mark agent with capability flag for runtime introspection
+                setattr(agent, "_mozaiks_has_image_generation", True)
+                
+            except ImportError as imp_err:
+                logger.error(
+                    f"[AGENTS][CAPABILITY] Failed to import AG2 image generation for {agent_name}: {imp_err}. "
+                    f"Install with: pip install ag2[lmm,openai]"
+                )
+                raise
+            except Exception as cap_err:
+                logger.error(
+                    f"[AGENTS][CAPABILITY] Failed to attach image generation capability to {agent_name}: {cap_err}",
+                    exc_info=True
+                )
+                raise
+
         setattr(agent, "_mozaiks_auto_tool_mode", auto_tool_mode)
         if structured_model_cls is not None:
             try:
@@ -450,6 +584,7 @@ def list_hooks_for_workflow(agents: Dict[str, Any]) -> Dict[str, Dict[str, List[
 
 __all__ = [
     "create_agents",
+    "extract_images_from_conversation",
     "list_agent_hooks",
     "list_hooks_for_workflow",
 ]

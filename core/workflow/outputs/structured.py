@@ -57,6 +57,21 @@ def _inline_schema_refs(node: Any, defs: Dict[str, Any], stack: Optional[Set[str
     return node
 
 
+def _add_additional_properties(schema: Any) -> Any:
+    """Recursively add additionalProperties: false to all object-type properties for OpenAI strict mode."""
+    if isinstance(schema, dict):
+        # If this is an object type, ensure additionalProperties explicitly false when unspecified or True
+        if schema.get('type') == 'object':
+            if schema.get('additionalProperties') is True or 'additionalProperties' not in schema:
+                schema['additionalProperties'] = False
+        
+        # Recursively process all nested schemas
+        return {k: _add_additional_properties(v) for k, v in schema.items()}
+    elif isinstance(schema, list):
+        return [_add_additional_properties(item) for item in schema]
+    return schema
+
+
 def _patch_model_schema(model_cls: type[BaseModel]) -> None:
     """Ensure JSON schema expands nested refs for OpenAI structured outputs."""
 
@@ -68,6 +83,8 @@ def _patch_model_schema(model_cls: type[BaseModel]) -> None:
         defs = schema.pop('$defs', None)
         if isinstance(defs, dict) and defs:
             schema = _inline_schema_refs(schema, defs)
+        # Add additionalProperties: false to all object types for OpenAI strict mode
+        schema = _add_additional_properties(schema)
         return schema
 
     model_cls.model_json_schema = classmethod(_model_json_schema)  # type: ignore[assignment]

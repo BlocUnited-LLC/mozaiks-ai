@@ -3,8 +3,6 @@
 # DESCRIPTION: 
 # ==============================================================================
 
-# === MOZAIKS-CORE-HEADER ===
-
 """Persistence layer for MozaiksAI workflows.
 
 Clean implementation aligned with AG2 event system:
@@ -19,6 +17,7 @@ import asyncio
 from datetime import datetime, UTC
 from typing import Dict, List, Any, Optional, Union, cast
 import hashlib
+from copy import deepcopy
 from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo import ReturnDocument
@@ -309,7 +308,10 @@ class AG2PersistenceManager:
             # Fetch created_at & usage to compute duration for rollup averages
             base_doc = await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"created_at": 1})
             created_at = base_doc.get("created_at") if base_doc else None
-            dur = float((now - created_at).total_seconds()) if created_at else 0.0
+            if isinstance(created_at, datetime) and created_at.tzinfo is None:
+                # Mongo can return naive datetimes when tz_aware=False; treat as UTC for compatibility.
+                created_at = created_at.replace(tzinfo=UTC)
+            dur = float((now - created_at).total_seconds()) if isinstance(created_at, datetime) else 0.0
             res = await coll.update_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"$set": {
                 "status": int(WorkflowStatus.COMPLETED),
                 "completed_at": now,
@@ -446,11 +448,24 @@ class AG2PersistenceManager:
         try:
             coll = await self._coll()
             doc = await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"messages": 1, "status": 1})
-            if not doc or int(doc.get("status", -1)) != int(WorkflowStatus.IN_PROGRESS):
+            
+            if not doc:
+                logger.warning(f"[RESUME_CHAT] No document found for chat_id={chat_id} enterprise_id={enterprise_id}")
                 return None
-            return doc.get("messages", [])
+            
+            status = int(doc.get("status", -1))
+            status_name = WorkflowStatus(status).name if status in [s.value for s in WorkflowStatus] else "UNKNOWN"
+            msgs = doc.get("messages", [])
+            
+            logger.info(f"[RESUME_CHAT] chat_id={chat_id} status={status_name}({status}) messages_count={len(msgs)}")
+            
+            if status != int(WorkflowStatus.IN_PROGRESS):
+                logger.warning(f"[RESUME_CHAT] Chat status is {status_name}, not IN_PROGRESS - returning None")
+                return None
+            
+            return msgs
         except Exception as e:  # pragma: no cover
-            logger.warning(f"Failed to resume chat {chat_id}: {e}")
+            logger.warning(f"[RESUME_CHAT] Failed to resume chat {chat_id}: {e}")
             return None
 
     async def fetch_event_diff(self, *, chat_id: str, enterprise_id: str, last_sequence: int) -> List[Dict[str, Any]]:
@@ -603,16 +618,66 @@ class AG2PersistenceManager:
                     # Attempt to parse JSON from cleaned content
                     parsed = self._extract_json_from_text(content_str)
                     if parsed:
-                        msg["structured_output"] = parsed
+                        normalized = self._normalize_structured_output(raw_name, parsed)
+                        if normalized != parsed:
+                            logger.warning(
+                                f"[SAVE_EVENT] Normalized structured output for {raw_name}"
+                            )
+                        msg["structured_output"] = normalized
                         schema_fields = get_structured_output_model_fields(wf_name, raw_name) or {}
                         if schema_fields:
                             msg["structured_schema"] = schema_fields
+                        logger.info(f"[SAVE_EVENT] ✓ Added structured_output for {raw_name}")
+                    else:
+                        logger.warning(f"[SAVE_EVENT] ✗ Failed to parse JSON for {raw_name}, content_preview: {content_str[:200] if content_str else '(empty)'}")
             except Exception as so_err:  # pragma: no cover
-                logger.debug(f"Structured output parse skipped agent={raw_name}: {so_err}")
+                logger.debug(f"[SAVE_EVENT] Structured output parse skipped agent={raw_name}: {so_err}")
             await coll.update_one(
                 {"_id": chat_id, "enterprise_id": enterprise_id},
                 {"$push": {"messages": msg}, "$set": {"last_updated_at": datetime.now(UTC)}},
             )
+            
+            # Log agent conversation to dedicated file with pretty formatting
+            try:
+                import logging as _logging
+                import json as _json
+                agent_conv_logger = _logging.getLogger("mozaiks.workflow.agent_messages")
+                agent_name = msg.get("agent_name", "unknown")
+                
+                # Try to parse and pretty-print JSON content
+                display_content = content_str
+                is_json = False
+                if content_str.strip().startswith('{') or content_str.strip().startswith('['):
+                    try:
+                        parsed = _json.loads(content_str)
+                        # Pretty print with indentation
+                        display_content = _json.dumps(parsed, indent=2, ensure_ascii=False)
+                        is_json = True
+                    except Exception:
+                        # Not valid JSON, use as-is
+                        pass
+                
+                # Truncate if too long (even after formatting)
+                max_len = 2000 if is_json else 500
+                if len(display_content) > max_len:
+                    display_content = display_content[:max_len] + "\n... (truncated)"
+                
+                # Add visual separator and formatting
+                separator = "=" * 80
+                log_message = f"\n{separator}\n[{agent_name}]\n{separator}\n{display_content}\n"
+                
+                agent_conv_logger.info(
+                    log_message,
+                    extra={
+                        "chat_id": chat_id,
+                        "enterprise_id": enterprise_id,
+                        "sequence": seq,
+                        "event_id": event_id,
+                    }
+                )
+            except Exception as log_err:  # pragma: no cover
+                logger.debug(f"Failed to log agent conversation: {log_err}")
+                
         except Exception as e:  # pragma: no cover
             logger.error(f"Failed to save event for {chat_id}: {e}")
 
@@ -868,8 +933,9 @@ class AG2PersistenceManager:
             logger.error(f"Failed to update session metrics for {chat_id}: {e}")
 
 
-
+#############################################
     # used for generate_and_download
+#############################################
     @staticmethod
     def _extract_json_from_text(text: Any) -> Optional[Dict[str, Any]]:
         try:
@@ -881,59 +947,140 @@ class AG2PersistenceManager:
                 return None
             s = text if isinstance(text, str) else str(text)
             s_strip = s.strip()
-            try:
-                obj = json.loads(s_strip)
-                if isinstance(obj, dict):
-                    return obj
-            except Exception:
-                pass
-            start = s_strip.find("{")
-            end = s_strip.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                snippet = s_strip[start:end+1]
+            decoder = json.JSONDecoder()
+            idx = 0
+            length = len(s_strip)
+            while idx < length:
+                brace_idx = s_strip.find("{", idx)
+                if brace_idx == -1:
+                    return None
                 try:
-                    obj = json.loads(snippet)
+                    obj, end_idx = decoder.raw_decode(s_strip, brace_idx)
                     if isinstance(obj, dict):
                         return obj
-                except Exception:
-                    return None
+                    idx = end_idx
+                    continue
+                except json.JSONDecodeError:
+                    idx = brace_idx + 1
+                    continue
             return None
         except Exception:
             return None
+
+    @staticmethod
+    def _normalize_structured_output(agent_name: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict) or not agent_name:
+            return payload
+
+        adjusted = deepcopy(payload)
+
+        try:
+            if agent_name == "ToolsManagerAgent":
+                tools = adjusted.get("tools")
+                if isinstance(tools, list):
+                    mutated = False
+                    for entry in tools:
+                        if not isinstance(entry, dict):
+                            continue
+                        ui_meta = entry.get("ui")
+                        tool_type = entry.get("tool_type")
+                        has_ui_component = isinstance(ui_meta, dict) and ui_meta.get("component")
+                        if has_ui_component and tool_type != "UI_Tool":
+                            entry["tool_type"] = "UI_Tool"
+                            mutated = True
+                        if not has_ui_component and tool_type == "UI_Tool":
+                            entry["tool_type"] = "Agent_Tool"
+                            mutated = True
+                    if mutated:
+                        logger.warning("[SAVE_EVENT] Coerced tool_type values for ToolsManagerAgent manifest")
+        except Exception as normalize_err:
+            logger.debug(f"[SAVE_EVENT] Structured output normalization skipped agent={agent_name}: {normalize_err}")
+
+        return adjusted
 
     async def gather_latest_agent_jsons(self, *, chat_id: str, enterprise_id: str, agent_names: Optional[List[str]] = None) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
         try:
             msgs = await self.resume_chat(chat_id, enterprise_id) or []
+            logger.info(f"[GATHER_AGENT_JSONS] chat_id={chat_id} enterprise_id={enterprise_id} msgs_count={len(msgs) if msgs else 0}")
+            
+            if not msgs:
+                logger.warning(f"[GATHER_AGENT_JSONS] resume_chat returned empty/None for chat_id={chat_id}")
+                return result
+            
             def agent_name_from(m: Dict[str, Any]) -> str:
                 if m.get("role") == "assistant":
                     return str(m.get("agent_name") or "").strip()
                 return "user"
+            
             if agent_names:
                 wanted = {n.strip() for n in agent_names}
+                logger.info(f"[GATHER_AGENT_JSONS] Filtering for specific agents: {wanted}")
                 for m in reversed(msgs):
                     if not isinstance(m, dict):
                         continue
                     nm = agent_name_from(m)
                     if not nm or nm not in wanted or nm in result:
                         continue
+                    
+                    # PRIORITY 1: Check structured_output field first
+                    structured_output = m.get("structured_output")
+                    if isinstance(structured_output, dict):
+                        result[nm] = structured_output
+                        logger.info(f"[GATHER_AGENT_JSONS] ✓ Extracted JSON from {nm} (via structured_output field)")
+                        continue
+                    
+                    # PRIORITY 2: Try content field
                     js = self._extract_json_from_text(m.get("content"))
                     if js is not None:
                         result[nm] = js
+                        logger.info(f"[GATHER_AGENT_JSONS] ✓ Extracted JSON from {nm} (via content field)")
+                    else:
+                        logger.warning(f"[GATHER_AGENT_JSONS] ✗ No JSON found in {nm} message")
                 return result
+            
             seen: set[str] = set()
+            agents_found = []
             for m in reversed(msgs):
                 if not isinstance(m, dict):
                     continue
                 nm = agent_name_from(m)
                 if not nm or nm in seen:
                     continue
+                
+                # Log each agent message we encounter
+                role = m.get("role")
+                content_preview = str(m.get("content", ""))[:100] if m.get("content") else "(empty)"
+                logger.debug(f"[GATHER_AGENT_JSONS] Processing message: role={role} agent={nm} content_preview={content_preview}")
+                
+                # PRIORITY 1: Check structured_output field first (for agents with structured_outputs_required: true)
+                structured_output = m.get("structured_output")
+                if isinstance(structured_output, dict):
+                    result[nm] = structured_output
+                    seen.add(nm)
+                    agents_found.append(nm)
+                    logger.info(f"[GATHER_AGENT_JSONS] ✓ Extracted JSON from {nm} (via structured_output field)")
+                    continue
+                
+                # PRIORITY 2: Try to extract JSON from content field (fallback)
                 js = self._extract_json_from_text(m.get("content"))
                 if js is not None:
                     result[nm] = js
                     seen.add(nm)
+                    agents_found.append(nm)
+                    logger.info(f"[GATHER_AGENT_JSONS] ✓ Extracted JSON from {nm} (via content field)")
+                else:
+                    # Log first 500 chars of content for failed extractions
+                    content = m.get("content", "")
+                    content_sample = str(content)[:500] if content else "(empty)"
+                    logger.warning(f"[GATHER_AGENT_JSONS] ✗ No JSON found in {nm} message (role={role})")
+                    logger.debug(f"[GATHER_AGENT_JSONS]    Content sample: {content_sample}")
+            
+            logger.info(f"[GATHER_AGENT_JSONS] Completed: found {len(result)} agents with valid JSON: {agents_found}")
             return result
         except Exception as e:  # pragma: no cover
-            logger.error(f"Failed to gather agent JSONs for {chat_id}: {e}")
+            logger.error(f"[GATHER_AGENT_JSONS] Failed for chat_id={chat_id}: {e}", exc_info=True)
             return result
 
+#############################################
+#############################################
