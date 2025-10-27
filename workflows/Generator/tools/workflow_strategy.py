@@ -71,6 +71,7 @@ def workflow_strategy(
         "workflow_name": workflow_name,
         "workflow_description": workflow_description,
         "trigger": trigger,
+        "trigger_type": trigger,  # Add trigger_type for UI compatibility
         "interaction_mode": interaction_mode,
         "pattern": pattern,
         "phases": phases,
