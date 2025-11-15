@@ -5,7 +5,7 @@
 import logging
 import os
 import sys
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 # Ensure project root is on Python path for workflow imports
@@ -22,6 +22,7 @@ from core.transport.simple_transport import SimpleTransport
 from core.workflow.workflow_manager import workflow_status_summary, get_workflow_transport, get_workflow_tools
 from core.data.persistence.persistence_manager import AG2PersistenceManager, InvalidEnterpriseIdError
 from core.data.themes.theme_manager import ThemeManager, ThemeResponse
+from core.workflow.dependencies import dependency_manager
 
 # Initialize persistence manager (handles lean chat session storage internally)
 persistence_manager = AG2PersistenceManager()
@@ -747,12 +748,140 @@ async def chat_exists(enterprise_id: str, workflow_name: str, chat_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to check chat existence: {e}")
 
+@app.get("/api/sessions/list/{enterprise_id}/{user_id}")
+async def list_user_sessions(enterprise_id: str, user_id: str):
+    """
+    List all active/paused workflow sessions for a user.
+    
+    Used by frontend to render session tabs (like browser tabs).
+    Returns sessions across all workflows so UI can show which ones are IN_PROGRESS.
+    """
+    try:
+        from core.data.models import WorkflowStatus
+        coll = await _chat_coll()
+        
+        # Find all IN_PROGRESS sessions for this user
+        sessions = await coll.find({
+            "enterprise_id": enterprise_id,
+            "user_id": user_id,
+            "status": int(WorkflowStatus.IN_PROGRESS)
+        }).sort("last_updated_at", -1).to_list(length=100)
+        
+        result = []
+        for session in sessions:
+            result.append({
+                "chat_id": session["_id"],
+                "workflow_name": session.get("workflow_name"),
+                "created_at": session.get("created_at").isoformat() if session.get("created_at") else None,
+                "last_updated_at": session.get("last_updated_at").isoformat() if session.get("last_updated_at") else None,
+                "last_artifact": session.get("last_artifact"),  # Quick metadata
+            })
+        
+        wf_logger.debug(f"[LIST_SESSIONS] Found {len(result)} IN_PROGRESS sessions for user {user_id}")
+        
+        return {
+            "sessions": result,
+            "count": len(result)
+        }
+    except Exception as e:
+        wf_logger.error(f"[LIST_SESSIONS] Failed to list sessions: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {e}")
+
+
+def _iso(dt: Optional[datetime]) -> Optional[str]:
+    if isinstance(dt, datetime):
+        try:
+            return dt.isoformat()
+        except Exception:
+            return str(dt)
+    return dt  # type: ignore[return-value]
+
+
+@app.get("/api/general_chats/list/{enterprise_id}/{user_id}")
+async def list_general_chats(enterprise_id: str, user_id: str, limit: int = 50):
+    """Return Ask Mozaiks general chat sessions for a user."""
+
+    try:
+        sanitized_limit = max(1, min(int(limit or 1), 200))
+        sessions = await persistence_manager.list_general_chats(
+            enterprise_id=enterprise_id,
+            user_id=user_id,
+            limit=sanitized_limit,
+        )
+        normalized: List[Dict[str, Any]] = []
+        for sess in sessions:
+            normalized.append(
+                {
+                    "chat_id": sess.get("chat_id"),
+                    "label": sess.get("label"),
+                    "sequence": sess.get("sequence"),
+                    "status": sess.get("status"),
+                    "created_at": _iso(sess.get("created_at")),
+                    "last_updated_at": _iso(sess.get("last_updated_at")),
+                    "last_sequence": sess.get("last_sequence"),
+                }
+            )
+        return {"sessions": normalized, "count": len(normalized)}
+    except Exception as e:
+        wf_logger.error(f"[LIST_GENERAL_CHATS] Failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list general chats: {e}")
+
+
+@app.get("/api/general_chats/transcript/{enterprise_id}/{general_chat_id}")
+async def general_chat_transcript(
+    enterprise_id: str,
+    general_chat_id: str,
+    after_sequence: int = -1,
+    limit: int = 200,
+):
+    """Return a general chat transcript slice for Ask Mozaiks tabs."""
+
+    try:
+        transcript = await persistence_manager.fetch_general_chat_transcript(
+            general_chat_id=general_chat_id,
+            enterprise_id=enterprise_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+        if not transcript:
+            raise HTTPException(status_code=404, detail="General chat not found")
+
+        def _serialize_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+            m = dict(msg)
+            ts = m.get("timestamp")
+            if isinstance(ts, datetime):
+                m["timestamp"] = ts.isoformat()
+            return m
+
+        payload = {
+            "chat_id": transcript.get("chat_id"),
+            "label": transcript.get("label"),
+            "sequence": transcript.get("sequence"),
+            "status": transcript.get("status"),
+            "enterprise_id": transcript.get("enterprise_id"),
+            "user_id": transcript.get("user_id"),
+            "created_at": _iso(transcript.get("created_at")),
+            "last_updated_at": _iso(transcript.get("last_updated_at")),
+            "last_sequence": transcript.get("last_sequence"),
+            "messages": [_serialize_message(m) for m in transcript.get("messages", [])],
+        }
+        return payload
+    except HTTPException:
+        raise
+    except Exception as e:
+        wf_logger.error(f"[GENERAL_CHAT_TRANSCRIPT] Failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load general chat transcript: {e}")
+
+
 @app.get("/api/chats/meta/{enterprise_id}/{workflow_name}/{chat_id}")
 async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
-    """Return lightweight chat metadata including cache_seed and last_artifact.
+    """Return lightweight chat metadata including cache_seed, last_artifact, and artifact_instance.
 
     This allows a second user/browser to restore artifact UI state even if local
-    storage is empty. Does not return full transcript.
+    storage is empty. Includes both UI tool artifacts (last_artifact) and
+    WorkflowSession artifacts (artifact_instance_id + state) for multi-workflow navigation.
+    
+    Does not return full transcript.
     """
     try:
         try:
@@ -764,12 +893,33 @@ async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
         doc = await coll.find_one({"_id": chat_id, "enterprise_id": eid, "workflow_name": workflow_name}, projection)
         if not doc:
             return {"exists": False}
+        
+        # Also fetch artifact instance from WorkflowSessions (for multi-workflow navigation)
+        artifact_instance_id = None
+        artifact_state = None
+        try:
+            from core.workflow import session_manager
+            workflow_session = await session_manager.get_workflow_session(chat_id, str(eid))
+            if workflow_session and workflow_session.get("artifact_instance_id"):
+                artifact_instance_id = workflow_session["artifact_instance_id"]
+                # Fetch full artifact state for restoration
+                artifact_doc = await session_manager.get_artifact_instance(artifact_instance_id, str(eid))
+                if artifact_doc:
+                    artifact_state = artifact_doc.get("state")
+                    wf_logger.debug(
+                        f"[CHAT_META] Retrieved artifact instance {artifact_instance_id} for chat {chat_id}"
+                    )
+        except Exception as artifact_err:
+            wf_logger.warning(f"[CHAT_META] Failed to retrieve artifact instance for chat {chat_id}: {artifact_err}")
+        
         return {
             "exists": True,
             "chat_id": chat_id,
             "workflow_name": workflow_name,
             "cache_seed": doc.get("cache_seed"),
-            "last_artifact": doc.get("last_artifact"),
+            "last_artifact": doc.get("last_artifact"),  # UI tool artifacts (legacy/quick restore)
+            "artifact_instance_id": artifact_instance_id,  # WorkflowSession artifact ID
+            "artifact_state": artifact_state,  # Full artifact state for multi-workflow navigation
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load chat meta: {e}")
@@ -783,12 +933,16 @@ async def websocket_endpoint(
     chat_id: str,
     user_id: str,
 ):
-    """WebSocket endpoint for real-time agent communication."""
+    """WebSocket endpoint for real-time agent communication with multi-workflow session support."""
     if not simple_transport:
         await websocket.close(code=1000, reason="Transport service not available")
         return
 
-    wf_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_name}' (incoming chat_id={chat_id})")
+    # Register this WebSocket connection in session registry
+    from core.transport.session_registry import session_registry
+    ws_id = id(websocket)
+
+    wf_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_name}' (incoming chat_id={chat_id}, ws_id={ws_id})")
 
     # Auto resume vs new session selection
     active_chat_id = chat_id
@@ -923,13 +1077,78 @@ async def websocket_endpoint(
     except Exception as meta_e:
         wf_logger.debug(f"Failed to emit chat_meta for {active_chat_id}: {meta_e}")
     
-    await simple_transport.handle_websocket(
-        websocket=websocket,
+    # Validate workflow dependencies before accepting connection
+    try:
+        is_valid, error_msg = await dependency_manager.validate_workflow_dependencies(
+            workflow_name=workflow_name,
+            enterprise_id=enterprise_id,
+            user_id=user_id
+        )
+        
+        if not is_valid:
+            wf_logger.warning(
+                "WS_DEPENDENCIES_NOT_MET",
+                extra={
+                    "workflow_name": workflow_name,
+                    "enterprise_id": enterprise_id,
+                    "user_id": user_id,
+                    "error": error_msg,
+                    "chat_id": active_chat_id
+                }
+            )
+            # Send error event to client before closing
+            if simple_transport:
+                await simple_transport.send_event_to_ui({
+                    'kind': 'error',
+                    'error_message': error_msg,
+                    'error_code': 'WORKFLOW_DEPENDENCIES_NOT_MET',
+                    'chat_id': active_chat_id,
+                    'workflow_name': workflow_name
+                }, active_chat_id)
+            
+            # Close WebSocket with policy violation code
+            await websocket.close(code=1008, reason="Dependencies not met")
+            return
+    except Exception as dep_err:
+        wf_logger.error(f"WS_DEPENDENCY_VALIDATION_FAILED: {dep_err}", exc_info=True)
+        # On validation error, fail closed to prevent bypassing prerequisites
+        try:
+            await websocket.send_json({
+                "type": "chat.error",
+                "data": {
+                    "message": "Failed to validate workflow dependencies. Please try again.",
+                    "error_code": "DEPENDENCY_VALIDATION_ERROR"
+                }
+            })
+        except Exception as send_err:
+            wf_logger.error(f"Failed to send validation error to client: {send_err}")
+        
+        await websocket.close(code=1011, reason="Dependency validation failed")
+        return
+    
+    # Register initial workflow in session registry
+    session_registry.add_workflow(
+        ws_id=ws_id,
         chat_id=active_chat_id,
-        user_id=user_id,
         workflow_name=workflow_name,
-        enterprise_id=enterprise_id
+        enterprise_id=enterprise_id,
+        user_id=user_id,
+        auto_activate=True
     )
+
+    try:
+        await simple_transport.handle_websocket(
+            websocket=websocket,
+            chat_id=active_chat_id,
+            user_id=user_id,
+            workflow_name=workflow_name,
+            enterprise_id=enterprise_id,
+            ws_id=ws_id  # Pass ws_id for session switching
+        )
+    finally:
+        # Clean up session registry on disconnect
+        session_registry.remove_session(ws_id)
+        wf_logger.info(f"🔌 Cleaned up session registry for ws_id={ws_id}")
 
 @app.post("/chat/{enterprise_id}/{chat_id}/{user_id}/input")
 async def handle_user_input(
@@ -1155,6 +1374,45 @@ async def get_workflow_configs():
     except Exception as e:
         logger.error(f"? Failed to get workflow configs: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve workflow configurations")
+
+@app.get("/api/workflows/{enterprise_id}/available")
+async def get_available_workflows(
+    enterprise_id: str,
+    user_id: str,
+):
+    """
+    Get workflows with availability status based on dependencies.
+    
+    Returns a list of workflows indicating which are available for the user to start
+    based on their dependency prerequisites.
+    
+    Args:
+        enterprise_id: Enterprise identifier
+        user_id: User identifier
+        
+    Returns:
+        Dict with 'workflows' array containing workflow metadata and availability status
+    """
+    try:
+        workflows = await dependency_manager.list_available_workflows(
+            enterprise_id=enterprise_id,
+            user_id=user_id
+        )
+        
+        get_workflow_logger("shared_app").info(
+            "AVAILABLE_WORKFLOWS_REQUESTED",
+            extra={
+                "enterprise_id": enterprise_id,
+                "user_id": user_id,
+                "workflow_count": len(workflows)
+            }
+        )
+        
+        return {"workflows": workflows}
+        
+    except Exception as e:
+        logger.error(f"Failed to get available workflows for enterprise {enterprise_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve available workflows: {str(e)}")
 
 @app.post("/chat/{enterprise_id}/{chat_id}/component_action")
 async def handle_component_action(

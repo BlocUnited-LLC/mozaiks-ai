@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Agentic Chat Platform with dynamic agent/plugin loading",
   "main": "src/ExampleApp.js",
-  "proxy": "http://localhost:8000",
   "scripts": {
     "start": "node ./wait-backend.mjs && react-scripts start",
     "start:no-wait": "react-scripts start",

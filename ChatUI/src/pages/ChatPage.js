@@ -1,10 +1,11 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import Header from "../components/layout/Header";
-import Footer from "../components/layout/Footer";
 import ChatInterface from "../components/chat/ChatInterface";
 import ArtifactPanel from "../components/chat/ArtifactPanel";
 import WorkflowCompletion from "../components/chat/WorkflowCompletion";
-import { useParams } from "react-router-dom";
+import FluidChatLayout from "../components/chat/FluidChatLayout";
+import MobileArtifactDrawer from "../components/chat/MobileArtifactDrawer";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useChatUI } from "../context/ChatUIContext";
 import workflowConfig from '../config/workflowConfig';
 import { getLoadedWorkflows, getWorkflow } from '../workflows/index';
@@ -21,6 +22,8 @@ const debugFlag = (k) => {
 };
 
 const ChatPage = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
   // Core state
   const [messages, setMessages] = useState([]);
   // Ref mirror to access latest messages inside callbacks without stale closure
@@ -41,19 +44,79 @@ const ChatPage = () => {
   const connectionInProgressRef = useRef(false);
   // Guard to prevent overlapping start logic (used by preflight existence effect)
   const pendingStartRef = useRef(false);
-  const { enterpriseId, workflowName: urlWorkflowName } = useParams();
-  const { user, api, config } = useChatUI();
+  const conversationBootstrapRef = useRef(false);
+  const pathSegments = location.pathname.split('/').filter(Boolean);
+  let pathEnterpriseId = null;
+  let pathWorkflowName = null;
+
+  if (pathSegments[0] === 'chat') {
+    pathEnterpriseId = pathSegments[1] || null;
+    pathWorkflowName = pathSegments[2] || null;
+  } else if (pathSegments[0] === 'enterprise') {
+    pathEnterpriseId = pathSegments[1] || null;
+    pathWorkflowName = pathSegments[2] || null;
+  }
+
+  const searchParams = new URLSearchParams(location.search || '');
+  const queryEnterpriseId = searchParams.get('enterpriseId') || searchParams.get('enterprise_id');
+  const queryWorkflowName = searchParams.get('workflow');
+
+  const enterpriseId = pathEnterpriseId || queryEnterpriseId;
+  const urlWorkflowName = pathWorkflowName || queryWorkflowName;
+  const { 
+    user, 
+    api, 
+    config, 
+    setActiveChatId, 
+    setActiveWorkflowName,
+    setChatMinimized,
+    layoutMode,
+    setLayoutMode,
+    isInDiscoveryMode,
+    setPreviousLayoutMode,
+    setIsInDiscoveryMode,
+    conversationMode,
+    setConversationMode,
+    activeGeneralChatId,
+    setActiveGeneralChatId,
+    generalChatSummary,
+    setGeneralChatSummary,
+    generalChatSessions,
+    setGeneralChatSessions,
+  } = useChatUI();
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
   const [forceOverlay, setForceOverlay] = useState(false);
+  const [discoveryChatMinimized, setDiscoveryChatMinimized] = useState(false);
+  
+  // Mobile-specific state
+  const [isMobileView, setIsMobileView] = useState(false);
+  const [mobileDrawerState, setMobileDrawerState] = useState('peek'); // 'hidden' | 'peek' | 'expanded'
+  const [hasUnseenChat, setHasUnseenChat] = useState(false);
+  const [hasUnseenArtifact, setHasUnseenArtifact] = useState(false);
+  
   // Current artifact messages rendered inside ArtifactPanel (not in chat messages)
   const [currentArtifactMessages, setCurrentArtifactMessages] = useState([]);
   // Track the most recent artifact-mode UI event id to manage auto-collapse
   const lastArtifactEventRef = useRef(null);
+  // Track pending AG2 input request (when user should respond via submitInputRequest)
+  const [pendingInputRequestId, setPendingInputRequestId] = useState(null);
   // Prevent duplicate restores per connection
   const artifactRestoredOnceRef = useRef(false);
   const artifactCacheValidRef = useRef(false);
+  const workflowMessagesCacheRef = useRef([]);
+  const generalMessagesCacheRef = useRef([]);
+  const generalHydrationPendingRef = useRef(false);
+  useEffect(() => {
+    if (conversationMode === 'workflow') {
+      workflowMessagesCacheRef.current = messages;
+    } else {
+      generalMessagesCacheRef.current = messages;
+    }
+  }, [messages, conversationMode]);
   const currentEnterpriseId = enterpriseId || config?.chat?.defaultEnterpriseId || '68542c1109381de738222350';
   const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
+  const [generalSessionsLoading, setGeneralSessionsLoading] = useState(false);
+  const [generalSessionsError, setGeneralSessionsError] = useState(null);
   // Workflow completion state
   const [workflowCompleted, setWorkflowCompleted] = useState(false);
   const [completionData, setCompletionData] = useState(null);
@@ -107,6 +170,141 @@ const ChatPage = () => {
     }
   }, []);
 
+  const refreshGeneralSessions = useCallback(async () => {
+    if (!api || !currentEnterpriseId || !currentUserId) {
+      return [];
+    }
+    setGeneralSessionsLoading(true);
+    setGeneralSessionsError(null);
+    try {
+      const result = await api.listGeneralChats(currentEnterpriseId, currentUserId, 50);
+      const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
+      setGeneralChatSessions(sessions);
+      return sessions;
+    } catch (err) {
+      console.error('Failed to list general chats:', err);
+      setGeneralSessionsError(err);
+      return [];
+    } finally {
+      setGeneralSessionsLoading(false);
+    }
+  }, [api, currentEnterpriseId, currentUserId, setGeneralChatSessions]);
+
+  const mapGeneralMessage = useCallback((message) => {
+    if (!message) {
+      return null;
+    }
+    const timestamp = (() => {
+      if (!message.timestamp) return Date.now();
+      try {
+        return new Date(message.timestamp).getTime();
+      } catch (_) {
+        return Date.now();
+      }
+    })();
+    return {
+      id: message.event_id || `general-${message.sequence || Date.now()}`,
+      sender: message.role === 'assistant' ? 'agent' : 'user',
+      agentName: message.role === 'assistant' ? 'Ask Mozaiks' : 'You',
+      content: message.content,
+      isStreaming: false,
+      timestamp,
+      metadata: message.metadata || {},
+    };
+  }, []);
+
+  const hydrateGeneralTranscript = useCallback(async (chatId, options = {}) => {
+    if (!api || !chatId) {
+      return;
+    }
+    try {
+      const transcript = await api.fetchGeneralChatTranscript(currentEnterpriseId, chatId, options);
+      if (!transcript) {
+        return;
+      }
+      const normalized = (transcript.messages || [])
+        .map(mapGeneralMessage)
+        .filter(Boolean);
+      generalMessagesCacheRef.current = normalized;
+      if (conversationMode === 'ask') {
+        setMessagesWithLogging(normalized);
+      }
+      setActiveGeneralChatId(transcript.chat_id);
+      setGeneralChatSummary({
+        chatId: transcript.chat_id,
+        label: transcript.label || transcript.chat_id,
+        lastUpdatedAt: transcript.last_updated_at,
+        lastSequence: transcript.last_sequence,
+      });
+      setGeneralSessionsError(null);
+      setGeneralChatSessions((prev) => {
+        if (!Array.isArray(prev) || !transcript.chat_id) {
+          return prev;
+        }
+        const next = [...prev];
+        const idx = next.findIndex((session) => session?.chat_id === transcript.chat_id);
+        if (idx === -1) {
+          return prev;
+        }
+        next[idx] = {
+          ...next[idx],
+          label: transcript.label || next[idx]?.label,
+          last_updated_at: transcript.last_updated_at,
+          lastSequence: transcript.last_sequence,
+          sequence: transcript.sequence ?? next[idx]?.sequence,
+        };
+        return next;
+      });
+    } catch (err) {
+      console.error('Failed to hydrate general chat transcript:', err);
+      setGeneralSessionsError(err);
+    }
+  }, [api, conversationMode, currentEnterpriseId, mapGeneralMessage, setActiveGeneralChatId, setGeneralChatSummary, setGeneralChatSessions, setGeneralSessionsError, setMessagesWithLogging]);
+
+  useEffect(() => {
+    if (!api || !currentEnterpriseId || !currentUserId) {
+      return;
+    }
+    refreshGeneralSessions();
+  }, [api, currentEnterpriseId, currentUserId, refreshGeneralSessions]);
+
+  useEffect(() => {
+    if (conversationBootstrapRef.current) {
+      return;
+    }
+    conversationBootstrapRef.current = true;
+    if (conversationMode !== 'workflow') {
+      setConversationMode('workflow');
+    }
+  }, [conversationMode, setConversationMode]);
+
+  useEffect(() => {
+    if (conversationMode === 'workflow') {
+      const cached = workflowMessagesCacheRef.current;
+      if (cached) {
+        setMessagesWithLogging(cached);
+      }
+      return;
+    }
+    if (conversationMode !== 'ask') {
+      return;
+    }
+    if (generalMessagesCacheRef.current && generalMessagesCacheRef.current.length > 0) {
+      setMessagesWithLogging(generalMessagesCacheRef.current);
+      return;
+    }
+    if ((!generalMessagesCacheRef.current || generalMessagesCacheRef.current.length === 0) && messagesRef.current.length > 0) {
+      setMessagesWithLogging([]);
+    }
+    if (!activeGeneralChatId || generalHydrationPendingRef.current) {
+      return;
+    }
+    generalHydrationPendingRef.current = true;
+    Promise.resolve(hydrateGeneralTranscript(activeGeneralChatId)).finally(() => {
+      generalHydrationPendingRef.current = false;
+    });
+  }, [activeGeneralChatId, conversationMode, hydrateGeneralTranscript, setMessagesWithLogging]);
+
   // Simplified incoming handler (namespaced chat.* only)
   const handleIncoming = useCallback((data) => {
     // Log all incoming events for debugging - you can filter this later if needed
@@ -158,6 +356,30 @@ const ChatPage = () => {
       };
       
       console.debug('🔌 ChatPage: Passing sendResponse callback type:', typeof sendResponse, 'event:', data);
+      // Auto-open artifact panel ONLY for display === 'artifact' (not inline components)
+      try {
+        const displayMode = data.display || data.display_type || data.mode;
+        if (displayMode === 'artifact') {
+          console.log('📊 [TELEMETRY] Auto-opening artifact panel for ui_tool_event:', {
+            ui_tool_id: data.ui_tool_id,
+            display: displayMode,
+            workflow: currentWorkflowName,
+            chat_id: currentChatId,
+            isMobile: isMobileView
+          });
+          
+          if (isMobileView) {
+            // Mobile: surface the bottom drawer and clear artifact badge
+            setIsSidePanelOpen(true);
+            setMobileDrawerState('expanded');
+            setHasUnseenArtifact(false);
+          } else {
+            // Desktop: Open split view as usual
+            setLayoutMode && setLayoutMode('split');
+            setIsSidePanelOpen && setIsSidePanelOpen(true);
+          }
+        }
+      } catch (e) { /* ignore if not available */ }
       try {
         dynamicUIHandler.processUIEvent(data, sendResponse);
       } catch (err) {
@@ -381,8 +603,95 @@ const ChatPage = () => {
       }
     } catch {}
 
-    const evt = data.type.slice(5);
+    const evt = data.type.startsWith('chat.') ? data.type.slice(5) : data.type;
     switch (evt) {
+      case 'mode_changed': {
+        const payload = data.data || {};
+        const nextMode = payload.mode || payload.status;
+        if (nextMode === 'general') {
+          setConversationMode('ask');
+          const generalId = payload.general_chat_id || payload.chat_id;
+          if (generalId) {
+            setActiveGeneralChatId(generalId);
+            setGeneralChatSummary({
+              chatId: generalId,
+              label: payload.general_chat_label || payload.label || 'Ask Mozaiks',
+              lastUpdatedAt: payload.last_updated_at || payload.timestamp || null,
+              lastSequence: payload.general_chat_sequence,
+            });
+            if (!generalHydrationPendingRef.current) {
+              generalHydrationPendingRef.current = true;
+              Promise.resolve(hydrateGeneralTranscript(generalId)).finally(() => {
+                generalHydrationPendingRef.current = false;
+              });
+            }
+          }
+          refreshGeneralSessions();
+        } else if (nextMode === 'workflow') {
+          setConversationMode('workflow');
+        }
+        if (payload.message) {
+          setMessagesWithLogging((prev) => ([
+            ...prev,
+            {
+              id: `mode-msg-${Date.now()}`,
+              sender: 'system',
+              agentName: 'System',
+              content: payload.message,
+              isStreaming: false,
+            }
+          ]));
+        }
+        return;
+      }
+      case 'general_session_created': {
+        const payload = data.data || {};
+        const generalId = payload.general_chat_id || payload.chat_id;
+        if (generalId) {
+          generalMessagesCacheRef.current = [];
+          setActiveGeneralChatId(generalId);
+          setGeneralChatSummary({
+            chatId: generalId,
+            label: payload.general_chat_label || payload.label || 'Ask Mozaiks',
+            lastUpdatedAt: payload.last_updated_at || payload.timestamp || null,
+            lastSequence: payload.general_chat_sequence,
+          });
+          setConversationMode('ask');
+          generalHydrationPendingRef.current = true;
+          Promise.resolve(hydrateGeneralTranscript(generalId)).finally(() => {
+            generalHydrationPendingRef.current = false;
+          });
+        }
+        refreshGeneralSessions();
+        return;
+      }
+      case 'context_switched': {
+        const payload = data.data || {};
+        const targetChatId = payload.to_chat_id || payload.chat_id;
+        if (targetChatId) {
+          setCurrentChatId(targetChatId);
+          setActiveChatId(targetChatId);
+          try { localStorage.setItem(LOCAL_STORAGE_KEY, targetChatId); } catch {}
+        }
+        if (payload.workflow_name) {
+          setCurrentWorkflowName(payload.workflow_name);
+          setActiveWorkflowName(payload.workflow_name);
+        }
+        setConversationMode('workflow');
+        if (payload.message) {
+          setMessagesWithLogging((prev) => ([
+            ...prev,
+            {
+              id: `ctx-msg-${Date.now()}`,
+              sender: 'system',
+              agentName: 'System',
+              content: payload.message,
+              isStreaming: false,
+            }
+          ]));
+        }
+        return;
+      }
       case 'print': {
         // Suppress very first auto-generated instruction style message if workflow has no explicit initial_message_to_user
         try {
@@ -454,6 +763,24 @@ const ChatPage = () => {
           }
         } catch {}
         const content = data.content || '';
+        const metadataSource = data.metadata || data.data?.metadata || {};
+        const normalizedAgent = (data.agent || data.agent_name || data.sender || '').toLowerCase();
+        const isGeneralUserEcho = metadataSource?.source === 'general_agent' && normalizedAgent === 'user';
+        const isWorkflowUserMessage = !isGeneralUserEcho && (
+          normalizedAgent === 'user' ||
+          (data.role && String(data.role).toLowerCase() === 'user') ||
+          metadataSource?.source === 'workflow_user' ||
+          Boolean(metadataSource?.input_request_id)
+        );
+        if (isGeneralUserEcho) {
+          const recent = messagesRef.current[messagesRef.current.length - 1];
+          if (recent && recent.sender === 'user') {
+            const recentText = String(recent.content || '').trim();
+            if (recentText && recentText === String(content).trim()) {
+              return;
+            }
+          }
+        }
         // Enhanced suppression for assistant parroting user input (including minor variation)
         try {
           if (content) {
@@ -483,7 +810,9 @@ const ChatPage = () => {
           }
         } catch {}
         if (!content.trim()) return;
-        const agentName = extractAgentName(data);
+        const displayAsUser = isGeneralUserEcho || isWorkflowUserMessage;
+        const agentName = displayAsUser ? 'You' : extractAgentName(data);
+        const computedSender = displayAsUser ? 'user' : 'agent';
         setMessagesWithLogging(prev => {
           // Remove any thinking messages when agent actually speaks
           const thinkingMessages = prev.filter(m => m.isThinking);
@@ -508,7 +837,7 @@ const ChatPage = () => {
           const isToolAgent = !!data.is_tool_agent;
           updated.push({
             id:`text-${Date.now()}`,
-            sender:'agent',
+            sender: computedSender,
             agentName,
             content,
             isStreaming:false,
@@ -516,23 +845,63 @@ const ChatPage = () => {
             structuredOutput,
             structuredSchema,
             isVisual,
-            isToolAgent
+            isToolAgent,
+            metadata: metadataSource
           });
           if (debugFlag('mozaiks.debug_pipeline')) {
             console.log('[PIPELINE] appended final text message', { agent: agentName, len: content.length, isStructuredCapable, hasStructuredOutput: !!structuredOutput });
           }
           return updated;
         });
+        if (metadataSource?.general_chat_id) {
+          setGeneralChatSummary((prev) => ({
+            chatId: metadataSource.general_chat_id,
+            label: metadataSource.general_chat_label || prev?.label || 'Ask Mozaiks',
+            lastUpdatedAt: Date.now(),
+            lastSequence: metadataSource.general_chat_sequence || metadataSource.sequence || prev?.lastSequence,
+          }));
+        }
+        
+        // Badge notification: Set unseen chat badge if artifact drawer is covering chat
+        if (isMobileView && mobileDrawerState === 'expanded') {
+          setHasUnseenChat(true);
+        }
+        
         // Hide the one-time initialization spinner after the first successfully rendered chat.text
         if (showInitSpinner) {
           setShowInitSpinner(false);
         }
+        // Auto-open artifact panel for visual outputs with display === 'artifact'
+        try {
+          const hasStructuredOutput = data.structured_output && Object.keys(data.structured_output).length > 0;
+          const displayMode = data.display || data.display_type || data.mode || 
+                              (data.structured_output && data.structured_output.display);
+          
+          // Only auto-open if explicitly marked as artifact display (not inline)
+          if ((hasStructuredOutput || data.is_visual) && displayMode === 'artifact') {
+            console.log('📊 [TELEMETRY] Auto-opening artifact panel for text event:', {
+              agent: agentName,
+              is_visual: data.is_visual,
+              has_structured_output: hasStructuredOutput,
+              display: displayMode,
+              workflow: currentWorkflowName,
+              chat_id: currentChatId
+            });
+            setLayoutMode && setLayoutMode('split');
+            setIsSidePanelOpen && setIsSidePanelOpen(true);
+          }
+        } catch (e) {}
         return;
       }
       case 'input_request': {
+        console.log('📥 [INPUT_REQUEST] Received input_request event:', data);
+        if (data.request_id) {
+          console.log('🔖 [INPUT_REQUEST] Storing pending request_id:', data.request_id);
+          setPendingInputRequestId(data.request_id);
+        }
         const componentType = data.component_type || data.ui_tool_id || null;
         if (componentType) {
-          console.debug('🧩 [UI_EVENT] input_request -> processUIEvent payload:', {
+          const payload = {
             type: 'user_input_request',
             data: {
               input_request_id: data.request_id,
@@ -543,62 +912,15 @@ const ChatPage = () => {
                 workflow_name: currentWorkflowName
               }
             }
-          });
+          };
+          console.debug('🧩 [UI_EVENT] input_request -> processUIEvent payload:', payload);
           try {
-            dynamicUIHandler.processUIEvent({
-            type: 'user_input_request',
-            data: {
-              input_request_id: data.request_id,
-              chat_id: currentChatId,
-              payload: {
-                prompt: data.prompt,
-                ui_tool_id: componentType,
-                workflow_name: currentWorkflowName
-              }
-            }
-            });
+            dynamicUIHandler.processUIEvent(payload);
           } catch (err) {
             console.error('🧩 [UI_EVENT] dynamicUIHandler.processUIEvent threw for input_request', err, data);
           }
-        }
-        return;
-      }
-      case 'chat.input_request': {
-        console.log('📥 [INPUT_REQUEST] Received chat.input_request:', data);
-        const componentType = data.component_type || data.ui_tool_id || null;
-        if (componentType) {
-          console.debug('🧩 [UI_EVENT] chat.input_request -> processUIEvent payload:', {
-            type: 'user_input_request',
-            data: {
-              input_request_id: data.request_id,
-              chat_id: currentChatId,
-              payload: {
-                prompt: data.prompt,
-                ui_tool_id: componentType,
-                workflow_name: currentWorkflowName
-              }
-            }
-          });
-          try {
-            dynamicUIHandler.processUIEvent({
-              type: 'user_input_request',
-              data: {
-                input_request_id: data.request_id,
-                chat_id: currentChatId,
-                payload: {
-                  prompt: data.prompt,
-                  ui_tool_id: componentType,
-                  workflow_name: currentWorkflowName
-                }
-              }
-            });
-          } catch (err) {
-            console.error('🧩 [UI_EVENT] dynamicUIHandler.processUIEvent threw for chat.input_request', err, data);
-          }
-        } else {
-          // Fallback: show as a simple input request
+        } else if (data.prompt) {
           console.log('📝 [INPUT_REQUEST] Simple input request:', data.prompt);
-          // You could add UI logic here to show an input dialog
         }
         return;
       }
@@ -642,6 +964,20 @@ const ChatPage = () => {
               ...(derivedDisplay ? { display: derivedDisplay } : {})
             }
           }, sendResponse);
+          // Auto-open artifact panel ONLY for display === 'artifact'
+          try {
+            if (derivedDisplay === 'artifact') {
+              console.log('📊 [TELEMETRY] Auto-opening artifact panel for tool_call:', {
+                tool_name: toolName,
+                component_type: componentType,
+                display: derivedDisplay,
+                workflow: currentWorkflowName,
+                chat_id: currentChatId
+              });
+              setLayoutMode && setLayoutMode('split');
+              setIsSidePanelOpen && setIsSidePanelOpen(true);
+            }
+          } catch (e) {}
         } else {
           setMessagesWithLogging(prev => [...prev, { id: data.tool_call_id || `tool-call-${Date.now()}`, sender:'system', agentName:'System', content:`🔧 Tool Call: ${data.tool_name}`, isStreaming:false }]);
         }
@@ -842,7 +1178,7 @@ const ChatPage = () => {
       default:
         return;
     }
-  }, [currentChatId, currentWorkflowName, setMessagesWithLogging, extractAgentName, isSidePanelOpen, showInitSpinner]);
+  }, [currentChatId, currentWorkflowName, setMessagesWithLogging, extractAgentName, isSidePanelOpen, showInitSpinner, setLayoutMode, isMobileView, mobileDrawerState, setConversationMode, setActiveGeneralChatId, setGeneralChatSummary, hydrateGeneralTranscript, refreshGeneralSessions, setActiveChatId, setActiveWorkflowName, setCurrentChatId]);
 
   // Debug: Log spinner state changes
   useEffect(() => {
@@ -894,6 +1230,12 @@ useEffect(() => {
               console.log('[EXISTS] Chat exists; adopting chat_id and skipping startChat');
               setCurrentChatId(reuseChatId);
               setChatExists(true);
+              
+              // Update global chat context for persistent bubble
+              setActiveChatId(reuseChatId);
+              setActiveWorkflowName(currentWorkflowName);
+              setChatMinimized(false);
+              
               pendingStartRef.current = false;
               return;
             } else {
@@ -916,6 +1258,11 @@ useEffect(() => {
         const reused = !!result.reused;
         setCurrentChatId(newId);
         setChatExists(reused);
+        
+        // Update global chat context for persistent bubble
+        setActiveChatId(newId);
+        setActiveWorkflowName(currentWorkflowName);
+        setChatMinimized(false);
         try { localStorage.setItem(LOCAL_STORAGE_KEY, newId); } catch {}
         if (!reused) {
           try {
@@ -931,6 +1278,7 @@ useEffect(() => {
       pendingStartRef.current = false;
     }
   })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [api, workflowConfigLoaded, currentChatId, currentWorkflowName, currentEnterpriseId, currentUserId]);
 
   // Expose a helper to force-reset the current chat client-side (can be wired to a debug button later)
@@ -1278,10 +1626,24 @@ useEffect(() => {
   const sendMessage = async (messageContent) => {
     console.log('🚀 [SEND] Sending message:', messageContent);
     console.log('🚀 [SEND] Current chat ID:', currentChatId);
+    console.log('🚀 [SEND] Pending input request ID:', pendingInputRequestId);
     console.log('🚀 [SEND] Transport type:', transportType);
     console.log('🚀 [SEND] Enterprise ID:', currentEnterpriseId);
     console.log('🚀 [SEND] User ID:', currentUserId);
     console.log('🚀 [SEND] Workflow name:', currentWorkflowName);
+    
+    // If there's a pending input request, route to submitInputRequest instead of regular message flow
+    if (pendingInputRequestId) {
+      console.log('🎯 [SEND] Routing to submitInputRequest for pending request:', pendingInputRequestId);
+      const success = submitInputRequest(pendingInputRequestId, messageContent.content);
+      if (success) {
+        setPendingInputRequestId(null); // Clear pending request after submission
+        console.log('✅ [SEND] Input request submitted successfully');
+      } else {
+        console.error('❌ [SEND] Failed to submit input request');
+      }
+      return;
+    }
     
     // Create a properly structured user message
     const userMessage = {
@@ -1320,6 +1682,31 @@ useEffect(() => {
       ];
     });
     
+    if (conversationMode === 'ask') {
+      const targetChatId = activeGeneralChatId || currentChatId;
+      if (!targetChatId) {
+        console.error('❌ [SEND] No chat available for Ask Mozaiks message');
+        return;
+      }
+
+      const didSend = sendWsMessage({
+        type: 'user.input.submit',
+        chat_id: targetChatId,
+        text: messageContent.content,
+        context: {
+          source: 'chat_interface',
+          conversation_mode: 'ask',
+          general_chat_id: activeGeneralChatId || undefined,
+        },
+      });
+      if (!didSend) {
+        console.error('❌ [SEND] Failed to send Ask Mozaiks message (socket unavailable)');
+      } else {
+        setLoading(true);
+      }
+      return;
+    }
+
     // Send directly to backend workflow via WebSocket
     try {
       if (!currentChatId) {
@@ -1347,16 +1734,92 @@ useEffect(() => {
   // Submit a pending input request via WebSocket control message
   const submitInputRequest = useCallback((input_request_id, text) => {
     const activeWs = wsRef.current;
+    const targetChatId = currentChatId || activeGeneralChatId;
     if (!activeWs || !activeWs.socket || activeWs.socket.readyState !== WebSocket.OPEN) {
       console.warn('⚠️ Cannot submit input request; socket not open');
       return false;
     }
+    if (!targetChatId) {
+      console.warn('⚠️ Cannot submit input request; no active chat id');
+      return false;
+    }
     return activeWs.send({
       type: 'user.input.submit',
+      chat_id: targetChatId,
       input_request_id,
-      text
+      text,
+      context: {
+        source: 'chat_interface',
+        conversation_mode: conversationMode,
+        general_chat_id: activeGeneralChatId || undefined,
+      },
     });
+  }, [currentChatId, activeGeneralChatId, conversationMode]);
+
+  const sendWsMessage = useCallback((payload) => {
+    const activeWs = wsRef.current;
+    if (!activeWs || typeof activeWs.send !== 'function') {
+      console.warn('⚠️ No websocket connection available for payload', payload?.type || payload);
+      return false;
+    }
+    try {
+      activeWs.send(payload);
+      return true;
+    } catch (err) {
+      console.error('Failed to send websocket payload', payload, err);
+      return false;
+    }
   }, []);
+
+  const ensureGeneralMode = useCallback(() => {
+    if (conversationMode === 'ask') {
+      return true;
+    }
+    const sent = sendWsMessage({ type: 'chat.enter_general_mode' });
+    if (sent) {
+      setConversationMode('ask');
+      refreshGeneralSessions();
+    }
+    return sent;
+  }, [conversationMode, refreshGeneralSessions, sendWsMessage, setConversationMode]);
+
+  const startNewGeneralSession = useCallback(() => {
+    const sent = sendWsMessage({ type: 'chat.start_general_chat' });
+    if (sent) {
+      setConversationMode('ask');
+      refreshGeneralSessions();
+      generalMessagesCacheRef.current = [];
+      setMessagesWithLogging([]);
+    }
+    return sent;
+  }, [refreshGeneralSessions, sendWsMessage, setConversationMode, setMessagesWithLogging]);
+
+  const ensureWorkflowMode = useCallback(() => {
+    if (conversationMode === 'workflow') {
+      return true;
+    }
+    if (!currentChatId) {
+      console.warn('⚠️ Cannot resume workflow mode without chat id');
+      return false;
+    }
+    const sent = sendWsMessage({ type: 'chat.switch_workflow', chat_id: currentChatId });
+    if (sent) {
+      setConversationMode('workflow');
+    }
+    return sent;
+  }, [conversationMode, currentChatId, sendWsMessage, setConversationMode]);
+
+  const handleConversationModeChange = useCallback((mode) => {
+    if (mode === 'ask') {
+      ensureGeneralMode();
+    } else {
+      ensureWorkflowMode();
+    }
+  }, [ensureGeneralMode, ensureWorkflowMode]);
+
+  const handleStartGeneralChat = useCallback(() => {
+    startNewGeneralSession();
+  }, [startNewGeneralSession]);
 
   // Handle agent UI actions
   const handleAgentAction = async (action) => {
@@ -1418,10 +1881,6 @@ useEffect(() => {
     }
   };
 
-  const handleMyAppsClick = () => {
-  // console.debug('Navigate to My Apps');
-  };
-
   const handleCommunityClick = () => {
   // console.debug('Navigate to community');
   };
@@ -1431,12 +1890,45 @@ useEffect(() => {
   };
 
   const handleDiscoverClick = () => {
-  // console.debug('Discovery clicked');
+    try {
+      setPreviousLayoutMode(layoutMode);
+      setIsInDiscoveryMode(true);
+      navigate('/workflows');
+    } catch (err) {
+      console.warn('Failed to navigate to workflows', err);
+    }
   };
+
+  const handleReturnToChat = useCallback(() => {
+    navigate('/chat');
+  }, [navigate]);
+
+  const toggleDiscoveryChatMinimized = useCallback(() => {
+    setDiscoveryChatMinimized(prev => !prev);
+  }, []);
+
+  useEffect(() => {
+    if (!isInDiscoveryMode && discoveryChatMinimized) {
+      setDiscoveryChatMinimized(false);
+    }
+  }, [isInDiscoveryMode, discoveryChatMinimized]);
 
   const toggleSidePanel = () => {
     setIsSidePanelOpen((open) => {
       const next = !open;
+      
+      // Update fluid layout state
+      if (next) {
+        // Opening artifact - switch to split view
+        setLayoutMode('split');
+      } else {
+        // Closing artifact - back to full chat
+        setLayoutMode('full');
+      }
+
+      if (isMobileView) {
+        setMobileDrawerState(next ? 'expanded' : 'peek');
+      }
       
       if (next && currentArtifactMessages.length === 0 && artifactCacheValidRef.current) {
         // Panel opening and no current artifact - try to restore from cache
@@ -1517,15 +2009,23 @@ useEffect(() => {
     }
   }, [connectionStatus, currentChatId, chatExists, currentWorkflowName]);
 
-  // Decide when to force overlay (mobile landscape or short height)
+  // Mobile detection and layout adaptation
   useEffect(() => {
     const compute = () => {
       try {
         const w = window.innerWidth;
         const h = window.innerHeight;
-        const isSmallWidth = w < 768; // md breakpoint
+        const isMobile = w < 768; // md breakpoint
         const isShort = h < 500; // landscape phones/tablets
-        setForceOverlay(isSmallWidth || isShort);
+        
+        console.log('📱 [MOBILE] Detection:', { width: w, height: h, isMobile, isShort });
+        setIsMobileView(isMobile);
+        setForceOverlay(isMobile || isShort);
+        
+        // On mobile, avoid split mode - use tabs instead
+        if (isMobile && layoutMode === 'split') {
+          setLayoutMode('full');
+        }
       } catch {}
     };
     compute();
@@ -1535,7 +2035,31 @@ useEffect(() => {
       window.removeEventListener('resize', compute);
       window.removeEventListener('orientationchange', compute);
     };
-  }, []);
+  }, [layoutMode, setLayoutMode]);
+
+  // Keep drawer state in sync as viewport or artifact availability changes
+  useEffect(() => {
+    if (!isMobileView) {
+      if (mobileDrawerState !== 'peek') {
+        setMobileDrawerState('peek');
+      }
+      return;
+    }
+  }, [isMobileView, mobileDrawerState]);
+
+  useEffect(() => {
+    if (!isSidePanelOpen) {
+      setHasUnseenArtifact(false);
+      return;
+    }
+    setHasUnseenArtifact(mobileDrawerState !== 'expanded');
+  }, [mobileDrawerState, isSidePanelOpen]);
+
+  useEffect(() => {
+    if (mobileDrawerState !== 'expanded' && hasUnseenChat) {
+      setHasUnseenChat(false);
+    }
+  }, [mobileDrawerState, hasUnseenChat]);
 
   // Lock body scroll when overlay is open
   useEffect(() => {
@@ -1545,6 +2069,101 @@ useEffect(() => {
       return () => { document.body.style.overflow = overflow; };
     }
   }, [isSidePanelOpen, forceOverlay]);
+
+  const artifactToggleHandler = isInDiscoveryMode
+    ? handleReturnToChat
+    : (isMobileView
+        ? () => {
+            setIsSidePanelOpen(true);
+            setMobileDrawerState((prev) => (prev === 'expanded' ? 'peek' : 'expanded'));
+          }
+        : toggleSidePanel);
+
+  const artifactToggleLabel = isInDiscoveryMode
+    ? 'Return to chat'
+    : (isMobileView ? 'Artifact drawer' : undefined);
+
+  const mobileChatPaddingBottomClass = mobileDrawerState === 'expanded'
+    ? 'pb-[0.75rem]'
+    : 'pb-[4.5em]';
+
+  const hasArtifactContent = currentArtifactMessages.length > 0;
+
+  const chatInterface = (
+    <ChatInterface 
+      messages={messages} 
+      onSendMessage={sendMessage} 
+      loading={loading}
+      onAgentAction={handleAgentAction}
+      onArtifactToggle={artifactToggleHandler}
+      artifactToggleLabel={artifactToggleLabel}
+      connectionStatus={connectionStatus}
+      transportType={transportType}
+      workflowName={currentWorkflowName}
+      structuredOutputs={getWorkflow(currentWorkflowName)?.structuredOutputs || {}}
+      startupMode={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.startup_mode}
+      initialMessageToUser={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.initial_message_to_user}
+      onRetry={retryConnection}
+      tokensExhausted={tokensExhausted}
+      submitInputRequest={submitInputRequest}
+      onBrandClick={isInDiscoveryMode ? handleReturnToChat : undefined}
+      conversationMode={conversationMode}
+      onConversationModeChange={handleConversationModeChange}
+      onStartGeneralChat={handleStartGeneralChat}
+      generalChatSummary={generalChatSummary}
+      generalSessionsLoading={generalSessionsLoading}
+    />
+  );
+
+  console.log('📱 [RENDER] ChatPage render:', { isInDiscoveryMode, isMobileView, workflowCompleted, mobileDrawerState });
+
+  if (isInDiscoveryMode) {
+    if (discoveryChatMinimized) {
+      return (
+        <div className="fixed bottom-4 right-4 z-50">
+          <button
+            type="button"
+            onClick={toggleDiscoveryChatMinimized}
+            className="group relative w-20 h-20 rounded-2xl bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-secondary)] shadow-[0_8px_32px_rgba(15,23,42,0.6)] border-2 border-[rgba(var(--color-primary-light-rgb),0.5)] hover:shadow-[0_16px_48px_rgba(51,240,250,0.4)] hover:scale-105 transition-all duration-300 flex items-center justify-center"
+            title="Expand chat"
+          >
+            <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[rgba(var(--color-primary-light-rgb),0.2)] to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+            <img 
+              src="/mozaik_logo.svg" 
+              alt="MozaiksAI" 
+              className="w-11 h-11 relative z-10 group-hover:scale-110 transition-transform"
+              onError={(e) => {
+                e.currentTarget.onerror = null;
+                e.currentTarget.src = '/mozaik.png';
+              }}
+            />
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-0 pointer-events-none">
+        <button
+          type="button"
+          onClick={toggleDiscoveryChatMinimized}
+          className="pointer-events-auto relative group mb-[-1px] z-20"
+          title="Minimize chat"
+        >
+          <div className="w-32 h-8 rounded-t-2xl bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.4)] to-[rgba(var(--color-secondary-rgb),0.4)] border-t border-l border-r border-[rgba(var(--color-primary-light-rgb),0.4)] backdrop-blur-sm flex items-center justify-center group-hover:bg-gradient-to-r group-hover:from-[rgba(var(--color-primary-rgb),0.6)] group-hover:to-[rgba(var(--color-secondary-rgb),0.6)] transition-all">
+            <svg className="w-5 h-5 text-[var(--color-primary-light)] group-hover:text-white transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </div>
+        </button>
+        <div className="pointer-events-auto w-[26rem] max-w-[calc(100vw-2.5rem)] h-[50vh] md:h-[70vh] min-h-[360px]">
+          <div className="h-full">
+            {chatInterface}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen overflow-hidden relative">
@@ -1564,14 +2183,13 @@ useEffect(() => {
       <Header 
         user={user}
         workflowName={currentWorkflowName}
-        onMyAppsClick={handleMyAppsClick}
         onCommunityClick={handleCommunityClick}
         onNotificationClick={handleNotificationClick}
         onDiscoverClick={handleDiscoverClick}
       />
       
       {/* Main content area that fills remaining screen height - no scrolling */}
-      <div className="flex-1 flex flex-col min-h-0 overflow-hidden pt-16 sm:pt-20 md:pt-16">{/* Extra padding on mobile for cleaner spacing */}
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden pt-16 md:pt-16">{/* Padding for header */}
         {workflowCompleted ? (
           /* Workflow Completion Screen */
           <div className="flex-1 flex items-center justify-center px-4">
@@ -1588,51 +2206,76 @@ useEffect(() => {
               }}
             />
           </div>
-        ) : (
-          /* Normal Chat Interface */
-          <div className={`flex flex-col md:flex-row flex-1 w-full min-h-0 overflow-hidden transition-all duration-300`}>
-            {/* Chat Pane - lock to 50% width when artifact is open, 100% when closed */}
-            <div className={`flex flex-col px-4 min-h-0 overflow-hidden transition-all duration-300 ${isSidePanelOpen ? 'md:w-2/5 md:flex-none' : 'w-full flex-1'}`}>
-              
-              <ChatInterface 
-                messages={messages} 
-                onSendMessage={sendMessage} 
-                loading={loading}
-                onAgentAction={handleAgentAction}
-                onArtifactToggle={toggleSidePanel}
-                connectionStatus={connectionStatus}
-                transportType={transportType}
-                workflowName={currentWorkflowName}
-                structuredOutputs={getWorkflow(currentWorkflowName)?.structuredOutputs || {}}
-                startupMode={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.startup_mode}
-                initialMessageToUser={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.initial_message_to_user}
-                onRetry={retryConnection}
-                tokensExhausted={tokensExhausted}
-                submitInputRequest={submitInputRequest}
-              />
+        ) : isMobileView ? (
+          <div className="relative flex-1 flex flex-col">
+            <div className={`flex-1 flex flex-col transition-[padding-bottom] duration-300 mt-[1.25rem] ${mobileChatPaddingBottomClass}`}>
+              {chatInterface}
             </div>
-            
-            {/* Artifact Panel wrapper - always present on desktop to allow smooth CSS-driven transitions */}
-            <div
-              className={`hidden md:flex min-h-0 h-full px-4 md:flex-none transition-all duration-500 ease-in-out`
-                + ` ${isSidePanelOpen && !forceOverlay ? 'md:w-3/5 opacity-100 visible translate-x-0' : 'md:w-0 opacity-0 invisible -translate-x-4'}`
+
+            {isSidePanelOpen && mobileDrawerState === 'expanded' && (
+              <button
+                type="button"
+                aria-label="Collapse artifact workspace"
+                className="absolute inset-0 bg-black/40 backdrop-blur-[2px] z-30"
+                onClick={() => setMobileDrawerState('peek')}
+              ></button>
+            )}
+
+            <MobileArtifactDrawer
+              state={mobileDrawerState}
+              onStateChange={setMobileDrawerState}
+              onClose={() => {
+                setMobileDrawerState('peek');
+                setIsSidePanelOpen(false);
+              }}
+              artifactContent={
+                <ArtifactPanel 
+                  onClose={() => {
+                    setMobileDrawerState('peek');
+                    setIsSidePanelOpen(false);
+                  }}
+                  messages={currentArtifactMessages} 
+                  chatId={currentChatId}
+                  workflowName={currentWorkflowName}
+                />
               }
-              aria-hidden={!isSidePanelOpen || forceOverlay}
-            >
-              <ArtifactPanel onClose={toggleSidePanel} messages={currentArtifactMessages} />
-            </div>
+              hasArtifact={hasArtifactContent}
+              hasUnseenChat={hasUnseenChat}
+              hasUnseenArtifact={hasUnseenArtifact}
+            />
           </div>
+        ) : (
+          /* Desktop: Fluid Chat Layout - Adapts between full, split, and minimized */
+          <FluidChatLayout
+            layoutMode={layoutMode}
+            onLayoutChange={setLayoutMode}
+            isArtifactAvailable={true}
+            hasActiveChat={!!currentChatId}
+            onToggleArtifact={() => {
+              if (layoutMode === 'full') {
+                setLayoutMode('split');
+                setIsSidePanelOpen(true);
+              } else {
+                setLayoutMode('full');
+                setIsSidePanelOpen(false);
+              }
+            }}
+            onToggleChat={() => {
+              if (layoutMode === 'minimized') {
+                setLayoutMode('split');
+              }
+            }}
+            chatContent={chatInterface}
+            artifactContent={
+              <ArtifactPanel 
+                onClose={toggleSidePanel} 
+                messages={currentArtifactMessages} 
+                chatId={currentChatId}
+                workflowName={currentWorkflowName}
+              />
+            }
+          />
         )}
-      </div>
-
-      {/* Mobile full-screen Artifact modal (md:hidden handled inside component) */}
-      {!workflowCompleted && isSidePanelOpen && forceOverlay && (
-        <ArtifactPanel onClose={toggleSidePanel} isMobile={true} messages={currentArtifactMessages} />
-      )}
-
-      {/* Footer - positioned at bottom without affecting flex layout */}
-      <div className="flex-shrink-0">
-        <Footer />
       </div>
 
     </div>

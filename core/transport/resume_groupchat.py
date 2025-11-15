@@ -28,6 +28,7 @@ class GroupChatResumer:
         chat_id: str,
         enterprise_id: Optional[str],
         send_event: SendEventFunc,
+        startup_mode: Optional[str] = None,
     ) -> Optional[int]:
         """Replay persisted messages for in-progress chats when a socket connects."""
         if not enterprise_id:
@@ -65,6 +66,7 @@ class GroupChatResumer:
             chat_status="in_progress",
             start_index=0,
             context={"reason": "on_connect"},
+            startup_mode=startup_mode,
         )
         return last_index
 
@@ -118,6 +120,7 @@ class GroupChatResumer:
             chat_status=status,
             start_index=start_index,
             context={"reason": "client_resume", "last_client_index": last_client_index},
+            startup_mode=None,  # Client resume doesn't need filtering (they already saw it)
         )
         return {
             "replayed_messages": len(messages[start_index:]) if last_index is not None else 0,
@@ -138,6 +141,7 @@ class GroupChatResumer:
         chat_status: str,
         start_index: int,
         context: Optional[Dict[str, Any]],
+        startup_mode: Optional[str] = None,
     ) -> Optional[int]:
         slice_messages = messages[start_index:]
         if not slice_messages:
@@ -160,10 +164,28 @@ class GroupChatResumer:
         last_index = start_index - 1
         for offset, message in enumerate(slice_messages):
             absolute_index = start_index + offset
-            await send_event(
-                self._build_text_event(message=message, index=absolute_index, chat_id=chat_id),
-                chat_id,
-            )
+            
+            # Filter out initial_message from UserProxy in AgentDriven mode during reconnect
+            # This prevents the hidden kickstart message from appearing in the UI on resume
+            should_skip = False
+            if startup_mode == "AgentDriven":
+                # Check if this is the initial_message seed (hidden user proxy kickstart)
+                seed_kind = message.get("_mozaiks_seed_kind")
+                metadata = message.get("metadata", {})
+                metadata_seed_kind = metadata.get("_mozaiks_seed_kind") if isinstance(metadata, dict) else None
+                
+                if seed_kind == "initial_message" or metadata_seed_kind == "initial_message":
+                    self.logger.debug(
+                        "[AUTO_RESUME] Skipping initial_message for AgentDriven workflow (index=%d, chat_id=%s)",
+                        absolute_index, chat_id
+                    )
+                    should_skip = True
+            
+            if not should_skip:
+                await send_event(
+                    self._build_text_event(message=message, index=absolute_index, chat_id=chat_id),
+                    chat_id,
+                )
             last_index = absolute_index
 
         await send_event(
@@ -201,6 +223,30 @@ class GroupChatResumer:
         metadata = message.get("metadata")
         if metadata:
             normalized["metadata"] = metadata
+            
+            # Restore UI tool state if message has ui_tool metadata
+            ui_tool_meta = metadata.get("ui_tool")
+            if ui_tool_meta and isinstance(ui_tool_meta, dict):
+                # Reconstruct uiToolEvent object for frontend UIToolEventRenderer
+                normalized["uiToolEvent"] = {
+                    "ui_tool_id": ui_tool_meta.get("ui_tool_id"),
+                    "eventId": ui_tool_meta.get("event_id"),
+                    "payload": ui_tool_meta.get("payload", {}),
+                    "display": ui_tool_meta.get("display", "inline"),
+                    "workflow_name": message.get("workflow_name"),  # May be in top-level or metadata
+                }
+                # CRITICAL: Surface completion state to frontend
+                # Frontend UIToolEventRenderer checks these flags to show "Completed" chip vs interactive component
+                normalized["ui_tool_completed"] = ui_tool_meta.get("ui_tool_completed", False)
+                normalized["ui_tool_status"] = ui_tool_meta.get("ui_tool_status", "pending")
+                
+                self.logger.debug(
+                    "[RESUME] Restored UI tool state: tool=%s event=%s completed=%s display=%s",
+                    ui_tool_meta.get("ui_tool_id"),
+                    ui_tool_meta.get("event_id"),
+                    ui_tool_meta.get("ui_tool_completed", False),
+                    ui_tool_meta.get("display", "inline")
+                )
         return normalized
 
     def _build_boundary_event(

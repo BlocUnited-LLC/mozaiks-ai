@@ -151,6 +151,32 @@ async def use_ui_tool(
         workflow_name=workflow_name,
         agent_name=agent_name,
     )
+    
+    # Persist UI tool metadata to enable state restoration on reconnect
+    if chat_id:
+        try:
+            from core.data.persistence import persistence_manager as pm
+            from core.core_config import get_enterprise_id_from_chat_or_context
+            
+            enterprise_id = get_enterprise_id_from_chat_or_context(chat_id=chat_id)
+            if enterprise_id:
+                await pm.attach_ui_tool_metadata(
+                    chat_id=chat_id,
+                    enterprise_id=enterprise_id,
+                    event_id=event_id,
+                    metadata={
+                        "ui_tool_id": tool_id,
+                        "event_id": event_id,
+                        "display": resolved_display,
+                        "ui_tool_completed": False,
+                        "payload": payload,
+                        "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat()
+                    }
+                )
+                wf_logger.debug(f"📌 Attached UI tool metadata for {tool_id} (event={event_id})")
+        except Exception as meta_err:
+            wf_logger.warning(f"⚠️ Failed to attach UI tool metadata: {meta_err}")
+    
     try:
         # Try to log via tools logger (optional import)
         from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
@@ -197,6 +223,25 @@ async def use_ui_tool(
                 wf_logger.debug(f"🧹 Sent completion event for inline tool: {event_id}")
             except Exception as vanish_err:
                 wf_logger.warning(f"⚠️ Failed to send completion event for {event_id}: {vanish_err}")
+            
+            # Persist completion state to enable state restoration on reconnect
+            if chat_id:
+                try:
+                    from core.data.persistence import persistence_manager as pm
+                    from core.core_config import get_enterprise_id_from_chat_or_context
+                    
+                    enterprise_id = get_enterprise_id_from_chat_or_context(chat_id=chat_id)
+                    if enterprise_id:
+                        await pm.update_ui_tool_completion(
+                            chat_id=chat_id,
+                            enterprise_id=enterprise_id,
+                            event_id=event_id,
+                            completed=True,
+                            status=resp.get("status", "completed")
+                        )
+                        wf_logger.debug(f"✅ Updated UI tool completion status for {tool_id} (event={event_id})")
+                except Exception as persist_err:
+                    wf_logger.warning(f"⚠️ Failed to persist UI tool completion: {persist_err}")
         
         return resp
     except Exception as e:

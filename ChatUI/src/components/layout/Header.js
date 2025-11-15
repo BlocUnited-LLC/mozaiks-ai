@@ -5,7 +5,6 @@ const Header = ({
   user = null, 
   workflowName = null,
   onNotificationClick = () => {},
-  onMyAppsClick = () => {},
   onDiscoverClick = () => {}
 }) => {
   // Default user if none provided (for standalone mode)
@@ -19,7 +18,6 @@ const Header = ({
   const [isProfileDropdownOpen, setIsProfileDropdownOpen] = useState(false);
   const [isNotificationDropdownOpen, setIsNotificationDropdownOpen] = useState(false);
   const [notificationCount, setNotificationCount] = useState(3); // TODO: Mock notification count
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
   const dropdownRef = useRef(null);
 
@@ -80,15 +78,9 @@ const Header = ({
     onNotificationClick();
   };
 
-  const handleMyAppsClick = () => {
-    onMyAppsClick();
-  };
-
   const handleDiscoverClick = () => {
     onDiscoverClick();
   };
-
-  const toggleMobileMenu = () => setMobileMenuOpen(v => !v);
 
   return (
     <header className={`
@@ -104,32 +96,38 @@ const Header = ({
             <img src="/mozaik_logo.svg" className="h-7 w-7" alt="Mozaiks logo" />
             <img src="/mozaik.png" className="h-7 opacity-90" alt="Mozaiks brand" />
           </a>
-          <div className="hidden md:flex items-center gap-2 text-xs text-[rgba(var(--color-primary-light-rgb),0.8)]">
-            <button onClick={handleMyAppsClick} className="flex items-center gap-1 hover:text-[var(--color-primary-light)] hover:text-white transition-colors">
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          {workflowName && (
+            <div className="hidden md:flex items-center gap-2 text-xs text-[rgba(var(--color-primary-light-rgb),0.8)]">
+              <button
+                type="button"
+                onClick={handleDiscoverClick}
+                className="flex items-center gap-1 hover:text-[var(--color-primary-light)] hover:text-white transition-colors cursor-pointer"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+                <span className="oxanium">My Workflows</span>
+              </button>
+              <svg className="w-3 h-3 text-[rgba(var(--color-primary-rgb),0.5)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
               </svg>
-              <span className="oxanium">My Workflows</span>
-            </button>
-            <svg className="w-3 h-3 text-[rgba(var(--color-primary-rgb),0.5)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-            <span
-              className="oxanium text-[var(--color-primary-light)] text-white font-medium inline-block max-w-[40vw] truncate"
-              title={workflowName || 'Command Center Interface'}
-            >
-              {workflowName ? workflowName.charAt(0).toUpperCase() + workflowName.slice(1) : 'Command Center Interface'}
-            </span>
-          </div>
+              <span
+                className="oxanium text-[var(--color-primary-light)] text-white font-medium inline-block max-w-[40vw] truncate"
+                title={workflowName}
+              >
+                {workflowName.charAt(0).toUpperCase() + workflowName.slice(1)}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* RIGHT: Commander, notifications, discover */}
-        <div className="flex items-center gap-1.5 md:gap-2.5">
+        <div className="flex items-center gap-2 md:gap-3">
           {/* Commander */}
           <div className="relative" ref={dropdownRef}>
-            <button onClick={toggleProfileDropdown} className="flex items-center gap-2 p-2 rounded-lg hover:bg-white/10 transition-colors" title="Command Profile">
+            <button onClick={toggleProfileDropdown} className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-white/10 transition-colors" title="Command Profile">
               <div className="relative">
-                <div className="w-7 h-7 rounded-full overflow-hidden border border-[rgba(var(--color-primary-light-rgb),0.3)]">
+                <div className="w-8 h-8 rounded-full overflow-hidden border border-[rgba(var(--color-primary-light-rgb),0.3)]">
                   {currentUser.userPhoto ? (
                     <img src={currentUser.userPhoto} alt="User" className="w-full h-full object-cover" />
                   ) : (
@@ -193,12 +191,12 @@ const Header = ({
           </div>
 
           {/* Notifications */}
-          <button onClick={toggleNotificationDropdown} className="relative p-2 rounded-lg hover:bg-white/10 transition-colors" title="Mission Alerts">
+          <button onClick={toggleNotificationDropdown} className="relative p-1.5 rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center" title="Mission Alerts">
             <svg className="w-6 h-6 text-[var(--color-primary-light)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
             </svg>
             {notificationCount > 0 && (
-              <div className="absolute -top-0.5 -right-0.5">
+              <div className="absolute top-0 right-0">
                 <div className="w-4 h-4 bg-[var(--color-error)] rounded-full flex items-center justify-center border border-slate-900/60">
                   <span className="text-white text-[10px] font-bold oxanium">{notificationCount}</span>
                 </div>
@@ -207,43 +205,38 @@ const Header = ({
           </button>
 
           {/* Discover */}
-          <button onClick={handleDiscoverClick} className="hidden md:flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 border border-[rgba(var(--color-primary-light-rgb),0.3)] text-[var(--color-primary-light)] text-white oxanium hover:bg-white/10 transition-colors text-sm" title="Discover New Features">
-            <svg className="w-5 h-5 text-[var(--color-primary-light)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+          <button 
+            onClick={handleDiscoverClick} 
+            className="hidden md:flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-secondary)] border-2 border-[var(--color-primary-light)] text-white oxanium hover:shadow-[0_0_20px_rgba(51,240,250,0.5)] transition-all duration-300 text-sm font-bold" 
+            title="Discover New Features"
+            style={{ boxShadow: '0 0 10px rgba(51,240,250,0.3)' }}
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.343 17.657l-1.414 1.414m12.728 0l-1.414-1.414M6.343 6.343L4.929 4.929" />
+              <circle cx="12" cy="12" r="5" stroke="currentColor" strokeWidth="2.5" />
+            </svg>
+            <span className="font-bold tracking-wide">Discover</span>
+          </button>
+          {/* Discover mobile button */}
+          <button
+            onClick={handleDiscoverClick}
+            className="md:hidden inline-flex items-center justify-center w-11 h-11 rounded-2xl bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-secondary)] border border-[rgba(var(--color-primary-light-rgb),0.5)] text-white hover:shadow-[0_8px_30px_rgba(var(--color-primary-light-rgb),0.4)] transition-all"
+            title="Go to Discover"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.343 17.657l-1.414 1.414m12.728 0l-1.414-1.414M6.343 6.343L4.929 4.929" />
               <circle cx="12" cy="12" r="5" stroke="currentColor" strokeWidth="2" />
             </svg>
-            <span className="font-semibold">Discover</span>
-          </button>
-          <button
-            onClick={toggleMobileMenu}
-            className="md:hidden p-2 rounded-lg bg-white/5 border border-[rgba(var(--color-primary-light-rgb),0.3)] text-[var(--color-primary-light)] text-white hover:bg-white/10 transition-colors"
-            aria-expanded={mobileMenuOpen}
-            aria-controls="mobile-command-menu"
-            title={mobileMenuOpen ? "Close menu" : "Open menu"}
-          >
-            {mobileMenuOpen ? (
-              // Close (X) icon when open
-              <svg className="w-5 h-5 text-[var(--color-primary-light)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            ) : (
-              // Hamburger icon when closed
-              <svg className="w-5 h-5 text-[var(--color-primary-light)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            )}
           </button>
         </div>
       </div>
 
-      {/* Mobile Command Interface */}
-      {/* Show only on small screens to avoid duplication with desktop breadcrumbs */}
+      {/* Mobile Breadcrumbs */}
       <div className="md:hidden px-4 pb-3">
-        <div className="flex items-center justify-between gap-2">
-          {/* Mobile Breadcrumb: My Workflows > {Workflow} */}
+        {workflowName && (
           <div className="flex items-center space-x-2 text-xs text-[rgba(var(--color-primary-light-rgb),0.7)]">
             <button 
-              onClick={handleMyAppsClick}
+              onClick={handleDiscoverClick}
               className="flex items-center space-x-1 hover:text-[var(--color-primary-light)] transition-colors duration-200"
             >
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -257,40 +250,8 @@ const Header = ({
             </svg>
 
             <span className="oxanium text-[var(--color-primary-light)] text-slate-200 font-medium">
-              {workflowName ? workflowName.charAt(0).toUpperCase() + workflowName.slice(1) : 'Command Center Interface'}
+              {workflowName.charAt(0).toUpperCase() + workflowName.slice(1)}
             </span>
-          </div>
-        </div>
-        {mobileMenuOpen && (
-          <div id="mobile-command-menu" className="mt-2 rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] bg-white/5 backdrop-blur-md p-2 space-y-2">
-            <button
-              onClick={() => { handleDiscoverClick(); setMobileMenuOpen(false); }}
-              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-gradient-to-r from-[rgba(var(--color-background-rgb,15,23,32),0.8)] via-[rgba(var(--color-primary-dark-rgb,14,116,144),0.6)] to-[rgba(var(--color-background-rgb,15,23,32),0.8)] border border-[rgba(var(--color-primary-light-rgb),0.4)] text-[var(--color-primary-light)] text-white font-semibold oxanium hover:bg-[rgba(var(--color-primary-light-rgb),0.1)] hover:border-[rgba(var(--color-primary-light-rgb),0.8)] transition-all duration-200 text-sm"
-            >
-              <svg className="w-5 h-5 text-[var(--color-primary-light)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.343 17.657l-1.414 1.414m12.728 0l-1.414-1.414M6.343 6.343L4.929 4.929" />
-                <circle cx="12" cy="12" r="5" stroke="currentColor" strokeWidth="2" />
-              </svg>
-              Discover
-            </button>
-            <button
-              onClick={() => { toggleNotificationDropdown(); setMobileMenuOpen(false); }}
-              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl border border-[rgba(var(--color-primary-light-rgb),0.3)] text-[var(--color-primary-light)] text-white hover:bg-[rgba(var(--color-primary-light-rgb),0.1)] transition-all duration-200 text-sm"
-            >
-              <svg
-                className="w-5 h-5 text-[var(--color-primary-light)]"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                strokeWidth={1.8}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
-              </svg>
-              Notifications
-              {notificationCount > 0 && (
-                <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(var(--color-error-rgb),0.8)]">{notificationCount}</span>
-              )}
-            </button>
           </div>
         )}
       </div>

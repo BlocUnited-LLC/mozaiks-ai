@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
 import ChatMessage from "./ChatMessage";
-import ConnectionStatus from "./ConnectionStatus";
 import { useNavigate, useParams } from "react-router-dom";
 import UIToolRenderer from "../../core/ui/UIToolRenderer";
 
@@ -136,15 +135,22 @@ const ModernChatInterface = ({
   loading, 
   onAgentAction, 
   onArtifactToggle,
+  artifactToggleLabel,
   connectionStatus,
   transportType,
   workflowName,
+  conversationMode = 'workflow',
+  onConversationModeChange,
+  onStartGeneralChat,
+  generalChatSummary,
+  generalSessionsLoading = false,
   structuredOutputs = {},
   startupMode,
   initialMessageToUser,
   onRetry,
   tokensExhausted = false,
-  submitInputRequest // F5: WebSocket input submission function
+  submitInputRequest,
+  onBrandClick // Optional callback when brand/logo clicked
 }) => {
   const [message, setMessage] = useState('');
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
@@ -153,6 +159,17 @@ const ModernChatInterface = ({
   const [buttonText, setButtonText] = useState('SEND');
   const [isScrolledUp, setIsScrolledUp] = useState(false);
   const navigate = useNavigate();
+  const formattedWorkflowName = workflowName ? workflowName.charAt(0).toUpperCase() + workflowName.slice(1) : null;
+  const conversationSubtitle = conversationMode === 'ask'
+    ? (generalChatSummary?.label || 'Ask Mozaiks Session')
+    : (formattedWorkflowName || 'AI-Powered Workflow');
+  const modeLabel = conversationMode === 'ask' ? 'Ask Mozaiks' : 'Workflow';
+  const avatarIcon = conversationMode === 'ask' ? '🧠' : '🤖';
+  const avatarTitle = onBrandClick
+    ? 'Return to chat'
+    : conversationMode === 'ask'
+      ? 'Switch to Workflow Mode'
+      : 'Switch to Ask Mozaiks';
   // const renderCountRef = useRef(0); // For debugging renders if needed
   
   // Optional debug: enable to trace renders
@@ -239,94 +256,114 @@ const ModernChatInterface = ({
     }
   }, []);
 
+  const handleModeToggle = () => {
+    if (!onConversationModeChange) {
+      return;
+    }
+    const nextMode = conversationMode === 'workflow' ? 'ask' : 'workflow';
+    onConversationModeChange(nextMode);
+    if (nextMode === 'ask' && onStartGeneralChat && !generalChatSummary?.chatId) {
+      onStartGeneralChat();
+    }
+  };
+
+  const handleAvatarClick = () => {
+    if (onBrandClick) {
+      onBrandClick();
+      return;
+    }
+    handleModeToggle();
+  };
+
   return (
-    <div className="flex flex-col h-full rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] md:overflow-hidden overflow-visible shadow-2xl bg-gradient-to-br from-white/5 to-[rgba(var(--color-primary-rgb),0.05)] backdrop-blur-sm cosmic-ui-module">
-  {/* Per-turn loading: rely on subtle typing indicator inside messages area; avoid full-page spinner after init */}
+    <div className="flex flex-col h-full rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] md:overflow-hidden overflow-visible shadow-2xl bg-gradient-to-br from-white/5 to-[rgba(var(--color-primary-rgb),0.05)] backdrop-blur-sm cosmic-ui-module artifact-panel p-0" style={{ overflow: 'clip' }}>
+      {/* Per-turn loading: rely on subtle typing indicator inside messages area; avoid full-page spinner after init */}
       
-      {/* Fixed Command Center Header - Never moves */}
-  <div className="flex-shrink-0 px-3 py-1 md:px-4 md:py-2 border-b border-[rgba(var(--color-primary-light-rgb),0.2)] bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)] backdrop-blur-xl shadow-lg rounded-lg md:rounded-xl mx-1 md:mx-2 mt-1 md:mt-2 mb-1">
-        <div className="flex items-center justify-between">
-          <div className="flex-1">
-            <div className="cosmic-module-header text-sm md:text-base leading-tight">
-              <span className="text-[var(--color-primary-light)]">🚀</span>
-              {workflowName ? workflowName.charAt(0).toUpperCase() + workflowName.slice(1) : 'Command Center Interface'}
+      {/* Fixed Command Center Header - Dark background to match artifact */}
+      <div className="flex-shrink-0 bg-[rgba(0,0,0,0.6)] border-b border-[rgba(var(--color-primary-light-rgb),0.2)] backdrop-blur-xl">
+        <div className="flex flex-col gap-4 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-3 flex-1 min-w-0">
+            <div className="flex items-center gap-3">
+            {/* Chat Icon + Title */}
+            <button
+              type="button"
+              onClick={handleAvatarClick}
+              className="flex items-center gap-3 focus:outline-none focus:ring-2 focus:ring-[var(--color-primary-light)]/60 rounded-xl"
+              title={avatarTitle}
+              aria-pressed={onBrandClick ? undefined : conversationMode === 'ask'}
+            >
+              <span className={`w-12 h-12 rounded-xl flex items-center justify-center shadow-lg transition-all duration-300 ${conversationMode === 'ask'
+                ? 'bg-gradient-to-br from-[var(--color-secondary)] to-[var(--color-primary)] scale-105'
+                : 'bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-secondary)]'}`}>
+                <span className="text-2xl" role="img" aria-hidden="true">{avatarIcon}</span>
+              </span>
+              <span className="text-left">
+                <span className="block text-xl font-bold text-white tracking-tight">MozaiksAI</span>
+                <span className="block text-xs text-gray-400">{conversationSubtitle}</span>
+              </span>
+            </button>
             </div>
-            {connectionStatus && (
-              <div className="relative mt-1 w-full flex items-center gap-2 pr-24">
-                <ConnectionStatus
-                  status={connectionStatus}
-                  transportType={transportType}
-                  workflowName={workflowName}
-                  onRetry={onRetry}
-                  onArtifactToggle={onArtifactToggle}
-                  className="connection-status-compact connection-status-tight-mobile text-xs"
-                />
-                {/* Mobile-only artifact button rendered as a separate, prominent control, absolutely positioned so it doesn't add height */}
-                {onArtifactToggle && (
-                  <button
-                    onClick={onArtifactToggle}
-                    className="md:hidden absolute right-1 top-[calc(50%-18px)] -translate-y-1/2 w-14 h-14 rounded-2xl border bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.15)] to-[rgba(var(--color-secondary-rgb),0.15)] backdrop-blur-sm artifact-hover-glow artifact-cta flex items-center justify-center transition-all duration-300 z-10"
-                    title="Artifact Canvas"
-                    aria-label="Open Artifact Canvas"
-                  >
-                    <img 
-                      src="/mozaik_logo.svg" 
-                      className="w-8 h-8 opacity-95 -mt-0.5" 
-                      alt="Artifact"
-                    />
-                  </button>
-                )}
-              </div>
-            )}
-            {/* Initial Message - only show for UserDriven workflows and if message exists */}
-            {startupMode === 'UserDriven' && initialMessageToUser && (
-              <div className="mt-2 flex justify-center">
-                <div className="relative px-3 py-1.5 rounded-lg bg-gradient-to-r from-[rgba(var(--color-secondary-rgb),0.2)] to-[rgba(var(--color-secondary-dark-rgb),0.2)] border border-[rgba(var(--color-secondary-rgb),0.3)] flex items-center justify-center space-x-2 backdrop-blur-sm max-w-md">
-                  <div className="absolute inset-0 bg-gradient-to-r from-[rgba(var(--color-secondary-rgb),0.1)] to-[rgba(var(--color-secondary-dark-rgb),0.1)] rounded-lg blur-sm"></div>
-                  {/* Animated pulse dot - aligned to left */}
-                  <div className="relative w-2 h-2 bg-[rgba(var(--color-secondary-rgb),0.8)] rounded-full animate-pulse [box-shadow:0_0_6px_rgba(var(--color-secondary-rgb),0.5)] flex-shrink-0"></div>
-                  <span className="relative text-[rgba(var(--color-secondary-rgb),0.7)] text-xs font-semibold tracking-wide oxanium text-center">
-                    {initialMessageToUser}
-                  </span>
-                </div>
-              </div>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${conversationMode === 'ask'
+                  ? 'bg-[rgba(var(--color-secondary-rgb),0.15)] text-[var(--color-secondary-light)] border-[rgba(var(--color-secondary-light-rgb),0.5)]'
+                  : 'bg-[rgba(var(--color-primary-rgb),0.15)] text-[var(--color-primary-light)] border-[rgba(var(--color-primary-light-rgb),0.5)]'}`}
+              >
+                <span className="text-base" aria-hidden="true">{conversationMode === 'ask' ? '🧠' : '⚙️'}</span>
+                {modeLabel} Mode
+              </span>
+              {conversationMode === 'ask' && onStartGeneralChat && (
+                <button
+                  type="button"
+                  onClick={onStartGeneralChat}
+                  className="px-3 py-1 text-xs rounded-full border border-[var(--color-secondary-light)] text-[var(--color-secondary-light)] hover:bg-[rgba(var(--color-secondary-rgb),0.15)] transition-colors"
+                  disabled={generalSessionsLoading}
+                >
+                  {generalSessionsLoading ? 'Refreshing…' : 'New Ask'}
+                </button>
+              )}
+              {conversationMode === 'ask' && generalChatSummary?.label && (
+                <span
+                  className="text-[11px] text-gray-400 truncate max-w-[180px]"
+                  title={`Session ${generalChatSummary?.chatId || generalChatSummary?.label}`}
+                >
+                  Session: {generalChatSummary.label}
+                </span>
+              )}
+            </div>
           </div>
           
-          {/* Right side: Artifact Canvas Toggle Button and Connection Status */}
-          <div className="flex flex-col items-end gap-2">
-            {/* Artifact Canvas Toggle Button */}
-            {onArtifactToggle && (
-              <>
-                {/* 
-                  ARTIFACT TRIGGER LOGIC:
-                  The button below manually triggers the artifact panel visibility via the `onArtifactToggle` prop,
-                  which is connected to the `toggleSidePanel` function in `ChatPage.js`.
-=
-                  To make the artifact panel appear automatically based on an agent's output,
-                  you would call the `onArtifactToggle` function programmatically. This could be done
-                  by listening for a specific type of agent message in `ChatPage.js` and then
-                  calling `toggleSidePanel()` when that message is received. This is the central
-                  point for controlling the artifact panel's state.
-                */}
-                <button
-                  onClick={onArtifactToggle}
-                  className="hidden md:block group relative p-3 rounded-lg bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.1)] to-[rgba(var(--color-secondary-rgb),0.1)] border transition-all duration-300 backdrop-blur-sm artifact-hover-glow artifact-cta"
-                  title="Toggle Artifact Canvas"
-                >
-                  <img 
-                    src="/mozaik_logo.svg" 
-                    className="w-10 h-10 opacity-70 group-hover:opacity-100 transition-all duration-300 group-hover:scale-105" 
-                    alt="Artifact Canvas" 
-                  />
-                  <div className="absolute inset-0 bg-[rgba(var(--color-primary-light-rgb),0.1)] rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
-                </button>
-              </>
-            )}
-          </div>
+          {/* Desktop: Artifact Canvas Toggle Button */}
+          {onArtifactToggle && (
+            <button
+              onClick={onArtifactToggle}
+              className="hidden md:block group relative p-3 rounded-lg bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.1)] to-[rgba(var(--color-secondary-rgb),0.1)] border transition-all duration-300 backdrop-blur-sm artifact-hover-glow artifact-cta"
+              title={artifactToggleLabel || 'Toggle Artifact Canvas'}
+            >
+              <img 
+                src="/mozaik_logo.svg" 
+                className="w-10 h-10 opacity-70 group-hover:opacity-100 transition-all duration-300 group-hover:scale-105" 
+                alt="Artifact Canvas" 
+              />
+              <div className="absolute inset-0 bg-[rgba(var(--color-primary-light-rgb),0.1)] rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
+            </button>
+          )}
         </div>
+        
+        {/* Initial Message - only show for UserDriven workflows and if message exists */}
+        {startupMode === 'UserDriven' && initialMessageToUser && (
+          <div className="pb-3 px-4 md:px-6 flex justify-center">
+            <div className="relative px-3 py-1.5 rounded-lg bg-gradient-to-r from-[rgba(var(--color-secondary-rgb),0.2)] to-[rgba(var(--color-secondary-dark-rgb),0.2)] border border-[rgba(var(--color-secondary-rgb),0.3)] flex items-center justify-center space-x-2 backdrop-blur-sm max-w-md">
+              <div className="absolute inset-0 bg-gradient-to-r from-[rgba(var(--color-secondary-rgb),0.1)] to-[rgba(var(--color-secondary-dark-rgb),0.1)] rounded-lg blur-sm"></div>
+              {/* Animated pulse dot - aligned to left */}
+              <div className="relative w-2 h-2 bg-[rgba(var(--color-secondary-rgb),0.8)] rounded-full animate-pulse [box-shadow:0_0_6px_rgba(var(--color-secondary-rgb),0.5)] flex-shrink-0"></div>
+              <span className="relative text-[rgba(var(--color-secondary-rgb),0.7)] text-xs font-semibold tracking-wide oxanium text-center">
+                {initialMessageToUser}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
-      
     {/* Chat Messages Area - ONLY THIS SCROLLS */}
     <div className="flex-1 relative overflow-hidden" role="log" aria-live="polite" aria-relevant="additions">
         {/* Dim the galaxy background slightly for readability across the entire scroll area */}
@@ -449,7 +486,7 @@ const ModernChatInterface = ({
       </div>
 
   {/* Fixed Transmission Input Area - Never moves */}
-            <div className={`flex-shrink-0 p-1.5 md:p-3 border-t border-[rgba(var(--color-primary-light-rgb),0.2)] bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)] backdrop-blur-xl shadow-lg transition-all duration-500 transmission-input-tight`}>
+            <div className={`flex-shrink-0 p-1.5 md:p-3 border-t border-[rgba(var(--color-primary-light-rgb),0.2)] bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)] backdrop-blur-xl shadow-lg transition-all duration-500 transmission-input-tight rounded-b-[inherit]`}>
         <form onSubmit={onSubmitClick} className="flex gap-3 flex-row items-center">
           <div className="flex-1 relative min-w-0 flex items-center">
             <textarea

@@ -11,7 +11,8 @@ class WorkflowConfig {
   constructor() {
     this.configs = new Map();
     this.defaultWorkflow = null; // Dynamic discovery from backend
-  this.fetchInProgress = false;
+    this.fetchInProgress = false;
+    this.warnedNoWorkflow = false;
   }
 
   /**
@@ -61,6 +62,7 @@ class WorkflowConfig {
           }
         }
         this.fetchInProgress = false;
+        this.warnedNoWorkflow = false;
         return; // success
       } catch (error) {
         lastError = error;
@@ -89,13 +91,24 @@ class WorkflowConfig {
    * Get default workflow type
    */
   getDefaultWorkflow() {
+    if (this.defaultWorkflow) {
+      return this.defaultWorkflow;
+    }
+
     const available = this.getAvailableWorkflows();
     if (available.length > 0) {
       return available[0]; // Use first available workflow
     }
-    
-    // If no workflows discovered, let backend handle this
-    console.warn('⚠️ No workflows discovered, backend should provide default');
+
+    if (this.fetchInProgress) {
+      // Avoid noisy warnings while discovery is still running
+      return null;
+    }
+
+    if (!this.warnedNoWorkflow) {
+      console.warn('⚠️ No workflows discovered, backend should provide default');
+      this.warnedNoWorkflow = true;
+    }
     return null;
   }
 

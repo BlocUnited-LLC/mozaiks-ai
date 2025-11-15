@@ -3,6 +3,22 @@ import workflowConfig from '../config/workflowConfig';
 import config from '../config';
 
 export class ApiAdapter {
+  constructor(adapterConfig = null) {
+    this.config = adapterConfig || {};
+  }
+
+  getHttpBaseUrl() {
+    const fallback = typeof config?.get === 'function' ? config.get('api.baseUrl') : undefined;
+    const raw = this.config?.baseUrl
+      || this.config?.api?.baseUrl
+      || fallback
+      || 'http://localhost:8000';
+    if (typeof raw === 'string' && raw.endsWith('/')) {
+      return raw.slice(0, -1);
+    }
+    return raw;
+  }
+
   async sendMessage(_message, _enterpriseId, _userId) {
     throw new Error('sendMessage must be implemented');
   }
@@ -33,13 +49,62 @@ export class ApiAdapter {
   async startChat(_enterpriseId, _workflowname, _userId) {
     throw new Error('startChat must be implemented');
   }
+
+  async listGeneralChats(enterpriseId, userId, limit = 50) {
+    const baseUrl = this.getHttpBaseUrl();
+    const searchParams = new URLSearchParams();
+    if (limit !== undefined && limit !== null) {
+      searchParams.set('limit', String(limit));
+    }
+
+    const url = `${baseUrl}/api/general_chats/list/${encodeURIComponent(enterpriseId)}/${encodeURIComponent(userId)}?${searchParams.toString()}`;
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to list general chats:', error);
+      throw error;
+    }
+  }
+
+  async fetchGeneralChatTranscript(enterpriseId, generalChatId, options = {}) {
+    const { afterSequence = -1, limit = 200 } = options;
+    const baseUrl = this.getHttpBaseUrl();
+    const searchParams = new URLSearchParams();
+    if (afterSequence !== undefined && afterSequence !== null) {
+      searchParams.set('after_sequence', String(afterSequence));
+    }
+    if (limit !== undefined && limit !== null) {
+      searchParams.set('limit', String(limit));
+    }
+
+    const url = `${baseUrl}/api/general_chats/transcript/${encodeURIComponent(enterpriseId)}/${encodeURIComponent(generalChatId)}?${searchParams.toString()}`;
+
+    try {
+      const response = await fetch(url);
+      if (response.status === 404) {
+        return null;
+      }
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to fetch general chat transcript:', error);
+      throw error;
+    }
+  }
 }
 
 // Default WebSocket API Adapter
 export class WebSocketApiAdapter extends ApiAdapter {
   constructor(config) {
-    super();
-    this.config = config;
+    super(config);
+    this.config = config || {};
   }
 
   async sendMessage() {
@@ -290,8 +355,8 @@ export class WebSocketApiAdapter extends ApiAdapter {
 // REST API Adapter (alternative to WebSocket)
 export class RestApiAdapter extends ApiAdapter {
   constructor(config) {
-    super();
-    this.config = config;
+    super(config);
+    this.config = config || {};
     this.activeChatSessions = new Map(); // Track active chat sessions to prevent duplicates
   }
 
@@ -439,4 +504,4 @@ export class RestApiAdapter extends ApiAdapter {
 }
 
 // Default API instance for enterprise usage
-export const enterpriseApi = new RestApiAdapter(config.api);
+export const enterpriseApi = new RestApiAdapter(config.get ? config.get('api') : config?.config?.api);

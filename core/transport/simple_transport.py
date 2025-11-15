@@ -26,6 +26,11 @@ from core.workflow.workflow_manager import workflow_manager
 # Enhanced logging setup
 from logs.logging_config import get_core_logger
 
+# Session manager for multi-workflow navigation
+from core.workflow import session_manager
+from core.transport.session_registry import session_registry
+from core.assistant.ask_mozaiks import get_ask_mozaiks_service
+
 # Get our enhanced loggers
 logger = get_core_logger("simple_transport")
 
@@ -128,13 +133,20 @@ class SimpleTransport:
         
         This method is called by the API endpoint when the frontend submits user input.
         """
+        logger.info(f"🔍 [INPUT_SUBMIT] Looking for request_id={input_request_id} in {len(self._input_request_registries)} chat registries")
+        for cid, reg in self._input_request_registries.items():
+            logger.info(f"  📋 [INPUT_SUBMIT] chat={cid} has {len(reg)} pending requests: {list(reg.keys())}")
+        
         # First try orchestration registry respond callback(s)
         handled = False
         ack_chat_id = None
         for chat_id, reg in list(self._input_request_registries.items()):
             respond_cb = reg.get(input_request_id)
             if respond_cb:
+                logger.info(f"✅ [INPUT_SUBMIT] Found callback for {input_request_id} in chat {chat_id}")
+            if respond_cb:
                 try:
+                    logger.info(f"🚀 [INPUT_SUBMIT] Invoking respond callback with user_input='{user_input[:50]}...'")
                     # Support both async and sync lambdas assigned by AG2
                     result = respond_cb(user_input)
                     if asyncio.iscoroutine(result):
@@ -143,7 +155,7 @@ class SimpleTransport:
                     ack_chat_id = chat_id
                     logger.info(f"✅ [INPUT] Respond callback invoked for request {input_request_id} (chat {chat_id})")
                 except Exception as e:
-                    logger.error(f"❌ [INPUT] Respond callback failed {input_request_id}: {e}")
+                    logger.error(f"❌ [INPUT] Respond callback failed {input_request_id}: {e}", exc_info=True)
                 finally:
                     # Remove after use
                     try:
@@ -393,11 +405,18 @@ class SimpleTransport:
                 # UI tool events have awaiting_response=True and component_type
                 is_ui_tool_event = data_payload.get('awaiting_response') and data_payload.get('component_type')
             
-            # Skip visibility filtering for select_speaker and UI tool events
-            skip_visibility_filter = envelope_type == 'chat.select_speaker' or is_ui_tool_event
+            # Skip visibility filtering for select_speaker, input_request, and UI tool events
+            is_input_request_event = envelope_type == 'chat.input_request'
+            skip_visibility_filter = (
+                envelope_type == 'chat.select_speaker'
+                or is_ui_tool_event
+                or is_input_request_event
+            )
             
             if is_ui_tool_event:
                 logger.info(f"🎯 [TRANSPORT] UI tool event detected - bypassing agent visibility filter (component={envelope.get('data', {}).get('component_type')})")
+            elif is_input_request_event:
+                logger.info("🎯 [TRANSPORT] Input request event detected - bypassing agent visibility filter")
 
             # Additional filtering (agent visibility) only for BaseEvent path where needed
             agent_name = None
@@ -611,6 +630,124 @@ class SimpleTransport:
             # Final safety fallback
             return self._stringify_unknown(obj)
 
+    async def _handle_artifact_action(self, event: Dict[str, Any], chat_id: str, websocket) -> None:
+        """
+        Handle artifact action events from frontend (launch_workflow, update_state, etc.).
+        
+        Args:
+            event: Event data with type='chat.artifact_action' and data payload
+            chat_id: Current chat/session ID
+            websocket: WebSocket connection for response
+        """
+        data = event.get("data", {})
+        action = data.get("action")
+        payload = data.get("payload", {})
+        artifact_id = data.get("artifact_id")
+        
+        conn_meta = self.connections.get(chat_id, {})
+        enterprise_id = conn_meta.get("enterprise_id")
+        user_id = conn_meta.get("user_id")
+        
+        if not enterprise_id or not user_id:
+            logger.error(f"❌ Missing enterprise_id or user_id for artifact action in chat {chat_id}")
+            return
+        
+        # Route: launch_workflow (pause current, create new session)
+        if action == "launch_workflow":
+            target_workflow = payload.get("workflow_name")
+            if not target_workflow:
+                logger.warning(f"⚠️ Missing workflow_name in launch_workflow action")
+                return
+            
+            logger.info(f"🚀 Launching workflow {target_workflow} from chat {chat_id}")
+            
+            # Validate dependencies before launching
+            from core.workflow.dependencies import dependency_manager
+            is_valid, error_msg = await dependency_manager.validate_workflow_dependencies(
+                target_workflow, enterprise_id, user_id
+            )
+            
+            if not is_valid:
+                logger.warning(f"⚠️ Dependency validation failed for {target_workflow}: {error_msg}")
+                await websocket.send_json({
+                    "type": "chat.dependency_blocked",
+                    "data": {
+                        "workflow_name": target_workflow,
+                        "message": error_msg or "Prerequisites not met",
+                        "error_code": "WORKFLOW_DEPENDENCIES_NOT_MET"
+                    },
+                    "chat_id": chat_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+                return
+            
+            # Create new session and artifact (old session stays IN_PROGRESS)
+            new_session = await session_manager.create_workflow_session(
+                enterprise_id, user_id, target_workflow
+            )
+            artifact = await session_manager.create_artifact_instance(
+                enterprise_id,
+                target_workflow,
+                payload.get("artifact_type", "ActionPlan")
+            )
+            await session_manager.attach_artifact_to_session(
+                new_session["_id"], artifact["_id"], enterprise_id
+            )
+            
+            logger.info(f"✅ Created new session {new_session['_id']} with artifact {artifact['_id']}")
+            
+            # Notify frontend to navigate to new chat
+            await websocket.send_json({
+                "type": "chat.navigate",
+                "data": {
+                    "chat_id": new_session["_id"],
+                    "workflow_name": target_workflow,
+                    "artifact_instance_id": artifact["_id"],
+                    "enterprise_id": enterprise_id
+                },
+                "correlation_id": event.get("correlation_id"),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+            return
+        
+        # Route: update_state (partial artifact state updates)
+        if action == "update_state" and artifact_id:
+            state_updates = payload.get("state_updates", {})
+            if not state_updates:
+                logger.warning(f"⚠️ Empty state_updates in update_state action")
+                return
+            
+            await session_manager.update_artifact_state(
+                artifact_id, enterprise_id, state_updates
+            )
+            
+            logger.info(f"✅ Updated artifact state for {artifact_id}: {list(state_updates.keys())}")
+            
+            # Broadcast state update to all connections for this artifact
+            await websocket.send_json({
+                "type": "artifact.state.updated",
+                "data": {
+                    "artifact_id": artifact_id,
+                    "state_delta": state_updates
+                },
+                "chat_id": chat_id,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+            return
+        
+        # Route: other actions (forward to agent as tool_call or handle directly)
+        logger.info(f"🔄 Artifact action {action} received for chat {chat_id}")
+        # Future: route to agent or handle other action types
+        await websocket.send_json({
+            "type": "ack.artifact_action",
+            "data": {
+                "action": action,
+                "status": "received"
+            },
+            "chat_id": chat_id,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+
     async def _handle_resume_request(self, chat_id: str, last_client_index: int, websocket) -> None:
         """Resume protocol aligned with AG2 GroupChat resume semantics.
 
@@ -766,18 +903,25 @@ class SimpleTransport:
         chat_id: str,
         user_id: str,
         workflow_name: str,
-        enterprise_id: Optional[str] = None
+        enterprise_id: Optional[str] = None,
+        ws_id: Optional[int] = None
     ) -> None:
-        """Handle WebSocket connection for real-time communication"""
+        """Handle WebSocket connection for real-time communication with multi-workflow session support"""
         await websocket.accept()
+        
+        # Store ws_id for session registry lookups
+        if ws_id is None:
+            ws_id = id(websocket)
+        
         self.connections[chat_id] = {
             "websocket": websocket,
             "user_id": user_id,
             "workflow_name": workflow_name,
             "enterprise_id": enterprise_id,
             "active": True,
+            "ws_id": ws_id,  # Track WebSocket ID for session switching
         }
-        logger.info(f"🔌 WebSocket connected for chat_id: {chat_id}")
+        logger.info(f"🔌 WebSocket connected for chat_id: {chat_id} (ws_id={ws_id})")
         
         # H2: Start heartbeat for connection
         await self._start_heartbeat(chat_id, websocket)
@@ -831,17 +975,64 @@ class SimpleTransport:
                 if mtype in ("user.input.submit", "user_input_submit"):
                     req_id = data.get('input_request_id') or data.get('request_id')
                     text = (data.get('text') or data.get('user_input') or "").strip()
+                    ws_id = self.connections.get(chat_id, {}).get("ws_id")
+                    ui_context_payload = data.get("context") or data.get("ui_context") or {}
+                    if not isinstance(ui_context_payload, dict):
+                        ui_context_payload = {}
+
+                    logger.info(f"📥 [INPUT] Received user.input.submit: chat={chat_id}, req_id={req_id}, text_len={len(text)}, ws_id={ws_id}")
+
+                    is_general_mode = bool(ws_id and session_registry.is_in_general_mode(ws_id))
+                    logger.info(f"🔍 [INPUT] Mode check: is_general={is_general_mode}, has_req_id={bool(req_id)}")
+
+                    if not req_id and is_general_mode:
+                        if not text:
+                            await websocket.send_json({
+                                "type": "chat.error",
+                                "data": {
+                                    "message": "Message cannot be empty in Ask Mozaiks mode",
+                                    "error_code": "GENERAL_MODE_EMPTY_MESSAGE"
+                                },
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+                            continue
+                        try:
+                            await self._handle_general_agent_exchange(
+                                chat_id=chat_id,
+                                ws_id=ws_id,
+                                user_message=text,
+                                ui_context=ui_context_payload,
+                            )
+                            await websocket.send_json({
+                                "type": "chat.input_ack",
+                                "data": {"chat_id": chat_id, "status": "accepted"},
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+                        except Exception as general_err:
+                            logger.error(f"Failed to process Ask Mozaiks message for {chat_id}: {general_err}")
+                            await websocket.send_json({
+                                "type": "chat.error",
+                                "data": {
+                                    "message": "Ask Mozaiks is unavailable right now. Please try again.",
+                                    "error_code": "GENERAL_MODE_FAILED"
+                                },
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+                        continue
+
                     if req_id:
                         # Treat as response to AG2 InputRequestEvent
+                        logger.info(f"🎯 [INPUT] Routing to submit_user_input for AG2 InputRequestEvent: req_id={req_id}")
                         try:
                             ok = await self.submit_user_input(req_id, text)
+                            logger.info(f"✅ [INPUT] submit_user_input returned: {ok} for req_id={req_id}")
                             await websocket.send_json({
                                 "type": "ack.input",
                                 "data": {"input_request_id": req_id, "status": "accepted" if ok else "rejected"},
                                 "timestamp": datetime.now(timezone.utc).isoformat()
                             })
                         except Exception as ie:
-                            logger.error(f"❌ Failed to process inbound user input {req_id}: {ie}")
+                            logger.error(f"❌ Failed to process inbound user input {req_id}: {ie}", exc_info=True)
                     else:
                         # Free-form user message (no pending request). Persist & feed to orchestrator.
                         try:
@@ -885,6 +1076,177 @@ class SimpleTransport:
                                 "data": {"message": "UI tool response failed", "error_code": "UI_TOOL_RESPONSE_FAILED"},
                                 "timestamp": datetime.now(timezone.utc).isoformat()
                             })
+                    continue
+                
+                # Handle artifact action (launch_workflow, update_state, etc.)
+                if mtype == "chat.artifact_action":
+                    try:
+                        await self._handle_artifact_action(data, chat_id, websocket)
+                    except Exception as ae:
+                        logger.error(f"❌ Failed to process artifact action for chat {chat_id}: {ae}")
+                        await websocket.send_json({
+                            "type": "chat.error",
+                            "data": {"message": "Artifact action failed", "error_code": "ARTIFACT_ACTION_FAILED"},
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    continue
+
+                # Handle workflow switching (manual UI-driven)
+                if mtype == "chat.switch_workflow":
+                    try:
+                        target_chat_id = data.get("chat_id")
+                        
+                        if not target_chat_id:
+                            raise ValueError("chat_id required for workflow switch")
+                        
+                        ws_id = self.connections.get(chat_id, {}).get("ws_id")
+                        if not ws_id:
+                            raise ValueError("WebSocket ID not found in connection metadata")
+                        
+                        # Switch workflow context in registry
+                        active_context = session_registry.switch_workflow(ws_id, target_chat_id)
+                        
+                        if not active_context:
+                            raise ValueError(f"Workflow {target_chat_id} not found or already completed")
+                        
+                        logger.info(f"🔄 Switched from {chat_id} to {target_chat_id} (ws_id={ws_id})")
+                        
+                        # Notify frontend of successful switch
+                        await websocket.send_json({
+                            "type": "chat.context_switched",
+                            "data": {
+                                "from_chat_id": chat_id,
+                                "to_chat_id": target_chat_id,
+                                "workflow_name": active_context.workflow_name,
+                                "artifact_id": active_context.artifact_id,
+                                "enterprise_id": active_context.enterprise_id
+                            },
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    except Exception as se:
+                        logger.error(f"❌ Failed to switch workflow: {se}")
+                        await websocket.send_json({
+                            "type": "chat.error",
+                            "data": {"message": f"Workflow switch failed: {str(se)}", "error_code": "SWITCH_WORKFLOW_FAILED"},
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    continue
+                
+                # Handle "Ask Mozaiks" mode (pause all workflows, general Q&A)
+                if mtype == "chat.enter_general_mode":
+                    try:
+                        ws_id = self.connections.get(chat_id, {}).get("ws_id")
+                        
+                        if not ws_id:
+                            raise ValueError("WebSocket ID not found in connection metadata")
+                        
+                        # Pause all workflows
+                        session_registry.enter_general_mode(ws_id)
+                        general_ctx = await self._ensure_general_chat_context(chat_id=chat_id)
+                        logger.info(
+                            f"💬 Entered general mode (ws_id={ws_id}, general_chat={general_ctx.get('chat_id')})"
+                        )
+                        
+                        # Notify frontend
+                        await websocket.send_json({
+                            "type": "chat.mode_changed",
+                            "data": {
+                                "mode": "general",
+                                "message": "Ask me anything! Workflows paused.",
+                                "general_chat_id": general_ctx.get("chat_id"),
+                                "general_chat_label": general_ctx.get("label"),
+                                "general_chat_sequence": general_ctx.get("sequence"),
+                            },
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    except Exception as ge:
+                        logger.error(f"❌ Failed to enter general mode: {ge}")
+                        await websocket.send_json({
+                            "type": "chat.error",
+                            "data": {"message": f"General mode failed: {str(ge)}", "error_code": "GENERAL_MODE_FAILED"},
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    continue
+                
+                # Handle starting a new workflow from UI button
+
+                if mtype == "chat.start_general_chat":
+                    try:
+                        ws_id = self.connections.get(chat_id, {}).get("ws_id")
+                        if not ws_id:
+                            raise ValueError("WebSocket ID not found in connection metadata")
+                        session_registry.enter_general_mode(ws_id)
+                        general_ctx = await self._ensure_general_chat_context(chat_id=chat_id, force_new=True)
+                        await websocket.send_json({
+                            "type": "chat.general_session_created",
+                            "data": {
+                                "general_chat_id": general_ctx.get("chat_id"),
+                                "general_chat_label": general_ctx.get("label"),
+                                "general_chat_sequence": general_ctx.get("sequence"),
+                            },
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                        logger.info(
+                            f"🆕 Started new general chat session {general_ctx.get('chat_id')} (ws_id={ws_id})"
+                        )
+                    except Exception as gc_err:
+                        logger.error(f"❌ Failed to start new general chat: {gc_err}")
+                        await websocket.send_json({
+                            "type": "chat.error",
+                            "data": {
+                                "message": f"General chat creation failed: {gc_err}",
+                                "error_code": "GENERAL_CHAT_CREATE_FAILED",
+                            },
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                    continue
+                if mtype == "chat.start_workflow":
+                    try:
+                        target_workflow = data.get("workflow_name")
+                        
+                        if not target_workflow:
+                            raise ValueError("workflow_name required")
+                        
+                        ws_id = self.connections.get(chat_id, {}).get("ws_id")
+                        ent_id = self.connections.get(chat_id, {}).get("enterprise_id")
+                        usr_id = self.connections.get(chat_id, {}).get("user_id")
+                        
+                        if not ws_id or not ent_id or not usr_id:
+                            raise ValueError("Missing connection metadata")
+                        
+                        # Create new chat session
+                        new_chat_id = f"chat_{target_workflow}_{uuid.uuid4().hex[:8]}"
+                        
+                        # Register in session registry (pauses current workflow)
+                        session_registry.add_workflow(
+                            ws_id=ws_id,
+                            chat_id=new_chat_id,
+                            workflow_name=target_workflow,
+                            enterprise_id=ent_id,
+                            user_id=usr_id,
+                            auto_activate=True
+                        )
+                        
+                        logger.info(f"🚀 Started new workflow {target_workflow} (chat_id={new_chat_id}, ws_id={ws_id})")
+                        
+                        # Notify frontend
+                        await websocket.send_json({
+                            "type": "chat.workflow_started",
+                            "data": {
+                                "chat_id": new_chat_id,
+                                "workflow_name": target_workflow,
+                                "enterprise_id": ent_id,
+                                "user_id": usr_id
+                            },
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    except Exception as we:
+                        logger.error(f"❌ Failed to start workflow: {we}")
+                        await websocket.send_json({
+                            "type": "chat.error",
+                            "data": {"message": f"Workflow start failed: {str(we)}", "error_code": "START_WORKFLOW_FAILED"},
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
                     continue
                 
                 # Client resume handshake (B11)
@@ -1053,6 +1415,184 @@ class SimpleTransport:
             pm = AG2PersistenceManager()
             self._persistence_manager = pm
         return pm
+
+    async def _ensure_general_chat_context(
+        self,
+        *,
+        chat_id: str,
+        force_new: bool = False,
+    ) -> Dict[str, Any]:
+        """Return (or create) the general chat context associated with this connection."""
+
+        conn = self.connections.get(chat_id)
+        if not conn:
+            raise RuntimeError(f"No active connection metadata for chat {chat_id}")
+
+        if not force_new:
+            existing_ctx = conn.get("general_session")
+            if isinstance(existing_ctx, dict) and existing_ctx.get("chat_id"):
+                return existing_ctx
+
+        enterprise_id = conn.get("enterprise_id")
+        user_id = conn.get("user_id") or "anonymous"
+        if not enterprise_id:
+            raise RuntimeError("Cannot create general chat without enterprise context")
+
+        pm = self._get_or_create_persistence_manager()
+        session_info = await pm.create_general_chat_session(
+            enterprise_id=str(enterprise_id),
+            user_id=str(user_id),
+        )
+
+        general_ctx = {
+            "chat_id": session_info.get("chat_id"),
+            "label": session_info.get("label"),
+            "sequence": session_info.get("sequence"),
+            "enterprise_id": str(enterprise_id),
+            "user_id": str(user_id),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        conn["general_session"] = general_ctx
+        return general_ctx
+
+    async def _handle_general_agent_exchange(
+        self,
+        *,
+        chat_id: str,
+        ws_id: Optional[int],
+        user_message: str,
+        ui_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Route a general-mode utterance to the Ask Mozaiks companion."""
+
+        conn = self.connections.get(chat_id) or {}
+        enterprise_id = conn.get("enterprise_id")
+        user_id = conn.get("user_id")
+        if not enterprise_id:
+            raise RuntimeError("Cannot route Ask Mozaiks message without enterprise context")
+
+        general_ctx = await self._ensure_general_chat_context(chat_id=chat_id)
+        general_chat_id = general_ctx.get("chat_id")
+        general_label = general_ctx.get("label")
+        if not general_chat_id:
+            raise RuntimeError("Failed to resolve general chat identifier")
+
+        workflows_payload: List[Dict[str, Any]] = []
+        if ws_id:
+            contexts = session_registry.get_all_workflows(ws_id)
+            for ctx in contexts:
+                if hasattr(ctx, "to_dict"):
+                    workflows_payload.append(ctx.to_dict())
+                else:
+                    workflows_payload.append({
+                        "chat_id": getattr(ctx, "chat_id", None),
+                        "workflow_name": getattr(ctx, "workflow_name", None),
+                        "status": getattr(ctx, "status", None),
+                        "artifact_id": getattr(ctx, "artifact_id", None),
+                        "enterprise_id": getattr(ctx, "enterprise_id", None),
+                        "user_id": getattr(ctx, "user_id", None),
+                    })
+
+        metadata_base = {
+            "source": "general_agent",
+            "ui_context": ui_context or {},
+            "workflows": workflows_payload,
+            "general_chat_id": general_chat_id,
+            "general_chat_label": general_label,
+        }
+
+        await self._persist_general_message(
+            general_chat_id=str(general_chat_id),
+            enterprise_id=str(enterprise_id),
+            role="user",
+            content=user_message,
+            user_id=str(user_id) if user_id else None,
+            metadata=metadata_base,
+        )
+
+        await self.send_event_to_ui(
+            {
+                "kind": "text",
+                "agent": "user",
+                "content": user_message,
+                "chat_id": chat_id,
+                "metadata": metadata_base,
+            },
+            chat_id,
+        )
+
+        service = get_ask_mozaiks_service()
+        response = await service.generate_response(
+            prompt=user_message,
+            workflows=workflows_payload,
+            enterprise_id=str(enterprise_id),
+            user_id=str(user_id) if user_id else None,
+            ui_context=ui_context,
+        )
+
+        assistant_metadata = {
+            "source": "general_agent",
+            "workflows": workflows_payload,
+            "ui_context": ui_context or {},
+            "general_chat_id": general_chat_id,
+            "general_chat_label": general_label,
+        }
+
+        await self._persist_general_message(
+            general_chat_id=str(general_chat_id),
+            enterprise_id=str(enterprise_id),
+            role="assistant",
+            content=response.get("content", ""),
+            user_id=str(user_id) if user_id else None,
+            metadata=assistant_metadata,
+        )
+
+        await self.send_chat_message(
+            response.get("content", ""),
+            agent_name="Ask Mozaiks",
+            chat_id=chat_id,
+            metadata=assistant_metadata,
+        )
+
+        usage = response.get("usage") or {}
+        try:
+            pm = self._get_or_create_persistence_manager()
+            await pm.update_session_metrics(
+                chat_id=str(general_chat_id),
+                enterprise_id=str(enterprise_id),
+                user_id=str(user_id) if user_id else "anonymous",
+                workflow_name="AskMozaiks",
+                prompt_tokens=int(usage.get("prompt_tokens") or 0),
+                completion_tokens=int(usage.get("completion_tokens") or 0),
+                cost_usd=0.0,
+                agent_name="AskMozaiks",
+                session_type="general",
+            )
+        except Exception as metrics_err:
+            logger.debug(f"Failed to record Ask Mozaiks usage metrics: {metrics_err}")
+
+    async def _persist_general_message(
+        self,
+        *,
+        general_chat_id: str,
+        enterprise_id: str,
+        role: str,
+        content: str,
+        user_id: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        pm = self._get_or_create_persistence_manager()
+        try:
+            await pm.append_general_message(
+                general_chat_id=general_chat_id,
+                enterprise_id=enterprise_id,
+                role=role,
+                content=content,
+                user_id=user_id,
+                metadata=metadata,
+            )
+        except Exception as persist_err:
+            logger.debug(f"Failed to persist general agent message for {chat_id}: {persist_err}")
 
     async def _resolve_chat_context(
         self,
@@ -1440,55 +1980,59 @@ class SimpleTransport:
                 logger.debug(f"[AUTO_RESUME] No enterprise_id for {chat_id}, skipping auto-resume")
                 return
 
-            from core.data.persistence.persistence_manager import AG2PersistenceManager
-            if not hasattr(self, '_persistence_manager'):
-                self._persistence_manager = AG2PersistenceManager()
+            # Get workflow name and startup_mode from connection
+            workflow_name = None
+            startup_mode = None
+            if chat_id in self.connections:
+                workflow_name = self.connections[chat_id].get("workflow_name")
+                if workflow_name:
+                    try:
+                        config = workflow_manager.get_config(workflow_name)
+                        startup_mode = config.get("startup_mode", "AgentDriven")
+                        logger.debug(f"[AUTO_RESUME] Retrieved startup_mode={startup_mode} for workflow={workflow_name}")
+                    except Exception as cfg_err:
+                        logger.warning(f"[AUTO_RESUME] Failed to get workflow config: {cfg_err}")
 
-            # Check if chat exists and is IN_PROGRESS
-            coll = await self._persistence_manager._coll()
-            doc = await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"status": 1, "messages": 1})
-
-            if not doc:
-                logger.debug(f"[AUTO_RESUME] No existing chat found for {chat_id}, skipping auto-resume")
-                return
-
-            from core.data.models import WorkflowStatus
-            status = doc.get("status", -1)
-            if int(status) != int(WorkflowStatus.IN_PROGRESS):
-                logger.debug(f"[AUTO_RESUME] Chat {chat_id} not IN_PROGRESS (status={status}), skipping auto-resume")
-                return
-
-            messages = doc.get("messages", [])
-            if not messages:
-                logger.debug(f"[AUTO_RESUME] No messages to resume for {chat_id}")
-                return
-
-            logger.info(f"🔄 [AUTO_RESUME] Restoring {len(messages)} messages for IN_PROGRESS chat {chat_id}")
-
-            # Send all messages to restore the chat UI
-            for idx, msg in enumerate(messages):
-                # Convert message to chat.text event format
-                event_data = {
-                    "type": "chat.text",
-                    "data": {
-                        "index": idx,
-                        "content": msg.get("content", ""),
-                        "role": msg.get("role", "user"),
-                        "sender": msg.get("name", msg.get("role", "user")),
-                        "replay": True  # Mark as replay/restoration
-                    }
-                }
-                await self._queue_message_with_backpressure(chat_id, event_data)
-
-            # Send resume boundary event
-            boundary_event = {
-                "type": "chat.resume_boundary",
-                "data": {
-                    "message_count": len(messages),
-                    "chat_status": "in_progress"
-                }
-            }
-            await self._queue_message_with_backpressure(chat_id, boundary_event)
+            # Use GroupChatResumer for proper message replay with filtering
+            from core.transport.resume_groupchat import GroupChatResumer
+            resumer = GroupChatResumer()
+            
+            async def send_event_wrapper(event_dict: Dict[str, Any], target_chat_id: Optional[str]) -> None:
+                """Wrapper to convert resume events to transport format."""
+                if not isinstance(event_dict, dict):
+                    return
+                
+                kind = event_dict.get("kind")
+                if kind == "text":
+                    # Convert to chat.text format
+                    await self._queue_message_with_backpressure(chat_id, {
+                        "type": "chat.text",
+                        "data": {
+                            "index": event_dict.get("index", 0),
+                            "content": event_dict.get("content", ""),
+                            "role": event_dict.get("role", "user"),
+                            "agent": event_dict.get("agent", "user"),
+                            "sender": event_dict.get("agent", "user"),
+                            "replay": event_dict.get("replay", True),
+                            "timestamp": event_dict.get("timestamp"),
+                            "metadata": event_dict.get("metadata"),
+                        }
+                    })
+                elif kind == "resume_boundary":
+                    # Convert boundary to transport format
+                    await self._queue_message_with_backpressure(chat_id, {
+                        "type": "chat.resume_boundary",
+                        "data": event_dict.get("data", {})
+                    })
+            
+            # Call the resumer with startup_mode filtering
+            await resumer.auto_resume_if_needed(
+                chat_id=chat_id,
+                enterprise_id=enterprise_id,
+                send_event=send_event_wrapper,
+                startup_mode=startup_mode,
+            )
+            
             await self._flush_message_queue(chat_id)
 
         except Exception as e:

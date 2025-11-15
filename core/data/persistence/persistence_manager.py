@@ -12,12 +12,14 @@ Clean implementation aligned with AG2 event system:
 
 from __future__ import annotations
 
-import json
 import asyncio
+import json
+import os
 from datetime import datetime, UTC
 from typing import Dict, List, Any, Optional, Union, cast
 import hashlib
 from copy import deepcopy
+import textwrap
 from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo import ReturnDocument
@@ -30,6 +32,28 @@ from autogen.events.agent_events import TextEvent
 from core.workflow.outputs.structured import agent_has_structured_output, get_structured_output_model_fields
 
 logger = get_workflow_logger("persistence")
+
+
+def _resolve_agent_log_limit(env_key: str, default: Optional[int]) -> Optional[int]:
+    """Resolve agent conversation log length limits from environment."""
+    raw_value = os.getenv(env_key)
+    if raw_value is None:
+        return default
+    try:
+        parsed = int(raw_value.strip())
+    except ValueError:
+        logger.warning(
+            "Invalid %s value '%s'; using default %s", env_key, raw_value, default
+        )
+        return default
+    return None if parsed <= 0 else parsed
+
+
+_AGENT_CONV_JSON_MAX_LEN = _resolve_agent_log_limit("AGENT_CONV_JSON_MAX_LEN", None)
+_AGENT_CONV_TEXT_MAX_LEN = _resolve_agent_log_limit("AGENT_CONV_TEXT_MAX_LEN", None)
+
+_GENERAL_CHAT_COLLECTION = "GeneralChatSessions"
+_GENERAL_CHAT_COUNTER_COLLECTION = "GeneralChatCounters"
 
 
 class InvalidEnterpriseIdError(Exception):
@@ -83,6 +107,30 @@ class PersistenceManager:
                 # Note: per-event normalized rows and their indexes in WorkflowStats
                 # were removed to reduce collection noise; WorkflowStats now holds
                 # live rollup documents (mon_ prefix) only, so no per-event index is needed.
+
+                general_coll = self.client["MozaiksAI"][_GENERAL_CHAT_COLLECTION]
+                general_indexes = await general_coll.list_indexes().to_list(length=None)
+                general_index_names = [idx["name"] for idx in general_indexes]
+                if "gc_ent_user_created" not in general_index_names:
+                    await general_coll.create_index(
+                        [("enterprise_id", 1), ("user_id", 1), ("created_at", -1)],
+                        name="gc_ent_user_created",
+                    )
+                    logger.debug("Created general chat enterprise/user index")
+                if "gc_status" not in general_index_names:
+                    await general_coll.create_index("status", name="gc_status")
+                    logger.debug("Created general chat status index")
+
+                counter_coll = self.client["MozaiksAI"][_GENERAL_CHAT_COUNTER_COLLECTION]
+                counter_indexes = await counter_coll.list_indexes().to_list(length=None)
+                counter_names = [idx["name"] for idx in counter_indexes]
+                if "gc_counter_ent_user" not in counter_names:
+                    await counter_coll.create_index(
+                        [("enterprise_id", 1), ("user_id", 1)],
+                        name="gc_counter_ent_user",
+                        unique=True,
+                    )
+                    logger.debug("Created general chat counter unique index")
             except Exception as e:  # pragma: no cover
                 logger.warning(f"Index ensure issue: {e}")
 
@@ -173,6 +221,16 @@ class AG2PersistenceManager:
         await self.persistence._ensure_client()
         assert self.persistence.client is not None, "Mongo client not initialized"
         return self.persistence.client["MozaiksAI"]["WorkflowStats"]
+
+    async def _general_coll(self):
+        await self.persistence._ensure_client()
+        assert self.persistence.client is not None, "Mongo client not initialized"
+        return self.persistence.client["MozaiksAI"][_GENERAL_CHAT_COLLECTION]
+
+    async def _general_counter_coll(self):
+        await self.persistence._ensure_client()
+        assert self.persistence.client is not None, "Mongo client not initialized"
+        return self.persistence.client["MozaiksAI"][_GENERAL_CHAT_COUNTER_COLLECTION]
 
     async def get_or_assign_cache_seed(self, chat_id: str, enterprise_id: Optional[str] = None) -> int:
         """Return a stable per-chat cache seed, assigning one if missing.
@@ -300,6 +358,67 @@ class AG2PersistenceManager:
             )
         except Exception as e:  # pragma: no cover
             logger.error(f"Failed to create chat session {chat_id}: {e}")
+
+    async def create_general_chat_session(self, *, enterprise_id: str, user_id: str) -> Dict[str, Any]:
+        """Allocate and persist a brand-new Ask Mozaiks general chat session."""
+
+        try:
+            try:
+                await self.persistence._validate_enterprise_exists(enterprise_id)
+            except Exception as e:
+                logger.error(f"Enterprise validation failed for general chat (enterprise={enterprise_id}): {e}")
+
+            ent_id = str(enterprise_id)
+            counters = await self._general_counter_coll()
+            now = datetime.now(UTC)
+            counter_doc = await counters.find_one_and_update(
+                {"enterprise_id": ent_id, "user_id": user_id},
+                {"$inc": {"sequence": 1}, "$setOnInsert": {"created_at": now}},
+                upsert=True,
+                return_document=ReturnDocument.AFTER,
+            )
+            seq = int(counter_doc.get("sequence", 1)) if counter_doc else 1
+            general_chat_id = f"generalchat-{ent_id}-{user_id}-{seq:04d}"
+            label = f"General Chat #{seq}"
+
+            general_doc = {
+                "_id": general_chat_id,
+                "chat_id": general_chat_id,
+                "enterprise_id": ent_id,
+                "user_id": user_id,
+                "session_type": "general",
+                "general_label": label,
+                "general_sequence": seq,
+                "status": int(WorkflowStatus.IN_PROGRESS),
+                "created_at": now,
+                "last_updated_at": now,
+                "last_sequence": 0,
+                "last_artifact": None,
+                "messages": [],
+                "usage_prompt_tokens_final": 0,
+                "usage_completion_tokens_final": 0,
+                "usage_total_tokens_final": 0,
+                "usage_total_cost_final": 0.0,
+            }
+
+            general_coll = await self._general_coll()
+            set_on_insert = dict(general_doc)
+            set_on_insert.pop("last_updated_at", None)
+            await general_coll.update_one(
+                {"_id": general_chat_id},
+                {"$setOnInsert": set_on_insert, "$set": {"last_updated_at": now}},
+                upsert=True,
+            )
+
+            logger.info(
+                "[GENERAL_CHAT] Created general session",
+                extra={"general_chat_id": general_chat_id, "enterprise_id": ent_id, "user_id": user_id, "sequence": seq},
+            )
+
+            return {"chat_id": general_chat_id, "label": label, "sequence": seq}
+        except Exception as e:  # pragma: no cover
+            logger.error(f"Failed to create general chat session for enterprise={enterprise_id}, user={user_id}: {e}")
+            raise
 
     async def mark_chat_completed(self, chat_id: str, enterprise_id: str) -> bool:
         try:
@@ -468,6 +587,136 @@ class AG2PersistenceManager:
             logger.warning(f"[RESUME_CHAT] Failed to resume chat {chat_id}: {e}")
             return None
 
+    async def append_general_message(
+        self,
+        *,
+        general_chat_id: str,
+        enterprise_id: str,
+        role: str,
+        content: str,
+        user_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Persist Ask Mozaiks (general agent) exchanges inside the dedicated general chat collection."""
+
+        normalized_role = role if role in {"user", "assistant"} else "assistant"
+        metadata = metadata or {}
+        metadata.setdefault("source", "general_agent")
+        if user_id and "user_id" not in metadata:
+            metadata["user_id"] = user_id
+
+        ent_id = str(enterprise_id)
+        coll = await self._general_coll()
+        now = datetime.now(UTC)
+        bump = await coll.find_one_and_update(
+            {"_id": general_chat_id, "enterprise_id": ent_id},
+            {"$inc": {"last_sequence": 1}, "$set": {"last_updated_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        seq = int(bump.get("last_sequence", 1)) if bump else 1
+
+        message_doc = {
+            "role": normalized_role,
+            "content": str(content),
+            "timestamp": now,
+            "event_type": "general_agent.message",
+            "event_id": f"general_{uuid4()}",
+            "sequence": seq,
+            "agent_name": "AskMozaiks" if normalized_role != "user" else "user",
+            "metadata": metadata,
+        }
+
+        await coll.update_one(
+            {"_id": general_chat_id, "enterprise_id": ent_id},
+            {"$push": {"messages": message_doc}, "$set": {"last_updated_at": now}},
+        )
+
+        logger.debug(
+            "[GENERAL_MSG] Persisted general agent message",
+            extra={
+                "general_chat_id": general_chat_id,
+                "enterprise_id": ent_id,
+                "sequence": seq,
+                "role": normalized_role,
+            },
+        )
+
+        return message_doc
+
+    async def list_general_chats(
+        self,
+        *,
+        enterprise_id: str,
+        user_id: str,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        coll = await self._general_coll()
+        ent_id = str(enterprise_id)
+        limit = max(1, min(int(limit or 1), 200))
+        docs = (
+            await coll.find({"enterprise_id": ent_id, "user_id": user_id})
+            .sort("created_at", -1)
+            .limit(limit)
+            .to_list(length=limit)
+        )
+        sessions: List[Dict[str, Any]] = []
+        for doc in docs:
+            sessions.append(
+                {
+                    "chat_id": doc.get("_id"),
+                    "label": doc.get("general_label") or doc.get("_id"),
+                    "sequence": int(doc.get("general_sequence", 0) or 0),
+                    "status": int(doc.get("status", -1)),
+                    "created_at": doc.get("created_at"),
+                    "last_updated_at": doc.get("last_updated_at"),
+                    "last_sequence": int(doc.get("last_sequence", 0) or 0),
+                }
+            )
+        return sessions
+
+    async def fetch_general_chat_transcript(
+        self,
+        *,
+        general_chat_id: str,
+        enterprise_id: str,
+        after_sequence: int = -1,
+        limit: int = 500,
+    ) -> Optional[Dict[str, Any]]:
+        coll = await self._general_coll()
+        ent_id = str(enterprise_id)
+        doc = await coll.find_one({"_id": general_chat_id, "enterprise_id": ent_id})
+        if not doc:
+            return None
+
+        messages = doc.get("messages", []) or []
+        filtered: List[Dict[str, Any]] = []
+        for message in messages:
+            try:
+                sequence_val = int(message.get("sequence", 0) or 0)
+            except Exception:
+                sequence_val = 0
+            if after_sequence >= 0 and sequence_val <= after_sequence:
+                continue
+            filtered.append(message)
+
+        if limit > 0:
+            limit = max(1, min(int(limit), 2000))
+            filtered = filtered[-limit:]
+
+        payload = {
+            "chat_id": doc.get("_id"),
+            "label": doc.get("general_label") or doc.get("_id"),
+            "sequence": int(doc.get("general_sequence", 0) or 0),
+            "status": int(doc.get("status", -1)),
+            "enterprise_id": ent_id,
+            "user_id": doc.get("user_id"),
+            "messages": filtered,
+            "last_sequence": int(doc.get("last_sequence", 0) or 0),
+            "created_at": doc.get("created_at"),
+            "last_updated_at": doc.get("last_updated_at"),
+        }
+        return payload
+
     async def fetch_event_diff(self, *, chat_id: str, enterprise_id: str, last_sequence: int) -> List[Dict[str, Any]]:
         """Return message diff (messages with sequence > last_sequence).
 
@@ -616,7 +865,7 @@ class AG2PersistenceManager:
             try:
                 if role == "assistant" and wf_name and raw_name and agent_has_structured_output(wf_name, raw_name):
                     # Attempt to parse JSON from cleaned content
-                    parsed = self._extract_json_from_text(content_str)
+                    parsed = self._extract_json_from_text(content_str, agent_name=raw_name)
                     if parsed:
                         normalized = self._normalize_structured_output(raw_name, parsed)
                         if normalized != parsed:
@@ -657,14 +906,48 @@ class AG2PersistenceManager:
                         # Not valid JSON, use as-is
                         pass
                 
-                # Truncate if too long (even after formatting)
-                max_len = 2000 if is_json else 500
-                if len(display_content) > max_len:
-                    display_content = display_content[:max_len] + "\n... (truncated)"
-                
-                # Add visual separator and formatting
+                # Optional truncation (controlled via env) and text wrapping
+                max_len = _AGENT_CONV_JSON_MAX_LEN if is_json else _AGENT_CONV_TEXT_MAX_LEN
+                truncated_suffix = ""
+                if max_len is not None and len(display_content) > max_len:
+                    display_content = display_content[:max_len]
+                    truncated_suffix = "\n... (truncated)"
+
+                if not is_json and display_content:
+                    wrapped_lines: list[str] = []
+                    split_lines = display_content.splitlines() or [display_content]
+                    for raw_line in split_lines:
+                        if not raw_line.strip():
+                            wrapped_lines.append("")
+                            continue
+                        wrapped_lines.extend(
+                            textwrap.wrap(
+                                raw_line,
+                                width=100,
+                                break_long_words=False,
+                                break_on_hyphens=False,
+                            )
+                        )
+                    display_content = "\n".join(wrapped_lines)
+
+                if truncated_suffix:
+                    display_content = f"{display_content}{truncated_suffix}"
+
+                # Add visual separator and metadata block for readability
                 separator = "=" * 80
-                log_message = f"\n{separator}\n[{agent_name}]\n{separator}\n{display_content}\n"
+                meta_lines = [
+                    f"agent: {agent_name}",
+                    f"chat_id: {chat_id}",
+                    f"enterprise_id: {enterprise_id}",
+                    f"sequence: {seq}",
+                    f"event_id: {event_id}",
+                ]
+                body = display_content if display_content else "(empty)"
+                log_message = (
+                    f"\n{separator}\n"
+                    + "\n".join(meta_lines)
+                    + f"\n{separator}\n{body}\n"
+                )
                 
                 agent_conv_logger.info(
                     log_message,
@@ -727,6 +1010,7 @@ class AG2PersistenceManager:
         agent_name: Optional[str] = None,
         event_ts: Optional[datetime] = None,
         duration_sec: float = 0.0,
+        session_type: str = "workflow",
     ) -> None:
         """Update live unified rollup document with per-chat + per-agent metrics and handle billing.
 
@@ -799,7 +1083,7 @@ class AG2PersistenceManager:
             await stats_coll.update_one({"_id": summary_id}, {"$inc": inc_ops, "$set": {"last_updated_at": now, f"chat_sessions.{chat_id}.last_event_ts": event_ts}})
 
             # Also reflect usage counters directly inside ChatSessions doc so rollup recompute stays consistent
-            chat_coll = await self._coll()
+            chat_coll = await (self._general_coll() if session_type == "general" else self._coll())
             await chat_coll.update_one(
                 {"_id": chat_id, "enterprise_id": enterprise_id},
                 {"$inc": {
@@ -937,34 +1221,93 @@ class AG2PersistenceManager:
     # used for generate_and_download
 #############################################
     @staticmethod
-    def _extract_json_from_text(text: Any) -> Optional[Dict[str, Any]]:
+    def _extract_json_from_text(text: Any, agent_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Extract JSON from text, with cleaning to handle common agent output issues.
+        
+        Handles:
+        - Markdown code fences (```json ... ```)
+        - Language identifiers (json, JSON)
+        - Trailing garbage after JSON
+        - Trailing commas before closing brackets
+        """
         try:
             if text is None:
+                if agent_name:
+                    logger.info(f"[JSON_PARSE] {agent_name}: text is None")
                 return None
             if isinstance(text, dict):
+                if agent_name:
+                    logger.info(f"[JSON_PARSE] {agent_name}: already a dict")
                 return text
             if isinstance(text, list):
+                if agent_name:
+                    logger.info(f"[JSON_PARSE] {agent_name}: text is a list, returning None")
                 return None
+            
             s = text if isinstance(text, str) else str(text)
             s_strip = s.strip()
+            
+            if agent_name:
+                logger.info(f"[JSON_PARSE] {agent_name}: original length={len(s)}, stripped length={len(s_strip)}")
+            
+            # CLEANING STEP 1: Remove Markdown code fences
+            if s_strip.startswith("```") and "```" in s_strip[3:]:
+                # Find the closing ```
+                end_fence = s_strip.find("```", 3)
+                s_strip = s_strip[3:end_fence].strip()
+                if agent_name:
+                    logger.info(f"[JSON_PARSE] {agent_name}: removed markdown fences, new length={len(s_strip)}")
+            
+            # CLEANING STEP 2: Remove "json" or "JSON" prefix if present
+            if s_strip.lower().startswith("json"):
+                s_strip = s_strip[4:].strip()
+                if agent_name:
+                    logger.info(f"[JSON_PARSE] {agent_name}: removed json prefix")
+            
+            # CLEANING STEP 3: Find JSON boundaries (first { or [ to last } or ])
+            json_start = s_strip.find("{") if "{" in s_strip else s_strip.find("[")
+            if json_start != -1:
+                # Find last closing bracket
+                json_end = s_strip.rfind("}") if "}" in s_strip else s_strip.rfind("]")
+                if json_end != -1:
+                    s_strip = s_strip[json_start:json_end + 1]
+                    if agent_name:
+                        logger.info(f"[JSON_PARSE] {agent_name}: extracted JSON boundaries, length={len(s_strip)}")
+            
+            # CLEANING STEP 4: Remove trailing commas before closing brackets (invalid JSON)
+            import re
+            s_strip = re.sub(r',\s*([\]}])', r'\1', s_strip)
+            
+            # Now try to parse the cleaned JSON
             decoder = json.JSONDecoder()
             idx = 0
             length = len(s_strip)
             while idx < length:
                 brace_idx = s_strip.find("{", idx)
                 if brace_idx == -1:
+                    if agent_name:
+                        logger.info(f"[JSON_PARSE] {agent_name}: no opening brace found")
                     return None
                 try:
                     obj, end_idx = decoder.raw_decode(s_strip, brace_idx)
                     if isinstance(obj, dict):
+                        if agent_name:
+                            logger.info(f"[JSON_PARSE] {agent_name}: ✓ Successfully parsed JSON")
                         return obj
                     idx = end_idx
                     continue
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    if agent_name and idx == 0:  # Only log first attempt
+                        logger.info(f"[JSON_PARSE] {agent_name}: JSONDecodeError at pos {e.pos}: {e.msg}, content preview: {s_strip[max(0, e.pos-50):e.pos+50]}")
                     idx = brace_idx + 1
                     continue
+            if agent_name:
+                logger.info(f"[JSON_PARSE] {agent_name}: exhausted all parse attempts")
             return None
-        except Exception:
+        except Exception as ex:
+            if agent_name:
+                logger.info(f"[JSON_PARSE] {agent_name}: exception during parse: {ex}")
             return None
 
     @staticmethod
@@ -1081,6 +1424,139 @@ class AG2PersistenceManager:
         except Exception as e:  # pragma: no cover
             logger.error(f"[GATHER_AGENT_JSONS] Failed for chat_id={chat_id}: {e}", exc_info=True)
             return result
+
+    # UI Tool Persistence -----------------------------------------------
+    async def attach_ui_tool_metadata(
+        self,
+        *,
+        chat_id: str,
+        enterprise_id: str,
+        event_id: str,
+        metadata: Dict[str, Any]
+    ) -> None:
+        """Attach UI tool metadata to the most recent agent message.
+        
+        This enables UI tool state to persist across reconnections.
+        When a UI tool is invoked, we store its configuration and state
+        in the last agent message's metadata field.
+        
+        Args:
+            chat_id: Chat session identifier
+            enterprise_id: Enterprise identifier
+            event_id: UI tool event identifier (for correlation)
+            metadata: UI tool metadata (ui_tool_id, display, payload, etc.)
+        """
+        try:
+            coll = await self._coll()
+            
+            # Find the chat document first
+            doc = await coll.find_one(
+                {"_id": chat_id, "enterprise_id": enterprise_id},
+                {"messages": 1}
+            )
+            
+            if not doc:
+                logger.warning(f"[UI_TOOL_METADATA] Chat {chat_id} not found")
+                return
+            
+            messages = doc.get("messages", [])
+            if not messages:
+                logger.warning(f"[UI_TOOL_METADATA] No messages in chat {chat_id}")
+                return
+            
+            # Find the last assistant message index
+            last_assistant_idx = None
+            for idx in range(len(messages) - 1, -1, -1):
+                msg = messages[idx]
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    last_assistant_idx = idx
+                    break
+            
+            if last_assistant_idx is None:
+                logger.warning(f"[UI_TOOL_METADATA] No assistant message found in {chat_id}")
+                return
+            
+            # Update the specific message with ui_tool metadata
+            result = await coll.update_one(
+                {
+                    "_id": chat_id,
+                    "enterprise_id": enterprise_id,
+                },
+                {
+                    "$set": {
+                        f"messages.{last_assistant_idx}.metadata": {
+                            "ui_tool": metadata
+                        }
+                    }
+                }
+            )
+            
+            if result.modified_count > 0:
+                logger.info(
+                    f"[UI_TOOL_METADATA] Attached ui_tool metadata to message[{last_assistant_idx}] "
+                    f"in {chat_id} (tool={metadata.get('ui_tool_id')}, event={event_id})"
+                )
+            else:
+                logger.warning(f"[UI_TOOL_METADATA] Failed to update message in {chat_id}")
+        except Exception as e:
+            logger.error(f"[UI_TOOL_METADATA] Failed to attach metadata for {chat_id}: {e}", exc_info=True)
+
+    async def update_ui_tool_completion(
+        self,
+        *,
+        chat_id: str,
+        enterprise_id: str,
+        event_id: str,
+        completed: bool,
+        status: str
+    ) -> None:
+        """Update UI tool completion status in persisted message metadata.
+        
+        Called after a UI tool interaction completes to mark the tool as done.
+        This ensures that on reconnect, completed inline components show
+        a "Completed" chip instead of the interactive component.
+        
+        Args:
+            chat_id: Chat session identifier
+            enterprise_id: Enterprise identifier
+            event_id: UI tool event identifier (for correlation)
+            completed: Whether the tool interaction is complete
+            status: Completion status ("completed", "dismissed", etc.)
+        """
+        try:
+            coll = await self._coll()
+            
+            # Find the message with matching ui_tool.event_id
+            result = await coll.update_one(
+                {
+                    "_id": chat_id,
+                    "enterprise_id": enterprise_id,
+                    "messages.metadata.ui_tool.event_id": event_id
+                },
+                {
+                    "$set": {
+                        "messages.$[elem].metadata.ui_tool.ui_tool_completed": completed,
+                        "messages.$[elem].metadata.ui_tool.ui_tool_status": status,
+                        "messages.$[elem].metadata.ui_tool.completed_at": datetime.now(UTC).isoformat()
+                    }
+                },
+                array_filters=[
+                    {"elem.metadata.ui_tool.event_id": event_id}
+                ]
+            )
+            
+            if result.modified_count > 0:
+                logger.info(
+                    f"[UI_TOOL_COMPLETE] Updated completion for event={event_id} "
+                    f"in {chat_id} (completed={completed}, status={status})"
+                )
+            else:
+                logger.warning(
+                    f"[UI_TOOL_COMPLETE] No message found with ui_tool.event_id={event_id} "
+                    f"in {chat_id}"
+                )
+        except Exception as e:
+            logger.error(f"[UI_TOOL_COMPLETE] Failed to update completion for {chat_id}: {e}", exc_info=True)
 
 #############################################
 #############################################

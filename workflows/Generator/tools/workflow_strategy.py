@@ -9,6 +9,36 @@ from typing import Dict, Any, Annotated, Optional
 import logging
 
 _logger = logging.getLogger("tools.workflow_strategy")
+_LIFECYCLE_TRIGGERS = {"before_chat", "after_chat", "before_agent", "after_agent"}
+
+
+def _normalize_lifecycle_operations(value: Any) -> list[dict[str, Any]]:
+    """Sanitize lifecycle operations emitted by WorkflowStrategyAgent."""
+    normalized: list[dict[str, Any]] = []
+    if not isinstance(value, list):
+        return normalized
+
+    for idx, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or f"Lifecycle {idx + 1}").strip()
+        trigger = str(entry.get("trigger") or "").strip().lower()
+        target = str(entry.get("target") or "").strip()
+        description = str(entry.get("description") or "").strip()
+
+        if trigger not in _LIFECYCLE_TRIGGERS:
+            _logger.debug("Skipping lifecycle entry '%s' with invalid trigger '%s'", name, trigger)
+            continue
+
+        normalized.append(
+            {
+                "name": name or f"{trigger.title()} operation",
+                "trigger": trigger,
+                "target": target or None,
+                "description": description,
+            }
+        )
+    return normalized
 
 def workflow_strategy(
     *,
@@ -24,7 +54,7 @@ def workflow_strategy(
     
     Args:
         WorkflowStrategy: Structured payload containing workflow metadata, orchestration pattern,
-            trigger, interaction mode, and phase definitions.
+            trigger, lifecycle operations, and phase definitions.
         agent_message: Optional short confirmation message included in the chat transcript.
         context_variables: Runtime context manager (injected by AG2) used to persist strategy state.
     
@@ -45,7 +75,8 @@ def workflow_strategy(
         or WorkflowStrategy.get("trigger_type")
         or ""
     ).strip()
-    interaction_mode = str(WorkflowStrategy.get("interaction_mode") or "").strip()
+    lifecycle_ops_payload = WorkflowStrategy.get("lifecycle_operations")
+    lifecycle_operations = _normalize_lifecycle_operations(lifecycle_ops_payload)
     strategy_notes = str(WorkflowStrategy.get("strategy_notes") or "").strip()
     phases_payload = WorkflowStrategy.get("phases")
     phases: list[Dict[str, Any]] = []
@@ -64,17 +95,15 @@ def workflow_strategy(
         raise ValueError("WorkflowStrategy.trigger is required")
     if not pattern:
         raise ValueError("WorkflowStrategy.pattern is required")
-    if not interaction_mode:
-        raise ValueError("WorkflowStrategy.interaction_mode is required")
 
     strategy = {
         "workflow_name": workflow_name,
         "workflow_description": workflow_description,
         "trigger": trigger,
         "trigger_type": trigger,  # Add trigger_type for UI compatibility
-        "interaction_mode": interaction_mode,
         "pattern": pattern,
         "phases": phases,
+        "lifecycle_operations": lifecycle_operations,
         "strategy_notes": strategy_notes,
     }
     
@@ -92,6 +121,7 @@ def workflow_strategy(
     
     phase_count = len(phases)
     approval_phases = sum(1 for p in phases if p.get("approval_required", False))
+    lifecycle_count = len(lifecycle_operations)
 
     confirmation_message = agent_message.strip() if isinstance(agent_message, str) else ""
     if not confirmation_message:
@@ -104,7 +134,7 @@ def workflow_strategy(
         f"Workflow: {workflow_name}\n"
         f"Pattern: {pattern}\n"
         f"Trigger: {trigger}\n"
-        f"Interaction: {interaction_mode}\n"
+        f"Lifecycle Ops: {lifecycle_count}\n"
         f"Phases: {phase_count} ({approval_phases} require approval)\n\n"
         "Handing off to WorkflowImplementationAgent for detailed implementation..."
     )

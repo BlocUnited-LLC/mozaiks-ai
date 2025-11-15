@@ -45,6 +45,13 @@ LOGS_AS_JSON = os.getenv("LOGS_AS_JSON", "").lower() in ("1", "true", "yes", "on
 # Single log file for everything
 MAIN_LOG_FILE = LOGS_DIR / "mozaiks.log"
 
+# Optional hard cap for log message length; blank disables truncation so long payloads stay intact.
+_truncate_env = os.getenv("LOG_MESSAGE_TRUNCATE_LIMIT", "").strip()
+try:
+    LOG_MESSAGE_TRUNCATE_LIMIT = int(_truncate_env) if _truncate_env else 0
+except ValueError:
+    LOG_MESSAGE_TRUNCATE_LIMIT = 0
+
 # Sensitive key substrings for redaction
 _SENSITIVE_KEYS = {"api_key", "apikey", "authorization", "auth", "secret", "password", "token"}
 
@@ -192,7 +199,7 @@ _MONGO_RE = re.compile(r"(mongodb\+srv://)([^:@/]+):([^@/]+)(@)", re.IGNORECASE)
 # 5) Azure Storage connection string AccountKey
 _AZURE_ACC_KEY_RE = re.compile(r"(AccountKey=)([^;]+)(;)", re.IGNORECASE)
 
-def _sanitize_log_message(message: str) -> str:
+def _sanitize_log_message(message: str, *, max_length: int | None = None) -> str:
     if not isinstance(message, str) or not message:
         return message
     # Redact GUIDs that appear in Azure tenant / client logs
@@ -207,9 +214,10 @@ def _sanitize_log_message(message: str) -> str:
     msg = _MONGO_RE.sub(lambda m: m.group(1) + "***:***" + m.group(4), msg)
     # Redact Azure Storage AccountKey
     msg = _AZURE_ACC_KEY_RE.sub(lambda m: m.group(1) + "***REDACTED***" + m.group(3), msg)
-    # Collapse excessive whitespace from large JSON dumps
-    if len(msg) > 2000:
-        msg = msg[:2000] + "...<truncated>"
+    # Respect optional length cap for safety while allowing full logs when unset
+    limit = LOG_MESSAGE_TRUNCATE_LIMIT if max_length is None else max_length
+    if limit and len(msg) > limit:
+        msg = msg[:limit] + "...<truncated>"
     return msg
 
 class PrettyConsoleFormatter(logging.Formatter):
@@ -218,10 +226,11 @@ class PrettyConsoleFormatter(logging.Formatter):
     Format:  HH:MM:SS.mmm [LEVEL] EMOJI logger  msg  (file.py:123 func)
     Includes select extras (chat_id, workflow_name, enterprise_id) inline.
     """
-    def __init__(self, no_color: Optional[bool] = None):
+    def __init__(self, no_color: Optional[bool] = None, *, max_length: int | None = None):
         super().__init__(datefmt="%H:%M:%S")
         env_no_color = os.getenv("NO_COLOR", "0").lower() in ("1", "true", "yes")
         self.no_color = env_no_color if no_color is None else bool(no_color)
+        self._max_length_override = max_length
 
     def format(self, record: logging.LogRecord) -> str:
         ts = datetime.fromtimestamp(record.created).strftime("%H:%M:%S.%f")[:-3]
@@ -230,7 +239,7 @@ class PrettyConsoleFormatter(logging.Formatter):
         color = _LEVEL_COLORS.get(level, "") if not self.no_color else ""
         reset = _RESET if color else ""
         logger_name = record.name
-        msg = _sanitize_log_message(record.getMessage())
+        msg = _sanitize_log_message(record.getMessage(), max_length=self._max_length_override)
         file = getattr(record, "filename", "")
         line = record.lineno
         func = record.funcName
@@ -370,7 +379,7 @@ def setup_logging(
     agent_conv_handler = _make_handler(
         agent_conv_file,
         logging.INFO,
-        PrettyConsoleFormatter(no_color=True),  # Human-readable format for conversations
+        PrettyConsoleFormatter(no_color=True, max_length=0),  # Keep conversation transcripts intact
         log_filter=None,
         max_bytes=max_file_size,
         backup_count=backup_count
@@ -483,10 +492,18 @@ class ContextLogger:
     def with_context(self, **more):
         return ContextLogger(self._base, _filter_reserved_log_keys({**self._ctx, **more}))
 
-def get_workflow_logger(workflow_name: str | None = None, chat_id: str | None = None, enterprise_id: str | None = None, **context):
+def get_workflow_logger(
+    workflow_name: str | None = None,
+    chat_id: str | None = None,
+    enterprise_id: str | None = None,
+    *,
+    base_logger: logging.Logger | None = None,
+    **context,
+):
     ctx = {k:v for k,v in {"workflow_name":workflow_name, "chat_id":chat_id, "enterprise_id":enterprise_id}.items() if v}
     ctx.update(context)
-    return ContextLogger(logging.getLogger("mozaiks.workflow"), ctx)
+    logger = base_logger or logging.getLogger("mozaiks.workflow")
+    return ContextLogger(logger, ctx)
 
 # Operation timing ---------------------------------------------------
 @contextmanager

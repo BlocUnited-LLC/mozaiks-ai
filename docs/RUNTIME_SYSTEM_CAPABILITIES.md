@@ -235,12 +235,12 @@ Generate custom tools for:
 
 **Challenge**: MozaiksAI supports infinite automation types (story creator, invoice generator, coding simulator, data pipeline, etc.)
 
-**Solution**: Generator agents must be domain-agnostic while understanding runtime capabilities
+**Solution**: Generator agents must be domain-agnostic while understanding RUNTIME INTEGRATION
 
 ### 4.1 General Principles
 
 1. **Read the Action Plan domain** → Understand user's automation goal
-2. **Map to runtime capabilities** → What does platform already do?
+2. **Map to RUNTIME INTEGRATION** → What does platform already do?
 3. **Identify gaps** → What domain logic is missing?
 4. **Generate only gap-filling tools** → Don't duplicate platform features
 

@@ -174,11 +174,13 @@ class AutoToolEventHandler:
     async def _load_bindings_for_workflow(self, workflow_name: str) -> Dict[str, AutoToolBinding]:
         cached = self._workflow_bindings.get(workflow_name)
         if cached is not None:
+            logger.debug("[AUTO_TOOL] Returning cached bindings for workflow=%s (count=%d)", workflow_name, len(cached))
             return cached
 
         mapping: Dict[str, AutoToolBinding] = {}
         try:
             registry = get_structured_outputs_for_workflow(workflow_name)
+            logger.debug("[AUTO_TOOL] Loaded structured outputs registry for workflow=%s: %s", workflow_name, list(registry.keys()))
         except Exception as err:
             logger.debug(
                 "[AUTO_TOOL] Structured outputs unavailable for workflow %s: %s",
@@ -188,15 +190,18 @@ class AutoToolEventHandler:
             registry = {}
 
         if not registry:
+            logger.warning("[AUTO_TOOL] Empty registry for workflow=%s - no bindings possible", workflow_name)
             self._workflow_bindings[workflow_name] = mapping
             return mapping
 
         tool_functions = load_agent_tool_functions(workflow_name)
+        logger.debug("[AUTO_TOOL] Loaded tool functions for workflow=%s: agents=%s", workflow_name, list(tool_functions.keys()))
         agent_function_index: Dict[str, Dict[str, Callable[..., Any]]] = {}
         for agent, funcs in tool_functions.items():
             agent_function_index[agent] = {
                 getattr(fn, "__name__", f"fn_{idx}"): fn for idx, fn in enumerate(funcs)
             }
+            logger.debug("[AUTO_TOOL] Agent %s has functions: %s", agent, list(agent_function_index[agent].keys()))
 
         tools_path = Path("workflows") / workflow_name / "tools.json"
         try:
@@ -211,6 +216,8 @@ class AutoToolEventHandler:
         entries = tools_data.get("tools") or []
         if not isinstance(entries, list):
             entries = []
+        
+        logger.debug("[AUTO_TOOL] Processing %d tool entries for workflow=%s", len(entries), workflow_name)
 
         for entry in entries:
             if not isinstance(entry, dict):
@@ -226,6 +233,7 @@ class AutoToolEventHandler:
                 except Exception:
                     should_auto_invoke = False
             if not should_auto_invoke:
+                logger.debug("[AUTO_TOOL] Skipping entry (auto_invoke=False): function=%s agent=%s", entry.get("function"), entry.get("agent"))
                 continue
             function_name = entry.get("function")
             if not isinstance(function_name, str) or not function_name:
@@ -237,11 +245,14 @@ class AutoToolEventHandler:
                 agents = [agent_field]
             else:
                 agents = []
+            logger.debug("[AUTO_TOOL] Processing auto_invoke tool: function=%s agents=%s", function_name, agents)
             for agent_name in agents:
                 model_cls = registry.get(agent_name)
                 if model_cls is None:
+                    logger.debug("[AUTO_TOOL] No structured output model for agent=%s (skipping binding)", agent_name)
                     continue
                 model_name = getattr(model_cls, "__name__", str(model_cls))
+                logger.debug("[AUTO_TOOL] Agent %s has model_name=%s", agent_name, model_name)
                 fn_lookup = agent_function_index.get(agent_name, {})
                 func = fn_lookup.get(function_name)
                 if not func:
@@ -251,6 +262,7 @@ class AutoToolEventHandler:
                         agent_name,
                     )
                     continue
+                logger.debug("[AUTO_TOOL] Found function %s for agent %s", function_name, agent_name)
                 sig = inspect.signature(func)
                 param_names = [
                     name
@@ -274,7 +286,9 @@ class AutoToolEventHandler:
                     model_cls=model_cls,
                 )
                 mapping[model_name] = binding
+                logger.info("[AUTO_TOOL] ✅ Created binding: model=%s agent=%s tool=%s", model_name, agent_name, binding.tool_name)
 
+        logger.info("[AUTO_TOOL] Loaded %d total bindings for workflow=%s: %s", len(mapping), workflow_name, list(mapping.keys()))
         self._workflow_bindings[workflow_name] = mapping
         return mapping
 
@@ -285,10 +299,16 @@ class AutoToolEventHandler:
         context: Dict[str, Any],
         pattern_context_ref: Any = None,
     ) -> Dict[str, Any]:
-        param_lookup = {name.lower(): name for name in binding.param_names}
+        def _normalize_key(raw: str | None) -> str:
+            if not raw:
+                return ""
+            # Canonicalize keys so `PhaseAgents`, `phase_agents`, and `phaseAgents` resolve to the same parameter.
+            return "".join(ch.lower() for ch in raw if ch.isalnum())
+
+        param_lookup = {_normalize_key(name): name for name in binding.param_names}
         kwargs: Dict[str, Any] = {}
         for key, value in normalized_payload.items():
-            matched = param_lookup.get(str(key).lower())
+            matched = param_lookup.get(_normalize_key(str(key)))
             if matched:
                 kwargs[matched] = value
         # Provide contextual metadata when the tool function explicitly accepts it.
@@ -303,7 +323,7 @@ class AutoToolEventHandler:
         for key, value in context_fallbacks.items():
             if value is None:
                 continue
-            matched = param_lookup.get(key)
+            matched = param_lookup.get(_normalize_key(key))
             if matched and matched not in kwargs:
                 kwargs[matched] = value
         if binding.accepts_context:

@@ -29,6 +29,42 @@ export const ChatUIProvider = ({
   const [agentSystemInitialized, setAgentSystemInitialized] = useState(false);
   const [workflowsInitialized, setWorkflowsInitialized] = useState(false);
   const WORKFLOW_INIT_TIMEOUT_MS = 8000; // guard against endless spinner
+  
+  // Persistent chat state (survives navigation)
+  const [activeChatId, setActiveChatId] = useState(null);
+  const [activeWorkflowName, setActiveWorkflowName] = useState(null);
+  const [chatMinimized, setChatMinimized] = useState(false);
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+  
+  // Fluid layout state - controls chat/artifact panel behavior
+  const [layoutMode, setLayoutMode] = useState('full'); // 'full' | 'split' | 'minimized'
+  const [previousLayoutMode, setPreviousLayoutMode] = useState('full'); // Remember state before minimizing
+  const [isArtifactOpen, setIsArtifactOpen] = useState(false);
+  const [isInDiscoveryMode, setIsInDiscoveryMode] = useState(false); // Track if on workflows page
+
+  // Conversation mode + general chat state (Ask Mozaiks integration)
+  const [conversationMode, setConversationMode] = useState(() => {
+    try {
+      const stored = localStorage.getItem('mozaiks.conversation_mode');
+      if (stored === 'ask' || stored === 'workflow') {
+        return stored;
+      }
+    } catch (_) {
+      /* ignore storage errors */
+    }
+    return 'workflow';
+  });
+  const [activeGeneralChatId, setActiveGeneralChatId] = useState(null);
+  const [generalChatSummary, setGeneralChatSummary] = useState(null);
+  const [generalChatSessions, setGeneralChatSessions] = useState([]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('mozaiks.conversation_mode', conversationMode);
+    } catch (_) {
+      /* ignore storage errors */
+    }
+  }, [conversationMode]);
 
   useEffect(() => {
     const initializeServices = async () => {
@@ -105,6 +141,34 @@ export const ChatUIProvider = ({
     // System state
     agentSystemInitialized,
     workflowsInitialized,
+
+    // Persistent chat state
+    activeChatId,
+    setActiveChatId,
+    activeWorkflowName,
+    setActiveWorkflowName,
+    chatMinimized,
+    setChatMinimized,
+    unreadChatCount,
+    setUnreadChatCount,
+    
+    // Fluid layout state
+    layoutMode,
+    setLayoutMode,
+    previousLayoutMode,
+    setPreviousLayoutMode,
+    isArtifactOpen,
+    setIsArtifactOpen,
+    isInDiscoveryMode,
+    setIsInDiscoveryMode,
+    conversationMode,
+    setConversationMode,
+    activeGeneralChatId,
+    setActiveGeneralChatId,
+    generalChatSummary,
+    setGeneralChatSummary,
+    generalChatSessions,
+    setGeneralChatSessions,
 
     // Configuration
     config: config.getConfig(),

@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Annotated, Optional
 import logging
 import sys
 from pathlib import Path
+import copy
 
 # Add workflows/Generator/tools to path for absolute import
 _tools_dir = Path(__file__).parent
@@ -85,6 +86,38 @@ async def phase_agents_plan(
             _logger.error("phase_agents[%d].agents is empty", idx)
             return {"status": "error", "message": f"phase_agents[{idx}].agents cannot be empty (at least 1 agent required per phase)"}
     
+    sanitized_phase_agents: List[Dict[str, Any]] = []
+    for entry in phase_agents:
+        try:
+            index = int(entry.get("phase_index", 0))
+        except (TypeError, ValueError):
+            _logger.debug(
+                "Skipping phase_agents entry with non-integer phase_index: %s",
+                entry.get("phase_index"),
+            )
+            continue
+
+        agents_list = entry.get("agents", [])
+        if isinstance(agents_list, list):
+            sanitized_agents = [copy.deepcopy(agent) for agent in agents_list if isinstance(agent, dict)]
+        else:
+            sanitized_agents = []
+
+        sanitized_phase_agents.append(
+            {
+                "phase_index": index,
+                "agents": sanitized_agents,
+            }
+        )
+
+    if context_variables and hasattr(context_variables, "set"):
+        try:
+            context_variables.set("workflow_phase_agents", sanitized_phase_agents)  # type: ignore[attr-defined]
+            context_variables.set("phase_agents_ready", bool(sanitized_phase_agents))  # type: ignore[attr-defined]
+            _logger.info("Cached %d phase_agents entries for downstream tools", len(sanitized_phase_agents))
+        except Exception as ctx_err:
+            _logger.debug("Failed to cache phase_agents in context variables: %s", ctx_err)
+
     # Forward to action_plan for merging
     _logger.info("Forwarding phase_agents to action_plan for merge with workflow_strategy")
     

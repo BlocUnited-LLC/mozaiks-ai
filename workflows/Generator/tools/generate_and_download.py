@@ -15,12 +15,83 @@ from logs.logging_config import get_workflow_logger
 from core.data.persistence.persistence_manager import AG2PersistenceManager
 from core.workflow.outputs.ui_tools import use_ui_tool, UIToolError
 from workflows.Generator.tools.workflow_converter import create_workflow_files
+from core.workflow.dependencies import dependency_manager
 
 try:
     from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
 except Exception:
     _get_tool_logger = None  # type: ignore
     _log_tool_event = None  # type: ignore
+
+async def _update_workflow_dependency_graph(
+    collected: Dict[str, Any],
+    workflow_name_pascal: str,
+    enterprise_id: str,
+    wf_logger,
+) -> None:
+    """
+    Extract workflow_dependencies and workflow_provides from TechnicalBlueprint 
+    and update the WorkflowDependencies collection.
+    
+    Args:
+        collected: Dictionary of agent outputs (includes WorkflowArchitectAgent)
+        workflow_name_pascal: PascalCase workflow name
+        enterprise_id: Enterprise ID
+        wf_logger: Workflow logger instance
+    """
+    try:
+        # Extract TechnicalBlueprint from WorkflowArchitectAgent output
+        architect_output = collected.get("WorkflowArchitectAgent")
+        if not architect_output or not isinstance(architect_output, dict):
+            wf_logger.debug("No WorkflowArchitectAgent output found, skipping dependency graph update")
+            return
+        
+        technical_blueprint = architect_output.get("TechnicalBlueprint")
+        if not technical_blueprint or not isinstance(technical_blueprint, dict):
+            wf_logger.debug("No TechnicalBlueprint found in WorkflowArchitectAgent output")
+            return
+        
+        # Extract workflow_dependencies and workflow_provides
+        workflow_dependencies = technical_blueprint.get("workflow_dependencies")
+        workflow_provides = technical_blueprint.get("workflow_provides")
+        
+        # Convert to proper format (null becomes None for Python)
+        dependencies = None
+        provides = None
+        
+        if workflow_dependencies and isinstance(workflow_dependencies, dict):
+            dependencies = {
+                "required_workflows": workflow_dependencies.get("required_workflows", []),
+                "required_context_vars": workflow_dependencies.get("required_context_vars", []),
+                "required_artifacts": workflow_dependencies.get("required_artifacts", [])
+            }
+            wf_logger.info(f"📊 Extracted workflow_dependencies: {len(dependencies.get('required_workflows', []))} workflows, "
+                          f"{len(dependencies.get('required_context_vars', []))} context vars, "
+                          f"{len(dependencies.get('required_artifacts', []))} artifacts")
+        
+        if workflow_provides and isinstance(workflow_provides, dict):
+            provides = {
+                "context_vars": workflow_provides.get("context_vars", []),
+                "artifacts": workflow_provides.get("artifacts", [])
+            }
+            wf_logger.info(f"📊 Extracted workflow_provides: {len(provides.get('context_vars', []))} context vars, "
+                          f"{len(provides.get('artifacts', []))} artifacts")
+        
+        # Update dependency graph in database
+        if dependencies or provides:
+            await dependency_manager.update_workflow_graph(
+                enterprise_id=enterprise_id,
+                workflow_name=workflow_name_pascal,
+                dependencies=dependencies,
+                provides=provides
+            )
+            wf_logger.info(f"✅ Updated WorkflowDependencies collection for workflow '{workflow_name_pascal}'")
+        else:
+            wf_logger.debug(f"No dependencies or provides found for workflow '{workflow_name_pascal}', skipping graph update")
+            
+    except Exception as dep_err:
+        # Non-critical error - log but don't fail workflow generation
+        wf_logger.warning(f"⚠️ Failed to update workflow dependency graph: {dep_err}", exc_info=True)
 
 async def generate_and_download(
     DownloadRequest: Annotated[Dict[str, Any], "Download configuration with confirmation_only and storage_backend"],
@@ -174,10 +245,15 @@ async def generate_and_download(
     if context_variables and hasattr(context_variables, 'get'):
         action_plan_ctx = context_variables.get("action_plan")
         if isinstance(action_plan_ctx, dict):
-            workflow_info = action_plan_ctx.get("workflow", {})
+            if isinstance(action_plan_ctx.get("workflow"), dict):
+                workflow_info = action_plan_ctx.get("workflow") or {}
+            else:
+                workflow_info = action_plan_ctx
+
             if isinstance(workflow_info, dict):
-                wf_name_user_friendly = workflow_info.get("name")
-                if wf_name_user_friendly:
+                candidate_name = workflow_info.get("name")
+                if isinstance(candidate_name, str) and candidate_name.strip():
+                    wf_name_user_friendly = candidate_name.strip()
                     wf_name_pascal = _to_pascal_case(wf_name_user_friendly)
                     wf_logger.info(f"📝 Extracted workflow name from context.action_plan: '{wf_name_user_friendly}' → '{wf_name_pascal}'")
     
@@ -189,14 +265,35 @@ async def generate_and_download(
             if isinstance(action_plan, dict):
                 workflow = action_plan.get("workflow", {})
                 if isinstance(workflow, dict):
-                    wf_name_user_friendly = workflow.get("name")
-                    if wf_name_user_friendly:
+                    candidate_name = workflow.get("name")
+                    if isinstance(candidate_name, str) and candidate_name.strip():
+                        wf_name_user_friendly = candidate_name.strip()
                         wf_name_pascal = _to_pascal_case(wf_name_user_friendly)
                         wf_logger.info(f"📝 Extracted workflow name from collected.ActionPlanArchitect: '{wf_name_user_friendly}' → '{wf_name_pascal}'")
+        if not wf_name_pascal:
+            strategy_data = collected.get("WorkflowStrategyAgent")
+            if isinstance(strategy_data, dict):
+                strategy_payload = strategy_data.get("WorkflowStrategy") or strategy_data.get("workflow_strategy") or strategy_data
+                if isinstance(strategy_payload, dict):
+                    candidate_name = strategy_payload.get("workflow_name")
+                    if isinstance(candidate_name, str) and candidate_name.strip():
+                        wf_name_user_friendly = candidate_name.strip()
+                        wf_name_pascal = _to_pascal_case(wf_name_user_friendly)
+                        wf_logger.info(f"📝 Extracted workflow name from collected.WorkflowStrategyAgent: '{wf_name_user_friendly}' → '{wf_name_pascal}'")
+        if not wf_name_pascal:
+            orchestrator_snapshot = collected.get("OrchestratorAgent")
+            if isinstance(orchestrator_snapshot, dict):
+                candidate_name = orchestrator_snapshot.get("workflow_name")
+                if isinstance(candidate_name, str) and candidate_name.strip():
+                    wf_name_user_friendly = candidate_name.strip()
+                    wf_name_pascal = _to_pascal_case(wf_name_user_friendly)
+                    wf_logger.info(f"📝 Extracted workflow name from collected.OrchestratorAgent: '{wf_name_user_friendly}' → '{wf_name_pascal}'")
     
     # PRIORITY 3: Fallback to orchestrator or context workflow_name
     if not wf_name_pascal:
-        wf_name_pascal = collected.get("workflow_name") or workflow_name or "GeneratedWorkflow"
+        fallback_name = collected.get("workflow_name") or workflow_name or "GeneratedWorkflow"
+        if isinstance(fallback_name, str) and fallback_name.strip():
+            wf_name_pascal = _to_pascal_case(fallback_name.strip())
         wf_logger.info(f"⚠️ No workflow name in ActionPlan, using fallback: '{wf_name_pascal}'")
     
     if not wf_name_pascal:
@@ -205,6 +302,12 @@ async def generate_and_download(
     # Use PascalCase name for all file operations
     wf_name = wf_name_pascal
     wf_logger = get_workflow_logger(workflow_name=wf_name, chat_id=chat_id, enterprise_id=enterprise_id)
+
+    if context_variables and hasattr(context_variables, "set"):
+        try:
+            context_variables.set("workflow_name", wf_name)
+        except Exception as ctx_err:
+            wf_logger.debug(f"Failed to persist workflow_name to context: {ctx_err}")
 
     # Build aggregation payload (used later if/when we create files)
     # Map all Generator workflow agent outputs according to structured_outputs.json registry
@@ -338,6 +441,10 @@ async def generate_and_download(
         created_files = create_res.get("files", [])
         workflow_dir = Path(create_res.get("workflow_dir", "")) if create_res.get("workflow_dir") else None
         
+        # Update workflow dependency graph after successful creation
+        if wf_name_pascal and enterprise_id:
+            await _update_workflow_dependency_graph(collected, wf_name_pascal, enterprise_id, wf_logger)
+        
         # Create zip file containing all workflow files
         if workflow_dir and workflow_dir.exists():
             try:
@@ -434,6 +541,10 @@ async def generate_and_download(
         created_files = create_res.get("files", [])
         workflow_dir = Path(create_res.get("workflow_dir", "")) if create_res.get("workflow_dir") else None
         ui_files = []
+        
+        # Update workflow dependency graph after successful creation
+        if wf_name_pascal and enterprise_id:
+            await _update_workflow_dependency_graph(collected, wf_name_pascal, enterprise_id, wf_logger)
         
         # Create zip file containing all workflow files
         if workflow_dir and workflow_dir.exists():

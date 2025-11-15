@@ -1005,8 +1005,8 @@
 
 /* Mobile-specific adjustments to prevent glow clipping and tighten header */
 @media (max-width: 640px) {
-  /* Only apply mobile adjustments to chat modules, not artifact panels */
-  .cosmic-ui-module:not(.artifact-panel) {
+  /* Mobile adjustments for all cosmic modules */
+  .cosmic-ui-module {
     overflow: visible; /* allow glows to render outside rounded bounds */
   padding: 6px; /* tighter interior padding on phones */
     border-radius: 12px;

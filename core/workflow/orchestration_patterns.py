@@ -165,42 +165,79 @@ async def _resume_or_initialize_chat(
     initial_message: Optional[str],
     wf_logger,
 ):
-    resumed_messages = await persistence_manager.resume_chat(chat_id, enterprise_id)
-    resume_raw_count = len(resumed_messages or [])
+    resumed_messages = await persistence_manager.resume_chat(chat_id, enterprise_id) or []
+    resume_raw_count = len(resumed_messages)
+    initial_messages: List[Dict[str, Any]] = []
+
+    # Strip Ask Mozaiks chatter before handing the transcript back to AG2 orchestration.
+    filtered_resumed_messages: List[Dict[str, Any]] = []
+    skipped_general = 0
+    for msg in resumed_messages:
+        metadata = msg.get("metadata") if isinstance(msg, dict) else None
+        source = metadata.get("source") if isinstance(metadata, dict) else None
+        if source == "general_agent":
+            skipped_general += 1
+            continue
+        filtered_resumed_messages.append(msg)
+
+    if skipped_general:
+        wf_logger.info(
+            " [RESUME] Ignored %s Ask Mozaiks messages while preparing workflow resume",
+            skipped_general,
+        )
+
+    resumed_messages = filtered_resumed_messages
+    effective_resume_count = len(resumed_messages)
 
     # Determine if the resumed messages actually constitute a prior conversation.
     # We ignore purely system/context/metadata scaffolding so brand-new chats created
     # earlier (e.g. by a pre-flight ping) are not misclassified as a resume.
     meaningful_roles = {"user", "assistant", "agent", "tool"}
     meaningful_messages: List[Dict[str, Any]] = []
-    for m in resumed_messages or []:
+    for m in resumed_messages:
         role = m.get("role") if isinstance(m, dict) else None
         if role in meaningful_roles:
             meaningful_messages.append(m)
 
-    resume_valid = resume_raw_count > 0 and len(meaningful_messages) > 0
+    resume_valid = effective_resume_count > 0 and len(meaningful_messages) > 0
 
     if resume_valid:
         wf_logger.info(
-            f" [RESUME_DETECT] Resuming chat {chat_id}: total_messages={resume_raw_count} meaningful={len(meaningful_messages)}"
+            f" [RESUME_DETECT] Resuming chat {chat_id}: total_messages={effective_resume_count} meaningful={len(meaningful_messages)}"
         )
-        initial_messages: List[Dict[str, Any]] = list(resumed_messages or [])  # shallow copy to append safely
+        initial_messages = list(resumed_messages)
         if initial_message:
-            initial_messages.append({"role": "user", "name": "user", "content": initial_message, "_mozaiks_seed_kind": "initial_message"})
+            initial_messages.append(
+                {
+                    "role": "user",
+                    "name": "user",
+                    "content": initial_message,
+                    "_mozaiks_seed_kind": "initial_message",
+                }
+            )
     else:
         if resume_raw_count > 0:
             wf_logger.info(
-                f" [RESUME_DETECT] Discarding resume for chat {chat_id}: only {resume_raw_count} scaffolding messages (meaningful=0). Treating as NEW."
+                f" [RESUME_DETECT] Discarding resume for chat {chat_id}: only {resume_raw_count} scaffolding/general messages (meaningful=0). Treating as NEW."
             )
         else:
             wf_logger.info(f" [RESUME_DETECT] No prior messages for chat {chat_id}. Starting NEW chat.")
+
         resumed_messages = []  # normalize to empty for downstream checks
-        initial_messages = []
         if initial_message:
-            initial_messages.append({"role": "user", "name": "user", "content": initial_message, "_mozaiks_seed_kind": "initial_message"})
+            initial_messages.append(
+                {
+                    "role": "user",
+                    "name": "user",
+                    "content": initial_message,
+                    "_mozaiks_seed_kind": "initial_message",
+                }
+            )
+
         current_user_id = user_id or "system_user"
         if not user_id:
             logger.warning(f"Starting chat {chat_id} without a specific user_id. Defaulting to 'system_user'.")
+
         try:
             await persistence_manager.create_chat_session(
                 chat_id=chat_id,
@@ -210,15 +247,13 @@ async def _resume_or_initialize_chat(
             )
         except Exception as cs_err:
             wf_logger.error(f" Failed to create chat session doc for {chat_id}: {cs_err}")
+
         try:
             await termination_handler.on_conversation_start(user_id=current_user_id)
             logger.info(" Termination handler started for new conversation")
         except Exception as start_err:
             logger.error(f" Termination handler start failed: {start_err}")
-        # Optionally persist the seed / initial messages. Disabled by default to avoid
-        # duplicates when AG2 itself emits the initial user message as a TextEvent.
-        # Enable by setting ENABLE_MANUAL_INITIAL_PERSIST=1
-        import os
+
         if os.getenv("ENABLE_MANUAL_INITIAL_PERSIST") == "1":
             try:
                 if initial_messages:
@@ -229,13 +264,16 @@ async def _resume_or_initialize_chat(
                     )
             except Exception as init_persist_err:  # pragma: no cover
                 wf_logger.debug(f" Failed to persist initial messages for {chat_id}: {init_persist_err}")
+
     if not initial_messages:
         seed = config.get("initial_message") or config.get("initial_message_to_user")
         if seed:
             seed_kind = "initial_message" if config.get("initial_message") else "initial_message_to_user"
-            initial_messages = [{"role": "user", "name": "user", "content": seed, "_mozaiks_seed_kind": seed_kind}]
-            import os as _os
-            if _os.getenv("ENABLE_MANUAL_INITIAL_PERSIST") == "1":
+            initial_messages = [
+                {"role": "user", "name": "user", "content": seed, "_mozaiks_seed_kind": seed_kind}
+            ]
+
+            if os.getenv("ENABLE_MANUAL_INITIAL_PERSIST") == "1":
                 # Persist config-seeded initial message too (optional)
                 try:
                     await persistence_manager.persist_initial_messages(
@@ -245,6 +283,7 @@ async def _resume_or_initialize_chat(
                     )
                 except Exception as seed_persist_err:  # pragma: no cover
                     wf_logger.debug(f" Failed to persist config seed message for {chat_id}: {seed_persist_err}")
+
     return resumed_messages, initial_messages
 
 
@@ -736,9 +775,7 @@ async def _stream_events(
                     agent_name = extract_agent_name(ev)
                     content = getattr(ev, 'content', '')
                     content_preview = str(content)[:100] if content else 'None'
-                    wf_logger.info(f" [EVENT_TRACE] {event_class} from {agent_name}: content_len={len(str(content)) if content else 0} preview='{content_preview}...'")
-                    if agent_name == 'ContextAgent':
-                        wf_logger.info(f" [CONTEXT_AGENT_TRACE] ContextAgent event detected! auto_tool_agents={auto_tool_agents}")
+                    wf_logger.debug(f" [EVENT_TRACE] {event_class} from {agent_name}: content_len={len(str(content)) if content else 0} preview='{content_preview}...'")
                 except Exception as trace_err:
                     wf_logger.debug(f" [EVENT_TRACE] Error tracing {event_class}: {trace_err}")
             else:
@@ -806,7 +843,7 @@ async def _stream_events(
                             
                             wf_logger.info(f" [{workflow_name_upper}] 🚨 CHECKPOINT A: About to check auto-tool intercept")
                             
-                            # AUTO-TOOL INTERCEPT: Process ContextAgent structured outputs before UI forwarding
+                            # AUTO-TOOL INTERCEPT: Process structured outputs from auto-tool agents before UI forwarding
                             import uuid
                             actual_message_to_send = message_content
                             
@@ -1092,26 +1129,10 @@ async def _stream_events(
                 selected_name = None
                 if turn_agent is not None:
                     selected_name = getattr(turn_agent, 'name', None) or str(turn_agent)
-                context_snapshot = {}
-                try:
-                    ctx_ref = locals().get('ag2_context', globals().get('ag2_context'))
-                    if ctx_ref:
-                        if hasattr(ctx_ref, 'to_dict') and callable(getattr(ctx_ref, 'to_dict')):
-                            context_snapshot = dict(ctx_ref.to_dict())  # type: ignore[arg-type]
-                        elif hasattr(ctx_ref, 'data') and isinstance(getattr(ctx_ref, 'data'), dict):
-                            context_snapshot = dict(getattr(ctx_ref, 'data'))
-                    if not context_snapshot:
-                        base_ctx = locals().get('context', globals().get('context'))
-                        if base_ctx:
-                            if hasattr(base_ctx, 'to_dict') and callable(getattr(base_ctx, 'to_dict')):
-                                context_snapshot = dict(base_ctx.to_dict())  # type: ignore[arg-type]
-                            elif hasattr(base_ctx, 'data') and isinstance(getattr(base_ctx, 'data'), dict):
-                                context_snapshot = dict(getattr(base_ctx, 'data'))
-                except Exception as ctx_err:  # pragma: no cover
-                    wf_logger.debug(f"[HANDOFF_TRACE] context snapshot unavailable: {ctx_err}")
-                interview_state = context_snapshot.get('interview_complete') if isinstance(context_snapshot, dict) else None
+                
+                # Generic handoff debugging (workflow-agnostic)
                 wf_logger.debug(
-                    f"[HANDOFF_TRACE] SelectSpeakerEvent candidates={candidates} selected={selected_name} interview_complete={interview_state}"
+                    f"[HANDOFF_TRACE] SelectSpeakerEvent candidates={candidates} selected={selected_name}"
                 )
 
             if isinstance(ev, InputRequestEvent):
@@ -1147,21 +1168,10 @@ async def _stream_events(
                     prompt_hint = getattr(request_obj, "prompt", None) or getattr(request_obj, "message", None)
                 if prompt_hint is not None:
                     setattr(ev, "_mozaiks_prompt", prompt_hint)
-            # Debug: Check if this is a ContextAgent TextEvent and transport conditions
+            # Debug: Transport processing check
             transport_available = transport is not None
             already_forwarded = getattr(ev, '_mozaiks_forwarded', False)
             wf_logger.debug(f" [TRANSPORT_CHECK] Event {ev.__class__.__name__}: transport_available={transport_available}, already_forwarded={already_forwarded}")
-            
-            if hasattr(ev, '__class__'):
-                event_class = ev.__class__.__name__
-                if event_class == 'TextEvent':
-                    try:
-                        from core.events.event_serialization import extract_agent_name
-                        agent_name = extract_agent_name(ev)
-                        if agent_name == 'ContextAgent':
-                            wf_logger.info(f" [DEBUG_CONTEXT_AGENT] ContextAgent TextEvent: transport={transport_available}, forwarded={already_forwarded}, will_process={transport_available and not already_forwarded}")
-                    except Exception as debug_err:
-                        wf_logger.debug(f" [DEBUG_CONTEXT_AGENT] Debug error: {debug_err}")
             
             if transport and not getattr(ev, '_mozaiks_forwarded', False):
                 wf_logger.debug(f" [TRANSPORT_PROCESSING] Processing {ev.__class__.__name__} through transport pipeline")
@@ -2203,7 +2213,10 @@ async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str
     Log the complete AG2 conversation to the agent chat log file.
     """
     try:
-        agent_chat_logger = get_workflow_logger("agent_messages")
+        agent_chat_logger = get_workflow_logger(
+            "agent_messages",
+            base_logger=logging.getLogger("mozaiks.workflow.agent_messages"),
+        )
 
         if not conversation_history:
             agent_chat_logger.info(f" [{workflow_name}] No conversation history to log for chat {chat_id}")

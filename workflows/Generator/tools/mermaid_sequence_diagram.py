@@ -223,6 +223,233 @@ def _fix_mermaid_syntax(diagram_text: str) -> str:
     return '\n'.join(fixed_lines)
 
 
+def _is_plan_complete(plan: Dict[str, Any]) -> bool:
+    """Check whether a cached action plan contains at least one phase."""
+    if not isinstance(plan, dict):
+        return False
+    phases = plan.get("phases")
+    return isinstance(phases, list) and len(phases) > 0
+
+
+def _coerce_phase_agents_cache(value: Any) -> List[Dict[str, Any]]:
+    """Normalize cached phase_agents entries for downstream merging."""
+    if not isinstance(value, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            phase_index = int(entry.get("phase_index", 0))
+        except (TypeError, ValueError):
+            continue
+
+        agents_payload = entry.get("agents", [])
+        if isinstance(agents_payload, list):
+            agents = [copy.deepcopy(agent) for agent in agents_payload if isinstance(agent, dict)]
+        else:
+            agents = []
+
+        normalized.append({"phase_index": phase_index, "agents": agents})
+
+    return normalized
+
+
+def _compose_workflow_from_components(
+    strategy: Optional[Dict[str, Any]],
+    phase_agents: List[Dict[str, Any]],
+    existing_plan: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Merge cached WorkflowStrategy + phase_agents into a workflow payload.
+
+    This enriches (or rebuilds) the cached action plan so ProjectOverviewAgent only
+    needs to focus on Mermaid diagram synthesis.
+    """
+    plan: Dict[str, Any] = copy.deepcopy(existing_plan) if isinstance(existing_plan, dict) else {}
+    if not isinstance(plan, dict):
+        plan = {}
+
+    strategy_phases: List[Dict[str, Any]] = []
+
+    if isinstance(strategy, dict):
+        workflow_name = _coerce_str(strategy.get("workflow_name")) or _coerce_str(plan.get("name")) or "Generated Workflow"
+        plan["name"] = workflow_name
+        workflow_description = _coerce_str(strategy.get("workflow_description")) or _coerce_str(plan.get("description"))
+        if workflow_description:
+            plan["description"] = workflow_description
+
+        pattern = _coerce_str(strategy.get("pattern")) or _coerce_str(plan.get("pattern"))
+        if pattern:
+            plan["pattern"] = pattern
+
+        trigger = _coerce_str(strategy.get("trigger")) or _coerce_str(plan.get("trigger"))
+        trigger_type = _coerce_str(strategy.get("trigger_type")) or trigger
+        if trigger:
+            plan["trigger"] = trigger
+        if trigger_type:
+            plan["trigger_type"] = trigger_type
+
+        initiated_by = _coerce_str(strategy.get("initiated_by")) or _coerce_str(plan.get("initiated_by")) or "user"
+        plan["initiated_by"] = initiated_by
+
+        lifecycle_ops = strategy.get("lifecycle_operations")
+        if isinstance(lifecycle_ops, list):
+            plan["lifecycle_operations"] = lifecycle_ops
+        elif not isinstance(plan.get("lifecycle_operations"), list):
+            plan["lifecycle_operations"] = []
+
+        strategy_notes = _coerce_str(strategy.get("strategy_notes"))
+        if strategy_notes:
+            plan["strategy_notes"] = strategy_notes
+
+        phases_candidate = strategy.get("phases")
+        if isinstance(phases_candidate, list):
+            strategy_phases = [phase for phase in phases_candidate if isinstance(phase, dict)]
+    else:
+        if not isinstance(plan.get("lifecycle_operations"), list):
+            plan["lifecycle_operations"] = []
+
+    existing_phases = plan.get("phases")
+    if not isinstance(existing_phases, list):
+        existing_phases = []
+
+    merged_phases: Optional[List[Dict[str, Any]]] = None
+    if phase_agents:
+        agents_by_index: Dict[int, List[Dict[str, Any]]] = {}
+        for entry in phase_agents:
+            idx = entry.get("phase_index")
+            try:
+                index = int(idx)
+            except (TypeError, ValueError):
+                continue
+            agents = entry.get("agents", [])
+            if not isinstance(agents, list):
+                agents = []
+            agents_by_index[index] = [copy.deepcopy(agent) for agent in agents if isinstance(agent, dict)]
+
+        merged_phases = []
+        if strategy_phases:
+            for idx, strategy_phase in enumerate(strategy_phases):
+                existing_phase: Dict[str, Any] = {}
+                if idx < len(existing_phases) and isinstance(existing_phases[idx], dict):
+                    existing_phase = existing_phases[idx]
+
+                name = (
+                    _coerce_str(existing_phase.get("name"))
+                    or _coerce_str(strategy_phase.get("phase_name"))
+                    or _coerce_str(strategy_phase.get("name"))
+                    or f"Phase {idx + 1}"
+                )
+                description = (
+                    _coerce_str(existing_phase.get("description"))
+                    or _coerce_str(strategy_phase.get("phase_description"))
+                    or _coerce_str(strategy_phase.get("description"))
+                )
+                objective = (
+                    _coerce_str(existing_phase.get("objective"))
+                    or _coerce_str(strategy_phase.get("phase_objective"))
+                    or _coerce_str(strategy_phase.get("objective"))
+                )
+                approval_required = (
+                    bool(existing_phase.get("approval_required"))
+                    or bool(strategy_phase.get("approval_required"))
+                    or bool(strategy_phase.get("requires_approval"))
+                )
+
+                agents_list = agents_by_index.get(idx, [])
+                merged_phase: Dict[str, Any] = {
+                    "name": name,
+                    "description": description,
+                    "objective": objective,
+                    "approval_required": approval_required,
+                    "agents": agents_list,
+                }
+
+                # Preserve optional metadata from strategy/existing phases when available
+                for optional_key in (
+                    "handoff_to_next",
+                    "handoff_from_previous",
+                    "entry_criteria",
+                    "exit_criteria",
+                    "success_criteria",
+                    "notes",
+                ):
+                    if optional_key in existing_phase and optional_key not in merged_phase:
+                        merged_phase[optional_key] = existing_phase[optional_key]
+                    elif optional_key in strategy_phase and optional_key not in merged_phase:
+                        merged_phase[optional_key] = strategy_phase[optional_key]
+
+                merged_phases.append(merged_phase)
+
+            extra_indices = sorted(idx for idx in agents_by_index.keys() if idx >= len(strategy_phases))
+            for idx in extra_indices:
+                agents_list = agents_by_index[idx]
+                merged_phases.append(
+                    {
+                        "name": f"Phase {idx + 1}",
+                        "description": "",
+                        "objective": "",
+                        "approval_required": False,
+                        "agents": agents_list,
+                    }
+                )
+        else:
+            sorted_indices = sorted(agents_by_index.keys())
+            for position, idx in enumerate(sorted_indices):
+                agents_list = agents_by_index[idx]
+                existing_phase: Dict[str, Any] = {}
+                if idx < len(existing_phases) and isinstance(existing_phases[idx], dict):
+                    existing_phase = existing_phases[idx]
+                name = _coerce_str(existing_phase.get("name")) or f"Phase {idx + 1}"
+                description = _coerce_str(existing_phase.get("description"))
+                objective = _coerce_str(existing_phase.get("objective"))
+                approval_required = bool(existing_phase.get("approval_required"))
+                merged_phases.append(
+                    {
+                        "name": name,
+                        "description": description,
+                        "objective": objective,
+                        "approval_required": approval_required,
+                        "agents": agents_list,
+                    }
+                )
+
+    if merged_phases is not None:
+        plan["phases"] = merged_phases
+    elif strategy_phases and not _is_plan_complete(plan):
+        fallback_phases: List[Dict[str, Any]] = []
+        for idx, strategy_phase in enumerate(strategy_phases):
+            name = _coerce_str(strategy_phase.get("phase_name")) or _coerce_str(strategy_phase.get("name")) or f"Phase {idx + 1}"
+            description = _coerce_str(strategy_phase.get("phase_description")) or _coerce_str(strategy_phase.get("description"))
+            objective = _coerce_str(strategy_phase.get("phase_objective")) or _coerce_str(strategy_phase.get("objective"))
+            approval_required = bool(strategy_phase.get("approval_required") or strategy_phase.get("requires_approval"))
+            fallback_phases.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "objective": objective,
+                    "approval_required": approval_required,
+                    "agents": [],
+                }
+            )
+        if fallback_phases:
+            plan["phases"] = fallback_phases
+
+    if "pattern" not in plan:
+        plan["pattern"] = "Pipeline"
+    if "trigger_type" not in plan:
+        plan["trigger_type"] = plan.get("trigger", "chat_start") or "chat_start"
+    if "initiated_by" not in plan:
+        plan["initiated_by"] = "user"
+    if not isinstance(plan.get("lifecycle_operations"), list):
+        plan["lifecycle_operations"] = []
+    if "phases" not in plan or not isinstance(plan["phases"], list):
+        plan["phases"] = []
+
+    return plan or None
+
+
 async def mermaid_sequence_diagram(
     *,
     MermaidSequenceDiagram: Annotated[
@@ -348,11 +575,27 @@ async def mermaid_sequence_diagram(
         wf_logger.info("✅ [MERMAID] Using provided mermaid_diagram text (%s characters)", len(diagram_text))
 
     stored_plan: Dict[str, Any] = {}
+    workflow_strategy: Optional[Dict[str, Any]] = None
+    cached_phase_agents: List[Dict[str, Any]] = []
+    stored_technical_blueprint: Optional[Dict[str, Any]] = None
     if context_variables and hasattr(context_variables, "get"):
         try:
             raw_plan = context_variables.get("action_plan")
             if isinstance(raw_plan, dict):
                 stored_plan = raw_plan
+
+            strategy_candidate = context_variables.get("workflow_strategy")
+            if isinstance(strategy_candidate, dict):
+                workflow_strategy = strategy_candidate
+
+            phase_agents_candidate = context_variables.get("workflow_phase_agents")
+            cached_phase_agents = _coerce_phase_agents_cache(phase_agents_candidate)
+            
+            # Retrieve TechnicalBlueprint from context
+            blueprint_candidate = context_variables.get("technical_blueprint")
+            if isinstance(blueprint_candidate, dict):
+                stored_technical_blueprint = blueprint_candidate
+                wf_logger.info("✅ [MERMAID] Retrieved technical_blueprint from context with keys: %s", list(blueprint_candidate.keys()))
         except Exception as ctx_err:
             wf_logger.debug("Unable to retrieve stored action plan: %s", ctx_err)
 
@@ -360,6 +603,35 @@ async def mermaid_sequence_diagram(
         fallback_workflow = diagram_payload.get("workflow")
         if isinstance(fallback_workflow, dict):
             stored_plan = fallback_workflow
+
+    plan_was_empty = not bool(stored_plan)
+    plan_was_incomplete = not _is_plan_complete(stored_plan)
+    if workflow_strategy or cached_phase_agents:
+        rebuilt_plan = _compose_workflow_from_components(
+            workflow_strategy,
+            cached_phase_agents,
+            stored_plan if stored_plan else None,
+        )
+        if rebuilt_plan:
+            stored_plan = rebuilt_plan
+            if context_variables and hasattr(context_variables, "set"):
+                try:
+                    context_variables.set("action_plan", copy.deepcopy(stored_plan))  # type: ignore[attr-defined]
+                except Exception as ctx_err:
+                    wf_logger.debug("Failed to refresh cached action plan: %s", ctx_err)
+
+            if plan_was_empty:
+                wf_logger.info(
+                    "✅ [MERMAID] Reconstituted action plan from cached strategy and implementation outputs",
+                )
+            elif plan_was_incomplete and _is_plan_complete(stored_plan):
+                wf_logger.info(
+                    "✅ [MERMAID] Completed action plan phases using cached strategy + phase_agents data",
+                )
+            else:
+                wf_logger.debug(
+                    "🔄 [MERMAID] Synced action plan metadata from cached strategy/implementation components",
+                )
 
     if not stored_plan:
         wf_logger.warning("No action plan available to merge with Mermaid diagram")
@@ -373,11 +645,24 @@ async def mermaid_sequence_diagram(
     try:
         workflow_with_diagram["mermaid_flow"] = diagram_text
         workflow_with_diagram["mermaid_diagram_source"] = diagram_source
+        
+        # Merge TechnicalBlueprint into workflow if available
+        if stored_technical_blueprint:
+            workflow_with_diagram["technical_blueprint"] = copy.deepcopy(stored_technical_blueprint)
+            wf_logger.info("✅ [MERMAID] Merged technical_blueprint into workflow payload for UI")
+            
+            # Also merge top-level fields from technical_blueprint for UI convenience
+            if "global_context_variables" in stored_technical_blueprint:
+                workflow_with_diagram["global_context_variables"] = stored_technical_blueprint["global_context_variables"]
+            if "ui_components" in stored_technical_blueprint:
+                workflow_with_diagram["ui_components"] = stored_technical_blueprint["ui_components"]
     except Exception as ctx_err:
         wf_logger.debug("Failed to augment workflow with diagram: %s", ctx_err)
         workflow_with_diagram = copy.deepcopy(stored_plan)
         workflow_with_diagram["mermaid_flow"] = diagram_text
         workflow_with_diagram["mermaid_diagram_source"] = diagram_source
+        if stored_technical_blueprint:
+            workflow_with_diagram["technical_blueprint"] = copy.deepcopy(stored_technical_blueprint)
 
     display_message = agent_message or _coerce_str(diagram_payload.get("agent_message"))
     if not display_message:

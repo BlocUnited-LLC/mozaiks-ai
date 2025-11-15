@@ -19,6 +19,20 @@ from logs.logging_config import get_workflow_logger
 MAX_IDENTIFIER_LENGTH = 32
 _logger = logging.getLogger("tools.action_plan")
 PLAN_SNAPSHOT_MAX_CHARS = 8000
+_LIFECYCLE_TRIGGERS = {"before_chat", "after_chat", "before_agent", "after_agent"}
+_TRIGGER_ALIAS_MAP = {
+    "chat": "chat_start",
+    "chat_start": "chat_start",
+    "conversation": "chat_start",
+    "form": "form_submit",
+    "form_submit": "form_submit",
+    "schedule": "cron_schedule",
+    "cron": "cron_schedule",
+    "cron_schedule": "cron_schedule",
+    "database": "database_condition",
+    "database_condition": "database_condition",
+    "webhook": "webhook",
+}
 
 
 # ---------------------------
@@ -76,6 +90,361 @@ def _make_identifier(label: str, prefix: str, index: int, seen: set[str]) -> str
     return candidate
 
 
+def _parse_database_schema_info(
+    schema_overview: Optional[str],
+    collections_first_docs: Optional[Dict[str, Any]],
+    context_schema_db: Optional[str],
+    context_include_schema: bool
+) -> Dict[str, Any]:
+    """Parse schema_overview text and collections_first_docs into structured database info for UI."""
+    database_info: Dict[str, Any] = {
+        "enabled": context_include_schema,
+        "database_name": context_schema_db,
+        "collections": [],
+        "total_collections": 0
+    }
+    
+    if not context_include_schema or not schema_overview:
+        return database_info
+    
+    try:
+        # Parse schema_overview text format:
+        # DATABASE: MozaiksCore
+        # TOTAL COLLECTIONS: 5
+        # 
+        # USERS [Enterprise-specific]:
+        #   Fields:
+        #     - user_id: str
+        #     - email: str
+        
+        lines = schema_overview.split('\n')
+        current_collection: Optional[Dict[str, Any]] = None
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Extract database name
+            if line.startswith("DATABASE:"):
+                database_info["database_name"] = line.replace("DATABASE:", "").strip()
+            
+            # Extract total collections
+            elif line.startswith("TOTAL COLLECTIONS:"):
+                try:
+                    database_info["total_collections"] = int(line.replace("TOTAL COLLECTIONS:", "").strip())
+                except ValueError:
+                    pass
+            
+            # New collection header (UPPERCASE: or UPPERCASE [Enterprise-specific]:)
+            elif line and ":" in line and line[0].isupper() and not line.startswith("Fields:"):
+                if current_collection:
+                    database_info["collections"].append(current_collection)
+                
+                collection_name = line.split(":")[0].strip()
+                is_enterprise = "[Enterprise-specific]" in line
+                collection_name = collection_name.replace("[Enterprise-specific]", "").strip()
+                
+                current_collection = {
+                    "name": collection_name,
+                    "is_enterprise": is_enterprise,
+                    "fields": []
+                }
+            
+            # Field line (  - field_name: field_type)
+            elif current_collection and line.startswith("- ") and ":" in line:
+                field_parts = line[2:].split(":", 1)
+                if len(field_parts) == 2:
+                    field_name = field_parts[0].strip()
+                    field_type = field_parts[1].strip()
+                    current_collection["fields"].append({
+                        "name": field_name,
+                        "type": field_type
+                    })
+        
+        # Add last collection
+        if current_collection:
+            database_info["collections"].append(current_collection)
+        
+        # Enhance with sample data from collections_first_docs if available
+        if collections_first_docs and isinstance(collections_first_docs, dict):
+            for collection in database_info["collections"]:
+                collection_name = collection["name"]
+                if collection_name in collections_first_docs:
+                    sample_doc = collections_first_docs[collection_name]
+                    if sample_doc:
+                        collection["has_sample_data"] = True
+                        collection["sample_doc_keys"] = list(sample_doc.keys())[:10]  # Limit to 10 keys
+    
+    except Exception as e:
+        _logger.debug(f"Failed to parse database schema info: {e}")
+    
+    return database_info
+
+
+def _sanitize_optional_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        lowered = trimmed.lower()
+        if lowered in {"null", "none"}:
+            return None
+        return trimmed
+    return str(value)
+
+
+def _dedupe_preserve_order(items: List[str]) -> List[str]:
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for item in items:
+        if not item:
+            continue
+        if item not in seen:
+            seen.add(item)
+            ordered.append(item)
+    return ordered
+
+
+def _normalize_agent_tools(value: Any) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    if not isinstance(value, list):
+        return normalized
+
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        name = _coerce_str(raw.get("name"), f"Tool {idx + 1}").strip()
+        if not name:
+            name = f"Tool {idx + 1}"
+        integration = _sanitize_optional_str(raw.get("integration"))
+        purpose = _coerce_str(raw.get("purpose"))
+        entry: Dict[str, Any] = {
+            "name": name,
+            "integration": integration,
+            "purpose": purpose,
+        }
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_lifecycle_tools(value: Any) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    if not isinstance(value, list):
+        return normalized
+
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        name = _coerce_str(raw.get("name"), f"Lifecycle {idx + 1}").strip()
+        if not name:
+            name = f"Lifecycle {idx + 1}"
+        trigger = _coerce_str(raw.get("trigger"), "before_agent").strip().lower()
+        if trigger not in _LIFECYCLE_TRIGGERS:
+            trigger = "before_agent"
+        purpose = _coerce_str(raw.get("purpose"))
+        integration = _sanitize_optional_str(raw.get("integration"))
+        entry: Dict[str, Any] = {
+            "name": name,
+            "trigger": trigger,
+            "purpose": purpose,
+            "integration": integration,
+        }
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_system_hooks(value: Any) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    if not isinstance(value, list):
+        return normalized
+
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        name = _coerce_str(raw.get("name"), f"system_hook_{idx + 1}").strip()
+        if not name:
+            name = f"system_hook_{idx + 1}"
+        purpose = _coerce_str(raw.get("purpose"))
+        normalized.append({
+            "name": name,
+            "purpose": purpose,
+        })
+    return normalized
+
+
+def _extract_blueprint(*candidates: Any) -> Optional[Dict[str, Any]]:
+    """Locate a TechnicalBlueprint payload from multiple possible wrapper shapes."""
+
+    def _unwrap(candidate: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(candidate, dict):
+            return None
+        wrapped = candidate.get("TechnicalBlueprint")
+        if isinstance(wrapped, dict):
+            return wrapped
+        wrapped = candidate.get("technical_blueprint")
+        if isinstance(wrapped, dict):
+            return wrapped
+        keys = set(candidate.keys()) if isinstance(candidate, dict) else set()
+        if keys.intersection({"global_context_variables", "ui_components", "before_chat_lifecycle", "after_chat_lifecycle"}):
+            return candidate  # Already the blueprint payload
+        return None
+
+    for source in candidates:
+        unwrapped = _unwrap(source)
+        if unwrapped:
+            return unwrapped
+    return None
+
+
+def _normalize_global_context_variables(value: Any) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    if not isinstance(value, list):
+        return normalized
+
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        name = _coerce_str(raw.get("name"), f"context_variable_{idx + 1}").strip()
+        if not name:
+            name = f"context_variable_{idx + 1}"
+        var_type = _coerce_str(raw.get("type"), "derived").strip() or "derived"
+        purpose = _coerce_str(raw.get("purpose"))
+        trigger_hint = _sanitize_optional_str(raw.get("trigger_hint"))
+
+        normalized.append(
+            {
+                "name": name,
+                "type": var_type,
+                "purpose": purpose,
+                "trigger_hint": trigger_hint,
+            }
+        )
+    return normalized
+
+
+def _enrich_context_variable_definitions(value: Any) -> Dict[str, Any]:
+    """Enrich context variables with full metadata for Data tab visualization.
+    
+    Extracts source information, triggers, and classifications for UI display.
+    Returns a dict mapping variable name to enriched definition.
+    """
+    enriched: Dict[str, Any] = {}
+    if not isinstance(value, list):
+        return enriched
+
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        
+        name = _coerce_str(raw.get("name"), f"context_variable_{idx + 1}").strip()
+        if not name:
+            name = f"context_variable_{idx + 1}"
+        
+        var_type = _coerce_str(raw.get("type"), "derived").strip() or "derived"
+        purpose = _coerce_str(raw.get("purpose"))
+        trigger_hint = _sanitize_optional_str(raw.get("trigger_hint"))
+        
+        # Extract source information (if available from upstream schema)
+        source_info: Dict[str, Any] = {}
+        if var_type == "database":
+            # Database variables may have collection/field info
+            source_info["type"] = "database"
+            # Note: Full source details (collection, field) not in RequiredContextVariable
+            # but available in workflow's context_variables.json if needed
+        elif var_type == "environment":
+            source_info["type"] = "environment"
+        elif var_type == "static":
+            source_info["type"] = "static"
+        elif var_type == "derived":
+            source_info["type"] = "derived"
+            # Extract trigger information from trigger_hint text
+            triggers = []
+            if trigger_hint:
+                # Parse common trigger patterns from hint text
+                hint_lower = trigger_hint.lower()
+                if "ui" in hint_lower or "user" in hint_lower or "component" in hint_lower:
+                    triggers.append({"type": "ui_response", "description": trigger_hint})
+                elif "agent" in hint_lower or "says" in hint_lower or "emits" in hint_lower:
+                    triggers.append({"type": "agent_text", "description": trigger_hint})
+            source_info["triggers"] = triggers
+        
+        enriched[name] = {
+            "name": name,
+            "type": var_type,
+            "purpose": purpose,
+            "trigger_hint": trigger_hint,
+            "source": source_info,
+        }
+    
+    return enriched
+
+
+def _normalize_ui_components(value: Any) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    if not isinstance(value, list):
+        return normalized
+
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        phase_name = _coerce_str(raw.get("phase_name"), f"Phase {idx + 1}")
+        agent = _coerce_str(raw.get("agent"), "Agent")
+        tool = _coerce_str(raw.get("tool"), f"tool_{idx + 1}")
+        label = _coerce_str(raw.get("label"))
+        component = _coerce_str(raw.get("component"))
+        display = _coerce_str(raw.get("display"), "inline")
+        interaction_pattern = _coerce_str(raw.get("interaction_pattern"), "single_step")
+        summary = _coerce_str(raw.get("summary"))
+
+        normalized.append(
+            {
+                "phase_name": phase_name,
+                "agent": agent,
+                "tool": tool,
+                "label": label,
+                "component": component,
+                "display": display,
+                "interaction_pattern": interaction_pattern,
+                "summary": summary,
+            }
+        )
+    return normalized
+
+
+def _normalize_blueprint_lifecycle(entry: Any, trigger: str) -> Optional[Dict[str, Any]]:
+    if not isinstance(entry, dict):
+        return None
+    name = _coerce_str(entry.get("name"), f"{trigger}_hook").strip()
+    if not name:
+        name = f"{trigger}_hook"
+    purpose = _coerce_str(entry.get("purpose"))
+    integration = _sanitize_optional_str(entry.get("integration"))
+
+    normalized: Dict[str, Any] = {
+        "name": name,
+        "trigger": trigger,
+        "description": purpose,
+    }
+    if integration:
+        normalized["integration"] = integration
+    return normalized
+
+
+def _normalize_trigger_fields(raw_workflow: Dict[str, Any]) -> tuple[str, str]:
+    trigger_candidate = raw_workflow.get("trigger_type")
+    if not isinstance(trigger_candidate, str) or not trigger_candidate.strip():
+        trigger_candidate = raw_workflow.get("trigger")
+    trigger_raw = _coerce_str(trigger_candidate).strip()
+    trigger_lookup = trigger_raw.lower()
+    normalized = _TRIGGER_ALIAS_MAP.get(trigger_lookup, trigger_lookup)
+    if not normalized:
+        normalized = "chat_start"
+    if not trigger_raw:
+        trigger_raw = normalized
+    return trigger_raw, normalized
+
+
 def _extract_agent_name(container: Any) -> Optional[str]:
     if not container or not hasattr(container, "get"):
         return None
@@ -110,23 +479,52 @@ def _normalize_agents(value: Any, phase_index: int) -> List[Dict[str, Any]]:
     for idx, raw_agent in enumerate(value):
         if not isinstance(raw_agent, dict):
             continue
-        name = _coerce_str(raw_agent.get("name"), f"Agent {phase_index + 1}-{idx + 1}").strip()
+        base_name = raw_agent.get("agent_name") or raw_agent.get("name")
+        name = _coerce_str(base_name, f"Agent {phase_index + 1}-{idx + 1}").strip()
+        if not name:
+            name = f"Agent {phase_index + 1}-{idx + 1}"
         description = _coerce_str(raw_agent.get("description"))
-        
-        # Handle human_interaction field with validation
-        human_interaction = _coerce_str(raw_agent.get("human_interaction"), "none").lower()
-        if human_interaction not in ("none", "context", "approval"):
+
+        human_interaction = _coerce_str(raw_agent.get("human_interaction"), "none").strip().lower()
+        if human_interaction not in {"none", "context", "approval"}:
             human_interaction = "none"
-        
-        integrations = _coerce_list_of_str(raw_agent.get("integrations"))
-        operations = _coerce_list_of_str(raw_agent.get("operations"))
-        agents.append({
+
+        agent_tools = _normalize_agent_tools(raw_agent.get("agent_tools"))
+        lifecycle_tools = _normalize_lifecycle_tools(raw_agent.get("lifecycle_tools"))
+        system_hooks = _normalize_system_hooks(raw_agent.get("system_hooks"))
+
+        integration_names = _dedupe_preserve_order(
+            [
+                tool["integration"]
+                for tool in agent_tools
+                if isinstance(tool.get("integration"), str) and tool["integration"]
+            ]
+        )
+        if not integration_names:
+            integration_names = _coerce_list_of_str(raw_agent.get("integrations"))
+
+        tool_names: List[str] = []
+        for tool in agent_tools:
+            candidate = _coerce_str(tool.get("name"))
+            if candidate:
+                tool_names.append(candidate)
+        operation_names = _dedupe_preserve_order(tool_names)
+        if not operation_names:
+            operation_names = _coerce_list_of_str(raw_agent.get("operations"))
+
+        agent_payload: Dict[str, Any] = {
+            "agent_name": name,
             "name": name,
             "description": description,
             "human_interaction": human_interaction,
-            "integrations": integrations,
-            "operations": operations,
-        })
+            "agent_tools": agent_tools,
+            "lifecycle_tools": lifecycle_tools,
+            "system_hooks": system_hooks,
+            "integrations": integration_names,
+            "operations": operation_names,
+        }
+
+        agents.append(agent_payload)
     return agents
 
 
@@ -140,9 +538,23 @@ def _normalize_phases(value: Any) -> List[Dict[str, Any]]:
         name = _coerce_str(raw_phase.get("name"), f"Phase {idx + 1}").strip()
         description = _coerce_str(raw_phase.get("description"))
         agents = _normalize_agents(raw_phase.get("agents"), idx)
+        phase_index_raw = raw_phase.get("phase_index")
+        try:
+            phase_index = int(phase_index_raw)
+        except (TypeError, ValueError):
+            phase_index = idx
+
+        approval_flag = raw_phase.get("approval_required")
+        if approval_flag is None:
+            approval_flag = raw_phase.get("human_in_loop")
+        approval_required = bool(approval_flag)
+
         phases.append({
             "name": name,
             "description": description,
+            "phase_index": phase_index,
+            "approval_required": approval_required,
+            "human_in_loop": approval_required,
             "agents": agents,
         })
     return phases
@@ -170,21 +582,73 @@ def _agent_tool_labels(agent: Dict[str, Any]) -> List[str]:
     return labels
 
 
+def _normalize_lifecycle_operations(value: Any) -> List[Dict[str, Any]]:
+    """Normalize lifecycle operations emitted by WorkflowStrategyAgent or downstream merges."""
+    normalized: List[Dict[str, Any]] = []
+    if not isinstance(value, list):
+        return normalized
+
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        name = _coerce_str(raw.get("name"), f"Lifecycle {idx + 1}").strip()
+        trigger = _coerce_str(raw.get("trigger")).strip().lower()
+        target = _coerce_str(raw.get("target")).strip()
+        description = _coerce_str(raw.get("description")).strip()
+
+        if trigger not in _LIFECYCLE_TRIGGERS:
+            _logger.debug("Skipping lifecycle operation '%s' with invalid trigger '%s'", name, trigger)
+            continue
+
+        normalized.append(
+            {
+                "name": name or f"{trigger.title()} operation",
+                "trigger": trigger,
+                "target": target or None,
+                "description": description,
+            }
+        )
+    return normalized
+
+
 def _normalize_workflow(raw_workflow: Dict[str, Any]) -> Dict[str, Any]:
     workflow_name = _coerce_str(raw_workflow.get("name"), "Generated Workflow").strip()
-    initiated_by = _coerce_str(raw_workflow.get("initiated_by"), "user").strip()
-    trigger_type = _coerce_str(raw_workflow.get("trigger_type"), "chat_start").strip()
-    interaction_mode = _coerce_str(raw_workflow.get("interaction_mode"), "conversational").strip()
+    initiated_by = _coerce_str(raw_workflow.get("initiated_by"), "user").strip().lower() or "user"
+    trigger_raw, trigger_type = _normalize_trigger_fields(raw_workflow)
+
+    pattern_field = raw_workflow.get("pattern")
+    pattern_variants_field = raw_workflow.get("pattern_variants")
+    pattern_variants: List[str] = []
+    if isinstance(pattern_variants_field, list):
+        pattern_variants = [entry.strip() for entry in pattern_variants_field if isinstance(entry, str) and entry.strip()]
+    if isinstance(pattern_field, list):
+        derived_variants = [entry.strip() for entry in pattern_field if isinstance(entry, str) and entry.strip()]
+        pattern_variants = pattern_variants or derived_variants
+        pattern = derived_variants[0] if derived_variants else (pattern_variants[0] if pattern_variants else "Pipeline")
+    elif isinstance(pattern_field, str) and pattern_field.strip():
+        pattern = pattern_field.strip()
+        if not pattern_variants:
+            pattern_variants = [pattern]
+    elif pattern_variants:
+        pattern = pattern_variants[0]
+    else:
+        pattern = "Pipeline"
     description = _coerce_str(raw_workflow.get("description"))
     phases = _normalize_phases(raw_workflow.get("phases"))
-    return {
+    lifecycle_operations = _normalize_lifecycle_operations(raw_workflow.get("lifecycle_operations"))
+    workflow_payload: Dict[str, Any] = {
         "name": workflow_name,
         "initiated_by": initiated_by,
+        "trigger": trigger_raw,
         "trigger_type": trigger_type,
-        "interaction_mode": interaction_mode,
+        "pattern": pattern,
         "description": description,
         "phases": phases,
+        "lifecycle_operations": lifecycle_operations,
     }
+    if pattern_variants:
+        workflow_payload["pattern_variants"] = pattern_variants
+    return workflow_payload
 
 
 def _normalize_action_plan(ap: Dict[str, Any]) -> Dict[str, Any]:
@@ -283,8 +747,16 @@ async def action_plan(
                         "name": str,
                         "initiated_by": "user"|"system"|"external_event",
                         "trigger_type": "form_submit"|"chat_start"|"cron_schedule"|"webhook"|"database_condition",
-                        "interaction_mode": "autonomous"|"checkpoint_approval"|"conversational",
+                        "pattern": "ContextAwareRouting"|"Escalation"|"FeedbackLoop"|"Hierarchical"|"Organic"|"Pipeline"|"Redundant"|"Star"|"TriageWithTasks",
                         "description": str,
+                        "lifecycle_operations": [
+                            {
+                                "name": str,
+                                "trigger": "before_chat"|"after_chat"|"before_agent"|"after_agent",
+                                "target": "AgentName"|null,
+                                "description": str
+                            }
+                        ],
                         "phases": [
                             {
                                 "name": str,
@@ -306,7 +778,8 @@ async def action_plan(
             Notes:
                 - Phases MUST preserve the exact names, ordering, and approval flags provided by the upstream WorkflowStrategyCall output (e.g., "Phase 1: Discovery", "Phase 2: Drafting").
                 - Multi-phase workflows are expected; do not collapse loops or approvals into single entries.
-                - Semantic model uses three orthogonal dimensions: initiated_by, trigger_type, interaction_mode
+                - Semantic model uses three orthogonal dimensions: initiated_by, trigger_type, pattern
+                - lifecycle_operations capture orchestration hooks between agents (before/after chat or agent triggers)
                 - "integrations" contains third-party APIs/services (PascalCase)
                 - "operations" contains internal workflow logic (snake_case)
                 - "human_interaction" is agent-level field: none=automated, context=info gathering, approval=decision gate
@@ -338,6 +811,7 @@ async def action_plan(
     stored_diagram_ready = False
     stored_diagram_meta: Dict[str, Any] = {}
     workflow_strategy: Optional[Dict[str, Any]] = None
+    stored_blueprint: Optional[Dict[str, Any]] = None
 
     if context_variables and hasattr(context_variables, "get"):
         try:
@@ -361,8 +835,22 @@ async def action_plan(
             strategy_candidate = context_variables.get("workflow_strategy")
             if isinstance(strategy_candidate, dict):
                 workflow_strategy = strategy_candidate
+            blueprint_candidate = context_variables.get("technical_blueprint")
+            if isinstance(blueprint_candidate, dict):
+                stored_blueprint = blueprint_candidate
+            
+            # Extract database schema information for Data tab display
+            schema_overview = context_variables.get("schema_overview")
+            collections_first_docs = context_variables.get("collections_first_docs_full")
+            context_include_schema = context_variables.get("context_include_schema", False)
+            context_schema_db = context_variables.get("context_schema_db")
+            
         except Exception as ctx_err:  # pragma: no cover - defensive logging
             _logger.debug("Unable to read planning context: %s", ctx_err)
+            schema_overview = None
+            collections_first_docs = None
+            context_include_schema = False
+            context_schema_db = None
 
     if not chat_id or not enterprise_id:
         _logger.warning("Missing routing keys: chat_id or enterprise_id not present on context_variables")
@@ -415,12 +903,26 @@ async def action_plan(
             if not isinstance(agents_list, list):
                 _logger.error("phase_agents[%d].agents is not a list", idx)
                 return {"status": "error", "message": f"Invalid agents for phase_index {idx}: must be a list"}
+
+            normalized_agents = [copy.deepcopy(agent) for agent in agents_list if isinstance(agent, dict)]
             
             # Merge: phase metadata from strategy + agents from implementation
+            phase_name = strategy_phase.get("phase_name") or strategy_phase.get("name") or f"Phase {idx + 1}"
+            phase_description = strategy_phase.get("phase_description") or strategy_phase.get("description") or ""
+            phase_index_raw = strategy_phase.get("phase_index")
+            try:
+                phase_index = int(phase_index_raw)
+            except (TypeError, ValueError):
+                phase_index = idx
+            approval_required = bool(strategy_phase.get("human_in_loop") or strategy_phase.get("approval_required"))
+
             merged_phase = {
-                "name": strategy_phase.get("phase_name", f"Phase {idx+1}"),
-                "description": strategy_phase.get("phase_description", ""),
-                "agents": agents_list
+                "name": _coerce_str(phase_name, f"Phase {idx + 1}").strip() or f"Phase {idx + 1}",
+                "description": _coerce_str(phase_description),
+                "phase_index": phase_index,
+                "approval_required": approval_required,
+                "human_in_loop": approval_required,
+                "agents": normalized_agents,
             }
             merged_phases.append(merged_phase)
             _logger.debug(
@@ -431,16 +933,33 @@ async def action_plan(
             )
         
         # Construct ActionPlan from merged data
+        pattern_field = workflow_strategy.get("pattern")
+        if isinstance(pattern_field, list):
+            pattern_value = next((p.strip() for p in pattern_field if isinstance(p, str) and p.strip()), "Pipeline")
+            pattern_variants = [p.strip() for p in pattern_field if isinstance(p, str) and p.strip()]
+        elif isinstance(pattern_field, str) and pattern_field.strip():
+            pattern_value = pattern_field.strip()
+            pattern_variants = [pattern_value]
+        else:
+            pattern_value = "Pipeline"
+            pattern_variants = []
+
+        trigger_raw, trigger_type = _normalize_trigger_fields(workflow_strategy)
+        initiated_by_raw = _coerce_str(workflow_strategy.get("initiated_by"), "user").strip().lower() or "user"
         ActionPlan = {
             "workflow": {
                 "name": workflow_strategy.get("workflow_name", "Generated Workflow"),
                 "description": workflow_strategy.get("workflow_description", ""),
-                "trigger_type": workflow_strategy.get("trigger", "chat_start"),
-                "interaction_mode": workflow_strategy.get("interaction_mode", "conversational"),
-                "pattern": workflow_strategy.get("pattern", "Pipeline"),
+                "initiated_by": initiated_by_raw,
+                "trigger": trigger_raw,
+                "trigger_type": trigger_type,
+                "pattern": pattern_value,
+                "lifecycle_operations": workflow_strategy.get("lifecycle_operations", []),
                 "phases": merged_phases
             }
         }
+        if pattern_variants:
+            ActionPlan["workflow"]["pattern_variants"] = pattern_variants
         _logger.info(
             "Successfully merged %d phases from strategy + implementation",
             len(merged_phases)
@@ -469,9 +988,118 @@ async def action_plan(
 
     plan_agent_message = _coerce_str(plan_payload.get("agent_message"))
 
+    blueprint_payload = _extract_blueprint(plan_payload, stored_blueprint, plan_input)
+    _logger.info("Blueprint extraction result: found=%s, keys=%s", 
+                 blueprint_payload is not None,
+                 list(blueprint_payload.keys()) if blueprint_payload else "None")
+
     ap_norm = _normalize_action_plan(plan_payload)
     plan_workflow = copy.deepcopy(ap_norm.get("workflow", {}) or {})
     legacy_mermaid_flow = _coerce_str(ap_norm.get("legacy_mermaid_flow"))
+
+    normalized_blueprint: Optional[Dict[str, Any]] = None
+    if blueprint_payload:
+        _logger.info("Processing TechnicalBlueprint payload with keys: %s", list(blueprint_payload.keys()) if isinstance(blueprint_payload, dict) else "not a dict")
+        _logger.info("Raw before_chat_lifecycle from blueprint: %s", blueprint_payload.get("before_chat_lifecycle"))
+        _logger.info("Raw after_chat_lifecycle from blueprint: %s", blueprint_payload.get("after_chat_lifecycle"))
+        global_context = _normalize_global_context_variables(blueprint_payload.get("global_context_variables"))
+        components = _normalize_ui_components(blueprint_payload.get("ui_components"))
+        designer_lifecycle = _normalize_lifecycle_operations(blueprint_payload.get("lifecycle_operations"))
+        before_chat = _normalize_blueprint_lifecycle(blueprint_payload.get("before_chat_lifecycle"), "before_chat")
+        after_chat = _normalize_blueprint_lifecycle(blueprint_payload.get("after_chat_lifecycle"), "after_chat")
+        
+        # Enrich context variables with full metadata for Data tab
+        enriched_definitions = _enrich_context_variable_definitions(blueprint_payload.get("global_context_variables"))
+        
+        _logger.info("Normalized blueprint lifecycle: before_chat=%s, after_chat=%s, global_context_count=%d, component_count=%d", 
+                    before_chat, after_chat, len(global_context), len(components))
+
+        normalized_blueprint = {
+            "global_context_variables": global_context,
+            "ui_components": components,
+            "before_chat_lifecycle": before_chat,
+            "after_chat_lifecycle": after_chat,
+        }
+
+        if global_context:
+            plan_workflow["global_context_variables"] = global_context
+        if components:
+            plan_workflow["ui_components"] = components
+        
+        # Add enriched context variable definitions for Data tab
+        if enriched_definitions:
+            plan_workflow["context_variable_definitions"] = enriched_definitions
+            _logger.info("Added %d enriched context variable definitions", len(enriched_definitions))
+
+        lifecycle_ops = plan_workflow.get("lifecycle_operations")
+        if not isinstance(lifecycle_ops, list):
+            lifecycle_ops = []
+
+        existing_triggers = {str(op.get("trigger", "")).lower(): op for op in lifecycle_ops if isinstance(op, dict)}
+        for entry in (before_chat, after_chat):
+            if not entry:
+                continue
+            trigger = str(entry.get("trigger", "")).lower()
+            if not trigger:
+                continue
+            existing = existing_triggers.get(trigger)
+            if existing is None:
+                lifecycle_ops.append(entry)
+                existing_triggers[trigger] = entry
+            else:
+                if entry.get("description") and not existing.get("description"):
+                    existing["description"] = entry["description"]
+                if entry.get("integration"):
+                    existing["integration"] = entry["integration"]
+
+        if designer_lifecycle:
+            for entry in designer_lifecycle:
+                if not isinstance(entry, dict):
+                    continue
+                trigger = str(entry.get("trigger", "")).lower()
+                if trigger not in _LIFECYCLE_TRIGGERS:
+                    continue
+                target = str(entry.get("target") or "").strip().lower()
+                key = (trigger, target)
+                match = None
+                for existing in lifecycle_ops:
+                    if not isinstance(existing, dict):
+                        continue
+                    existing_trigger = str(existing.get("trigger", "")).lower()
+                    existing_target = str(existing.get("target") or "").strip().lower()
+                    if (existing_trigger, existing_target) == key:
+                        match = existing
+                        break
+                if match is None:
+                    lifecycle_ops.append(entry)
+                else:
+                    if entry.get("description") and not match.get("description"):
+                        match["description"] = entry["description"]
+                    if entry.get("name") and not match.get("name"):
+                        match["name"] = entry["name"]
+
+        if lifecycle_ops:
+            plan_workflow["lifecycle_operations"] = lifecycle_ops
+            _logger.info("Final lifecycle_operations count in plan_workflow: %d", len(lifecycle_ops))
+
+        plan_workflow["technical_blueprint"] = normalized_blueprint
+
+    # --- Database Schema Information -----------------------------------------------
+    # Parse and include database schema info for Data tab display
+    database_schema_info = _parse_database_schema_info(
+        schema_overview=schema_overview,
+        collections_first_docs=collections_first_docs,
+        context_schema_db=context_schema_db,
+        context_include_schema=context_include_schema
+    )
+    
+    if database_schema_info.get("enabled"):
+        plan_workflow["database_schema"] = database_schema_info
+        _logger.info(
+            "Added database schema info: db=%s, collections=%d",
+            database_schema_info.get("database_name"),
+            len(database_schema_info.get("collections", []))
+        )
 
     # --- Mermaid diagram handling --------------------------------------------------
     diagram_payload_raw: Any = MermaidSequenceDiagram
@@ -555,6 +1183,12 @@ async def action_plan(
             context_variables.set("action_plan", copy.deepcopy(plan_workflow))  # type: ignore[attr-defined]
             context_variables.set("action_plan_snapshot", _serialize_plan_snapshot(plan_workflow))  # type: ignore[attr-defined]
             context_variables.set("action_plan_acceptance", "pending")  # type: ignore[attr-defined]
+            if normalized_blueprint:
+                context_variables.set("technical_blueprint", copy.deepcopy(normalized_blueprint))  # type: ignore[attr-defined]
+            
+            # Persist database schema info for downstream agents
+            if database_schema_info.get("enabled"):
+                context_variables.set("database_schema_info", copy.deepcopy(database_schema_info))  # type: ignore[attr-defined]
 
             if diagram_ready:
                 context_variables.set("mermaid_sequence_diagram", diagram_text)  # type: ignore[attr-defined]

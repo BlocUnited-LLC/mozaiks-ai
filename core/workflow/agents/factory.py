@@ -1,296 +1,185 @@
 # ==============================================================================
 # FILE: core/workflow/agents/factory.py
-# DESCRIPTION: ConversableAgent factory aligned with agent-centric context plan
+# DESCRIPTION: ConversableAgent factory - orchestrates agent creation with tools, context, and hooks
 # ==============================================================================
 from __future__ import annotations
 
 import logging
-import string
-from collections import defaultdict
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Sequence
 
 from autogen import ConversableAgent, UpdateSystemMessage
 
 from ..outputs import get_structured_outputs_for_workflow
-
 from ..workflow_manager import workflow_manager
+
+# Import context utilities (extracted for modularity)
+from ..context.context_utils import (
+    context_to_dict as _context_to_dict,
+    stringify_context_value as _stringify_context_value,
+    render_default_context_fragment as _render_default_context_fragment,
+    apply_context_exposures as _apply_context_exposures,
+    build_exposure_update_hook as _build_exposure_update_hook,
+)
+
+# Import message utilities (extracted for modularity)
+from ..messages.utils import extract_images_from_conversation
 
 logger = logging.getLogger(__name__)
 
 
-# ==============================================================================
-# IMAGE GENERATION UTILITIES
-# ==============================================================================
+# ------------------------------------------------------------------
+# PROMPT SECTION COMPOSITION
+# ------------------------------------------------------------------
 
-def extract_images_from_conversation(sender: ConversableAgent, recipient: ConversableAgent):
-    """Extract PIL images from agent conversation history (for image generation capabilities).
+def _compose_prompt_sections(sections: Sequence[Dict[str, Any]] | Dict[str, Any]) -> str:
+    """Reconstruct the system message string from structured prompt sections.
     
-    Parses GPT-4V format messages where content is an array with image_url entries.
+    Supports multiple formats for maximum adaptability:
+    1. Fixed structure (PromptSections): Dict with named fields (role, objective, context, etc.)
+    2. Custom array (list[PromptSectionContent]): List of {heading, content} dicts
     
-    Args:
-        sender: Agent that sent messages (image generator)
-        recipient: Agent that received messages
-        
-    Returns:
-        List of PIL Image objects found in conversation
-        
-    Raises:
-        ValueError: If no images found in message history
+    This allows the runtime to compose ANY section structure while enforcing
+    standardization for new agents via schema validation.
     """
-    try:
-        from autogen.agentchat.contrib import img_utils
-    except ImportError:
-        logger.error("[IMAGE_EXTRACT] Failed to import img_utils from autogen.agentchat.contrib")
-        raise ImportError("autogen.agentchat.contrib.img_utils not available - install ag2[lmm]")
+    parts: List[str] = []
     
-    images = []
-    all_messages = sender.chat_messages.get(recipient, [])
+    # Handle fixed structure (PromptSections object from schema)
+    if isinstance(sections, dict) and not any(k in sections for k in ("heading", "content")):
+        # This is a PromptSections object with named fields (role, objective, etc.)
+        # Convert to array format for unified processing
+        section_order = [
+            "role", "objective", "context", "runtime_integrations",
+            "guidelines", "instructions", "examples", "json_output_compliance", "output_format"
+        ]
+        array_sections = []
+        for key in section_order:
+            section_data = sections.get(key)
+            if section_data and isinstance(section_data, dict):
+                array_sections.append(section_data)
+        sections = array_sections
     
-    logger.debug(f"[IMAGE_EXTRACT] Scanning {len(all_messages)} messages from {sender.name} to {recipient.name}")
-    
-    for idx, message in enumerate(reversed(all_messages)):
-        contents = message.get("content", [])
-        
-        # Handle both string and array content formats
-        if isinstance(contents, str):
+    # Handle array format (custom sections or converted from fixed structure)
+    for section in sections:
+        if not isinstance(section, dict):
             continue
-            
-        if not isinstance(contents, list):
-            logger.warning(f"[IMAGE_EXTRACT] Message {idx} has unexpected content type: {type(contents)}")
-            continue
-        
-        for content_idx, content in enumerate(contents):
-            if isinstance(content, str):
-                continue
-                
-            if not isinstance(content, dict):
-                continue
-                
-            if content.get("type") == "image_url":
-                img_data = content.get("image_url", {}).get("url")
-                if img_data:
-                    try:
-                        img = img_utils.get_pil_image(img_data)
-                        images.append(img)
-                        logger.info(f"[IMAGE_EXTRACT] Found image in message {idx}, content {content_idx}")
-                    except Exception as img_err:
-                        logger.warning(f"[IMAGE_EXTRACT] Failed to load image from message {idx}: {img_err}")
-    
-    if not images:
-        logger.error(f"[IMAGE_EXTRACT] No images found in {len(all_messages)} messages")
-        raise ValueError("No image data found in conversation history")
-    
-    logger.info(f"[IMAGE_EXTRACT] Successfully extracted {len(images)} images")
-    return images
+        heading = section.get("heading")
+        content = section.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        content = content.strip()
+        if heading:
+            if content:
+                parts.append(f"{heading}\n{content}")
+            else:
+                parts.append(f"{heading}")
+        elif content:
+            parts.append(content)
+    return "\n\n".join(part.strip() for part in parts if part).strip()
 
 
 # ==============================================================================
-# CONTEXT UTILITIES
+# INTERVIEWAGENT TESTING UTILITIES (TEMPORARY - REMOVE FOR PRODUCTION)
 # ==============================================================================
-
-def _context_to_dict(container: Any) -> Dict[str, Any]:
-    try:
-        if hasattr(container, "to_dict"):
-            return dict(container.to_dict())  # type: ignore[arg-type]
-    except Exception:  # pragma: no cover
-        pass
-    data = getattr(container, "data", None)
-    if isinstance(data, dict):
-        return dict(data)
-    if isinstance(container, dict):
-        return dict(container)
-    return {}
-
-
-def _stringify_context_value(value: Any, null_label: Optional[str]) -> str:
-    if value is None:
-        return null_label if null_label is not None else "None"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
-
-
-def _format_template(template: str, mapping: Dict[str, Any]) -> str:
-    formatter = string.Formatter()
-    try:
-        return formatter.vformat(template, (), mapping)
-    except Exception:  # pragma: no cover
-        return template
-
-
-def _render_exposure_fragment(
-    exposure: Dict[str, Any],
-    context_dict: Dict[str, Any],
-    fallback_variables: List[str],
-) -> str:
-    if not isinstance(exposure, dict):
-        return ""
-
-    raw_variables = exposure.get("variables") or fallback_variables or []
-    variables = [str(var).strip() for var in raw_variables if isinstance(var, str) and str(var).strip()]
-    if not variables:
-        return ""
-
-    null_label = exposure.get("null_label")
-    mapping = defaultdict(lambda: _stringify_context_value(None, null_label))
-
-    for key, value in context_dict.items():
-        mapping[key] = _stringify_context_value(value, null_label if key in variables else None)
-
-    for var in variables:
-        if var not in mapping:
-            mapping[var] = _stringify_context_value(context_dict.get(var), null_label)
-
-    template = exposure.get("template")
-    if template:
-        rendered_body = _format_template(str(template), mapping)
-    else:
-        rendered_body = "\n".join(f"{var.upper()}: {mapping[var]}" for var in variables)
-
-    if not isinstance(rendered_body, str) or not rendered_body.strip():
-        return ""
-
-    header = exposure.get("header")
-    if isinstance(header, str) and header.strip():
-        return f"{header.strip()}\n{rendered_body.strip()}"
-
-    return rendered_body.strip()
-
-
-def _merge_message_parts(existing: str, fragment: str, placement: str) -> str:
-    placement_mode = (placement or "append").lower() if isinstance(placement, str) else "append"
-    fragment = fragment.strip() if isinstance(fragment, str) else ""
-    existing = existing.strip() if isinstance(existing, str) else ""
-    if not fragment:
-        return existing
-    if placement_mode == "replace":
-        return fragment
-    if placement_mode == "prepend":
-        parts = [fragment, existing]
-    else:
-        parts = [existing, fragment]
-    joined = "\n\n".join(part for part in parts if part)
-    return joined
-
-
-def _apply_context_exposures(
-    base_message: str,
-    exposures: List[Dict[str, Any]],
-    context_dict: Dict[str, Any],
-    fallback_variables: List[str],
-) -> str:
-    effective_exposures: List[Dict[str, Any]] = [
-        exposure for exposure in exposures if isinstance(exposure, dict)
-    ]
-    if not effective_exposures and fallback_variables:
-        effective_exposures = [{"variables": list(fallback_variables)}]
-
-    message = base_message or ""
-    for exposure in effective_exposures:
-        fragment = _render_exposure_fragment(exposure, context_dict, fallback_variables)
-        placement = exposure.get("placement", "append") if isinstance(exposure, dict) else "append"
-        message = _merge_message_parts(message, fragment, placement)
-    return message or base_message or ""
-
-
-def _render_default_context_fragment(variables: List[str], context_dict: Dict[str, Any]) -> str:
-    cleaned = [var.strip() for var in variables if isinstance(var, str) and var.strip()]
-    if not cleaned:
-        return ""
-    lines = ["Context Variables"]
-    for var in cleaned:
-        value = _stringify_context_value(context_dict.get(var), "null")
-        lines.append(f"{var.upper()}: {value}")
-    return "\n".join(lines)
-
-
-def _build_exposure_update_hook(
-    agent_name: str,
-    base_message: str,
-    exposures: List[Dict[str, Any]],
-    fallback_variables: List[str],
-):
-    valid_exposures = [exp for exp in exposures if isinstance(exp, dict)]
-    if not valid_exposures:
-        return None
-
-    def _update(agent: ConversableAgent, messages: List[Dict[str, Any]]) -> str:
-        container = getattr(agent, "context_variables", None)
-        context_dict = _context_to_dict(container) if container is not None else {}
-        logger.debug(f"[UpdateSystemMessage][{agent_name}] context snapshot: {context_dict}")
-        updated = _apply_context_exposures(base_message, valid_exposures, context_dict, fallback_variables)
-        if hasattr(agent, "update_system_message") and callable(agent.update_system_message):
-            agent.update_system_message(updated or base_message or "")
-        return updated or base_message or ""
-
-    _update.__annotations__ = {
-        "agent": ConversableAgent,
-        "messages": List[Dict[str, Any]],
-        "return": str,
-    }
-    _update.__name__ = f"{agent_name.lower()}_context_update"
-    return UpdateSystemMessage(_update)
-
+# NOTE: All InterviewAgent-specific code is consolidated in this section.
+# To remove InterviewAgent testing hooks, delete this entire section and the
+# corresponding registration code (search for "##INTERVIEWAGENT##" markers).
+# ==============================================================================
 
 def _build_interview_message_hook(
     exposures: List[Dict[str, Any]],
     fallback_variables: List[str],
 ) -> Callable[..., Any]:
+    """Build a process_message_before_send hook for InterviewAgent.
+    
+    TESTING MODE ONLY - REMOVE FOR PRODUCTION
+    
+    First message: Shows context variables and asks the automation question.
+    Second+ messages: Auto-responds with "NEXT" for testing purposes.
+    
+    To disable auto-NEXT behavior, comment out the reply_count check below.
+    """
     exposures_copy = [exp.copy() for exp in exposures if isinstance(exp, dict)] or []
+    
+    # Track number of times InterviewAgent has sent a message (conversation counter)
+    reply_count = {"count": 0}
 
     def _hook(sender=None, message=None, recipient=None, silent=False):
         try:
+            # Increment reply count for this agent
+            reply_count["count"] += 1
+            current_count = reply_count["count"]
+            
+            logger.debug(f"[InterviewAgent][HOOK] Processing message #{current_count} before send")
+            
+            # TESTING MODE: Auto-respond with "NEXT" on second+ replies
+            # Comment out this block for production to allow natural conversation
+            if current_count > 1:
+                logger.info(f"[InterviewAgent][HOOK] Auto-responding with NEXT (reply #{current_count})")
+                if isinstance(message, dict):
+                    updated = dict(message)
+                    updated["content"] = "NEXT"
+                    return updated
+                return "NEXT"
+            
+            # First message: Build context-aware greeting
             raw_message = message.get("content") if isinstance(message, dict) else message
             if not isinstance(raw_message, str):
+                logger.debug(f"[InterviewAgent][HOOK] Non-string message, returning as-is")
                 return message
-            trimmed = raw_message.strip()
-            if trimmed.upper().startswith("NEXT"):
-                final = "NEXT"
+                
+            container = getattr(sender, "context_variables", None)
+            context_dict = _context_to_dict(container) if container is not None else {}
+
+            if fallback_variables:
+                visible_snapshot: Dict[str, str] = {}
+                for var in fallback_variables:
+                    if not isinstance(var, str) or not var.strip():
+                        continue
+                    value = _stringify_context_value(context_dict.get(var), "null")
+                    if len(value) > 500:
+                        value = f"{value[:497]}..."
+                    visible_snapshot[var] = value
+                if visible_snapshot:
+                    logger.info(
+                        "[InterviewAgent][HOOK] Context variables snapshot",
+                        extra={"variables": visible_snapshot},
+                    )
+
+            if exposures_copy:
+                fragment = _apply_context_exposures("", exposures_copy, context_dict, fallback_variables).strip()
             else:
-                container = getattr(sender, "context_variables", None)
-                context_dict = _context_to_dict(container) if container is not None else {}
-
-                if fallback_variables:
-                    visible_snapshot: Dict[str, str] = {}
-                    for var in fallback_variables:
-                        if not isinstance(var, str) or not var.strip():
-                            continue
-                        value = _stringify_context_value(context_dict.get(var), "null")
-                        if len(value) > 500:
-                            value = f"{value[:497]}..."
-                        visible_snapshot[var] = value
-                    if visible_snapshot:
-                        logger.info(
-                            "[InterviewAgent] Context variables snapshot",
-                            extra={"variables": visible_snapshot},
-                        )
-
-                if exposures_copy:
-                    fragment = _apply_context_exposures("", exposures_copy, context_dict, fallback_variables).strip()
-                else:
-                    fragment = _render_default_context_fragment(fallback_variables, context_dict).strip()
-                if fragment:
-                    header, _, body = fragment.partition("\n")
-                    header = header.strip() or "Context Variables"
-                    body = body.strip()
-                    if not body:
-                        body = "null"
-                    context_block = f"{header}:\n{body}"
-                else:
-                    context_block = "Context Variables:\nnull"
-                question_line = "What would you like to automate?"
-                final = f"{question_line}\n\n{context_block}".strip()
-            logger.debug(f"[InterviewAgent] normalized outgoing message: {final!r}")
+                fragment = _render_default_context_fragment(fallback_variables, context_dict).strip()
+                
+            if fragment:
+                header, _, body = fragment.partition("\n")
+                header = header.strip() or "Context Variables"
+                body = body.strip()
+                if not body:
+                    body = "null"
+                context_block = f"{header}:\n{body}"
+            else:
+                context_block = "Context Variables:\nnull"
+                
+            question_line = "What would you like to automate?"
+            final = f"{question_line}\n\n{context_block}".strip()
+            
+            logger.debug(f"[InterviewAgent][HOOK] First message prepared: {final!r}")
+            
             if isinstance(message, dict):
                 updated = dict(message)
                 updated["content"] = final
                 return updated
             return final
+            
         except Exception as hook_err:  # pragma: no cover
-            logger.debug(f"[InterviewAgent] message normalization skipped: {hook_err}")
+            logger.error(f"[InterviewAgent][HOOK] Error in message hook: {hook_err}", exc_info=True)
             return message
 
     return _hook
+
+# ==============================================================================
+# END INTERVIEWAGENT TESTING UTILITIES
+# ==============================================================================
 
 
 async def create_agents(
@@ -384,7 +273,20 @@ async def create_agents(
             elif auto_tool_mode:
                 llm_config["tools"] = []
 
-        system_message = agent_config.get("system_message", "You are a helpful AI assistant.")
+        # Try prompt_sections first (fixed structure - enforces standardization)
+        prompt_sections = agent_config.get("prompt_sections")
+        # Fallback to prompt_sections_custom (flexible array - adapts to any structure)
+        if not prompt_sections:
+            prompt_sections = agent_config.get("prompt_sections_custom")
+        
+        system_message: str
+        if prompt_sections:
+            # Handles both dict (PromptSections) and list (PromptSectionContent[])
+            # Runtime adapts to whatever structure is provided
+            system_message = _compose_prompt_sections(prompt_sections)
+        else:
+            # Final fallback for agents still using system_message string directly
+            system_message = agent_config.get("system_message", "You are a helpful AI assistant.")
         agent_exposures = []
         if isinstance(exposures_map, dict):
             agent_exposures = exposures_map.get(agent_name, []) or []
@@ -414,11 +316,43 @@ async def create_agents(
         else:
             system_message = base_system_message
 
-##################################################################################################
+        # Load update_agent_state hooks from hooks.json for this agent
+        # CRITICAL: These must be added BEFORE agent construction to work with AG2's update_agent_state_before_reply
+        try:
+            from ..execution.hooks import _resolve_import
+            from pathlib import Path
+            
+            hooks_json_path = Path("workflows") / workflow_name / "hooks.json"
+            if hooks_json_path.exists():
+                import json
+                with open(hooks_json_path, 'r', encoding='utf-8') as f:
+                    hooks_data = json.load(f) or {}
+                hooks_entries = hooks_data.get("hooks") or []
+                
+                for entry in hooks_entries:
+                    if (isinstance(entry, dict) and 
+                        entry.get("hook_type") == "update_agent_state" and 
+                        entry.get("hook_agent") == agent_name):
+                        
+                        file_value = entry.get("filename")
+                        fn_value = entry.get("function")
+                        
+                        if file_value and fn_value:
+                            workflow_path = Path("workflows") / workflow_name
+                            fn, qual = _resolve_import(workflow_name, file_value, fn_value, workflow_path)
+                            if fn:
+                                update_hooks.append(fn)
+                                logger.debug(f"[AGENTS] Pre-loaded update_agent_state hook {qual} for {agent_name}")
+        except Exception as hook_load_err:
+            logger.debug(f"[AGENTS] Failed to pre-load update_agent_state hooks for {agent_name}: {hook_load_err}")
+
+        # ##INTERVIEWAGENT## TESTING MODE - Build auto-NEXT hook (REMOVE FOR PRODUCTION)
         interview_message_hook = None
         if agent_name == "InterviewAgent":
             interview_message_hook = _build_interview_message_hook(agent_exposures, agent_variables)
-##################################################################################################
+            logger.debug(f"[AGENTS] Built interview message hook for InterviewAgent (auto-NEXT enabled for testing)")
+        # ##INTERVIEWAGENT## END
+        
         try:
             raw_human_mode = agent_config.get("human_input_mode")
             if raw_human_mode and str(raw_human_mode).upper() not in ("", "NEVER", "NONE"):
@@ -437,10 +371,18 @@ async def create_agents(
                 context_variables=context_variables,
                 update_agent_state_before_reply=update_hooks or None,
             )
-###################################################################################################
+            if isinstance(prompt_sections, Sequence) and prompt_sections:
+                setattr(agent, "_mozaiks_prompt_sections", prompt_sections)
+            
+            # ##INTERVIEWAGENT## TESTING MODE - Register auto-NEXT hook (REMOVE FOR PRODUCTION)
             if agent_name == "InterviewAgent" and interview_message_hook:
-                agent.register_hook("process_message_before_send", interview_message_hook)
-###################################################################################################
+                try:
+                    agent.register_hook("process_message_before_send", interview_message_hook)
+                    logger.info(f"[AGENTS][HOOK] ✓ Registered process_message_before_send hook for InterviewAgent (auto-NEXT enabled)")
+                except Exception as hook_reg_err:
+                    logger.error(f"[AGENTS][HOOK] Failed to register InterviewAgent message hook: {hook_reg_err}", exc_info=True)
+            # ##INTERVIEWAGENT## END
+            
         except Exception as err:
             logger.error(f"[AGENTS] CRITICAL ERROR creating ConversableAgent {agent_name}: {err}")
             raise

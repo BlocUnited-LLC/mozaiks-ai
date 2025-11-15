@@ -1,16 +1,17 @@
 import React from 'react';
 import UIToolRenderer from '../../core/ui/UIToolRenderer';
 
-const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
-  const containerClasses = isMobile
-    ? "fixed inset-0 z-50"
-    : "flex flex-col w-full transition-all duration-500 ease-in-out";
+const ArtifactPanel = ({ onClose, isMobile = false, messages = [], workflowName = null }) => {
+  const showMobileClose = Boolean(isMobile && onClose);
 
-  // Content uses transform and opacity for smooth entrance/exit; when used as a desktop side-panel
-  // the outer wrapper controls width/visibility. Keep visual styles consistent but reduce abrupt shadow changes.
+  const containerClasses = isMobile
+    ? 'fixed inset-0 z-50 min-h-0'
+    : 'flex flex-col w-full h-full min-h-0 self-stretch transition-all duration-500 ease-in-out';
+
+  // Match ChatInterface styling exactly for consistent neon border effect
   const contentClasses = isMobile
-    ? "relative w-full h-full flex flex-col"
-    : "flex flex-col h-full rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] overflow-hidden shadow-lg bg-gradient-to-br from-white/5 to-[rgba(var(--color-primary-rgb),0.05)] backdrop-blur-sm cosmic-ui-module artifact-panel transform transition-transform duration-500 ease-in-out will-change-transform";
+    ? 'relative w-full h-full flex flex-col'
+    : 'flex flex-col flex-1 min-h-0 h-full rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] md:overflow-hidden overflow-visible shadow-2xl bg-gradient-to-br from-white/5 to-[rgba(var(--color-primary-rgb),0.05)] backdrop-blur-sm cosmic-ui-module artifact-panel p-0';
 
   return (
     <div className={containerClasses}>
@@ -20,95 +21,114 @@ const ArtifactPanel = ({ onClose, isMobile = false, messages = [] }) => {
       )}
 
       {/* Panel Content */}
-      <div className={contentClasses}>
-        {/* Artifact Header */}
-  <div className="flex-shrink-0 px-4 py-3 border-b border-[rgba(var(--color-primary-light-rgb),0.2)] bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)] backdrop-blur-xl shadow-lg rounded-2xl mx-2 mt-2 mb-1 min-h-[80px]">
-          <div className="flex items-center justify-between h-full">
-            <div className="flex-1">
-              <div className="cosmic-module-header">
-                <span className="text-[var(--color-primary-light)]">🎨</span>
-                Artifact Canvas
+      <div className={contentClasses} style={{ overflow: 'clip' }}>
+        {/* Artifact Header - matches chat styling */}
+        <div className="flex-shrink-0 bg-[rgba(0,0,0,0.6)] border-b border-[rgba(var(--color-primary-light-rgb),0.2)] backdrop-blur-xl">
+            <div className="flex items-center justify-between px-6 py-5">
+              <div className="flex items-center gap-3 flex-1">
+                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-secondary)] flex items-center justify-center shadow-lg">
+                  <span className="text-2xl">🎨</span>
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-white tracking-tight">
+                    Artifact
+                  </h2>
+                  <p className="text-xs text-gray-400">
+                    Canvas Output
+                  </p>
+                </div>
               </div>
-            </div>
-            <div className="flex flex-col items-end gap-2">
-              <button 
-                onClick={onClose}
-                className="group relative p-3 rounded-lg bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.1)] to-[rgba(var(--color-secondary-rgb),0.1)] border border-[rgba(var(--color-primary-light-rgb),0.2)] hover:border-[rgba(var(--color-primary-light-rgb),0.4)] transition-all duration-300 backdrop-blur-sm"
-                title={`Close${isMobile ? '' : ' Artifact Canvas'}`}
-              >
-                <svg className="w-5 h-5 group-hover:rotate-90 transition-transform duration-300 text-[var(--color-text-primary)] text-white group-hover:text-[var(--color-primary-light)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-                <div className="absolute inset-0 bg-[rgba(var(--color-primary-light-rgb),0.1)] rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
-              </button>
+              {showMobileClose ? (
+                <button
+                  onClick={onClose}
+                  className="md:hidden w-12 h-12 rounded-xl border border-white/20 bg-black/30 backdrop-blur-sm flex items-center justify-center text-white text-2xl font-light transition-opacity duration-200"
+                  title="Close Artifact Canvas"
+                  aria-label="Close Artifact Canvas"
+                >
+                  &times;
+                </button>
+              ) : (
+                <div className="hidden md:block w-16 h-16" aria-hidden="true"></div>
+              )}
             </div>
           </div>
-        </div>
-        
-        {/* Artifact Content Area - ONLY THIS SCROLLS */}
-        <div className="flex-1 relative overflow-hidden">
-          <div className="absolute inset-0 overflow-y-auto p-6 space-y-4 my-scroll1">
-            {/* If no structured messages, show welcome state */}
-            {(!messages || messages.length === 0) ? (
-              <div className="text-center space-y-6 mt-8">
-                <div className="flex items-center justify-center h-full min-h-[400px]">
-                  <div className="w-32 h-32 bg-gradient-to-br from-[rgba(var(--color-primary-rgb),0.1)] to-[rgba(var(--color-secondary-rgb),0.1)] rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] flex items-center justify-center backdrop-blur-sm shadow-lg">
-                    <img 
-                      src="/mozaik_logo.svg" 
-                      alt="Mozaik Logo" 
-                      className="w-16 h-16 opacity-60"
+
+          {/* Artifact Content Area - match chat scroll treatment */}
+          <div className="flex-1 min-h-0 relative overflow-hidden" role="region" aria-label="Artifact output stream">
+            <div className="absolute inset-0 pointer-events-none bg-[rgba(0,0,0,0.45)] z-0" />
+            <div className="absolute inset-0 overflow-y-auto px-2 py-2 md:p-6 my-scroll1 z-10 h-full flex flex-col">
+              {/* If no content, show just the Mozaiks logo */}
+              {(!messages || messages.length === 0) ? (
+                <div className="flex flex-1 items-center justify-center min-h-full md:min-h-[500px]">
+                  <div className="w-40 h-40 bg-gradient-to-br from-[var(--color-primary)]/20 to-[var(--color-secondary)]/20 rounded-3xl border-2 border-[var(--color-primary-light)]/50 flex items-center justify-center backdrop-blur-sm shadow-2xl">
+                    <img
+                      src="/mozaik_logo.svg"
+                      alt="Mozaiks Logo"
+                      className="w-28 h-28"
+                      onError={(e) => {
+                        e.target.onerror = null;
+                        e.target.src = "/mozaik.png";
+                      }}
                     />
                   </div>
                 </div>
-                <div className="text-sm text-gray-300">No structured artifacts yet. Agent structured outputs will appear here.</div>
-              </div>
-            ) : (
-              <div className="space-y-6">
-                {messages.map((m, idx) => {
-                  // If message has uiToolEvent, render the actual UI component (OUTER BOX REMOVED PER REQUEST)
-                  if (m.uiToolEvent && m.uiToolEvent.ui_tool_id) {
+              ) : (
+                <div className="space-y-6 flex-1">
+                  {messages.map((m, idx) => {
+                    // If message has uiToolEvent, render the actual UI component
+                    if (m.uiToolEvent && m.uiToolEvent.ui_tool_id) {
+                      return (
+                        <div key={m.id || idx} className="app-component-wrapper">
+                          <UIToolRenderer
+                            event={m.uiToolEvent}
+                            onResponse={m.uiToolEvent.onResponse}
+                            className="app-ui-component"
+                          />
+                        </div>
+                      );
+                    }
+
+                    // Fallback: render as development view
+                    let parsed = null;
+                    try {
+                      const jsonMatch = (typeof m.content === 'string') ? m.content.match(/\{[\s\S]*\}/) : null;
+                      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+                      else if (typeof m.content === 'object') parsed = m.content;
+                    } catch (e) { parsed = null; }
+
                     return (
-                      <div key={m.id || idx} className="artifact-tool-wrapper">
-                        <UIToolRenderer
-                          event={m.uiToolEvent}
-                          onResponse={m.uiToolEvent.onResponse}
-                          className="artifact-ui-tool"
-                        />
+                      <div key={m.id || idx} className="bg-gray-800/40 border border-gray-700/60 rounded-xl p-5 backdrop-blur-sm">
+                        <div className="flex items-start justify-between mb-3">
+                          <div>
+                            <div className="text-xs font-medium text-[var(--color-primary-light)] mb-1">{m.agentName || 'System'}</div>
+                            <div className="text-sm text-gray-200 font-semibold">Component Data</div>
+                          </div>
+                          <button
+                            onClick={() => {
+                              if (navigator.clipboard && parsed) {
+                                navigator.clipboard.writeText(JSON.stringify(parsed, null, 2));
+                              }
+                            }}
+                            className="text-xs px-3 py-1.5 bg-gray-700/50 hover:bg-gray-600/50 rounded-lg text-gray-200 hover:text-white transition-all border border-gray-600/50"
+                          >
+                            Copy JSON
+                          </button>
+                        </div>
+                        {parsed ? (
+                          <pre className="text-xs text-gray-300 bg-black/40 p-4 rounded-lg overflow-auto max-h-80 border border-gray-700/30 font-mono">
+                            {JSON.stringify(parsed, null, 2)}
+                          </pre>
+                        ) : (
+                          <div className="text-sm text-gray-400">Component data not available.</div>
+                        )}
                       </div>
                     );
-                  }
-                  
-                  // Fallback: render as structured JSON (legacy behavior)
-                  let parsed = null;
-                  try {
-                    const jsonMatch = (typeof m.content === 'string') ? m.content.match(/\{[\s\S]*\}/) : null;
-                    if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-                    else if (typeof m.content === 'object') parsed = m.content;
-                  } catch (e) { parsed = null; }
-
-                  return (
-                    <div key={m.id || idx} className="bg-black/20 border border-gray-700 rounded-lg p-4">
-                      <div className="flex items-start justify-between mb-2">
-                        <div>
-                          <div className="text-xs text-[var(--color-primary-light)]">{m.agentName || 'Agent'}</div>
-                          <div className="text-sm text-gray-200 font-semibold">Structured Output</div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => { if (navigator.clipboard && parsed) { navigator.clipboard.writeText(JSON.stringify(parsed, null, 2)); } }} className="text-xs px-2 py-1 bg-gray-800/50 rounded text-gray-200">Copy JSON</button>
-                        </div>
-                      </div>
-                      {parsed ? (
-                        <pre className="text-xs text-gray-300 bg-black/30 p-3 rounded overflow-auto max-h-72">{JSON.stringify(parsed, null, 2)}</pre>
-                      ) : (
-                        <div className="text-sm text-gray-400">Could not parse structured output for this artifact.</div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                  })}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+
       </div>
     </div>
   );

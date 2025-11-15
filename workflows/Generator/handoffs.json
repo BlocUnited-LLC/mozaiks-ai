@@ -21,7 +21,7 @@
       },
       {
         "source_agent": "InterviewAgent",
-        "target_agent": "WorkflowStrategyAgent",
+        "target_agent": "PatternAgent",
         "handoff_type": "condition",
         "condition_type": "expression",
         "condition_scope": null,
@@ -29,7 +29,25 @@
         "transition_target": "AgentTarget"
       },
       {
+        "source_agent": "PatternAgent",
+        "target_agent": "WorkflowStrategyAgent",
+        "handoff_type": "after_work",
+        "condition_type": null,
+        "condition_scope": null,
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
         "source_agent": "WorkflowStrategyAgent",
+        "target_agent": "WorkflowArchitectAgent",
+        "handoff_type": "after_work",
+        "condition_type": null,
+        "condition_scope": null,
+        "condition": null,
+        "transition_target": "AgentTarget"
+      },
+      {
+        "source_agent": "WorkflowArchitectAgent",
         "target_agent": "WorkflowImplementationAgent",
         "handoff_type": "after_work",
         "condition_type": null,
@@ -66,7 +84,7 @@
       },
       {
         "source_agent": "user",
-        "target_agent": "WorkflowImplementationAgent",
+        "target_agent": "PatternAgent",
         "handoff_type": "condition",
         "condition_type": "expression",
         "condition_scope": "pre",
@@ -84,7 +102,7 @@
       },
       {
         "source_agent": "user",
-        "target_agent": "WorkflowImplementationAgent",
+        "target_agent": "PatternAgent",
         "handoff_type": "condition",
         "condition_type": "expression",
         "condition_scope": "after",
@@ -93,7 +111,7 @@
       },
       {
         "source_agent": "user",
-        "target_agent": "WorkflowImplementationAgent",
+        "target_agent": "PatternAgent",
         "handoff_type": "condition",
         "condition_type": "string_llm",
         "condition_scope": null,

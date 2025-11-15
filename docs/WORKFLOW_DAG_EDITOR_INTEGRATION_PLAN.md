@@ -36,7 +36,7 @@ Non-goals (initial phases): Multi-user conflict-free concurrent edits (deferred)
 ```
 
 ---
-## 3. Repository Touchpoints
+## 3. Repository Components
 | Area | Purpose | Action |
 |------|---------|--------|
 | `workflows/Generator/` (and other workflow dirs later) | Source YAML (agents, handoffs) | Read / write via new service layer |

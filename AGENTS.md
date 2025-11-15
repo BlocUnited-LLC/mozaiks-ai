@@ -63,7 +63,7 @@ INTERACTIONS WITH UI/TOOLS (runtime contract only)
 
 OPERATING PROCESS
 1) Understand Ask
-   - Summarize goal within runtime scope; identify transport/persistence/orchestration touchpoints.
+   - Summarize goal within runtime scope; identify transport/persistence/orchestration components.
    - If ambiguous, ask one targeted question.
 2) Plan (brief and actionable)
    - List files to touch with minimal diffs.

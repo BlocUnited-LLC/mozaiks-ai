@@ -6,6 +6,8 @@
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 import json
+import re
+import textwrap
 
 
 from logs.logging_config import get_workflow_logger
@@ -23,10 +25,139 @@ WORKFLOW_FILE_MAPPINGS = {
 }
 
 
+def clean_agent_content(content: str, agent_name: str = None) -> Optional[str]:
+    """
+    Remove Markdown code fences and clean JSON content.
+    Based on proven pattern from previous project's file_manager.py.
+    
+    Handles:
+    - Markdown code fences (```json ... ```)
+    - Language identifiers (json, JSON)
+    - Trailing commas before closing brackets
+    - Invalid escape sequences
+    - Extra whitespace
+    """
+    if not content:
+        return None
+        
+    try:
+        content = content.strip()
+        
+        # Remove Markdown code fences (```json ... ```)
+        if content.startswith("```") and content.endswith("```"):
+            content = content[3:-3].strip()
+        
+        # Remove "json" or "JSON" prefix if present
+        if content.lower().startswith("json"):
+            content = content[4:].strip()
+        
+        # Remove trailing commas before closing brackets
+        content = re.sub(r',\s*([\]}])', r'\1', content)
+        
+        # Detect and extract JSON correctly
+        json_start = content.find("{") if "{" in content else content.find("[")
+        if json_start != -1:
+            content = content[json_start:]
+        
+        # Find the last closing bracket
+        json_end = content.rfind("}") if "}" in content else content.rfind("]")
+        if json_end != -1:
+            content = content[:json_end + 1]
+        
+        # Validate final JSON format
+        json.loads(content)  # Raises an exception if invalid
+        return content
+        
+    except json.JSONDecodeError as e:
+        wf_logger = get_workflow_logger()
+        wf_logger.error(f"❌ [CLEAN_AGENT_CONTENT] JSON Parsing Error for {agent_name or 'unknown agent'}: {e}")
+        wf_logger.error(f"❌ [CLEAN_AGENT_CONTENT] Content preview: {content[:500]}...")
+        return None
+
+
 def _save_json_file(file_path: Path, data: Dict[str, Any]) -> None:
     """Save data to a JSON file"""
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _strip_markdown_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 2:
+            lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            stripped = "\n".join(lines).strip()
+    return stripped
+
+
+def _convert_object_ids(text: str) -> str:
+    return re.sub(r'ObjectId\(["\']?([0-9a-fA-F]{24})["\']?\)', r'{"$oid": "\1"}', text)
+
+
+def _ensure_newlines(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def _fix_jsx_syntax(content: str) -> str:
+    try:
+        text = content
+        if "import React" not in text:
+            text = "import React from \"react\";\n" + text
+
+        text = re.sub(r"<\s*n\s*>", "", text)
+        text = re.sub(r"</\s*n\s*>", "", text)
+
+        self_closing = r"(<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)([^>]*)>)"
+        text = re.sub(self_closing, lambda m: m.group(1).rstrip(">") + " />", text)
+        return text
+    except Exception:
+        return content
+
+
+def _normalize_json_text(raw: str) -> Optional[str]:
+    try:
+        parsed = json.loads(raw)
+        return json.dumps(parsed, indent=2, ensure_ascii=False)
+    except Exception:
+        return None
+
+
+def _normalize_file_content(rel_path: str, content: Any, agent_name: Optional[str] = None) -> Any:
+    if isinstance(content, (dict, list)):
+        try:
+            return json.dumps(content, indent=2, ensure_ascii=False)
+        except Exception:
+            return content
+
+    if not isinstance(content, str):
+        return content
+
+    text = content.strip("\ufeff")
+    text = _strip_markdown_fences(text)
+    lowered = text.strip().lower()
+    if lowered.startswith("json"):
+        text = text.strip()[4:].lstrip()
+
+    text = _convert_object_ids(text)
+    text = textwrap.dedent(text)
+    text = _ensure_newlines(text)
+
+    suffix = Path(rel_path).suffix.lower()
+    if suffix == ".json":
+        normalized = _normalize_json_text(text.strip())
+        if normalized is not None:
+            return _ensure_newlines(normalized)
+
+    if suffix in {".jsx", ".tsx"}:
+        text = _fix_jsx_syntax(text)
+
+    return _ensure_newlines(text)
 
 
 def _split_config_into_sections(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -234,11 +365,16 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
                 rel_path = str(rel_path).replace('\\', '/').lstrip('/')
                 
                 # Route files based on path prefix
+                normalized_content = _normalize_file_content(rel_path, content, item.get('agent'))
+
                 if rel_path.startswith('ChatUI/'):
                     # Frontend file - save relative to project root
                     file_path = project_root / rel_path
                     file_path.parent.mkdir(parents=True, exist_ok=True)
-                    file_path.write_text(content, encoding='utf-8')
+                    if isinstance(normalized_content, bytes):
+                        file_path.write_bytes(normalized_content)
+                    else:
+                        file_path.write_text(str(normalized_content), encoding='utf-8')
                     js_files_saved += 1
                     saved_files.append(rel_path)
                     wf_logger.info(f"📄 [SAVE] Frontend file saved → {rel_path}")
@@ -246,7 +382,10 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
                     # Backend file - save relative to workflow directory
                     file_path = workflow_dir / rel_path
                     file_path.parent.mkdir(parents=True, exist_ok=True)
-                    file_path.write_text(content, encoding='utf-8')
+                    if isinstance(normalized_content, bytes):
+                        file_path.write_bytes(normalized_content)
+                    else:
+                        file_path.write_text(str(normalized_content), encoding='utf-8')
                     py_files_saved += 1
                     saved_files.append(rel_path)
                     wf_logger.info(f"📄 [SAVE] Backend file saved → {rel_path}")
@@ -372,13 +511,29 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
 
         # Extract agents from AgentsAgent output (already contains auto_tool_mode)
         # AgentsAgent determines auto_tool_mode by analyzing the tools array
+        # Transform agents list into dict keyed by agent name for agents.json format
         agents_output = data.get('agents_output', {})
         agent_names = _extract_agent_names(agents_output)
         if agents_output and 'agents' in agents_output:
             agents_list = agents_output['agents']
-            config['agents'] = agents_list
-            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(agents_list)} agents (auto_tool_mode determined by AgentsAgent)")
-            wf_logger.info(f"   Agent names: {agent_names}")
+            
+            # Transform list to dict: [{"name": "Agent1", ...}] -> {"Agent1": {...}}
+            # Exclude fields that don't belong in agents.json runtime config
+            excluded_fields = {'name', 'display_name', 'agent_type'}
+            agents_dict = {}
+            
+            for agent in agents_list:
+                if isinstance(agent, dict) and 'name' in agent:
+                    agent_name = agent['name']
+                    # Remove excluded fields (name is the key, display_name/agent_type are metadata)
+                    agent_config = {k: v for k, v in agent.items() if k not in excluded_fields}
+                    agents_dict[agent_name] = agent_config
+                else:
+                    wf_logger.warning(f"⚠️ [CREATE_WORKFLOW_FILES] Skipping malformed agent entry: {agent}")
+            
+            config['agents'] = agents_dict
+            wf_logger.info(f"📋 [CREATE_WORKFLOW_FILES] Added {len(agents_dict)} agents (auto_tool_mode determined by AgentsAgent)")
+            wf_logger.info(f"   Agent names: {list(agents_dict.keys())}")
         else:
             wf_logger.warning("⚠️ [CREATE_WORKFLOW_FILES] No agents in agents_output")
 

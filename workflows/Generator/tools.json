@@ -6,9 +6,22 @@
       "function": "generate_and_download",
       "description": "Prepare workflow files and present inline download request.",
       "tool_type": "UI_Tool",
+      "auto_invoke": true,
       "ui": {
         "component": "FileDownloadCenter",
         "mode": "inline"
+      }
+    },
+    {
+      "agent": "PatternAgent",
+      "file": "pattern_selection.py",
+      "function": "pattern_selection",
+      "description": "Cache AG2 pattern selection in context variables for downstream agents.",
+      "tool_type": "Agent_Tool",
+      "auto_invoke": true,
+      "ui": {
+        "component": null,
+        "mode": null
       }
     },
     {
@@ -16,6 +29,18 @@
       "file": "workflow_strategy.py",
       "function": "workflow_strategy",
       "description": "Cache high-level workflow architecture (pattern, trigger, phases) in context variables.",
+      "tool_type": "Agent_Tool",
+      "auto_invoke": true,
+      "ui": {
+        "component": null,
+        "mode": null
+      }
+    },
+    {
+      "agent": "WorkflowArchitectAgent",
+      "file": "technical_blueprint.py",
+      "function": "technical_blueprint",
+      "description": "Persist TechnicalBlueprint output so downstream agents can read shared context.",
       "tool_type": "Agent_Tool",
       "auto_invoke": true,
       "ui": {
@@ -41,6 +66,7 @@
       "function": "mermaid_sequence_diagram",
       "description": "Refresh the Action Plan artifact with the generated Mermaid sequence diagram.",
       "tool_type": "UI_Tool",
+      "auto_invoke": true,
       "ui": {
         "component": "ActionPlan",
         "mode": "artifact"

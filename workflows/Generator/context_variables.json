@@ -30,6 +30,24 @@
           "default": false
         }
       },
+      "context_include_schema": {
+        "type": "boolean",
+        "description": "Flag indicating if database schema access is enabled for this workflow",
+        "source": {
+          "type": "environment",
+          "env_var": "CONTEXT_INCLUDE_SCHEMA",
+          "default": false
+        }
+      },
+      "context_schema_db": {
+        "type": "string",
+        "description": "Name of the database this workflow has schema access to",
+        "source": {
+          "type": "environment",
+          "env_var": "CONTEXT_SCHEMA_DB",
+          "default": null
+        }
+      },
       "interview_complete": {
         "type": "boolean",
         "description": "True once InterviewAgent has enough context to proceed to the next stage",
@@ -81,6 +99,15 @@
           "triggers": []
         }
       },
+      "technical_blueprint": {
+        "type": "object",
+        "description": "Workflow-wide technical blueprint detailing shared context variables, UI Components, and lifecycle hooks authored by WorkflowArchitectAgent.",
+        "source": {
+          "type": "derived",
+          "default": null,
+          "triggers": []
+        }
+      },
       "strategy_ready": {
         "type": "boolean",
         "description": "True when WorkflowStrategyAgent has stored the high-level plan for downstream agents.",
@@ -126,6 +153,7 @@
         "variables": [
           "concept_overview",
           "workflow_strategy",
+          "technical_blueprint",
           "action_plan",
           "strategy_ready",
           "action_plan_acceptance"
@@ -133,7 +161,9 @@
       },
       "ProjectOverviewAgent": {
         "variables": [
-          "action_plan_acceptance"
+          "action_plan_acceptance",
+          "technical_blueprint",
+          "action_plan"
         ]
       }
     }
