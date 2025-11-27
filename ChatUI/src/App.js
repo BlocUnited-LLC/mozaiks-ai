@@ -1,6 +1,6 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
-import { ChatUIProvider, useChatUI } from './context/ChatUIContext';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { ChatUIProvider } from './context/ChatUIContext';
 import ChatPage from './pages/ChatPage';
 import MyWorkflowsPage from './pages/MyWorkflowsPage';
 import './styles/TransportAwareChat.css';
@@ -11,27 +11,9 @@ import './styles/TransportAwareChat.css';
 const NullRoute = () => null;
 
 const AppContent = () => {
-  const location = useLocation();
-  const { 
-    layoutMode,
-    setLayoutMode,
-    previousLayoutMode,
-    setPreviousLayoutMode,
-    isInDiscoveryMode,
-    setIsInDiscoveryMode
-  } = useChatUI();
-
-  const isOnWorkflowsPage = location.pathname === '/workflows' || location.pathname === '/my-workflows';
-
-  React.useEffect(() => {
-    if (isOnWorkflowsPage && !isInDiscoveryMode) {
-      setPreviousLayoutMode(layoutMode);
-      setIsInDiscoveryMode(true);
-    } else if (!isOnWorkflowsPage && isInDiscoveryMode) {
-      setIsInDiscoveryMode(false);
-      setLayoutMode(previousLayoutMode || 'full');
-    }
-  }, [isOnWorkflowsPage, isInDiscoveryMode, layoutMode, previousLayoutMode, setIsInDiscoveryMode, setLayoutMode, setPreviousLayoutMode]);
+  // Widget mode is now managed by individual pages via useWidgetMode() hook
+  // and by ChatPage when processing returns from widget mode.
+  // No need for App.js to manage it centrally.
 
   return (
     <>

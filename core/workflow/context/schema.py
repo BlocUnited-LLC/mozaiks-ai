@@ -15,10 +15,10 @@ class ContextTriggerMatch(BaseModel):
 
 
 class ContextTriggerSpec(BaseModel):
-    """Declarative trigger definition for derived variables.
+    """Declarative trigger definition for state variables.
     
     Trigger Types:
-    - agent_text: Passive agent text detection (DerivedContextManager)
+    - agent_text: Passive agent text detection (state transitions via messages)
     - ui_response: Active UI interaction (tool code updates value)
     """
 
@@ -45,40 +45,64 @@ class ContextTriggerSpec(BaseModel):
         return data
 
 
+class StateTransitionSpec(BaseModel):
+    """State transition metadata for workflow orchestration variables."""
+
+    from_state: Optional[str] = Field(default=None, alias="from")
+    to_state: Any = Field(default=True, alias="to")
+    trigger: ContextTriggerSpec
+
+
 class ContextVariableSource(BaseModel):
     """Source metadata for resolving a context variable.
     
-    Source Types:
-    - database: Load from MongoDB collection
-    - environment: Load from environment variable
-    - static: Fixed value in config
-    - derived: Value updated by external signals (agent text or UI response)
+    Source Types (Production-Ready):
+    - config: Deployment configuration from environment variables
+    - data_reference: Read from existing MongoDB collections
+    - data_entity: Create and persist new MongoDB data
+    - computed: Business logic outputs (optionally persisted)
+    - state: Workflow orchestration state with transitions
+    - external: Third-party API data with caching/retry
     """
 
-    type: Literal["database", "environment", "static", "derived"]
+    type: Literal["config", "data_reference", "data_entity", "computed", "state", "external"]
     
-    # Database source fields
+    # Config source fields (type="config")
+    env_var: Optional[str] = None
+    default: Optional[Any] = None
+    required: Optional[bool] = None
+    
+    # Data reference source fields (type="data_reference")
     database_name: Optional[str] = None
     collection: Optional[str] = None
+    query_template: Optional[Dict[str, Any]] = None
+    fields: Optional[List[str]] = None
+    refresh_strategy: Optional[Literal["once", "per_phase", "on_demand"]] = None
+    
+    # Data entity source fields (type="data_entity")
+    # Reuses database_name
+    schema: Optional[Dict[str, Any]] = None
+    indexes: Optional[List[Dict[str, Any]]] = None
+    write_strategy: Optional[Literal["immediate", "on_phase_transition", "on_workflow_end"]] = None
     search_by: Optional[str] = None
-    field: Optional[str] = None
     
-    # Environment source fields
-    env_var: Optional[str] = None
+    # Computed source fields (type="computed")
+    computation: Optional[str] = None
+    inputs: Optional[List[str]] = None
+    output_type: Optional[str] = None
+    persist_to: Optional[Dict[str, Any]] = None
     
-    # Static/default value
-    default: Optional[Any] = None
-    value: Optional[Any] = None
+    # State source fields (type="state")
+    transitions: List[StateTransitionSpec] = Field(default_factory=list)
+    persist: Optional[bool] = None
     
-    # Derived source fields (external signal triggers)
-    triggers: List[ContextTriggerSpec] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    def _ensure_triggers(cls, data: Any) -> Any:
-        if isinstance(data, dict) and data.get("type") != "derived":
-            data = data.copy()
-            data.setdefault("triggers", [])
-        return data
+    # External source fields (type="external")
+    service: Optional[str] = None
+    operation: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None
+    auth: Optional[Dict[str, Any]] = None
+    cache: Optional[Dict[str, Any]] = None
+    retry: Optional[Dict[str, Any]] = None
 
 
 class ContextVariableDefinition(BaseModel):
@@ -178,6 +202,7 @@ __all__ = [
     "ContextVariableSource",
     "ContextAgentView",
     "ContextTriggerSpec",
+    "StateTransitionSpec",
     "ContextTriggerMatch",
     "load_context_variables_config",
 ]

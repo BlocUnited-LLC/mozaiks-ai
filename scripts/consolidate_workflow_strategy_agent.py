@@ -24,7 +24,7 @@ def consolidate_workflow_strategy_agent():
 
 **Step 2 - Select Trigger Type**:
 
-Determine the trigger type based on the automation context and user interaction pattern:
+Determine the trigger type based on the automation context and user UI pattern:
 
 - **chat** (DEFAULT) → Human-led conversation, exploration, or collaborative creation. Use for:
   * Creative workflows requiring user input/feedback

@@ -1,8 +1,8 @@
-# ============================================================================== 
+# ==============================================================================
 # FILE: workflows/Generator/tools/action_plan.py
-# DESCRIPTION: Normalize and cache ActionPlanArchitect output for Mermaid enrichment
+# DESCRIPTION: Normalize and cache ActionPlan semantic wrapper output for Mermaid enrichment
 # CONTRACT:
-#   - INPUT: action_plan (matches ActionPlan schema) from ActionPlanArchitect
+#   - INPUT: action_plan (matches ActionPlan schema) from upstream agent
 #   - OUTPUT: stores normalized workflow + metadata in context for downstream UI tool
 # ==============================================================================
 
@@ -308,7 +308,7 @@ def _normalize_global_context_variables(value: Any) -> List[Dict[str, Any]]:
         name = _coerce_str(raw.get("name"), f"context_variable_{idx + 1}").strip()
         if not name:
             name = f"context_variable_{idx + 1}"
-        var_type = _coerce_str(raw.get("type"), "derived").strip() or "derived"
+        var_type = _coerce_str(raw.get("type"), "computed").strip() or "computed"
         purpose = _coerce_str(raw.get("purpose"))
         trigger_hint = _sanitize_optional_str(raw.get("trigger_hint"))
 
@@ -341,33 +341,24 @@ def _enrich_context_variable_definitions(value: Any) -> Dict[str, Any]:
         if not name:
             name = f"context_variable_{idx + 1}"
         
-        var_type = _coerce_str(raw.get("type"), "derived").strip() or "derived"
+        var_type = _coerce_str(raw.get("type"), "computed").strip() or "computed"
         purpose = _coerce_str(raw.get("purpose"))
         trigger_hint = _sanitize_optional_str(raw.get("trigger_hint"))
         
-        # Extract source information (if available from upstream schema)
-        source_info: Dict[str, Any] = {}
-        if var_type == "database":
-            # Database variables may have collection/field info
-            source_info["type"] = "database"
-            # Note: Full source details (collection, field) not in RequiredContextVariable
-            # but available in workflow's context_variables.json if needed
-        elif var_type == "environment":
-            source_info["type"] = "environment"
-        elif var_type == "static":
-            source_info["type"] = "static"
-        elif var_type == "derived":
-            source_info["type"] = "derived"
-            # Extract trigger information from trigger_hint text
+        # Extract source information (six-type taxonomy)
+        source_info: Dict[str, Any] = {"type": var_type}
+        
+        # Extract trigger information for computed and state variables
+        if var_type in ("computed", "state"):
             triggers = []
             if trigger_hint:
-                # Parse common trigger patterns from hint text
                 hint_lower = trigger_hint.lower()
                 if "ui" in hint_lower or "user" in hint_lower or "component" in hint_lower:
                     triggers.append({"type": "ui_response", "description": trigger_hint})
                 elif "agent" in hint_lower or "says" in hint_lower or "emits" in hint_lower:
                     triggers.append({"type": "agent_text", "description": trigger_hint})
-            source_info["triggers"] = triggers
+            if triggers:
+                source_info["triggers"] = triggers
         
         enriched[name] = {
             "name": name,
@@ -394,7 +385,7 @@ def _normalize_ui_components(value: Any) -> List[Dict[str, Any]]:
         label = _coerce_str(raw.get("label"))
         component = _coerce_str(raw.get("component"))
         display = _coerce_str(raw.get("display"), "inline")
-        interaction_pattern = _coerce_str(raw.get("interaction_pattern"), "single_step")
+        ui_pattern = _coerce_str(raw.get("ui_pattern"), "single_step")
         summary = _coerce_str(raw.get("summary"))
 
         normalized.append(
@@ -405,7 +396,7 @@ def _normalize_ui_components(value: Any) -> List[Dict[str, Any]]:
                 "label": label,
                 "component": component,
                 "display": display,
-                "interaction_pattern": interaction_pattern,
+                "ui_pattern": ui_pattern,
                 "summary": summary,
             }
         )
@@ -544,17 +535,10 @@ def _normalize_phases(value: Any) -> List[Dict[str, Any]]:
         except (TypeError, ValueError):
             phase_index = idx
 
-        approval_flag = raw_phase.get("approval_required")
-        if approval_flag is None:
-            approval_flag = raw_phase.get("human_in_loop")
-        approval_required = bool(approval_flag)
-
         phases.append({
             "name": name,
             "description": description,
             "phase_index": phase_index,
-            "approval_required": approval_required,
-            "human_in_loop": approval_required,
             "agents": agents,
         })
     return phases
@@ -583,7 +567,7 @@ def _agent_tool_labels(agent: Dict[str, Any]) -> List[str]:
 
 
 def _normalize_lifecycle_operations(value: Any) -> List[Dict[str, Any]]:
-    """Normalize lifecycle operations emitted by WorkflowStrategyAgent or downstream merges."""
+    """Normalize lifecycle operations emitted by WorkflowStrategy semantic wrapper or downstream merges."""
     normalized: List[Dict[str, Any]] = []
     if not isinstance(value, list):
         return normalized
@@ -634,6 +618,7 @@ def _normalize_workflow(raw_workflow: Dict[str, Any]) -> Dict[str, Any]:
     else:
         pattern = "Pipeline"
     description = _coerce_str(raw_workflow.get("description"))
+    human_in_loop = _coerce_bool(raw_workflow.get("human_in_loop"), False)
     phases = _normalize_phases(raw_workflow.get("phases"))
     lifecycle_operations = _normalize_lifecycle_operations(raw_workflow.get("lifecycle_operations"))
     workflow_payload: Dict[str, Any] = {
@@ -643,6 +628,7 @@ def _normalize_workflow(raw_workflow: Dict[str, Any]) -> Dict[str, Any]:
         "trigger_type": trigger_type,
         "pattern": pattern,
         "description": description,
+        "human_in_loop": human_in_loop,
         "phases": phases,
         "lifecycle_operations": lifecycle_operations,
     }
@@ -706,13 +692,13 @@ async def action_plan(
         (
             "DEPRECATED - Use phase_agents instead. Legacy Action Plan object with workflow details. "
             "Expected keys: { 'workflow': { name, trigger, description, phases[...] } } "
-            "and a phases list that mirrors the upstream WorkflowStrategyCall output exactly (Phase N labels, order, and approvals)."
+            "and a phases list that mirrors the upstream WorkflowStrategy semantic wrapper exactly (Phase N labels, order, and approvals)."
         ),
     ] = None,
     phase_agents: Annotated[
         Optional[List[Dict[str, Any]]],
         (
-            "NEW FORMAT: Array of {phase_index, agents[]} objects from WorkflowImplementationAgent. "
+            "NEW FORMAT: Array of {phase_index, agents[]} objects from PhaseAgents semantic wrapper. "
             "Will be merged with workflow_strategy from context to build complete ActionPlan. "
             "Each entry must have phase_index (int) and agents (list of WorkflowAgent specs)."
         ),
@@ -776,7 +762,7 @@ async def action_plan(
                 }
 
             Notes:
-                - Phases MUST preserve the exact names, ordering, and approval flags provided by the upstream WorkflowStrategyCall output (e.g., "Phase 1: Discovery", "Phase 2: Drafting").
+                - Phases MUST preserve the exact names, ordering, and approval flags provided by the upstream WorkflowStrategy semantic wrapper (e.g., "Phase 1: Discovery", "Phase 2: Drafting").
                 - Multi-phase workflows are expected; do not collapse loops or approvals into single entries.
                 - Semantic model uses three orthogonal dimensions: initiated_by, trigger_type, pattern
                 - lifecycle_operations capture orchestration hooks between agents (before/after chat or agent triggers)
@@ -844,6 +830,8 @@ async def action_plan(
             collections_first_docs = context_variables.get("collections_first_docs_full")
             context_include_schema = context_variables.get("context_include_schema", False)
             context_schema_db = context_variables.get("context_schema_db")
+            schema_capability_flag = bool(context_variables.get("database_schema_available"))
+            schema_capability_db = context_variables.get("database_schema_db") or context_schema_db
             
         except Exception as ctx_err:  # pragma: no cover - defensive logging
             _logger.debug("Unable to read planning context: %s", ctx_err)
@@ -851,6 +839,8 @@ async def action_plan(
             collections_first_docs = None
             context_include_schema = False
             context_schema_db = None
+            schema_capability_flag = False
+            schema_capability_db = None
 
     if not chat_id or not enterprise_id:
         _logger.warning("Missing routing keys: chat_id or enterprise_id not present on context_variables")
@@ -914,14 +904,10 @@ async def action_plan(
                 phase_index = int(phase_index_raw)
             except (TypeError, ValueError):
                 phase_index = idx
-            approval_required = bool(strategy_phase.get("human_in_loop") or strategy_phase.get("approval_required"))
-
             merged_phase = {
                 "name": _coerce_str(phase_name, f"Phase {idx + 1}").strip() or f"Phase {idx + 1}",
                 "description": _coerce_str(phase_description),
                 "phase_index": phase_index,
-                "approval_required": approval_required,
-                "human_in_loop": approval_required,
                 "agents": normalized_agents,
             }
             merged_phases.append(merged_phase)
@@ -1101,6 +1087,14 @@ async def action_plan(
             len(database_schema_info.get("collections", []))
         )
 
+    schema_capability: Dict[str, Any] = {
+        "enabled": bool(schema_capability_flag or database_schema_info.get("enabled")),
+        "database_name": database_schema_info.get("database_name") or schema_capability_db or context_schema_db,
+        "has_schema_details": bool(database_schema_info.get("collections")),
+        "collections_reported": database_schema_info.get("total_collections") or len(database_schema_info.get("collections", [])) or 0,
+    }
+    plan_workflow["database_capability"] = schema_capability
+
     # --- Mermaid diagram handling --------------------------------------------------
     diagram_payload_raw: Any = MermaidSequenceDiagram
     if diagram_payload_raw is None and stored_diagram_ready:
@@ -1189,6 +1183,7 @@ async def action_plan(
             # Persist database schema info for downstream agents
             if database_schema_info.get("enabled"):
                 context_variables.set("database_schema_info", copy.deepcopy(database_schema_info))  # type: ignore[attr-defined]
+            context_variables.set("database_capability", copy.deepcopy(schema_capability))  # type: ignore[attr-defined]
 
             if diagram_ready:
                 context_variables.set("mermaid_sequence_diagram", diagram_text)  # type: ignore[attr-defined]

@@ -317,3 +317,22 @@ await persistence_manager.update_last_artifact(
 **Implement Fix 1 (chat_meta enhancement) immediately** - this is critical for multi-workflow navigation with artifacts to work correctly.
 
 Without this, users will see their chat history when returning to Generator, but the ActionPlan artifact panel will NOT restore unless Generator also calls `update_last_artifact()` (which may not be the pattern for all workflows).
+
+---
+
+## Frontend Alignment (Nov 2025)
+
+Recent ChatUI changes keep the UI in sync with these persistence rules:
+
+- `ChatPage.js` now fetches `/api/sessions/list/{enterprise_id}/{user_id}` on load and whenever modes change, storing the ordered (oldest-first) list of `IN_PROGRESS` workflow sessions inside `ChatUIContext.workflowSessions`.
+- Toggling from Ask Mozaiks back to workflow mode uses the cached session list when no `currentChatId` is present, defaulting to the oldest active workflow to guarantee deterministic restoration.
+- The persistent chat widget follows the same logic when the user toggles from `/workflows` or other routes: it navigates back to `/chat`, sends `chat.switch_workflow` for the resolved chat_id, and updates context so artifacts/UI snapshots can replay.
+- Ask-mode activation now refreshes both general chat sessions and workflow sessions, ensuring the frontend never points at a stale chat_id (critical when users complete or delete workflows outside the active tab).
+
+**Operational guardrails**
+
+- Backend must mark sessions `status = IN_PROGRESS` until workflows are explicitly completed so that the resolver can discover them.
+- `list_user_sessions` should keep `last_updated_at` (or `created_at`) populated; the frontend normalizes timestamps but relies on monotonic values to pick the “oldest” session when multiple are active.
+- When multiple dependencies exist (e.g., Generator → Investor), workflows should expose `last_artifact` metadata or artifact-instance references so returning to the oldest session still surfaces the correct artifact resume point.
+
+These changes keep persistence, transport, and UI orchestration aligned without adding workflow-specific logic to the runtime.

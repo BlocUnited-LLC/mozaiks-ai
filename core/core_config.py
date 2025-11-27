@@ -157,9 +157,38 @@ async def prompt_low_balance(chat_id: str, workflow_name: str, needed_tokens: in
         display="inline",
     )
 
+# -----------------------------
+# Enterprise ID resolution (for UI tools and persistence)
+# -----------------------------
+def get_enterprise_id_from_chat_or_context(chat_id: Optional[str] = None) -> Optional[str]:
+    """Get enterprise_id from chat context via SimpleTransport connections.
+    
+    This is a helper for UI tools and persistence operations that need enterprise_id
+    but only have chat_id available in their scope.
+    
+    Note: Currently returns None as a placeholder. UI tool persistence is non-critical
+    and will gracefully skip if enterprise_id is unavailable.
+    """
+    if not chat_id:
+        return None
+    
+    # TODO: Implement proper enterprise_id lookup via transport connections
+    # For now, return None and let callers handle gracefully
+    return None
+
+
+# -----------------------------
+# Token & Monetization Config
+# -----------------------------
+MONETIZATION_ENABLED = os.getenv("MONETIZATION_ENABLED", "true").lower() == "true"
+FREE_TRIAL_ENABLED = os.getenv("FREE_TRIAL_ENABLED", "true").lower() == "true"
+TOKEN_WARNING_THRESHOLD = float(os.getenv("TOKEN_WARNING_THRESHOLD", "0.2"))
+TOKENS_API_URL = os.getenv("TOKENS_API_URL", "")
+
 __all__ = [
     "prompt_low_balance",
     "get_secret",
     "get_mongo_client",
+    "get_enterprise_id_from_chat_or_context",
 ]
 

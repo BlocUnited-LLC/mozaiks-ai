@@ -64,7 +64,7 @@ By the time ProjectOverviewAgent completes, the following data structures are av
       "label": "string (user-facing CTA)",
       "component": "string (React component PascalCase)",
       "display": "inline|artifact",
-      "interaction_pattern": "single_step|two_step_confirmation|multi_step",
+      "ui_pattern": "single_step|two_step_confirmation|multi_step",
       "summary": "string (<=200 chars)"  // ⚠️ NOT DISPLAYED IN UI
     }
   ],
@@ -140,7 +140,7 @@ The `action_plan.py` tool processes and normalizes:
 4. Lifecycle tools (name, purpose, trigger) - **integration field IS normalized but NOT used in UI**
 5. System hooks (name, purpose)
 6. Global context variables (name, type, purpose) - **trigger_hint NOT captured**
-7. UI components (label, component, tool, phase_name, agent, display, interaction_pattern) - **summary NOT captured**
+7. UI components (label, component, tool, phase_name, agent, display, ui_pattern) - **summary NOT captured**
 8. Workflow-level lifecycle operations
 9. Mermaid diagram + legend
 10. TechnicalBlueprint (global_context_variables, ui_components, before_chat_lifecycle, after_chat_lifecycle)
@@ -172,7 +172,7 @@ The `action_plan.py` tool processes and normalizes:
 - **Workflow metadata**: name, initiated_by, trigger_type, pattern, description
 - **Lifecycle hooks**: before_chat, after_chat operations (name, purpose, integration if present)
 - **Context variables**: name, type, purpose
-- **UI components**: label, component, tool, phase_name, agent, display, interaction_pattern
+- **UI components**: label, component, tool, phase_name, agent, display, ui_pattern
 
 #### **Per-Phase Accordions:**
 - Phase name/description
@@ -281,7 +281,7 @@ plan_workflow = {
             "phase_name": "string",
             "agent": "string",
             "display": "inline|artifact",
-            "interaction_pattern": "single_step|two_step_confirmation|multi_step"
+            "ui_pattern": "single_step|two_step_confirmation|multi_step"
             # ❌ summary NOT included in normalization
         }
     ],

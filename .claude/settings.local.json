@@ -33,7 +33,9 @@
       "Bash(docker logs:*)",
       "Bash(docker rm:*)",
       "Bash(docker exec:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(move useDiscoveryMode.js useWidgetMode.js)",
+      "Bash(del \"workflows\\Generator\\tools\\update_agent_state_pattern.py.backup_20251119_165539\")"
     ],
     "deny": [],
     "ask": []

@@ -189,13 +189,13 @@ function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarni
   if (message_from === 'user') {
     if (!message) return null; // nothing to show
     return (
-      <div className="flex justify-end px-0 message-container">
+      <div className="flex justify-start px-0 message-container">
         <div className={`mt-1 user-message message ${isLatest ? 'latest' : ''}`}>
           <div className="flex flex-col">
             <div className="message-header justify-end">
               <span className="name-pill user"><span className="pill-avatar" aria-hidden>🧑</span> You</span>
             </div>
-            <div className="message-body w-full flex justify-end text-right">
+            <div className="message-body w-full flex justify-start text-left font-semibold">
               {renderMessageContent(message)}
             </div>
           </div>
@@ -234,7 +234,7 @@ function ChatMessage({ message, message_from, agentName, isTokenMessage, isWarni
           <div className="message-header">
             <span className="name-pill agent"><span className="pill-avatar" aria-hidden>🤖</span> {agentName || 'Agent'}</span>
           </div>
-          <div className="message-body w-full flex">
+          <div className="message-body w-full flex font-semibold">
             {renderMessageContent(message)}
           </div>
         </div>

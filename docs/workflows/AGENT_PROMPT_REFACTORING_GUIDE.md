@@ -247,7 +247,7 @@ Each agent has exclusive ownership of specific Action Plan fields:
 - Does NOT: Modify phases or agent configurations
 
 #### ContextVariablesAgent
-- Reads: ActionPlan, PhaseAgents, ToolsManagerAgentOutput
+- Reads: ActionPlan, PhaseAgents, ToolsManifest
 - Produces: ContextVariablesPlan (definitions + agent exposure mappings)
 - Does NOT: Modify workflow structure
 
@@ -257,7 +257,7 @@ Each agent has exclusive ownership of specific Action Plan fields:
 - Does NOT: Implement tool functions (that's downstream code generation)
 
 #### StructuredOutputsAgent
-- Reads: ActionPlan, ContextVariablesPlan, ToolsManagerAgentOutput, UI/tool file generator outputs
+- Reads: ActionPlan, ContextVariablesPlan, ToolsManifest, UI/tool file generator outputs
 - Produces: Pydantic models + registry
 - Does NOT: Implement validation logic (runtime handles)
 

@@ -300,7 +300,7 @@
 ```
 
 **structured_outputs.json**:
-- Model: `ToolsManagerAgentOutput` ✅
+- Model: `ToolsManifest` ✅
 - Tool model: `ToolSpec`
   - Field `agent` ✅
   - Field `file` ✅

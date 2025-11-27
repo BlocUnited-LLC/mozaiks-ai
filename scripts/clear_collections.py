@@ -59,7 +59,7 @@ def main():
     parser = argparse.ArgumentParser(description='Clear MongoDB collections (delete or drop)')
     parser.add_argument('--mongo-uri', help='Mongo URI. If omitted, read from MONGO_URI env or .env')
     parser.add_argument('--db', default='MozaiksAI', help='Database name (default: MozaiksAI)')
-    parser.add_argument('--collections', default='WorkflowStats,ChatSessions', help='Comma-separated list of collection names (default: WorkflowStats,ChatSessions)')
+    parser.add_argument('--collections', default='WorkflowStats,ChatSessions,GeneralChatSessions,GeneralChatCounters', help='Comma-separated list of collection names (default: WorkflowStats,ChatSessions,GeneralChatSessions,GeneralChatCounters)')
     parser.add_argument('--action', choices=['delete', 'drop'], default='delete', help='delete: delete documents; drop: drop collection')
     parser.add_argument('--yes', '-y', action='store_true', help='Run non-interactively and confirm actions')
     args = parser.parse_args()

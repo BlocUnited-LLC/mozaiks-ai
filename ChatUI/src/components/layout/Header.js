@@ -90,35 +90,12 @@ const Header = ({
     `}>
       {/* Main header content - single compact row */}
       <div className="relative h-14 md:h-16 flex items-center justify-between px-4 md:px-6 lg:px-8">
-        {/* LEFT: Brand + breadcrumb */}
+        {/* LEFT: Brand */}
         <div className="flex items-center gap-3 md:gap-4">
           <a href="https://mozaiks.ai" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
             <img src="/mozaik_logo.svg" className="h-7 w-7" alt="Mozaiks logo" />
             <img src="/mozaik.png" className="h-7 opacity-90" alt="Mozaiks brand" />
           </a>
-          {workflowName && (
-            <div className="hidden md:flex items-center gap-2 text-xs text-[rgba(var(--color-primary-light-rgb),0.8)]">
-              <button
-                type="button"
-                onClick={handleDiscoverClick}
-                className="flex items-center gap-1 hover:text-[var(--color-primary-light)] hover:text-white transition-colors cursor-pointer"
-              >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
-                <span className="oxanium">My Workflows</span>
-              </button>
-              <svg className="w-3 h-3 text-[rgba(var(--color-primary-rgb),0.5)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-              <span
-                className="oxanium text-[var(--color-primary-light)] text-white font-medium inline-block max-w-[40vw] truncate"
-                title={workflowName}
-              >
-                {workflowName.charAt(0).toUpperCase() + workflowName.slice(1)}
-              </span>
-            </div>
-          )}
         </div>
 
         {/* RIGHT: Commander, notifications, discover */}
@@ -231,30 +208,8 @@ const Header = ({
         </div>
       </div>
 
-      {/* Mobile Breadcrumbs */}
-      <div className="md:hidden px-4 pb-3">
-        {workflowName && (
-          <div className="flex items-center space-x-2 text-xs text-[rgba(var(--color-primary-light-rgb),0.7)]">
-            <button 
-              onClick={handleDiscoverClick}
-              className="flex items-center space-x-1 hover:text-[var(--color-primary-light)] transition-colors duration-200"
-            >
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-              </svg>
-              <span className="oxanium">My Workflows</span>
-            </button>
-
-            <svg className="w-3 h-3 text-[rgba(var(--color-primary-rgb),0.5)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-
-            <span className="oxanium text-[var(--color-primary-light)] text-slate-200 font-medium">
-              {workflowName.charAt(0).toUpperCase() + workflowName.slice(1)}
-            </span>
-          </div>
-        )}
-      </div>
+      {/* Mobile spacing placeholder */}
+      <div className="md:hidden px-4 pb-3" />
     </header>
   );
 };

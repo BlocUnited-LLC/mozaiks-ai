@@ -213,10 +213,17 @@ class SimpleTransport:
         if not agent_name:
             return True  # Show system messages
         
-        # Get the workflow type for this chat session
+        # Get the workflow type and ws_id for this chat session
         workflow_name = None
+        ws_id = None
         if chat_id and chat_id in self.connections:
             workflow_name = self.connections[chat_id].get("workflow_name")
+            ws_id = self.connections[chat_id].get("ws_id")
+        
+        # If in general mode, show all messages (bypass visual_agents filtering)
+        if ws_id and session_registry.is_in_general_mode(ws_id):
+            logger.debug(f"🧠 [GENERAL_MODE] Allowing message from '{agent_name}' (general mode bypass)")
+            return True
         
         # If we have workflow type, use visual_agents filtering
         if workflow_name:
@@ -870,6 +877,10 @@ class SimpleTransport:
             # Canonical resume field: lastClientIndex (0-based index of last message the client has)
             return all(field in message_data for field in ["chat_id", "lastClientIndex"]) and isinstance(message_data.get("lastClientIndex"), int)
         
+        elif msg_type in ("chat.enter_general_mode", "chat.start_general_chat", "chat.switch_workflow"):
+            # Mode switching commands - no additional validation needed
+            return True
+        
         # Unknown message types are invalid
         return False
         
@@ -1143,16 +1154,48 @@ class SimpleTransport:
                         # Pause all workflows
                         session_registry.enter_general_mode(ws_id)
                         general_ctx = await self._ensure_general_chat_context(chat_id=chat_id)
+                        general_chat_id = general_ctx.get("chat_id")
+                        
                         logger.info(
-                            f"💬 Entered general mode (ws_id={ws_id}, general_chat={general_ctx.get('chat_id')})"
+                            f"💬 Entered general mode (ws_id={ws_id}, general_chat={general_chat_id})"
                         )
                         
-                        # Notify frontend
+                        # Only send greeting if this is a new session (no existing messages)
+                        enterprise_id = self.connections.get(chat_id, {}).get("enterprise_id")
+                        pm = self._get_or_create_persistence_manager()
+                        transcript = await pm.fetch_general_chat_transcript(
+                            general_chat_id=general_chat_id,
+                            enterprise_id=enterprise_id,
+                            limit=1
+                        )
+                        
+                        has_messages = transcript and transcript.get("messages") and len(transcript["messages"]) > 0
+                        
+                        if not has_messages:
+                            # New session - send static welcome message (no LLM call to save tokens)
+                            logger.info(f"🆕 [GENERAL_MODE] New session, sending greeting for {general_chat_id}")
+                            await self.send_event_to_ui(
+                                {
+                                    "kind": "text",
+                                    "agent": "Ask Mozaiks",
+                                    "content": "Hi! I'm Ask Mozaiks, your AI companion. What can I help you with today? 😊",
+                                    "chat_id": chat_id,
+                                    "metadata": {
+                                        "source": "general_agent",
+                                        "general_chat_id": general_chat_id,
+                                        "is_greeting": True,
+                                    },
+                                },
+                                chat_id,
+                            )
+                        else:
+                            logger.info(f"🔄 [GENERAL_MODE] Resuming existing session {general_chat_id} (has messages, skipping greeting)")
+                        
+                        # Notify frontend (no message field - greeting sent separately)
                         await websocket.send_json({
                             "type": "chat.mode_changed",
                             "data": {
                                 "mode": "general",
-                                "message": "Ask me anything! Workflows paused.",
                                 "general_chat_id": general_ctx.get("chat_id"),
                                 "general_chat_label": general_ctx.get("label"),
                                 "general_chat_sequence": general_ctx.get("sequence"),
@@ -1177,6 +1220,23 @@ class SimpleTransport:
                             raise ValueError("WebSocket ID not found in connection metadata")
                         session_registry.enter_general_mode(ws_id)
                         general_ctx = await self._ensure_general_chat_context(chat_id=chat_id, force_new=True)
+                        
+                        # Send static welcome message for new session (no LLM call)
+                        await self.send_event_to_ui(
+                            {
+                                "kind": "text",
+                                "agent": "Ask Mozaiks",
+                                "content": "Hi! I'm Ask Mozaiks, your AI companion. What can I help you with today? 😊",
+                                "chat_id": chat_id,
+                                "metadata": {
+                                    "source": "general_agent",
+                                    "general_chat_id": general_ctx.get("chat_id"),
+                                    "is_greeting": True,
+                                },
+                            },
+                            chat_id,
+                        )
+                        
                         await websocket.send_json({
                             "type": "chat.general_session_created",
                             "data": {
@@ -1592,7 +1652,7 @@ class SimpleTransport:
                 metadata=metadata,
             )
         except Exception as persist_err:
-            logger.debug(f"Failed to persist general agent message for {chat_id}: {persist_err}")
+            logger.debug(f"Failed to persist general agent message for {general_chat_id}: {persist_err}")
 
     async def _resolve_chat_context(
         self,

@@ -1,4 +1,3 @@
-
 # ============================================================================== 
 # Mozaiks Platform Architecture: The World's First AI-Driven Startup Foundry
 # ==============================================================================
@@ -107,6 +106,14 @@ graph TB
    - workflows/customer-support/ (general support and routing)
    - Each workflow folder contains specific agentic functions for that app feature
 
+### **Stateless Semantic Context Strategy**
+
+To ensure high cohesion between generated agents without introducing stateful dependencies, the runtime employs a **Semantic Context Injection** strategy.
+
+- **Mechanism**: The runtime hooks (`update_agent_state`) inspect the `context_variables` for structured outputs from upstream agents (e.g., `WorkflowStrategy`, `TechnicalBlueprint`).
+- **Injection**: A concise summary of these upstream decisions (Phases, UI Components, Tools) is dynamically generated and injected into the system prompt of the current agent.
+- **Result**: Agents "remember" and align with the specific architectural decisions made earlier in the session, ensuring the final generated code is internally consistent and follows the user's unique requirements, all while remaining purely stateless.
+
 ## Developer Journey
 
 ### Step 1: App Creation at Mozaiks.ai
@@ -150,3 +157,11 @@ graph TB
 **You're building the infrastructure layer for the AI agent driven app economy.** Every business that wants AI agentic functionality in their app will use your platform - you handle the complexity, they handle the customer experience.
 
 This is "Shopify for AI Driven Apps" - and just like Shopify enabled millions of e-commerce stores, MozaiksAI will enable millions of AI-powered applications!
+
+---
+
+## Core Architectural Components
+
+- **Human Interaction**: Three-layer stateless model (Strategy → Architect → Implementation) ensuring UI consistency. See `docs/workflows/HUMAN_INTERACTION_STATELESS_STRATEGY.md`.
+- **Agent Taxonomy**: Stateless role propagation (Implementation → ContextVariables → Agents) ensuring architectural consistency. See `docs/workflows/AGENT_TAXONOMY_STATELESS_STRATEGY.md`.
+- **Context Variables**: Six-type taxonomy (config, data_reference, data_entity, computed, state, external) defined in `CONTEXT_VARIABLES_SIX_TYPE_ALIGNMENT.md`.

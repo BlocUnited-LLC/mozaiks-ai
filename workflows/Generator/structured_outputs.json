@@ -71,6 +71,16 @@
             "type": "str",
             "description": "Agent identifier (unique within the workflow)"
           },
+          "agent_type": {
+            "type": "str",
+            "allowed_values": [
+              "router",
+              "worker",
+              "evaluator",
+              "orchestrator"
+            ],
+            "description": "Architectural role of the agent. router=control flow; worker=execution; evaluator=QA/decision; orchestrator=sub-team lead. Intake behavior is represented by router + human_interaction='context'."
+          },
           "description": {
             "type": "str",
             "description": "Short human-readable description of the agent's responsibilities (displayed in the UI)."
@@ -97,7 +107,11 @@
               "context",
               "approval"
             ],
-            "description": "Human involvement mode for THIS SPECIFIC AGENT. none = fully automated execution; context = pauses to collect user information/clarification; approval = pauses for human decision/sign-off. Choose based on phase approval requirements and collaboration notes: approval phases require 'approval'; collaborative intake phases may use 'context'; otherwise use 'none'."
+            "description": "Human involvement mode for THIS SPECIFIC AGENT. none = fully automated execution; context = conversational data collection or clarification; approval = explicit sign-off/decision gate."
+          },
+          "max_consecutive_auto_reply": {
+            "type": "int",
+            "description": "Maximum number of consecutive auto-replies allowed for this agent. Derived from human_interaction mode: none=30 (high autonomy), context=20 (conversational intake), approval=5 (low autonomy)."
           }
         }
       },
@@ -213,120 +227,6 @@
           }
         }
       },
-      "DatabaseRef": {
-        "type": "model",
-        "NOTE": "DEPRECATED - Kept for backwards compatibility. New context variables use definitions+agents structure with source.type discrimination.",
-        "fields": {
-          "database_name": {
-            "type": "str",
-            "description": "Name of the target database"
-          },
-          "collection": {
-            "type": "str",
-            "description": "Collection name where the variable resides"
-          },
-          "search_by": {
-            "type": "str",
-            "description": "Field used as the query key when accessing this variable"
-          },
-          "field": {
-            "type": "str",
-            "description": "Specific field in the collection that stores the variable"
-          }
-        }
-      },
-      "DatabaseVariable": {
-        "type": "model",
-        "fields": {
-          "name": {
-            "type": "str",
-            "description": "Database variable name"
-          },
-          "description": {
-            "type": "str",
-            "description": "Purpose / usage in workflow"
-          },
-          "type": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Optional type hint for downstream consumers (e.g., string|boolean)"
-          },
-          "database": {
-            "type": "DatabaseRef",
-            "description": "Database reference information"
-          }
-        }
-      },
-      "EnvironmentVariable": {
-        "type": "model",
-        "fields": {
-          "name": {
-            "type": "str",
-            "description": "Environment variable name"
-          },
-          "description": {
-            "type": "str",
-            "description": "Purpose / usage in workflow"
-          },
-          "type": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Optional type hint (boolean|integer|string)"
-          },
-          "env_var": {
-            "type": "str",
-            "description": "Underlying environment variable key"
-          },
-          "default": {
-            "type": "union",
-            "variants": [
-              "null",
-              "str",
-              "bool",
-              "int"
-            ],
-            "description": "Fallback value when the environment variable is not set"
-          }
-        }
-      },
-      "DeclarativeVariable": {
-        "type": "model",
-        "fields": {
-          "name": {
-            "type": "str",
-            "description": "Declarative variable name"
-          },
-          "description": {
-            "type": "str",
-            "description": "Purpose / usage in workflow"
-          },
-          "type": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Optional type hint (string|boolean|integer|dict)"
-          },
-          "value": {
-            "type": "union",
-            "variants": [
-              "str",
-              "bool",
-              "int",
-              "float",
-              "dict"
-            ],
-            "description": "Literal value injected into context"
-          }
-        }
-      },
       "DerivedTriggerMatch": {
         "type": "model",
         "fields": {
@@ -397,46 +297,15 @@
               "str",
               "null"
             ],
-            "description": "Key in the UI tool response payload whose value seeds the derived variable (required when type=ui_response)."
-          }
-        }
-      },
-      "DerivedVariable": {
-        "type": "model",
-        "fields": {
-          "name": {
-            "type": "str",
-            "description": "Derived variable name (computed, not persisted)."
+            "description": "Key in the UI tool response payload whose value seeds the state variable (required when type=ui_response)."
           },
-          "description": {
-            "type": "str",
-            "description": "Purpose / effect of the derived variable. Context variables remain hidden from the frontend unless surfaced explicitly via UI tooling."
-          },
-          "type": {
+          "ui_hidden": {
             "type": "union",
             "variants": [
-              "str",
+              "bool",
               "null"
             ],
-            "description": "Optional type hint for downstream consumers (e.g., string|boolean|json)."
-          },
-          "default": {
-            "type": "union",
-            "variants": [
-              "null",
-              "str",
-              "bool",
-              "int",
-              "float",
-              "dict",
-              "list"
-            ],
-            "description": "Initial value prior to any triggers firing."
-          },
-          "triggers": {
-            "type": "list",
-            "items": "DerivedTrigger",
-            "description": "Ordered trigger definitions supporting both agent_text and ui_response contracts."
+            "description": "Whether to hide the agent's text output from the user UI (agent_text triggers only). True = hide token (e.g. NEXT), False = show message."
           }
         }
       },
@@ -446,44 +315,14 @@
           "type": {
             "type": "literal",
             "values": [
-              "database",
-              "environment",
-              "static",
-              "derived"
+              "config",
+              "data_reference",
+              "data_entity",
+              "computed",
+              "state",
+              "external"
             ],
-            "description": "Source classification for the context variable."
-          },
-          "database_name": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Mongo database name (database sources only)."
-          },
-          "collection": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Mongo collection name (database sources only)."
-          },
-          "search_by": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Field used to locate the document (database sources)."
-          },
-          "field": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Field extracted from the database document."
+            "description": "Source classification: config (deployment configuration from env vars), data_reference (read existing MongoDB data), data_entity (create new MongoDB data), computed (business logic outputs), state (workflow orchestration state with transitions), external (third-party API data with caching/retry)."
           },
           "env_var": {
             "type": "union",
@@ -491,7 +330,7 @@
               "str",
               "null"
             ],
-            "description": "Environment variable name (environment sources)."
+            "description": "Environment variable name (config sources only, UPPER_SNAKE_CASE)."
           },
           "default": {
             "type": "union",
@@ -501,22 +340,188 @@
               "bool",
               "null"
             ],
-            "description": "Fallback value when the source is unavailable."
+            "description": "Fallback value when the source is unavailable (config, computed, state sources)."
           },
-          "value": {
+          "required": {
             "type": "union",
             "variants": [
-              "str",
-              "int",
               "bool",
               "null"
             ],
-            "description": "Literal value for static sources."
+            "description": "Whether this config variable is required (config sources only)."
+          },
+          "database_name": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Mongo database name (data_reference and data_entity sources only)."
+          },
+          "collection": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Mongo collection name (data_reference and data_entity sources only)."
+          },
+          "query_template": {
+            "type": "union",
+            "variants": [
+              "dict",
+              "null"
+            ],
+            "description": "MongoDB query template with ${var} placeholders (data_reference sources only)."
+          },
+          "fields": {
+            "type": "union",
+            "variants": [
+              "list",
+              "null"
+            ],
+            "description": "List of fields to extract from query result (data_reference sources only)."
+          },
+          "refresh_strategy": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "When to refresh data: 'once' (cache indefinitely), 'per_phase' (refresh each phase), 'on_demand' (refresh when requested). Data_reference sources only."
+          },
+          "schema": {
+            "type": "union",
+            "variants": [
+              "dict",
+              "null"
+            ],
+            "description": "JSON schema for the entity structure (data_entity sources only)."
+          },
+          "indexes": {
+            "type": "union",
+            "variants": [
+              "list",
+              "null"
+            ],
+            "description": "MongoDB index definitions for this entity (data_entity sources only)."
+          },
+          "write_strategy": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "When to persist entity: 'immediate' (on creation), 'on_phase_transition', 'on_workflow_end'. Data_entity sources only."
+          },
+          "search_by": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Field used to locate/update the entity (data_entity sources only)."
+          },
+          "computation": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Description of the computation logic (computed sources only)."
+          },
+          "inputs": {
+            "type": "union",
+            "variants": [
+              "list",
+              "null"
+            ],
+            "description": "List of input variable names required for computation (computed sources only)."
+          },
+          "output_type": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Expected output data type (computed sources only)."
+          },
+          "persist_to": {
+            "type": "union",
+            "variants": [
+              "dict",
+              "null"
+            ],
+            "description": "Optional MongoDB persistence config (computed sources only)."
+          },
+          "transitions": {
+            "type": "union",
+            "variants": [
+              "list",
+              "null"
+            ],
+            "description": "State transition definitions with triggers (state sources only)."
+          },
+          "persist": {
+            "type": "union",
+            "variants": [
+              "bool",
+              "null"
+            ],
+            "description": "Whether to persist state across sessions (state sources only)."
+          },
+          "service": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Third-party service name (external sources only, e.g., 'Stripe', 'OpenAI')."
+          },
+          "operation": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "API operation or endpoint (external sources only)."
+          },
+          "params": {
+            "type": "union",
+            "variants": [
+              "dict",
+              "null"
+            ],
+            "description": "API request parameters with ${var} placeholders (external sources only)."
+          },
+          "auth": {
+            "type": "union",
+            "variants": [
+              "dict",
+              "null"
+            ],
+            "description": "Authentication configuration (external sources only)."
+          },
+          "cache": {
+            "type": "union",
+            "variants": [
+              "dict",
+              "null"
+            ],
+            "description": "Cache configuration with TTL (external sources only)."
+          },
+          "retry": {
+            "type": "union",
+            "variants": [
+              "dict",
+              "null"
+            ],
+            "description": "Retry policy for failed requests (external sources only)."
           },
           "triggers": {
             "type": "list",
             "items": "DerivedTrigger",
-            "description": "Trigger definitions for derived sources. Use [] for non-derived types.",
+            "description": "Trigger definitions for state sources with transitions. Use [] for other types.",
             "default": []
           }
         }
@@ -591,14 +596,6 @@
             ],
             "description": "React component name (UI_Tool only)"
           },
-          "mode": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Legacy display metadata (inline or artifact). Should mirror display for backward compatibility."
-          },
           "display": {
             "type": "union",
             "variants": [
@@ -622,14 +619,6 @@
               "null"
             ],
             "description": "Helper copy that must be rendered verbatim in the UI tool."
-          },
-          "interaction_pattern": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Indicates expected user flow (single_step, two_step_confirmation, multi_step)."
           }
         }
       },
@@ -861,10 +850,13 @@
           "condition_scope": {
             "type": "union",
             "variants": [
-              "str",
+              "literal",
               "null"
             ],
-            "description": "Evaluation timing for context conditions: 'pre' for pre-reply evaluation (re-checks every turn, ideal for UI interactions), 'post' for post-reply evaluation, null for default (LLM conditions ignore this field)"
+            "values": [
+              "pre"
+            ],
+            "description": "Evaluation timing for context conditions: 'pre' for pre-reply evaluation (re-checks every turn, ideal for UI interactions), null for default (Post-Reply). NEVER use 'after'."
           },
           "transition_target": {
             "type": "literal",
@@ -962,10 +954,6 @@
             "type": "str",
             "description": "Strategic description of what happens in this phase and why"
           },
-          "human_in_loop": {
-            "type": "bool",
-            "description": "Whether this phase requires human approval"
-          },
           "agents_needed": {
             "type": "str",
             "description": "Agent coordination pattern: 'single', 'parallel', or 'sequential'"
@@ -982,6 +970,10 @@
           "workflow_description": {
             "type": "str",
             "description": "Description: When [TRIGGER], workflow [ACTIONS], resulting in [VALUE]"
+          },
+          "human_in_loop": {
+            "type": "bool",
+            "description": "Global flag: Does this workflow involve ANY human interaction? (True for chat, False for fully automated background tasks)"
           },
           "pattern": {
             "type": "list",
@@ -1139,12 +1131,14 @@
           "type": {
             "type": "str",
             "allowed_values": [
-              "static",
-              "derived",
-              "environment",
-              "database"
+              "config",
+              "data_reference",
+              "data_entity",
+              "computed",
+              "state",
+              "external"
             ],
-            "description": "Variable type: static (hard-coded value), derived (set by agent_text or ui_response triggers), environment (from env vars), database (from MongoDB)"
+            "description": "Variable type: config (deployment configuration from env vars), data_reference (read existing MongoDB data), data_entity (create new MongoDB data), computed (business logic outputs), state (workflow orchestration state with transitions), external (third-party API data with caching/retry)"
           },
           "trigger_hint": {
             "type": "union",
@@ -1224,59 +1218,6 @@
           }
         }
       },
-      "PhaseTechnicalRequirements": {
-        "type": "model",
-        "fields": {
-          "phase_index": {
-            "type": "int",
-            "description": "Zero-based index matching workflow_strategy phases array (0 = Phase 1)"
-          },
-          "phase_name": {
-            "type": "str",
-            "description": "Phase name from workflow_strategy for reference (e.g., 'Phase 1: Planning')"
-          },
-          "required_tools": {
-            "type": "list",
-            "items": "RequiredTool",
-            "description": "Tools needed for this specific phase"
-          },
-          "required_context_variables": {
-            "type": "list",
-            "items": "RequiredContextVariable",
-            "description": "Context variables needed for this specific phase"
-          },
-          "required_lifecycle_operations": {
-            "type": "list",
-            "items": "RequiredLifecycleOperation",
-            "description": "Lifecycle operations needed for this specific phase"
-          }
-        }
-      },
-      "SharedRequirements": {
-        "type": "model",
-        "fields": {
-          "integrations": {
-            "type": "list",
-            "items": "str",
-            "description": "List of third-party integration names shared across workflow (e.g., ['Stripe', 'Slack', 'GoogleAnalytics'])"
-          },
-          "tools": {
-            "type": "list",
-            "items": "str",
-            "description": "List of shared tool names (snake_case) used across multiple phases (e.g., ['send_notification', 'validate_email'])"
-          },
-          "context_variables": {
-            "type": "list",
-            "items": "str",
-            "description": "List of shared context variable names (snake_case) accessible across all phases (e.g., ['workflow_started', 'current_iteration'])"
-          },
-          "lifecycle_operations": {
-            "type": "list",
-            "items": "str",
-            "description": "List of shared lifecycle operation names used across workflow (e.g., ['log_workflow_start', 'save_final_state'])"
-          }
-        }
-      },
       "WorkflowUIComponent": {
         "type": "model",
         "fields": {
@@ -1304,7 +1245,7 @@
             "type": "str",
             "description": "Visual placement hint (inline | artifact) that mirrors tools manifest metadata."
           },
-          "interaction_pattern": {
+          "ui_pattern": {
             "type": "str",
             "description": "Expected interaction cadence (single_step | two_step_confirmation | multi_step)."
           },
@@ -1360,21 +1301,6 @@
           }
         }
       },
-      "WorkflowProvides": {
-        "type": "model",
-        "fields": {
-          "context_vars": {
-            "type": "list",
-            "items": "str",
-            "description": "List of context variable names this workflow sets for downstream workflows to consume. Use [] when workflow doesn't provide context variables."
-          },
-          "artifacts": {
-            "type": "list",
-            "items": "str",
-            "description": "List of artifact types this workflow generates for downstream workflows (e.g., 'ActionPlan', 'BuildManifest'). Use [] when workflow doesn't generate artifacts."
-          }
-        }
-      },
       "TechnicalBlueprint": {
         "type": "model",
         "fields": {
@@ -1411,14 +1337,6 @@
               "null"
             ],
             "description": "Dependencies on other workflows (required_workflows, required_context_vars, required_artifacts). Set to null for first/standalone workflows with no dependencies."
-          },
-          "workflow_provides": {
-            "type": "union",
-            "variants": [
-              "WorkflowProvides",
-              "null"
-            ],
-            "description": "Outputs this workflow provides for downstream workflows (context_vars, artifacts). Set to null when workflow doesn't produce outputs for other workflows."
           }
         }
       },
@@ -1490,7 +1408,7 @@
         "fields": {
           "agent_message": {
             "type": "str",
-            "description": "Concise message (≤140 chars) shown to user in download UI. Example: 'Ready to download your workflow bundle?' Keep action-oriented and brief."
+            "description": "Concise message (\u2264140 chars) shown to user in download UI. Example: 'Ready to download your workflow bundle?' Keep action-oriented and brief."
           }
         }
       },
@@ -1523,7 +1441,7 @@
         "fields": {
           "tools": {
             "type": "list",
-            "items": "UIToolFile",
+            "items": "CodeFile",
             "description": "Ordered list of UI tool files (Python async functions + React components) to write to disk."
           }
         }
@@ -1533,7 +1451,7 @@
         "fields": {
           "tools": {
             "type": "list",
-            "items": "AgentToolFile",
+            "items": "CodeFile",
             "description": "Ordered list of backend agent tool implementation files to write to disk."
           }
         }

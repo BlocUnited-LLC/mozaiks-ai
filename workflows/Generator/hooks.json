@@ -41,6 +41,30 @@
       "hook_agent": "HandoffsAgent",
       "filename": "update_agent_state_pattern.py",
       "function": "inject_handoffs_guidance"
+    },
+    {
+      "hook_type": "update_agent_state",
+      "hook_agent": "AgentToolsFileGenerator",
+      "filename": "update_agent_state_pattern.py",
+      "function": "inject_agent_tools_file_generator_guidance"
+    },
+    {
+      "hook_type": "update_agent_state",
+      "hook_agent": "UIFileGenerator",
+      "filename": "update_agent_state_pattern.py",
+      "function": "inject_ui_file_generator_guidance"
+    },
+    {
+      "hook_type": "update_agent_state",
+      "hook_agent": "AgentToolsFileGenerator",
+      "filename": "hook_file_generation.py",
+      "function": "inject_file_generation_instructions"
+    },
+    {
+      "hook_type": "update_agent_state",
+      "hook_agent": "UIFileGenerator",
+      "filename": "hook_file_generation.py",
+      "function": "inject_file_generation_instructions"
     }
   ]
 }

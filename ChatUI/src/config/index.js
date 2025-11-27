@@ -26,7 +26,7 @@ class ChatUIConfig {
       // Chat Configuration
       chat: {
         // Auth system placeholder - replace with actual auth implementation
-        defaultEnterpriseId: process.env.REACT_APP_DEFAULT_ENTERPRISE_ID || '68542c1109381de738222350',
+        defaultEnterpriseId: process.env.REACT_APP_DEFAULT_ENTERPRISE_ID,
         defaultUserId: process.env.REACT_APP_DEFAULT_USER_ID || '56132',
         // Do not force a placeholder workflow; fall back to backend discovery
         defaultWorkflow: process.env.REACT_APP_DEFAULT_WORKFLOW || '',

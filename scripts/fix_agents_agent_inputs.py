@@ -19,7 +19,7 @@ system_message = agents_config["agents"]["AgentsAgent"]["system_message"]
 old_inputs_1 = """1. **Action Plan** (from ActionPlanCall output):
    - Structure: {"ActionPlan": {"workflow": {"phases": [...]}}}
    - What to extract: Agent names, phase order, human_interaction values, operations/integrations per agent
-   - Why: Determines agent roster, responsibilities, and interaction patterns"""
+   - Why: Determines agent roster, responsibilities, and UI patterns"""
 
 # NEW [INPUTS] section #1 text  
 new_inputs_1 = """1. **Workflow Strategy + Phase Agents** (merge from two sources):
@@ -30,7 +30,7 @@ new_inputs_1 = """1. **Workflow Strategy + Phase Agents** (merge from two source
      * Structure: {"phase_agents": [{"phase_index": 0, "agents": [{"name": "...", "description": "...", "human_interaction": "...", "operations": [...], "integrations": [...]}]}, ...]}
      * Contains: Agent specifications for each phase
    - Merge: For each phase_index, combine workflow_strategy.phases[i] metadata + phase_agents[i].agents array
-   - Why: Determines complete agent roster, responsibilities, and interaction patterns (all agents across all phases)"""
+   - Why: Determines complete agent roster, responsibilities, and UI patterns (all agents across all phases)"""
 
 # OLD Step 1 text
 old_step_1 = """Step 1 - Parse Action Plan for Agent Roster

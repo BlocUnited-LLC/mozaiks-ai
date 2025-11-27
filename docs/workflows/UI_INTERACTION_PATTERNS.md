@@ -1,4 +1,4 @@
-# UI Interaction Patterns
+# UI UI patterns
 
 This document describes standard patterns for tool-UI interactions in the MozaiksAI runtime.
 

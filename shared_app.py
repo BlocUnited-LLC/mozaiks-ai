@@ -600,11 +600,17 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
             if not user_id:
                 raise HTTPException(status_code=400, detail="user_id is required")
 
-            # Ensure wallet exists and get balance
+            # Ensure wallet exists
             await persistence_manager.ensure_wallet(user_id, enterprise_id, initial_balance=0)
-            balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
-            if required_min_tokens and balance < required_min_tokens:
+            
+            # TokenManager check
+            from core.tokens.manager import TokenManager, InsufficientTokensError
+            try:
+                await TokenManager.ensure_can_start_chat(user_id, enterprise_id, workflow_name, persistence_manager)
+            except InsufficientTokensError:
                 raise HTTPException(status_code=402, detail="Insufficient tokens to start workflow")
+            
+            balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
 
             # Obtain underlying lean chat sessions collection
             coll = await _chat_coll()
@@ -786,6 +792,57 @@ async def list_user_sessions(enterprise_id: str, user_id: str):
     except Exception as e:
         wf_logger.error(f"[LIST_SESSIONS] Failed to list sessions: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to list sessions: {e}")
+
+
+@app.get("/api/sessions/oldest/{enterprise_id}/{user_id}")
+async def get_oldest_workflow_session(enterprise_id: str, user_id: str):
+    """
+    Return the oldest IN_PROGRESS workflow session for a user.
+    
+    Used when toggling from Ask Mozaiks back to workflow mode—routes user
+    to the earliest active workflow (chronologically first). If multiple
+    workflows are running, this ensures predictable navigation order.
+    
+    Future: can filter by dependency prerequisites once dependency graph is wired.
+    """
+    try:
+        from core.data.models import WorkflowStatus
+        coll = await _chat_coll()
+        
+        # Find all IN_PROGRESS sessions, sorted by created_at ascending (oldest first)
+        sessions = await coll.find({
+            "enterprise_id": enterprise_id,
+            "user_id": user_id,
+            "status": int(WorkflowStatus.IN_PROGRESS)
+        }).sort("created_at", 1).to_list(length=100)
+        
+        if not sessions:
+            wf_logger.debug(f"[OLDEST_SESSION] No IN_PROGRESS workflows for user {user_id}")
+            return {
+                "found": False,
+                "chat_id": None,
+                "workflow_name": None
+            }
+        
+        # TODO: Apply dependency filtering here once workflow registry exposes prerequisite graph
+        # For now, return the chronologically oldest session
+        oldest = sessions[0]
+        
+        wf_logger.debug(
+            f"[OLDEST_SESSION] Returning oldest workflow {oldest.get('workflow_name')} "
+            f"chat_id={oldest['_id']} for user {user_id}"
+        )
+        
+        return {
+            "found": True,
+            "chat_id": oldest["_id"],
+            "workflow_name": oldest.get("workflow_name"),
+            "created_at": oldest.get("created_at").isoformat() if oldest.get("created_at") else None,
+            "last_artifact": oldest.get("last_artifact")
+        }
+    except Exception as e:
+        wf_logger.error(f"[OLDEST_SESSION] Failed to fetch oldest session: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch oldest session: {e}")
 
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
@@ -1585,3 +1642,15 @@ async def download_workflow_file(file_path: str):
     except Exception as e:
         logger.error(f"❌ File download failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to download file: {e}")
+
+@app.post("/api/chats/{chat_id}/resume")
+async def resume_chat_after_topup(chat_id: str, request: Request):
+    """Resume a chat that was paused due to token exhaustion or limits."""
+    data = await request.json()
+    enterprise_id = data.get("enterprise_id")
+    if not enterprise_id:
+        raise HTTPException(status_code=400, detail="enterprise_id is required")
+        
+    from core.tokens.manager import TokenManager
+    await TokenManager.resume_after_topup(chat_id, enterprise_id, persistence_manager)
+    return {"success": True}

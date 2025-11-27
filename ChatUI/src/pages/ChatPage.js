@@ -21,6 +21,195 @@ const debugFlag = (k) => {
   try { return ['1','true','on','yes'].includes((localStorage.getItem(k)||'').toLowerCase()); } catch { return false; }
 };
 
+const formatHistoryTimestamp = (timestamp) => {
+  if (!timestamp) return 'Just now';
+  try {
+    const parsed = new Date(timestamp);
+    if (Number.isNaN(parsed.getTime())) return 'Just now';
+    return parsed.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  } catch {
+    return 'Just now';
+  }
+};
+
+const AskHistorySidebar = ({
+  sessions = [],
+  activeChatId,
+  loading,
+  onSelectChat,
+  onStartNewChat,
+  onRefresh,
+}) => {
+  const hasSessions = Array.isArray(sessions) && sessions.length > 0;
+  return (
+    <aside className="hidden lg:flex flex-col w-64 xl:w-72 2xl:w-80 shrink-0 rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.25)] bg-[rgba(2,6,23,0.72)] backdrop-blur-xl shadow-[0_20px_60px_rgba(2,6,23,0.6)] px-4 py-4 text-sm text-slate-100">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-[11px] tracking-[0.2em] uppercase text-[rgba(148,163,184,0.9)]">Ask Mozaiks</p>
+          <h2 className="text-lg font-semibold">Recent Conversations</h2>
+        </div>
+        <button
+          type="button"
+          className="px-2 py-1 rounded-lg border border-[rgba(var(--color-primary-light-rgb),0.4)] text-[11px] tracking-wide text-[rgba(148,163,184,0.9)] hover:text-white hover:border-[rgba(var(--color-primary-light-rgb),0.8)] transition"
+          onClick={onRefresh}
+          disabled={loading}
+        >
+          {loading ? '…' : 'Refresh'}
+        </button>
+      </div>
+      <div className="mt-3 flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={onStartNewChat}
+          className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-[rgba(var(--color-secondary-rgb),0.35)] bg-[rgba(var(--color-secondary-rgb),0.12)] py-2 text-sm font-semibold text-white hover:border-[rgba(var(--color-secondary-rgb),0.55)] hover:bg-[rgba(var(--color-secondary-rgb),0.18)] transition"
+        >
+          <span className="text-base" aria-hidden="true">＋</span>
+          New Chat
+        </button>
+        <p className="text-[12px] text-[rgba(148,163,184,0.9)]">{hasSessions ? `${sessions.length} saved session${sessions.length === 1 ? '' : 's'}` : 'No saved conversations yet.'}</p>
+      </div>
+      <div className="mt-3 flex-1 overflow-y-auto my-scroll1 pr-1 space-y-2">
+        {hasSessions ? (
+          sessions.map((session) => {
+            const chatId = session?.chat_id;
+            if (!chatId) return null;
+            const isActive = chatId === activeChatId;
+            const label = session?.label || `Chat ${chatId.slice(-4)}`;
+            const summary = session?.summary || session?.last_message_preview || 'Tap to resume conversation.';
+            const timestamp = formatHistoryTimestamp(session?.last_updated_at || session?.updated_at);
+            return (
+              <button
+                key={chatId}
+                type="button"
+                onClick={() => onSelectChat(chatId)}
+                className={`w-full text-left rounded-2xl border px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-[rgba(var(--color-primary-light-rgb),0.6)] ${isActive
+                  ? 'border-[rgba(var(--color-primary-light-rgb),0.7)] bg-[rgba(var(--color-primary-rgb),0.15)] shadow-[0_10px_35px_rgba(6,182,212,0.15)]'
+                  : 'border-[rgba(148,163,184,0.2)] bg-[rgba(15,23,42,0.65)] hover:border-[rgba(148,163,184,0.4)] hover:bg-[rgba(15,23,42,0.8)]'}`}
+              >
+                <div className="flex items-center justify-between text-[11px] text-[rgba(148,163,184,0.95)]">
+                  <span className="font-semibold text-[rgba(226,232,240,0.9)] text-sm">{label}</span>
+                  <span>{timestamp}</span>
+                </div>
+                <p className="mt-1 text-[13px] leading-relaxed text-[rgba(226,232,240,0.8)] max-h-[3.6rem] overflow-hidden">{summary}</p>
+              </button>
+            );
+          })
+        ) : (
+          <div className="rounded-2xl border border-dashed border-[rgba(148,163,184,0.4)] px-3 py-6 text-center text-[13px] text-[rgba(148,163,184,0.9)]">
+            Start a conversation to see it appear here.
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+};
+
+const MobileAskHistoryDrawer = ({
+  open,
+  sessions = [],
+  activeChatId,
+  loading,
+  onSelectChat,
+  onStartNewChat,
+  onRefresh,
+  onClose,
+}) => {
+  if (!open) {
+    return null;
+  }
+
+  const hasSessions = Array.isArray(sessions) && sessions.length > 0;
+
+  return (
+    <div className="fixed inset-0 z-40 flex lg:hidden">
+      <button
+        type="button"
+        aria-label="Close Ask history"
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
+      ></button>
+      <div className="relative z-10 h-full w-[min(86vw,320px)] max-w-sm bg-[rgba(5,10,24,0.96)] backdrop-blur-2xl border-r border-[rgba(var(--color-primary-light-rgb),0.3)] shadow-[0_20px_60px_rgba(2,6,23,0.85)] flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[rgba(var(--color-primary-light-rgb),0.25)]">
+          <div>
+            <p className="text-[10px] tracking-[0.3em] uppercase text-[rgba(148,163,184,0.8)]">Ask Mozaiks</p>
+            <h2 className="text-base font-semibold text-white">Conversations</h2>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={loading}
+              className="px-2 py-1 rounded-lg border border-[rgba(var(--color-primary-light-rgb),0.35)] text-[11px] text-[rgba(148,163,184,0.95)] hover:border-[rgba(var(--color-primary-light-rgb),0.7)] hover:text-white transition disabled:opacity-60"
+            >
+              {loading ? '…' : 'Refresh'}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-8 h-8 rounded-full border border-[rgba(148,163,184,0.4)] text-white flex items-center justify-center hover:border-[rgba(var(--color-primary-light-rgb),0.7)]"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+        <div className="px-4 py-3 border-b border-[rgba(148,163,184,0.35)]">
+          <button
+            type="button"
+            onClick={onStartNewChat}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-[rgba(var(--color-secondary-rgb),0.35)] bg-[rgba(var(--color-secondary-rgb),0.15)] py-2 text-sm font-semibold text-white"
+          >
+            <span className="text-lg" aria-hidden="true">＋</span>
+            New Chat
+          </button>
+          <p className="mt-2 text-[12px] text-[rgba(148,163,184,0.9)]">
+            {hasSessions ? `${sessions.length} saved conversation${sessions.length === 1 ? '' : 's'}` : 'No saved conversations yet.'}
+          </p>
+        </div>
+        <div className="flex-1 overflow-y-auto my-scroll1 px-3 py-3 space-y-2">
+          {hasSessions ? (
+            sessions.map((session) => {
+              const chatId = session?.chat_id;
+              if (!chatId) return null;
+              const isActive = chatId === activeChatId;
+              const label = session?.label || `Chat ${chatId.slice(-4)}`;
+              const summary = session?.summary || session?.last_message_preview || 'Tap to resume conversation.';
+              const timestamp = formatHistoryTimestamp(session?.last_updated_at || session?.updated_at);
+              return (
+                <button
+                  key={chatId}
+                  type="button"
+                  onClick={() => {
+                    onSelectChat(chatId);
+                    onClose?.();
+                  }}
+                  className={`w-full text-left rounded-2xl border px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-[rgba(var(--color-primary-light-rgb),0.6)] ${isActive
+                    ? 'border-[rgba(var(--color-primary-light-rgb),0.7)] bg-[rgba(var(--color-primary-rgb),0.15)] shadow-[0_10px_35px_rgba(6,182,212,0.15)]'
+                    : 'border-[rgba(148,163,184,0.2)] bg-[rgba(15,23,42,0.65)] hover:border-[rgba(148,163,184,0.4)] hover:bg-[rgba(15,23,42,0.8)]'}`}
+                >
+                  <div className="flex items-center justify-between text-[11px] text-[rgba(148,163,184,0.95)]">
+                    <span className="font-semibold text-[rgba(226,232,240,0.95)] text-sm">{label}</span>
+                    <span>{timestamp}</span>
+                  </div>
+                  <p className="mt-1 text-[13px] leading-relaxed text-[rgba(226,232,240,0.85)] max-h-[3.6rem] overflow-hidden">{summary}</p>
+                </button>
+              );
+            })
+          ) : (
+            <div className="rounded-2xl border border-dashed border-[rgba(148,163,184,0.4)] px-3 py-6 text-center text-[13px] text-[rgba(148,163,184,0.9)]">
+              Start a conversation to see it appear here.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ChatPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -48,6 +237,8 @@ const ChatPage = () => {
   const pathSegments = location.pathname.split('/').filter(Boolean);
   let pathEnterpriseId = null;
   let pathWorkflowName = null;
+  const isPrimaryChatRoute = pathSegments.length === 0 || pathSegments[0] === 'chat' || pathSegments[0] === 'enterprise';
+  const lastPrimaryRouteRef = useRef(isPrimaryChatRoute);
 
   if (pathSegments[0] === 'chat') {
     pathEnterpriseId = pathSegments[1] || null;
@@ -60,6 +251,7 @@ const ChatPage = () => {
   const searchParams = new URLSearchParams(location.search || '');
   const queryEnterpriseId = searchParams.get('enterpriseId') || searchParams.get('enterprise_id');
   const queryWorkflowName = searchParams.get('workflow');
+  const queryChatId = searchParams.get('chat_id');
 
   const enterpriseId = pathEnterpriseId || queryEnterpriseId;
   const urlWorkflowName = pathWorkflowName || queryWorkflowName;
@@ -67,14 +259,16 @@ const ChatPage = () => {
     user, 
     api, 
     config, 
+    activeChatId,
     setActiveChatId, 
+    activeWorkflowName,
     setActiveWorkflowName,
     setChatMinimized,
     layoutMode,
     setLayoutMode,
-    isInDiscoveryMode,
+    isInWidgetMode,
     setPreviousLayoutMode,
-    setIsInDiscoveryMode,
+    setIsInWidgetMode,
     conversationMode,
     setConversationMode,
     activeGeneralChatId,
@@ -87,6 +281,7 @@ const ChatPage = () => {
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
   const [forceOverlay, setForceOverlay] = useState(false);
   const [discoveryChatMinimized, setDiscoveryChatMinimized] = useState(false);
+  const [isAskHistoryDrawerOpen, setIsAskHistoryDrawerOpen] = useState(false);
   
   // Mobile-specific state
   const [isMobileView, setIsMobileView] = useState(false);
@@ -103,9 +298,13 @@ const ChatPage = () => {
   // Prevent duplicate restores per connection
   const artifactRestoredOnceRef = useRef(false);
   const artifactCacheValidRef = useRef(false);
+  const lastErrorIdRef = useRef(null); // Track last error to prevent duplicates
   const workflowMessagesCacheRef = useRef([]);
   const generalMessagesCacheRef = useRef([]);
   const generalHydrationPendingRef = useRef(false);
+  const workflowArtifactSnapshotRef = useRef({ isOpen: false, messages: [], layoutMode: 'split' });
+  const queryResumeHandledRef = useRef(null);
+  
   useEffect(() => {
     if (conversationMode === 'workflow') {
       workflowMessagesCacheRef.current = messages;
@@ -113,10 +312,11 @@ const ChatPage = () => {
       generalMessagesCacheRef.current = messages;
     }
   }, [messages, conversationMode]);
-  const currentEnterpriseId = enterpriseId || config?.chat?.defaultEnterpriseId || '68542c1109381de738222350';
+  
+  // Note: Artifact panel restoration is handled directly in ensureWorkflowMode with setTimeout
+  const currentEnterpriseId = enterpriseId || config?.chat?.defaultEnterpriseId || process.env.REACT_APP_DEFAULT_ENTERPRISE_ID;
   const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
   const [generalSessionsLoading, setGeneralSessionsLoading] = useState(false);
-  const [generalSessionsError, setGeneralSessionsError] = useState(null);
   // Workflow completion state
   const [workflowCompleted, setWorkflowCompleted] = useState(false);
   const [completionData, setCompletionData] = useState(null);
@@ -128,6 +328,13 @@ const ChatPage = () => {
 
   const defaultWorkflow = (urlWorkflowName || config?.chat?.defaultWorkflow || getDefaultWorkflowFromRegistry() || '');
   const [currentWorkflowName, setCurrentWorkflowName] = useState(defaultWorkflow);
+
+  useEffect(() => {
+    if (urlWorkflowName && urlWorkflowName !== currentWorkflowName) {
+      console.log('🧭 [WORKFLOW_ROUTE] Updating workflow from URL param:', urlWorkflowName);
+      setCurrentWorkflowName(urlWorkflowName);
+    }
+  }, [urlWorkflowName, currentWorkflowName]);
   const [tokensExhausted, setTokensExhausted] = useState(false);
   // One-time initial spinner: show after websocket connects, hide after first agent chat.text message
   const [showInitSpinner, setShowInitSpinner] = useState(false);
@@ -175,7 +382,6 @@ const ChatPage = () => {
       return [];
     }
     setGeneralSessionsLoading(true);
-    setGeneralSessionsError(null);
     try {
       const result = await api.listGeneralChats(currentEnterpriseId, currentUserId, 50);
       const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
@@ -183,7 +389,6 @@ const ChatPage = () => {
       return sessions;
     } catch (err) {
       console.error('Failed to list general chats:', err);
-      setGeneralSessionsError(err);
       return [];
     } finally {
       setGeneralSessionsLoading(false);
@@ -236,7 +441,6 @@ const ChatPage = () => {
         lastUpdatedAt: transcript.last_updated_at,
         lastSequence: transcript.last_sequence,
       });
-      setGeneralSessionsError(null);
       setGeneralChatSessions((prev) => {
         if (!Array.isArray(prev) || !transcript.chat_id) {
           return prev;
@@ -257,9 +461,8 @@ const ChatPage = () => {
       });
     } catch (err) {
       console.error('Failed to hydrate general chat transcript:', err);
-      setGeneralSessionsError(err);
     }
-  }, [api, conversationMode, currentEnterpriseId, mapGeneralMessage, setActiveGeneralChatId, setGeneralChatSummary, setGeneralChatSessions, setGeneralSessionsError, setMessagesWithLogging]);
+  }, [api, conversationMode, currentEnterpriseId, mapGeneralMessage, setActiveGeneralChatId, setGeneralChatSummary, setGeneralChatSessions, setMessagesWithLogging]);
 
   useEffect(() => {
     if (!api || !currentEnterpriseId || !currentUserId) {
@@ -569,8 +772,8 @@ const ChatPage = () => {
         // Structured output payload + schema
         if (inner.structured_output !== undefined && data.structured_output === undefined) data.structured_output = inner.structured_output;
         if (inner.structured_schema !== undefined && data.structured_schema === undefined) data.structured_schema = inner.structured_schema;
-        // UI tool / component hints (input_request etc.)
-        ['component_type','ui_tool_id','tool_name','tool_call_id','request_id','progress_percent','prompt','success','interaction_type','status','corr','call_id','payload'].forEach(f => {
+        // UI tool / component hints (input_request etc.) + error messages
+        ['component_type','ui_tool_id','tool_name','tool_call_id','request_id','progress_percent','prompt','success','interaction_type','status','corr','call_id','payload','message','error_code'].forEach(f => {
           if (inner[f] !== undefined && data[f] === undefined) data[f] = inner[f];
         });
       }
@@ -1165,7 +1368,20 @@ const ChatPage = () => {
         return;
       }
       case 'error': {
-        setMessagesWithLogging(prev => [...prev, { id:`err-${Date.now()}`, sender:'system', agentName:'System', content:`❌ Error: ${data.message||'Unknown error'}`, isStreaming:false }]);
+        const errorMsg = data.message || data.data?.message || 'Unknown error';
+        const errorCode = data.error_code || data.data?.error_code;
+        // Create a stable ID based on error content to prevent duplicates
+        const errorId = `${errorCode || 'error'}-${errorMsg.slice(0, 50)}`;
+        
+        // Prevent duplicate errors (React StrictMode or event replay)
+        if (lastErrorIdRef.current === errorId) {
+          console.log('🔴 [ERROR_EVENT] Duplicate error detected, skipping:', errorId);
+          return;
+        }
+        lastErrorIdRef.current = errorId;
+        
+        console.log('🔴 [ERROR_EVENT] Received error event:', { message: errorMsg, error_code: errorCode, raw_data: data });
+        setMessagesWithLogging(prev => [...prev, { id:`err-${Date.now()}`, sender:'system', agentName:'System', content:`❌ Error: ${errorMsg}`, isStreaming:false }]);
         return;
       }
       case 'input_ack':
@@ -1775,13 +1991,37 @@ useEffect(() => {
     if (conversationMode === 'ask') {
       return true;
     }
+    console.log('🧠 [MODE_TOGGLE] Switching to Ask Mozaiks mode (sending chat.enter_general_mode)');
     const sent = sendWsMessage({ type: 'chat.enter_general_mode' });
     if (sent) {
       setConversationMode('ask');
+      // Cache workflow messages and snapshot artifact panel state
+      console.log('🧹 [MODE_TOGGLE] Caching workflow messages + artifact state, closing artifact panel, restoring Ask Mozaiks messages');
+      workflowMessagesCacheRef.current = messagesRef.current;
+      workflowArtifactSnapshotRef.current = {
+        isOpen: isSidePanelOpen,
+        layoutMode: layoutMode || 'split',
+        messages: isSidePanelOpen ? [...currentArtifactMessages] : []
+      };
+      console.log('📸 [ARTIFACT_SNAPSHOT] Saved artifact state before switching to Ask:', workflowArtifactSnapshotRef.current);
+      // Close artifact panel when entering Ask mode
+      setIsSidePanelOpen(false);
+      setCurrentArtifactMessages([]);
+      setPendingInputRequestId(null); // Clear any pending workflow input requests
+      
+      // Restore cached general messages if available
+      if (generalMessagesCacheRef.current && generalMessagesCacheRef.current.length > 0) {
+        console.log(`📦 [MODE_TOGGLE] Restoring ${generalMessagesCacheRef.current.length} cached Ask Mozaiks messages`);
+        setMessagesWithLogging(generalMessagesCacheRef.current);
+      } else {
+        console.log('📭 [MODE_TOGGLE] No cached Ask Mozaiks messages, starting fresh');
+        setMessagesWithLogging([]);
+      }
+      
       refreshGeneralSessions();
     }
     return sent;
-  }, [conversationMode, refreshGeneralSessions, sendWsMessage, setConversationMode]);
+  }, [conversationMode, refreshGeneralSessions, sendWsMessage, setConversationMode, setMessagesWithLogging, currentArtifactMessages, isSidePanelOpen, layoutMode]);
 
   const startNewGeneralSession = useCallback(() => {
     const sent = sendWsMessage({ type: 'chat.start_general_chat' });
@@ -1794,6 +2034,32 @@ useEffect(() => {
     return sent;
   }, [refreshGeneralSessions, sendWsMessage, setConversationMode, setMessagesWithLogging]);
 
+  const handleSelectGeneralChat = useCallback((chatId) => {
+    if (!chatId || generalHydrationPendingRef.current) {
+      return;
+    }
+    ensureGeneralMode();
+    generalHydrationPendingRef.current = true;
+    setActiveGeneralChatId(chatId);
+    const session = (generalChatSessions || []).find((item) => item?.chat_id === chatId);
+    if (session) {
+      setGeneralChatSummary({
+        chatId,
+        label: session.label || session.chat_id,
+        lastUpdatedAt: session.last_updated_at || session.updated_at,
+        lastSequence: session.last_sequence ?? session.sequence,
+      });
+    }
+    setMessagesWithLogging([]);
+    Promise.resolve(hydrateGeneralTranscript(chatId)).finally(() => {
+      generalHydrationPendingRef.current = false;
+    });
+  }, [ensureGeneralMode, generalChatSessions, hydrateGeneralTranscript, setActiveGeneralChatId, setGeneralChatSummary, setMessagesWithLogging]);
+
+  const handleRefreshGeneralSessions = useCallback(() => {
+    refreshGeneralSessions();
+  }, [refreshGeneralSessions]);
+
   const ensureWorkflowMode = useCallback(() => {
     if (conversationMode === 'workflow') {
       return true;
@@ -1802,24 +2068,222 @@ useEffect(() => {
       console.warn('⚠️ Cannot resume workflow mode without chat id');
       return false;
     }
+    console.log('🤖 [MODE_TOGGLE] Switching to workflow mode (sending chat.switch_workflow)');
     const sent = sendWsMessage({ type: 'chat.switch_workflow', chat_id: currentChatId });
     if (sent) {
       setConversationMode('workflow');
+      // Cache general messages and restore workflow messages + artifact panel state
+      console.log('🧹 [MODE_TOGGLE] Caching Ask Mozaiks messages, restoring workflow messages + artifact panel state');
+      generalMessagesCacheRef.current = messagesRef.current;
+      
+      // Restore cached workflow messages
+      if (workflowMessagesCacheRef.current && workflowMessagesCacheRef.current.length > 0) {
+        console.log(`📦 [MODE_TOGGLE] Restoring ${workflowMessagesCacheRef.current.length} cached workflow messages`);
+        setMessagesWithLogging(workflowMessagesCacheRef.current);
+        
+        setTimeout(() => {
+          const snapshot = workflowArtifactSnapshotRef.current;
+          let restoredFromSnapshot = false;
+          if (snapshot?.isOpen) {
+            console.log('🎨 [ARTIFACT_SNAPSHOT_RESTORE] Restoring artifact panel from snapshot');
+            setIsSidePanelOpen(true);
+            if (snapshot.layoutMode && setLayoutMode) {
+              setLayoutMode(snapshot.layoutMode);
+            }
+            if (snapshot.messages?.length) {
+              setCurrentArtifactMessages(snapshot.messages);
+              console.log(`📦 [ARTIFACT_SNAPSHOT_RESTORE] Restored ${snapshot.messages.length} artifact messages from snapshot`);
+            }
+            restoredFromSnapshot = true;
+          }
+
+          if (!restoredFromSnapshot) {
+            // Auto-detect if we should open artifact panel based on message content
+            const hasArtifacts = workflowMessagesCacheRef.current.some(msg => {
+              if (msg.ui_mode) return true;
+              if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+                return msg.tool_calls.some(tc => tc.function?.name === 'render_ui_component');
+              }
+              return false;
+            });
+            
+            if (hasArtifacts) {
+              console.log('🎨 [ARTIFACT_AUTO_OPEN] Detected UI artifacts in workflow messages, opening artifact panel');
+              setIsSidePanelOpen(true);
+              const artifactMsgs = workflowMessagesCacheRef.current.filter(msg => 
+                msg.ui_mode || (msg.tool_calls && msg.tool_calls.some(tc => tc.function?.name === 'render_ui_component'))
+              );
+              if (artifactMsgs.length > 0) {
+                setCurrentArtifactMessages(artifactMsgs);
+                console.log(`📦 [ARTIFACT_AUTO_OPEN] Restored ${artifactMsgs.length} artifact messages`);
+              }
+            } else {
+              console.log('📭 [ARTIFACT_AUTO_OPEN] No UI artifacts detected, keeping panel closed');
+              setIsSidePanelOpen(false);
+              setCurrentArtifactMessages([]);
+            }
+          }
+
+          // Reset snapshot once we've attempted restore
+          workflowArtifactSnapshotRef.current = { isOpen: false, messages: [], layoutMode: snapshot?.layoutMode || 'split' };
+        }, 150);
+      } else {
+        console.log('📭 [MODE_TOGGLE] No cached workflow messages, starting fresh');
+        setMessagesWithLogging([]);
+      }
     }
     return sent;
-  }, [conversationMode, currentChatId, sendWsMessage, setConversationMode]);
+  }, [conversationMode, currentChatId, sendWsMessage, setConversationMode, setMessagesWithLogging, setLayoutMode]);
 
-  const handleConversationModeChange = useCallback((mode) => {
-    if (mode === 'ask') {
-      ensureGeneralMode();
-    } else {
-      ensureWorkflowMode();
+  const resumeWorkflowSession = useCallback((targetChatId, targetWorkflow = null) => {
+    if (!targetChatId) {
+      console.warn('🔁 [WORKFLOW_RESUME] Missing chat_id, cannot resume');
+      return false;
     }
-  }, [ensureGeneralMode, ensureWorkflowMode]);
+
+    const resolvedWorkflow = targetWorkflow || currentWorkflowName || defaultWorkflow;
+    console.log('🔁 [WORKFLOW_RESUME] Attempting resume for chat:', targetChatId, 'workflow:', resolvedWorkflow);
+
+    setCurrentChatId(targetChatId);
+    setActiveChatId(targetChatId);
+    setActiveWorkflowName(resolvedWorkflow);
+    setCurrentWorkflowName(resolvedWorkflow);
+
+    const sent = sendWsMessage({ type: 'chat.switch_workflow', chat_id: targetChatId });
+    console.log('🔁 [WORKFLOW_RESUME] chat.switch_workflow sent:', sent);
+
+    if (sent) {
+      setConversationMode('workflow');
+      generalMessagesCacheRef.current = messagesRef.current;
+      console.log('🔁 [WORKFLOW_RESUME] Workflow mode restored, cached general messages count:', messagesRef.current.length);
+      return true;
+    }
+
+    return false;
+  }, [currentWorkflowName, defaultWorkflow, sendWsMessage, setActiveChatId, setActiveWorkflowName, setConversationMode, setCurrentWorkflowName, setCurrentChatId]);
+
+  const handleConversationModeChange = useCallback(async (mode) => {
+    console.log('🔄 [MODE_CHANGE] handleConversationModeChange called with mode:', mode);
+    console.log('🔄 [MODE_CHANGE] Current conversationMode:', conversationMode);
+    console.log('🔄 [MODE_CHANGE] Current activeChatId (from context):', activeChatId);
+    console.log('🔄 [MODE_CHANGE] Current activeWorkflowName (from context):', activeWorkflowName);
+    console.log('🔄 [MODE_CHANGE] Current currentChatId (local state):', currentChatId);
+    
+    if (mode === 'ask') {
+      // ensureGeneralMode will cache artifact state and close panel
+      console.log('🧠 [MODE_CHANGE] Switching to Ask mode');
+      ensureGeneralMode();
+      // Ensure layout is reset to full (no artifact panel)
+      if (setLayoutMode) setLayoutMode('full');
+      // Reset mobile drawer to peek state (no artifacts in Ask mode)
+      if (isMobileView) setMobileDrawerState('peek');
+    } else {
+      // Switching to workflow mode from Ask - ALWAYS fetch oldest IN_PROGRESS workflow
+      console.log('🤖 [MODE_CHANGE] Switching to workflow mode, fetching oldest IN_PROGRESS workflow');
+      console.log('🤖 [MODE_CHANGE] isInWidgetMode:', isInWidgetMode);
+      console.log('🤖 [MODE_CHANGE] API available?', !!api);
+      console.log('🤖 [MODE_CHANGE] Enterprise ID:', currentEnterpriseId);
+      console.log('🤖 [MODE_CHANGE] User ID:', currentUserId);
+
+      // If in widget mode, navigate to /chat first
+      if (isInWidgetMode) {
+        console.log('🚀 [MODE_CHANGE] In widget mode - navigating to /chat');
+        navigate('/chat');
+        // Exit widget mode
+        setIsInWidgetMode(false);
+      }
+      
+      try {
+        const endpoint = `/api/sessions/oldest/${currentEnterpriseId}/${currentUserId}`;
+        console.log('🌐 [MODE_CHANGE] Calling endpoint:', endpoint);
+        const response = await api.get(endpoint);
+        console.log('✅ [MODE_CHANGE] API response:', JSON.stringify(response, null, 2));
+        
+        if (!response || !response.found) {
+          console.warn('⚠️ [MODE_CHANGE] No IN_PROGRESS workflows available to resume');
+          console.warn('⚠️ [MODE_CHANGE] Response found flag:', response?.found);
+          return;
+        }
+        
+        const targetChatId = response.chat_id;
+        const targetWorkflowName = response.workflow_name;
+        
+        console.log(`🎯 [MODE_CHANGE] Resuming oldest workflow: ${targetWorkflowName} (${targetChatId})`);
+        console.log('🎯 [MODE_CHANGE] Setting chat context...');
+        
+        // Update current chat context before sending switch command
+        setCurrentChatId(targetChatId);
+        console.log('✅ [MODE_CHANGE] setCurrentChatId called with:', targetChatId);
+        setActiveChatId(targetChatId);
+        console.log('✅ [MODE_CHANGE] setActiveChatId called with:', targetChatId);
+        setActiveWorkflowName(targetWorkflowName);
+        console.log('✅ [MODE_CHANGE] setActiveWorkflowName called with:', targetWorkflowName);
+        
+        console.log('📤 [MODE_CHANGE] Sending chat.switch_workflow message...');
+        const sent = sendWsMessage({ type: 'chat.switch_workflow', chat_id: targetChatId });
+        console.log('📤 [MODE_CHANGE] WebSocket send result:', sent);
+        
+        if (sent) {
+          console.log('✅ [MODE_CHANGE] Setting conversation mode to workflow');
+          setConversationMode('workflow');
+          // Cache general messages - workflow messages will be restored via auto-resume
+          generalMessagesCacheRef.current = messagesRef.current;
+          console.log('✅ [MODE_CHANGE] Cached general messages, count:', messagesRef.current.length);
+        } else {
+          console.error('❌ [MODE_CHANGE] Failed to send WebSocket message');
+        }
+      } catch (err) {
+        console.error('❌ [MODE_CHANGE] Error fetching oldest workflow:', err);
+        console.error('❌ [MODE_CHANGE] Error stack:', err.stack);
+        console.log('🔄 [MODE_CHANGE] Falling back to ensureWorkflowMode');
+        // Fallback to existing ensureWorkflowMode if fetch fails
+        ensureWorkflowMode();
+      }
+    }
+    console.log('✅ [MODE_CHANGE] handleConversationModeChange completed');
+  }, [ensureGeneralMode, ensureWorkflowMode, setLayoutMode, api, currentEnterpriseId, currentUserId, sendWsMessage, setConversationMode, setCurrentChatId, setActiveChatId, setActiveWorkflowName, conversationMode, activeChatId, activeWorkflowName, isInWidgetMode, navigate, setIsInWidgetMode, currentChatId, isMobileView, setMobileDrawerState]);
+
+  useEffect(() => {
+    if (!queryChatId) {
+      return;
+    }
+    if (!isPrimaryChatRoute) {
+      return;
+    }
+    if (connectionStatus !== 'connected') {
+      return;
+    }
+
+    const workflowFromQuery = urlWorkflowName || currentWorkflowName;
+    const cacheKey = `${queryChatId}:${workflowFromQuery || ''}`;
+    if (conversationMode === 'workflow' && queryResumeHandledRef.current === cacheKey) {
+      return;
+    }
+
+    console.log('🧭 [ROUTE_RESUME] Detected chat_id in URL, attempting resume:', { queryChatId, workflowFromQuery });
+    if (isInWidgetMode) {
+      console.log('🧭 [ROUTE_RESUME] Exiting widget mode for direct resume');
+      setIsInWidgetMode(false);
+    }
+
+    const success = resumeWorkflowSession(queryChatId, workflowFromQuery);
+    if (success) {
+      queryResumeHandledRef.current = cacheKey;
+    }
+  }, [queryChatId, urlWorkflowName, currentWorkflowName, resumeWorkflowSession, conversationMode, connectionStatus, isInWidgetMode, setIsInWidgetMode, isPrimaryChatRoute]);
 
   const handleStartGeneralChat = useCallback(() => {
     startNewGeneralSession();
   }, [startNewGeneralSession]);
+
+  // Force Ask mode once when transitioning away from the primary chat routes
+  useEffect(() => {
+    const wasPrimary = lastPrimaryRouteRef.current;
+    if (!isPrimaryChatRoute && wasPrimary) {
+      ensureGeneralMode();
+    }
+    lastPrimaryRouteRef.current = isPrimaryChatRoute;
+  }, [ensureGeneralMode, isPrimaryChatRoute]);
 
   // Handle agent UI actions
   const handleAgentAction = async (action) => {
@@ -1892,7 +2356,7 @@ useEffect(() => {
   const handleDiscoverClick = () => {
     try {
       setPreviousLayoutMode(layoutMode);
-      setIsInDiscoveryMode(true);
+      setIsInWidgetMode(true);
       navigate('/workflows');
     } catch (err) {
       console.warn('Failed to navigate to workflows', err);
@@ -1908,10 +2372,10 @@ useEffect(() => {
   }, []);
 
   useEffect(() => {
-    if (!isInDiscoveryMode && discoveryChatMinimized) {
+    if (!isInWidgetMode && discoveryChatMinimized) {
       setDiscoveryChatMinimized(false);
     }
-  }, [isInDiscoveryMode, discoveryChatMinimized]);
+  }, [isInWidgetMode, discoveryChatMinimized]);
 
   const toggleSidePanel = () => {
     setIsSidePanelOpen((open) => {
@@ -2070,24 +2534,50 @@ useEffect(() => {
     }
   }, [isSidePanelOpen, forceOverlay]);
 
-  const artifactToggleHandler = isInDiscoveryMode
-    ? handleReturnToChat
-    : (isMobileView
-        ? () => {
-            setIsSidePanelOpen(true);
-            setMobileDrawerState((prev) => (prev === 'expanded' ? 'peek' : 'expanded'));
-          }
-        : toggleSidePanel);
+  // Only show artifact toggle in workflow mode (Ask mode has no artifacts)
+  const artifactToggleHandler = conversationMode === 'ask'
+    ? null
+    : isInWidgetMode
+      ? handleReturnToChat
+      : (isMobileView
+          ? () => {
+              setIsSidePanelOpen(true);
+              setMobileDrawerState((prev) => (prev === 'expanded' ? 'peek' : 'expanded'));
+            }
+          : toggleSidePanel);
 
-  const artifactToggleLabel = isInDiscoveryMode
-    ? 'Return to chat'
-    : (isMobileView ? 'Artifact drawer' : undefined);
+  const artifactToggleLabel = conversationMode === 'ask'
+    ? undefined
+    : isInWidgetMode
+      ? 'Return to chat'
+      : (isMobileView ? 'Artifact drawer' : undefined);
 
-  const mobileChatPaddingBottomClass = mobileDrawerState === 'expanded'
-    ? 'pb-[0.75rem]'
-    : 'pb-[4.5em]';
+  const shouldReserveArtifactSpace = conversationMode === 'workflow';
+  const mobileChatPaddingBottomClass = shouldReserveArtifactSpace
+    ? (mobileDrawerState === 'expanded' ? 'pb-[0.75rem]' : 'pb-[4.5em]')
+    : 'pb-2';
+  const mobileChatTopMarginClass = shouldReserveArtifactSpace ? 'mt-[1.25rem]' : 'mt-[1.25rem]';
 
-  const hasArtifactContent = currentArtifactMessages.length > 0;
+  const isChatPageSurface = isPrimaryChatRoute && !isInWidgetMode;
+  const showAskHistorySidebar = isChatPageSurface && !isMobileView && conversationMode === 'ask';
+  const showMobileAskHistoryMenu = isChatPageSurface && isMobileView && conversationMode === 'ask';
+
+  useEffect(() => {
+    if (!showMobileAskHistoryMenu && isAskHistoryDrawerOpen) {
+      setIsAskHistoryDrawerOpen(false);
+    }
+  }, [showMobileAskHistoryMenu, isAskHistoryDrawerOpen]);
+
+  useEffect(() => {
+    if (!isAskHistoryDrawerOpen) {
+      return undefined;
+    }
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [isAskHistoryDrawerOpen]);
 
   const chatInterface = (
     <ChatInterface 
@@ -2106,21 +2596,25 @@ useEffect(() => {
       onRetry={retryConnection}
       tokensExhausted={tokensExhausted}
       submitInputRequest={submitInputRequest}
-      onBrandClick={isInDiscoveryMode ? handleReturnToChat : undefined}
+      onBrandClick={undefined}
       conversationMode={conversationMode}
       onConversationModeChange={handleConversationModeChange}
       onStartGeneralChat={handleStartGeneralChat}
       generalChatSummary={generalChatSummary}
+      isOnChatPage={isChatPageSurface}
       generalSessionsLoading={generalSessionsLoading}
+      showAskHistoryMenu={showMobileAskHistoryMenu}
+      onAskHistoryToggle={() => setIsAskHistoryDrawerOpen((prev) => !prev)}
     />
   );
 
-  console.log('📱 [RENDER] ChatPage render:', { isInDiscoveryMode, isMobileView, workflowCompleted, mobileDrawerState });
+  console.log('📱 [RENDER] ChatPage render:', { isInWidgetMode, isMobileView, workflowCompleted, mobileDrawerState });
 
-  if (isInDiscoveryMode) {
+  // Widget mode has its own UI (persistent widget on non-ChatPage routes), so render that
+  if (isInWidgetMode) {
     if (discoveryChatMinimized) {
       return (
-        <div className="fixed bottom-4 right-4 z-50">
+        <div className="fixed right-4 z-50 widget-safe-bottom">
           <button
             type="button"
             onClick={toggleDiscoveryChatMinimized}
@@ -2143,7 +2637,7 @@ useEffect(() => {
     }
 
     return (
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-0 pointer-events-none">
+      <div className="fixed right-4 z-50 flex flex-col items-end gap-0 pointer-events-none widget-safe-bottom">
         <button
           type="button"
           onClick={toggleDiscoveryChatMinimized}
@@ -2208,73 +2702,103 @@ useEffect(() => {
           </div>
         ) : isMobileView ? (
           <div className="relative flex-1 flex flex-col">
-            <div className={`flex-1 flex flex-col transition-[padding-bottom] duration-300 mt-[1.25rem] ${mobileChatPaddingBottomClass}`}>
+            <div className={`flex-1 flex flex-col transition-[padding-bottom] duration-300 ${mobileChatTopMarginClass} ${mobileChatPaddingBottomClass}`}>
               {chatInterface}
             </div>
 
-            {isSidePanelOpen && mobileDrawerState === 'expanded' && (
+            {isSidePanelOpen && mobileDrawerState === 'expanded' && conversationMode === 'workflow' && (
               <button
                 type="button"
                 aria-label="Collapse artifact workspace"
-                className="absolute inset-0 bg-black/40 backdrop-blur-[2px] z-30"
+                className="absolute inset-x-0 top-0 z-30 h-16 bg-gradient-to-b from-black/40 to-transparent"
                 onClick={() => setMobileDrawerState('peek')}
               ></button>
             )}
 
-            <MobileArtifactDrawer
-              state={mobileDrawerState}
-              onStateChange={setMobileDrawerState}
-              onClose={() => {
-                setMobileDrawerState('peek');
-                setIsSidePanelOpen(false);
-              }}
-              artifactContent={
-                <ArtifactPanel 
-                  onClose={() => {
-                    setMobileDrawerState('peek');
-                    setIsSidePanelOpen(false);
-                  }}
-                  messages={currentArtifactMessages} 
-                  chatId={currentChatId}
-                  workflowName={currentWorkflowName}
-                />
-              }
-              hasArtifact={hasArtifactContent}
-              hasUnseenChat={hasUnseenChat}
-              hasUnseenArtifact={hasUnseenArtifact}
-            />
+            {/* Only show mobile artifact drawer in workflow mode (Ask mode has no artifacts) */}
+            {conversationMode === 'workflow' && (
+              <MobileArtifactDrawer
+                state={mobileDrawerState}
+                onStateChange={setMobileDrawerState}
+                onClose={() => {
+                  setMobileDrawerState('peek');
+                  setIsSidePanelOpen(false);
+                }}
+                artifactContent={
+                  <ArtifactPanel
+                    onClose={() => {
+                      setMobileDrawerState('peek');
+                      setIsSidePanelOpen(false);
+                    }}
+                    isMobile
+                    isEmbedded
+                    messages={currentArtifactMessages}
+                    chatId={currentChatId}
+                    workflowName={currentWorkflowName}
+                  />
+                }
+                hasUnseenChat={hasUnseenChat}
+                hasUnseenArtifact={hasUnseenArtifact}
+              />
+            )}
+
+            {showMobileAskHistoryMenu && (
+              <MobileAskHistoryDrawer
+                open={isAskHistoryDrawerOpen}
+                sessions={generalChatSessions}
+                activeChatId={activeGeneralChatId}
+                loading={generalSessionsLoading}
+                onSelectChat={handleSelectGeneralChat}
+                onStartNewChat={handleStartGeneralChat}
+                onRefresh={handleRefreshGeneralSessions}
+                onClose={() => setIsAskHistoryDrawerOpen(false)}
+              />
+            )}
           </div>
         ) : (
-          /* Desktop: Fluid Chat Layout - Adapts between full, split, and minimized */
-          <FluidChatLayout
-            layoutMode={layoutMode}
-            onLayoutChange={setLayoutMode}
-            isArtifactAvailable={true}
-            hasActiveChat={!!currentChatId}
-            onToggleArtifact={() => {
-              if (layoutMode === 'full') {
-                setLayoutMode('split');
-                setIsSidePanelOpen(true);
-              } else {
-                setLayoutMode('full');
-                setIsSidePanelOpen(false);
-              }
-            }}
-            onToggleChat={() => {
-              if (layoutMode === 'minimized') {
-                setLayoutMode('split');
-              }
-            }}
-            chatContent={chatInterface}
-            artifactContent={
-              <ArtifactPanel 
-                onClose={toggleSidePanel} 
-                messages={currentArtifactMessages} 
-                chatId={currentChatId}
-                workflowName={currentWorkflowName}
+          <div className="flex flex-1 min-h-0 gap-4 px-3 md:px-6 pb-4">
+            {showAskHistorySidebar && (
+              <AskHistorySidebar
+                sessions={generalChatSessions}
+                activeChatId={activeGeneralChatId}
+                loading={generalSessionsLoading}
+                onSelectChat={handleSelectGeneralChat}
+                onStartNewChat={handleStartGeneralChat}
+                onRefresh={handleRefreshGeneralSessions}
               />
-            }
-          />
+            )}
+            <div className="flex-1 min-h-0">
+              <FluidChatLayout
+                layoutMode={layoutMode}
+                onLayoutChange={setLayoutMode}
+                isArtifactAvailable={true}
+                hasActiveChat={!!currentChatId}
+                onToggleArtifact={() => {
+                  if (layoutMode === 'full') {
+                    setLayoutMode('split');
+                    setIsSidePanelOpen(true);
+                  } else {
+                    setLayoutMode('full');
+                    setIsSidePanelOpen(false);
+                  }
+                }}
+                onToggleChat={() => {
+                  if (layoutMode === 'minimized') {
+                    setLayoutMode('split');
+                  }
+                }}
+                chatContent={chatInterface}
+                artifactContent={
+                  <ArtifactPanel 
+                    onClose={toggleSidePanel} 
+                    messages={currentArtifactMessages} 
+                    chatId={currentChatId}
+                    workflowName={currentWorkflowName}
+                  />
+                }
+              />
+            </div>
+          </div>
         )}
       </div>
 

@@ -96,7 +96,7 @@
         "target_agent": "ContextVariablesAgent",
         "handoff_type": "condition",
         "condition_type": "expression",
-        "condition_scope": "after",
+        "condition_scope": null,
         "condition": "${action_plan_acceptance} == \"accepted\"",
         "transition_target": "AgentTarget"
       },
@@ -105,7 +105,7 @@
         "target_agent": "PatternAgent",
         "handoff_type": "condition",
         "condition_type": "expression",
-        "condition_scope": "after",
+        "condition_scope": null,
         "condition": "${action_plan} != None and ${action_plan_acceptance} != \"accepted\"",
         "transition_target": "AgentTarget"
       },

@@ -454,11 +454,11 @@ class UnifiedWorkflowManager:
 
     def get_ui_hidden_triggers(self, workflow_name: str) -> Dict[str, Set[str]]:
         """Return mapping of agent_name -> set of ui_hidden trigger values.
-        
-        Extracts derived variables with ui_hidden: true from context_variables.json
+
+        Extracts state variables with ui_hidden: true from context_variables.json
         and returns a dict mapping each source agent to the set of trigger values
         that should be hidden from the UI.
-        
+
         Returns:
             Dict mapping agent_name to Set of trigger values (e.g., {"InterviewAgent": {"NEXT"}})
         """
@@ -468,17 +468,18 @@ class UnifiedWorkflowManager:
         if 'context_variables' in context_vars:
             context_vars = context_vars['context_variables']
         definitions = context_vars.get('definitions', {})
-        
+
         hidden_triggers: Dict[str, Set[str]] = {}
-        
+
         for var_name, var_config in definitions.items():
             if not isinstance(var_config, dict):
                 continue
             source = var_config.get('source', {})
-            if source.get('type') == 'derived' and isinstance(source.get('triggers'), list):
-                for trigger in source['triggers']:
-                    if not isinstance(trigger, dict):
+            if source.get('type') == 'state' and isinstance(source.get('transitions'), list):
+                for transition in source['transitions']:
+                    if not isinstance(transition, dict):
                         continue
+                    trigger = transition.get('trigger', {})
                     # Check if this trigger should be hidden from UI
                     if trigger.get('ui_hidden') is True:
                         agent = trigger.get('agent')
@@ -487,7 +488,7 @@ class UnifiedWorkflowManager:
                             if agent not in hidden_triggers:
                                 hidden_triggers[agent] = set()
                             hidden_triggers[agent].add(trigger_value)
-        
+
         return hidden_triggers
 
     def get_structured_output_registry(self, workflow_name: str) -> Dict[str, Optional[str]]:

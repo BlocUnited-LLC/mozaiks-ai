@@ -66,9 +66,9 @@ Enhanced WorkflowArchitectAgent with complete upstream field references followin
 
 #### Step 4 - Map UI Components
 - For each phase with human_in_loop=true or phase description mentioning user interaction
-- Record 8 fields: phase_name, agent, tool, label, component, display, interaction_pattern, summary
+- Record 8 fields: phase_name, agent, tool, label, component, display, ui_pattern, summary
 - **Display Scoring Rules**: inline (lightweight, quick) vs artifact (richer content, multi-panel)
-- **Interaction Pattern Rules**: single_step (immediate) vs two_step_confirmation (preview→decision) vs multi_step (3+ panels)
+- **UI pattern Rules**: single_step (immediate) vs two_step_confirmation (preview→decision) vs multi_step (3+ panels)
 - **Summary Field Guidelines**: Enumerate inputs, validations, follow-up automation (<=200 chars)
 - **Purpose**: Encode ui_components as semantic contract for ToolsManagerAgent/UIFileGenerator
 - **Critical**: Use empty array [] when no UI surfaced
@@ -98,14 +98,14 @@ Enhanced WorkflowArchitectAgent with complete upstream field references followin
 - Generic "Read workflow_strategy from context" instruction
 - No explicit field enumeration
 - Missing extraction patterns for context variables
-- No display/interaction_pattern scoring guidance
+- No display/ui_pattern scoring guidance
 - Generic "Review Pattern Guidance" without field breakdown
 
 ### After
 - Complete field extraction guide (5 workflow + 5 phase + 4 pattern guidance fields)
 - Explicit navigation paths (message.content['WorkflowStrategy']['strategy'])
 - Critical extraction patterns for 3 output categories (variables, components, hooks)
-- Detailed display/interaction_pattern decision trees with examples
+- Detailed display/ui_pattern decision trees with examples
 - Pattern guidance field breakdown (topology, integrations, signals, UI affordances)
 - Phase lookup map pattern for cross-referencing
 - Validation checks to prevent fabricated variables/components
@@ -128,14 +128,14 @@ Enhanced WorkflowArchitectAgent with complete upstream field references followin
 
 ### For the Agent
 - Clear extraction contract: knows exactly which fields to extract and where to find them
-- Decision trees: explicit rules for display/interaction_pattern scoring
+- Decision trees: explicit rules for display/ui_pattern scoring
 - Validation guardrails: prevents fabricated variables/components not grounded in upstream data
 - Semantic contract: ui_component summaries become implementation specifications
 
 ### For Downstream Agents
 - TechnicalBlueprint output is now deterministic based on clear extraction rules
 - ToolsManagerAgent receives detailed ui_component specifications (inputs, validations, follow-ups)
-- UIFileGenerator receives display mode and interaction pattern guidance
+- UIFileGenerator receives display mode and UI pattern guidance
 - All agents benefit from grounded global_context_variables (no invented variables)
 
 ## Verification

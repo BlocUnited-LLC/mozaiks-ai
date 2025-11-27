@@ -5,10 +5,10 @@
 // ============================================================================
 
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronDown, ChevronRight, Layers, Plug, UserCheck, Bot, Sparkles, Zap, Activity, GitBranch, Clock, Settings, Database, MousePointerClick, Compass, MessageSquare } from 'lucide-react';
+import { ChevronDown, ChevronRight, Layers, Plug, UserCheck, Bot, Sparkles, Zap, Activity, GitBranch, Clock, Settings, Database, MousePointerClick, Compass, MessageSquare, DollarSign, ArrowRightCircle } from 'lucide-react';
 import { createToolsLogger } from '../../../core/toolsLogger';
 // Use centralized design system tokens (incremental migration)
-import { typography, components, colors } from '../../../styles/artifactDesignSystem';
+import { components, colors, fonts } from '../../../styles/artifactDesignSystem';
 
 // Semantic model field mappings (3 orthogonal dimensions)
 const INITIATED_BY = {
@@ -102,22 +102,22 @@ const ToolPill = ({ tool, idx, type = 'integration' }) => {
       };
 
   return (
-    <div className={`group relative overflow-hidden rounded-lg border-2 ${colorScheme.border} bg-slate-800 p-4 transition-all ${colorScheme.borderHover} hover:bg-slate-750 hover:shadow-xl hover:[box-shadow:0_0_0_rgba(var(--color-secondary-rgb),0.2)]`}>
-      <div className="flex items-start gap-3">
-        <div className={`rounded-lg ${colorScheme.bg} p-2.5 ring-2 ${colorScheme.ring}`}>
-          <Plug className={`h-5 w-5 ${colorScheme.iconColor}`} />
+    <div className={`group relative overflow-hidden rounded-lg border-2 ${colorScheme.border} bg-slate-800 p-3 md:p-4 transition-all ${colorScheme.borderHover} hover:bg-slate-750 hover:shadow-xl hover:[box-shadow:0_0_0_rgba(var(--color-secondary-rgb),0.2)]`}>
+      <div className="flex items-start gap-2 md:gap-3">
+        <div className={`rounded-lg ${colorScheme.bg} p-2 md:p-2.5 ring-2 ${colorScheme.ring}`}>
+          <Plug className={`h-4 w-4 md:h-5 md:w-5 ${colorScheme.iconColor}`} />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="font-bold text-white text-sm">{name}</p>
-          {purpose && <p className="mt-1.5 text-xs text-slate-300">{purpose}</p>}
+          <p className="font-bold text-white text-sm break-words">{name}</p>
+          {purpose && <p className="mt-1.5 text-xs text-slate-300 break-words line-clamp-3">{purpose}</p>}
           {type === 'integration' && integration && (
-            <p className="mt-1 text-[0.65rem] uppercase tracking-wider text-slate-400">
-              Integration: <span className="text-slate-200">{integration}</span>
+            <p className="mt-1 text-[0.65rem] uppercase tracking-wider text-slate-400 break-words">
+              Integration: <span className="text-slate-200 break-all">{integration}</span>
             </p>
           )}
           {type === 'operation' && trigger && (
-            <p className="mt-1 text-[0.65rem] uppercase tracking-wider text-slate-400">
-              Trigger: <span className="text-slate-200">{trigger}</span>
+            <p className="mt-1 text-[0.65rem] uppercase tracking-wider text-slate-400 break-words">
+              Trigger: <span className="text-slate-200 break-all">{trigger}</span>
             </p>
           )}
         </div>
@@ -160,7 +160,7 @@ const ComponentCard = ({ component, idx }) => {
   const toolName = String(component?.tool || '').trim();
   const componentName = String(component?.component || '').trim();
   const display = String(component?.display || 'inline').trim();
-  const interactionPattern = String(component?.interaction_pattern || 'single_step').trim();
+  const interactionPattern = String(component?.ui_pattern || 'single_step').trim();
   const summary = component?.summary ? String(component.summary) : '';
 
   // Color code by display type
@@ -172,38 +172,38 @@ const ComponentCard = ({ component, idx }) => {
   const iconColor = isInline ? 'text-blue-400' : 'text-purple-400';
 
   return (
-    <div className={`rounded-xl border-2 ${borderColor} ${bgColor} p-4`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <div className={`rounded-lg ${iconBg} p-2 ring-2 ${iconRing}`}>
-            <MousePointerClick className={`h-4 w-4 ${iconColor}`} />
+    <div className={`rounded-xl border-2 ${borderColor} ${bgColor} p-3 md:p-4`}>
+      <div className="flex items-start justify-between gap-2 md:gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className={`rounded-lg ${iconBg} p-1.5 md:p-2 ring-2 ${iconRing}`}>
+            <MousePointerClick className={`h-3.5 w-3.5 md:h-4 md:w-4 ${iconColor}`} />
           </div>
-          <span className="font-bold text-white">{label}</span>
+          <span className="font-bold text-white text-sm break-words">{label}</span>
         </div>
-        <span className="rounded-full bg-slate-700 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-200">
+        <span className="rounded-full bg-slate-700 px-2 md:px-3 py-0.5 md:py-1 text-[10px] md:text-xs font-semibold uppercase tracking-wide text-slate-200 shrink-0">
           {interactionPattern.replace(/_/g, ' ')}
         </span>
       </div>
-      <div className="mt-3 space-y-1 text-xs text-slate-300">
-        <div>
+      <div className="mt-2 md:mt-3 space-y-1 text-xs text-slate-300">
+        <div className="break-words">
           <span className="font-semibold text-white">Phase:</span> {phaseName}
         </div>
-        <div>
+        <div className="break-words">
           <span className="font-semibold text-white">Agent:</span> {agentName}
         </div>
         {toolName && (
-          <div>
+          <div className="break-words">
             <span className="font-semibold text-white">Tool:</span> {toolName}
           </div>
         )}
         {componentName && (
-          <div>
+          <div className="break-words">
             <span className="font-semibold text-white">Component:</span> {componentName}
           </div>
         )}
       </div>
       {summary && (
-        <p className="mt-3 text-sm leading-relaxed text-slate-200">{summary}</p>
+        <p className="mt-2 md:mt-3 text-sm leading-relaxed text-slate-200 break-words line-clamp-4">{summary}</p>
       )}
     </div>
   );
@@ -431,14 +431,14 @@ const AgentAccordionRow = ({ agent, index, isOpen, onToggle, agentLifecycleHooks
       bgClass: 'bg-[rgba(var(--color-primary-rgb),0.2)] ring-2 ring-[rgba(var(--color-primary-light-rgb),0.5)]',
       iconColor: 'text-[var(--color-primary-light)]',
       badgeClass: 'bg-slate-700 text-slate-200',
-      badgeText: 'Autonomous'
+      badgeText: 'AUTONOMOUS'
     },
     context: {
       icon: UserCheck,
       bgClass: 'bg-[rgba(var(--color-secondary-rgb),0.2)] ring-2 ring-[rgba(var(--color-secondary-light-rgb),0.5)]',
       iconColor: 'text-[var(--color-secondary-light)]',
       badgeClass: 'bg-[var(--color-secondary)] text-white shadow-lg [box-shadow:0_0_0_rgba(var(--color-secondary-rgb),0.5)]',
-      badgeText: 'Human in the Loop'
+      badgeText: 'REQUIRES CONTEXT'
     },
     approval: {
       icon: UserCheck,
@@ -456,16 +456,16 @@ const AgentAccordionRow = ({ agent, index, isOpen, onToggle, agentLifecycleHooks
     <div className={`overflow-hidden rounded-xl border-2 transition-all ${isOpen ? 'border-[var(--color-primary-light)] bg-slate-800 shadow-xl [box-shadow:0_0_0_rgba(var(--color-primary-rgb),0.2)]' : 'border-slate-600 bg-slate-800/50'}`}>
       <button
         onClick={onToggle}
-        className="flex w-full items-center gap-4 p-5 text-left transition-colors hover:bg-slate-700/50 border-l-4 border-transparent hover:border-[var(--color-primary-light)]"
+        className="flex w-full items-center gap-2 md:gap-4 p-3 md:p-5 text-left transition-colors hover:bg-slate-700/50 border-l-4 border-transparent hover:border-[var(--color-primary-light)]"
       >
-        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 transition-all ${isOpen ? 'border-blue-400 bg-blue-500/20 rotate-90' : 'border-blue-500 bg-slate-700/50'}`}>
-          <ChevronRight className={`h-4 w-4 transition-transform ${isOpen ? 'text-blue-400' : 'text-blue-500'}`} />
+        <div className={`flex h-6 w-6 md:h-8 md:w-8 shrink-0 items-center justify-center rounded-full border-2 transition-all ${isOpen ? 'border-blue-400 bg-blue-500/20 rotate-90' : 'border-blue-500 bg-slate-700/50'}`}>
+          <ChevronRight className={`h-3 w-3 md:h-4 md:w-4 transition-transform ${isOpen ? 'text-blue-400' : 'text-blue-500'}`} />
         </div>
-        <div className="flex items-center gap-3">
-          <div className={`rounded-lg p-2.5 ${config.bgClass}`}>
-            <Icon className={`h-5 w-5 ${config.iconColor}`} />
+        <div className="flex items-center gap-2 md:gap-3 min-w-0">
+          <div className={`rounded-lg p-2 md:p-2.5 ${config.bgClass}`}>
+            <Icon className={`h-4 w-4 md:h-5 md:w-5 ${config.iconColor}`} />
           </div>
-          <span className="text-lg font-bold text-white">
+          <span className="text-sm md:text-lg font-bold text-white break-words">
             {agentName}
           </span>
         </div>
@@ -478,7 +478,7 @@ const AgentAccordionRow = ({ agent, index, isOpen, onToggle, agentLifecycleHooks
         </div>
       </button>
       {isOpen && (
-        <div className="space-y-5 border-t-2 border-[rgba(var(--color-primary-light-rgb),0.3)] bg-slate-900 p-6 ml-4">
+        <div className="space-y-4 md:space-y-5 border-t-2 border-[rgba(var(--color-primary-light-rgb),0.3)] bg-slate-900 p-4 md:p-6 ml-2 md:ml-4">
           <div className="rounded-lg bg-slate-800/70 p-4 border-l-4 border-[var(--color-primary-light)]">
             <p className="text-sm leading-relaxed text-slate-200">
               {String(agent?.description || 'No description provided.')}
@@ -558,6 +558,11 @@ const PhaseAccordion = ({ phase, index, open, onToggle, lifecycleOperations = []
     String(a?.human_interaction || '').toLowerCase() === 'context'
   ).length;
   
+  // Monetization logic
+  const monetizationScope = String(phase?.monetization_scope || 'free_trial').toLowerCase();
+  const isPaid = monetizationScope === 'paid';
+  const isFreeTrialEntry = phase?.free_trial_entry === true;
+  
   return (
     <div className={`overflow-hidden rounded-2xl transition-all ${open ? components.accordionOpen : components.accordionClosed}`}>
       <button
@@ -571,31 +576,54 @@ const PhaseAccordion = ({ phase, index, open, onToggle, lifecycleOperations = []
             <ChevronRight className="h-6 w-6 text-slate-300" />
           )}
         </div>
-        <div className="flex items-center gap-4">
-          <span className="text-xl font-black text-white">
-            {String(phase?.name || `Phase ${index + 1}`)}
-          </span>
+        
+        <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-4">
+              <span className="text-xl font-black text-white">
+                {String(phase?.name || `Phase ${index + 1}`)}
+              </span>
+              {/* Monetization Badge */}
+              {isPaid ? (
+                 <span className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white shadow-sm">
+                    <DollarSign className="h-3 w-3" /> PAID
+                 </span>
+              ) : (
+                 <span className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white shadow-sm">
+                    FREE TRIAL
+                 </span>
+              )}
+            </div>
+            {isFreeTrialEntry && (
+                <span className="text-xs text-emerald-400 font-medium flex items-center gap-1">
+                    <ArrowRightCircle className="h-3 w-3" /> Entry Point
+                </span>
+            )}
         </div>
-        <div className="ml-auto flex items-center gap-4">
-          <div className="flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2.5">
-            <Activity className="h-4 w-4 text-[var(--color-primary-light)]" />
-            <span className="font-bold text-white">{agents.length}</span>
-            <span className="text-sm text-slate-300">{agents.length === 1 ? 'Agent' : 'Agents'}</span>
+
+        <div className="ml-auto flex flex-col items-end gap-2 sm:gap-2">
+          <div className="flex items-center gap-1.5 rounded-lg bg-slate-800/80 px-3 py-1.5 text-[10px] sm:text-xs font-black uppercase tracking-wide text-white shadow-lg shadow-[rgba(var(--color-primary-rgb),0.3)]">
+            <Activity className="h-3.5 w-3.5 text-[var(--color-primary-light)]" />
+            <span className="text-base font-black text-white leading-none">{agents.length}</span>
+            <span className="text-[10px] sm:text-xs text-slate-200">
+              {agents.length === 1 ? 'Agent' : 'Agents'}
+            </span>
           </div>
           {contextCount > 0 && (
-            <span className="rounded-lg bg-[var(--color-secondary)] px-4 py-2.5 font-bold text-white shadow-lg [box-shadow:0_0_0_rgba(var(--color-secondary-rgb),0.5)]">
-              {contextCount} Human In The Loop
+            <span className="flex items-center gap-1.5 rounded-lg bg-[var(--color-secondary)] px-3 py-1.5 text-[10px] sm:text-xs font-black uppercase tracking-wide text-white shadow-lg shadow-[rgba(var(--color-secondary-rgb),0.35)]">
+              <UserCheck className="h-3.5 w-3.5 text-white/90" />
+              {contextCount} Context Required
             </span>
           )}
           {approvalCount > 0 && (
-            <span className="rounded-lg bg-[var(--color-accent)] px-4 py-2.5 font-bold text-white shadow-lg [box-shadow:0_0_0_rgba(var(--color-accent-rgb),0.5)]">
+            <span className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-[10px] sm:text-xs font-black uppercase tracking-wide text-white shadow-lg shadow-[rgba(var(--color-accent-rgb),0.35)]">
+              <UserCheck className="h-3.5 w-3.5 text-white/90" />
               {approvalCount} Approval {approvalCount === 1 ? 'Gate' : 'Gates'}
             </span>
           )}
         </div>
       </button>
       {open && (
-        <div className="space-y-6 border-t-4 border-[rgba(var(--color-primary-light-rgb),0.3)] bg-slate-900 p-6">
+        <div className="space-y-4 md:space-y-6 border-t-4 border-[rgba(var(--color-primary-light-rgb),0.3)] bg-slate-900 p-4 md:p-6">
           <div className="rounded-lg bg-slate-800/50 p-5 border-l-4 border-[var(--color-primary-light)]">
             <p className="text-base leading-relaxed text-slate-200">
               {String(phase?.description || 'No description provided.')}
@@ -634,12 +662,37 @@ const PhaseAccordion = ({ phase, index, open, onToggle, lifecycleOperations = []
 };
 
 // Mermaid preview with bold styling and multi-diagram support (flowchart + sequence)
+const forceFlowchartOrientation = (diagram, orientation) => {
+  if (typeof diagram !== 'string' || !diagram.trim().startsWith('flowchart')) return diagram;
+  const normalizedOrientation = orientation?.toUpperCase?.() || 'TD';
+  const directiveRegex = /^flowchart\s+(LR|RL|TD|TB|BT)/i;
+  if (directiveRegex.test(diagram)) {
+    return diagram.replace(directiveRegex, `flowchart ${normalizedOrientation}`);
+  }
+  return diagram.replace(/^flowchart/i, `flowchart ${normalizedOrientation}`);
+};
+
 const MermaidPreview = ({ chart, pendingMessage, pattern }) => {
   const ref = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth <= 640);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+  
   useEffect(() => {
     if (typeof window === 'undefined') return () => {};
 
     let disposed = false;
+    const isMobileViewport = window.matchMedia ? window.matchMedia('(max-width: 640px)').matches : false;
+    let mobileFlowchartNodeCount = 0;
+    let mobileHorizontalFlow = false;
 
     const detectTheme = () => {
       const root = document.documentElement;
@@ -741,8 +794,12 @@ const MermaidPreview = ({ chart, pendingMessage, pattern }) => {
         const isLR = normalized.startsWith('flowchart LR');
         const nodeMatches = normalized.match(/\w+[[(]/g);
         const nodeCount = nodeMatches ? nodeMatches.length : 0;
-        console.log('🎨 [MermaidPreview] Analyzing flowchart:', { isLR, nodeCount });
-        if (isLR && nodeCount > 5) {
+        mobileFlowchartNodeCount = nodeCount;
+        console.log('🎨 [MermaidPreview] Analyzing flowchart:', { isLR, nodeCount, mobileViewport: isMobileViewport });
+        if (isMobileViewport) {
+          normalized = forceFlowchartOrientation(normalized, 'LR');
+          mobileHorizontalFlow = true;
+        } else if (isLR && nodeCount > 5) {
           normalized = normalized.replace('flowchart LR', 'flowchart TD');
           console.log('🎨 [MermaidPreview] Converted LR to TD for better layout (nodeCount:', nodeCount, ')');
         }
@@ -765,26 +822,26 @@ const MermaidPreview = ({ chart, pendingMessage, pattern }) => {
             flowchart: {
               htmlLabels: true,
               curve: 'basis',
-              padding: 20,
-              nodeSpacing: 80,
-              rankSpacing: 80,
+              padding: isMobileViewport ? 10 : 20,
+              nodeSpacing: isMobileViewport ? 60 : 80,
+              rankSpacing: isMobileViewport ? 60 : 80,
               useMaxWidth: true,
-              wrappingWidth: 200
+              wrappingWidth: isMobileViewport ? 150 : 200
             },
             sequence: {
-              diagramMarginX: 20,
-              diagramMarginY: 20,
-              actorMargin: 80,
-              width: 200,
-              height: 65,
-              boxMargin: 10,
-              boxTextMargin: 5,
-              noteMargin: 10,
-              messageMargin: 50,
-              mirrorActors: true,
+              diagramMarginX: isMobileViewport ? 10 : 20,
+              diagramMarginY: isMobileViewport ? 10 : 20,
+              actorMargin: isMobileViewport ? 50 : 80,
+              width: isMobileViewport ? 150 : 200,
+              height: isMobileViewport ? 50 : 65,
+              boxMargin: isMobileViewport ? 5 : 10,
+              boxTextMargin: isMobileViewport ? 3 : 5,
+              noteMargin: isMobileViewport ? 5 : 10,
+              messageMargin: isMobileViewport ? 35 : 50,
+              mirrorActors: !isMobileViewport,
               useMaxWidth: true,
               wrap: true,
-              wrapPadding: 10
+              wrapPadding: isMobileViewport ? 5 : 10
             },
             themeVariables: {
               primaryColor: palette.primary,
@@ -814,7 +871,31 @@ const MermaidPreview = ({ chart, pendingMessage, pattern }) => {
 
             svgEl.style.maxWidth = '100%';
             svgEl.style.height = 'auto';
-            svgEl.style.minHeight = isSequence ? '500px' : '400px';
+
+            // Mobile-optimized heights
+            if (isMobileViewport) {
+              svgEl.style.minHeight = isSequence ? '350px' : '300px';
+            } else {
+              svgEl.style.minHeight = isSequence ? '500px' : '400px';
+            }
+
+            // Mobile flowchart handling with better UX
+            if (mobileHorizontalFlow && !isSequence) {
+              const minWidth = Math.min(1200, Math.max(600, mobileFlowchartNodeCount * 110));
+              svgEl.style.minWidth = `${minWidth}px`;
+              ref.current.style.overflowX = 'auto';
+              ref.current.style.overflowY = 'hidden';
+              // Add scroll shadow indicator
+              ref.current.style.background = 'linear-gradient(90deg, rgba(15, 23, 42, 0) 0%, rgba(15, 23, 42, 0.05) 5%, rgba(15, 23, 42, 0.05) 95%, rgba(15, 23, 42, 0) 100%)';
+              // Smooth scrolling
+              ref.current.style.scrollBehavior = 'smooth';
+              ref.current.style.webkitOverflowScrolling = 'touch';
+            } else {
+              svgEl.style.minWidth = '';
+              ref.current.style.overflowX = '';
+              ref.current.style.overflowY = '';
+              ref.current.style.background = '';
+            }
             svgEl.style.colorScheme = isDark ? 'dark' : 'light';
             svgEl.style.background = palette.surfaceAlt;
             ref.current.style.background = palette.surface;
@@ -918,18 +999,101 @@ const MermaidPreview = ({ chart, pendingMessage, pattern }) => {
     };
   }, [chart, pendingMessage]);
   
+  const hasChart = typeof chart === 'string' && chart.trim().length > 0;
+  const isLandscape = typeof window !== 'undefined' && window.innerWidth > window.innerHeight;
+  
+  if (isMobile && !isFullscreen) {
+    return (
+      <div className={`${components.card.primary} overflow-hidden rounded-2xl`}>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0 border-b-3 border-[rgba(var(--color-secondary-rgb),0.5)] bg-gradient-to-r from-[var(--color-secondary-dark)] to-purple-600 px-4 md:px-6 py-3 md:py-4">
+          <div className="flex items-center gap-2 md:gap-3 text-sm md:text-base font-black uppercase tracking-wider text-white">
+            <GitBranch className="h-4 w-4 md:h-5 md:w-5" />
+            Workflow Diagram
+          </div>
+          {pattern && (
+            <SemanticChip value={pattern} mapping={PATTERN_META} prefix="Pattern" icon={GitBranch} />
+          )}
+        </div>
+        <div className="flex flex-col items-center justify-center gap-4 bg-slate-850 p-8 min-h-[200px]">
+          {hasChart ? (
+            <>
+              <GitBranch className="h-12 w-12 text-[var(--color-secondary-light)]" />
+              <p className="text-sm text-slate-300 text-center">
+                View the full workflow diagram in landscape mode for the best experience
+              </p>
+              <button
+                onClick={() => setIsFullscreen(true)}
+                className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-secondary)] px-6 py-3 text-sm font-bold text-white shadow-lg hover:shadow-xl transition-all"
+              >
+                <GitBranch className="h-4 w-4" />
+                View Flow Diagram
+              </button>
+            </>
+          ) : (
+            <p className="text-sm text-slate-400 text-center">
+              {typeof pendingMessage === 'string' && pendingMessage.trim().length > 0
+                ? pendingMessage.trim()
+                : 'Approve the plan to generate a Mermaid sequence diagram.'}
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+  
+  if (isFullscreen) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-900 flex flex-col">
+        {/* Header with close button */}
+        <div className="flex items-center justify-between gap-4 border-b-2 border-slate-700 bg-gradient-to-r from-[var(--color-secondary-dark)] to-purple-600 px-4 py-3">
+          <div className="flex items-center gap-2 text-sm font-black uppercase tracking-wider text-white">
+            <GitBranch className="h-4 w-4" />
+            Workflow Diagram
+          </div>
+          <button
+            onClick={() => setIsFullscreen(false)}
+            className="flex items-center gap-2 rounded-lg bg-slate-700 hover:bg-slate-600 px-3 py-2 text-sm font-bold text-white transition-colors"
+          >
+            <ChevronDown className="h-4 w-4" />
+            Close
+          </button>
+        </div>
+        
+        {/* Landscape hint for portrait mode */}
+        {!isLandscape && (
+          <div className="flex items-center gap-3 bg-amber-500/20 border-b-2 border-amber-500/50 px-4 py-3">
+            <div className="animate-pulse">
+              <svg className="h-6 w-6 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9l3 3m0 0l3-3m-3 3V3" transform="rotate(90 12 12)" />
+              </svg>
+            </div>
+            <p className="text-xs font-semibold text-amber-200">
+              Rotate your device to landscape mode for better viewing
+            </p>
+          </div>
+        )}
+        
+        {/* Diagram content */}
+        <div className="flex-1 overflow-auto bg-slate-850">
+          <div ref={ref} className="min-h-full p-4" />
+        </div>
+      </div>
+    );
+  }
+  
   return (
     <div className={`${components.card.primary} overflow-hidden rounded-2xl`}>
-      <div className="flex items-center justify-between border-b-3 border-[rgba(var(--color-secondary-rgb),0.5)] bg-gradient-to-r from-[var(--color-secondary-dark)] to-purple-600 px-6 py-4">
-        <div className="flex items-center gap-3 text-base font-black uppercase tracking-wider text-white">
-          <GitBranch className="h-5 w-5" />
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0 border-b-3 border-[rgba(var(--color-secondary-rgb),0.5)] bg-gradient-to-r from-[var(--color-secondary-dark)] to-purple-600 px-4 md:px-6 py-3 md:py-4">
+        <div className="flex items-center gap-2 md:gap-3 text-sm md:text-base font-black uppercase tracking-wider text-white">
+          <GitBranch className="h-4 w-4 md:h-5 md:w-5" />
           Workflow Diagram
         </div>
         {pattern && (
           <SemanticChip value={pattern} mapping={PATTERN_META} prefix="Pattern" icon={GitBranch} />
         )}
       </div>
-      <div ref={ref} className="min-h-[400px] overflow-auto bg-slate-850 p-8" />
+      <div ref={ref} className="min-h-[300px] md:min-h-[400px] overflow-auto bg-slate-850 p-4 md:p-8" />
     </div>
   );
 };
@@ -937,38 +1101,173 @@ const MermaidPreview = ({ chart, pendingMessage, pattern }) => {
 // Data View - Connection status and context variables
 const DataView = ({ workflow, contextVariableDefinitions }) => {
   const definitions = contextVariableDefinitions || {};
+  const databaseCapability = workflow?.database_capability || {};
+  const schemaProvided = Boolean(workflow?.database_schema);
+  const [expandedCollections, setExpandedCollections] = useState({});
+  const [carouselIndex, setCarouselIndex] = useState(0);
+  const mobileCarouselRef = useRef(null);
+  const schemaCollections = Array.isArray(workflow?.database_schema?.collections)
+    ? workflow.database_schema.collections
+    : [];
+  const sortedCollections = schemaCollections.slice().sort((a, b) => {
+    const left = String(a?.name || '').toLowerCase();
+    const right = String(b?.name || '').toLowerCase();
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  });
+  const toggleCollection = (key) => {
+    setExpandedCollections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+  useEffect(() => {
+    const node = mobileCarouselRef.current;
+    if (!node) return undefined;
+    const handleScroll = () => {
+      const child = node.firstElementChild;
+      if (!child) return;
+      const cardWidth = child.getBoundingClientRect().width || 1;
+      const idx = Math.round(node.scrollLeft / cardWidth);
+      const bounded = Math.min(Math.max(idx, 0), Math.max(sortedCollections.length - 1, 0));
+      if (bounded !== carouselIndex) {
+        setCarouselIndex(bounded);
+      }
+    };
+    node.addEventListener('scroll', handleScroll, { passive: true });
+    return () => node.removeEventListener('scroll', handleScroll);
+  }, [sortedCollections.length, carouselIndex]);
+
+  useEffect(() => {
+    setCarouselIndex(0);
+  }, [sortedCollections.length]);
   
-  // Group variables by source type
+  // Group variables by source type (six-type taxonomy)
   const variablesByType = {
-    environment: [],
-    static: [],
-    database: [],
-    derived: []
+    config: [],           // Environment variables and static defaults
+    data_reference: [],   // Read-only MongoDB queries
+    data_entity: [],      // Workflow-owned writes
+    computed: [],         // Deterministic derivations
+    state: [],            // Mutable orchestration state
+    external: []          // Third-party API fetches
   };
   
   Object.entries(definitions).forEach(([name, def]) => {
-    const type = def?.source?.type || def?.type || 'derived';
+    const type = def?.source?.type || def?.type || 'computed';
     if (variablesByType[type]) {
       variablesByType[type].push({ name, ...def });
     }
   });
   
   // Check for database configuration
-  const hasDatabaseVars = variablesByType.database.length > 0;
-  const hasRuntimeVars = variablesByType.derived.length > 0;
-  const hasSystemVars = variablesByType.environment.length > 0 || variablesByType.static.length > 0;
+  const hasDatabaseVars = variablesByType.data_reference.length > 0 || 
+                          variablesByType.data_entity.length > 0;
+  const hasRuntimeVars = variablesByType.computed.length > 0 || 
+                         variablesByType.state.length > 0;
+  const hasSystemVars = variablesByType.config.length > 0;
   
   // Check context-aware status (would come from environment/config)
-  const contextAwareEnabled = hasDatabaseVars; // True if any database variables exist
+  const contextAwareEnabled = Boolean(databaseCapability.enabled || schemaProvided || hasDatabaseVars);
   
-  // Extract unique database collections from database variables
+  // Extract unique database collections from data_reference and data_entity variables
   const databaseCollections = new Set();
-  variablesByType.database.forEach(variable => {
+  [...variablesByType.data_reference, ...variablesByType.data_entity].forEach(variable => {
     const collection = variable?.source?.collection || variable?.collection;
     if (collection && typeof collection === 'string') {
       databaseCollections.add(collection);
     }
   });
+
+  const renderCollectionCard = (collection, idx, variant = 'grid') => {
+    const cardKey = `${collection?.name || 'collection'}-${idx}`;
+    const isExpanded = !!expandedCollections[cardKey];
+    const fields = Array.isArray(collection?.fields) ? collection.fields : [];
+    const previewFields = fields.slice(0, 3);
+    const previewOverflow = fields.length - previewFields.length;
+    const sampleKeys = Array.isArray(collection?.sample_doc_keys) ? collection.sample_doc_keys : [];
+    const containerBase = 'rounded-2xl border border-blue-500/40 bg-slate-900/60 p-4 shadow-[0_10px_30px_rgba(15,23,42,0.35)] transition-all duration-300';
+    const variantClasses = variant === 'mobile'
+      ? 'min-w-[82vw] snap-center mr-2'
+      : '';
+
+    return (
+      <div key={cardKey} className={`${containerBase} ${variantClasses}`}>
+        <button
+          type="button"
+          onClick={() => toggleCollection(cardKey)}
+          className="flex w-full items-center justify-between gap-3 text-left"
+          aria-expanded={isExpanded}
+        >
+          <div>
+            <p className="text-base font-bold text-blue-200">{collection?.name || `Collection ${idx + 1}`}</p>
+            <div className="mt-1 flex flex-wrap gap-2 text-[0.65rem] uppercase tracking-widest text-slate-400">
+              <span>{fields.length} Fields</span>
+              {collection?.is_enterprise && (
+                <span className="rounded-full bg-purple-500/20 px-2 py-0.5 text-purple-200">
+                  Enterprise
+                </span>
+              )}
+              {collection?.has_sample_data && (
+                <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-emerald-200">
+                  Sample Data
+                </span>
+              )}
+            </div>
+          </div>
+          <div className={`rounded-full border border-blue-500/50 p-1 ${isExpanded ? 'rotate-180' : ''}`}>
+            <ChevronDown className="h-4 w-4 text-blue-300" />
+          </div>
+        </button>
+        {!isExpanded && previewFields.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1 text-xs">
+            {previewFields.map((field, fieldIdx) => (
+              <span
+                key={`${cardKey}-preview-${field?.name || fieldIdx}`}
+                className="rounded-full bg-slate-800/80 px-2 py-1 text-slate-200"
+              >
+                {field?.name || 'field'}
+              </span>
+            ))}
+            {previewOverflow > 0 && (
+              <span className="text-slate-500">+{previewOverflow} more</span>
+            )}
+          </div>
+        )}
+        <div className={`overflow-hidden transition-all duration-300 ${isExpanded ? 'max-h-[460px] opacity-100 mt-4' : 'max-h-0 opacity-0'}`}>
+          {fields.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                Field Definitions
+              </div>
+              <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
+                {fields.map((field, fieldIdx) => (
+                  <div
+                    key={`${cardKey}-field-${field?.name || fieldIdx}`}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-slate-700/70 bg-slate-900/80 px-2 py-1 text-xs"
+                  >
+                    <span className="font-mono text-slate-200">{field?.name || 'field'}</span>
+                    <span className="text-slate-400">{field?.type || 'unknown'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {collection?.has_sample_data && sampleKeys.length > 0 && (
+            <div className="mt-3">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                Sample Keys
+              </div>
+              <div className="mt-1 flex flex-wrap gap-1 text-xs text-slate-300">
+                {sampleKeys.map((key, sampleIdx) => (
+                  <span key={`${cardKey}-sample-${sampleIdx}`} className="rounded border border-slate-600 px-2 py-0.5">
+                    {key}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
   
   return (
     <div className="space-y-6">
@@ -1006,59 +1305,55 @@ const DataView = ({ workflow, contextVariableDefinitions }) => {
           <div className="mb-4">
             <div className="flex items-center gap-2 mb-3">
               <span className="text-xs font-black uppercase tracking-widest text-slate-400">
-                Database: {workflow.database_schema.database_name || 'Unknown'}
+                Database: {databaseCapability.database_name || workflow.database_schema.database_name || 'Unknown'}
               </span>
               <span className="rounded-full bg-blue-500/20 border border-blue-500/50 px-2 py-0.5 text-xs font-bold text-blue-300">
-                {workflow.database_schema.total_collections || workflow.database_schema.collections?.length || 0} Collections
+                {databaseCapability.collections_reported || workflow.database_schema.total_collections || workflow.database_schema.collections?.length || 0} Collections
               </span>
             </div>
             
-            {/* Collections Grid */}
-            {workflow.database_schema.collections && workflow.database_schema.collections.length > 0 && (
-              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-                {workflow.database_schema.collections.map((collection, idx) => (
-                  <div key={idx} className="rounded-lg border border-blue-500/50 bg-blue-500/5 p-3">
-                    <div className="flex items-center justify-between gap-2 mb-2">
-                      <span className="text-sm font-bold text-blue-300">{collection.name}</span>
-                      {collection.is_enterprise && (
-                        <span className="rounded bg-purple-500/20 border border-purple-500/50 px-2 py-0.5 text-xs font-semibold text-purple-300">
-                          Enterprise
-                        </span>
-                      )}
-                    </div>
-                    
-                    {/* Field Types */}
-                    {collection.fields && collection.fields.length > 0 && (
-                      <div className="space-y-1 mt-2">
-                        <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
-                          Fields ({collection.fields.length})
-                        </div>
-                        <div className="max-h-32 overflow-y-auto space-y-1">
-                          {collection.fields.slice(0, 8).map((field, fieldIdx) => (
-                            <div key={fieldIdx} className="flex items-center justify-between text-xs">
-                              <span className="text-slate-300 font-mono">{field.name}</span>
-                              <span className="text-slate-500 font-mono">{field.type}</span>
-                            </div>
-                          ))}
-                          {collection.fields.length > 8 && (
-                            <div className="text-xs text-slate-500 italic">
-                              +{collection.fields.length - 8} more fields
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Sample Data Indicator */}
-                    {collection.has_sample_data && (
-                      <div className="mt-2 pt-2 border-t border-blue-500/20">
-                        <span className="text-xs text-blue-400">
-                          ✓ Sample data available
-                        </span>
-                      </div>
-                    )}
+            {/* Collections List */}
+            {sortedCollections.length > 0 && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="text-xs font-black uppercase tracking-widest text-slate-400">
+                    Collections ({sortedCollections.length})
                   </div>
-                ))}
+                  {sortedCollections.length > 3 && (
+                    <button
+                      type="button"
+                      onClick={() => setExpandedCollections({})}
+                      className="text-[0.65rem] font-semibold uppercase tracking-widest text-blue-300 hover:text-blue-100"
+                    >
+                      Collapse All
+                    </button>
+                  )}
+                </div>
+
+                {/* Mobile Carousel */}
+                <div className="md:hidden">
+                  <div
+                    ref={mobileCarouselRef}
+                    className="flex snap-x snap-mandatory gap-4 overflow-x-auto pb-4"
+                  >
+                    {sortedCollections.map((collection, idx) => renderCollectionCard(collection, idx, 'mobile'))}
+                  </div>
+                  {sortedCollections.length > 1 && (
+                    <div className="flex justify-center gap-1">
+                      {sortedCollections.map((_, dotIdx) => (
+                        <span
+                          key={`collections-dot-${dotIdx}`}
+                          className={`h-1.5 rounded-full transition-all ${dotIdx === carouselIndex ? 'w-4 bg-blue-400' : 'w-2 bg-slate-600'}`}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Desktop Grid */}
+                <div className="hidden md:grid gap-3 md:grid-cols-2">
+                  {sortedCollections.map((collection, idx) => renderCollectionCard(collection, idx))}
+                </div>
               </div>
             )}
           </div>
@@ -1092,14 +1387,14 @@ const DataView = ({ workflow, contextVariableDefinitions }) => {
               Database Variables
             </div>
             <div className="space-y-2">
-              {variablesByType.database.map((variable, idx) => (
+              {[...variablesByType.data_reference, ...variablesByType.data_entity].map((variable, idx) => (
                 <div key={idx} className="rounded-lg border border-slate-700 bg-slate-800/70 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
                         <span className="font-bold text-[var(--color-primary-light)]">{variable.name}</span>
                         <span className="rounded-full bg-blue-500/20 border border-blue-500/50 px-2 py-0.5 text-xs font-semibold text-blue-300">
-                          Database
+                          {variable.source?.type === 'data_entity' ? 'Write' : 'Query'}
                         </span>
                       </div>
                       {variable.purpose && (
@@ -1128,19 +1423,19 @@ const DataView = ({ workflow, contextVariableDefinitions }) => {
               System Configuration
             </span>
             <span className="rounded-full bg-[var(--color-secondary)] px-2 py-0.5 text-xs font-bold text-white">
-              {variablesByType.environment.length + variablesByType.static.length}
+              {variablesByType.config.length}
             </span>
           </div>
           <p className="text-xs text-slate-400 mb-4">
             Pre-configured values loaded from environment or workflow definition
           </p>
           <div className="grid gap-3 md:grid-cols-2 flex-1">
-            {[...variablesByType.environment, ...variablesByType.static].map((variable, idx) => (
+            {variablesByType.config.map((variable, idx) => (
               <div key={idx} className="rounded-lg border border-slate-700 bg-slate-800/70 p-3 h-fit">
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <span className="font-bold text-white text-sm">{variable.name}</span>
                   <span className="rounded-full bg-green-500/20 border border-green-500/50 px-2 py-0.5 text-xs font-semibold text-green-300">
-                    {variable.source?.type === 'environment' ? 'ENV' : 'STATIC'}
+                    CONFIG
                   </span>
                 </div>
                 {variable.purpose && (
@@ -1152,29 +1447,29 @@ const DataView = ({ workflow, contextVariableDefinitions }) => {
         </div>
       )}
       
-      {/* Derived Variables Section */}
+      {/* Runtime Variables Section */}
       {hasRuntimeVars && (
         <div className="rounded-xl border-2 border-[rgba(var(--color-accent-rgb),0.4)] bg-slate-800/50 p-6 min-h-[200px] flex flex-col">
           <div className="flex items-center gap-2 mb-4">
             <Activity className="h-5 w-5 text-[var(--color-accent-light)]" />
             <span className="text-sm font-bold uppercase tracking-wider text-[var(--color-accent-light)]">
-              Derived Variables
+              Runtime Variables
             </span>
             <span className="rounded-full bg-[var(--color-accent)] px-2 py-0.5 text-xs font-bold text-white">
-              {variablesByType.derived.length}
+              {variablesByType.computed.length + variablesByType.state.length}
             </span>
           </div>
           <p className="text-xs text-slate-400 mb-4">
-            Variables computed during workflow execution based on agent outputs or user interactions
+            Variables computed or updated during workflow execution based on agent outputs or user interactions
           </p>
           <div className="space-y-3 flex-1">
-            {variablesByType.derived.map((variable, idx) => (
+            {[...variablesByType.computed, ...variablesByType.state].map((variable, idx) => (
               <div key={idx} className="rounded-lg border border-slate-700 bg-slate-800/70 p-3">
                 <div className="flex items-start justify-between gap-3 mb-2">
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-white text-sm">{variable.name}</span>
                     <span className="rounded-full bg-amber-500/20 border border-amber-500/50 px-2 py-0.5 text-xs font-semibold text-amber-300">
-                      Derived
+                      {variable.source?.type === 'state' ? 'State' : 'Computed'}
                     </span>
                   </div>
                 </div>
@@ -1391,7 +1686,6 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
     });
   });
   const toolCount = uniqueToolNames.size || uniqueIntegrations.size;
-
   const normalizeDiagram = (value) => (typeof value === 'string' ? value.trim() : '');
   const legacyDiagram = normalizeDiagram(payload?.legacy_mermaid_flow);
   const workflowDiagram = normalizeDiagram(safeWorkflow?.mermaid_flow);
@@ -1470,15 +1764,20 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
     { id: 'interactions', label: 'Interactions', icon: MessageSquare },
     { id: 'diagram', label: 'Diagram', icon: GitBranch },
   ];
-
   return (
-    <div className={`min-h-screen space-y-8 rounded-2xl ${components.card.primary}`} data-agent-message-id={agentMessageId || undefined}>
+    <div className={`min-h-screen space-y-4 md:space-y-8 rounded-2xl ${components.card.primary}`} data-agent-message-id={agentMessageId || undefined}>
       {/* Header Section */}
-        <header className="space-y-6 rounded-2xl border-3 border-[var(--color-primary)] bg-gradient-to-br from-slate-900 to-slate-800 p-8 shadow-2xl [box-shadow:0_0_0_rgba(var(--color-primary-rgb),0.3)]">
+        <header className="space-y-4 md:space-y-6 rounded-2xl border-3 border-[var(--color-primary)] bg-gradient-to-br from-slate-900 to-slate-800 p-4 md:p-8 shadow-2xl [box-shadow:0_0_0_rgba(var(--color-primary-rgb),0.3)]">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="flex items-center gap-3 text-sm font-black uppercase tracking-[0.3em] text-[var(--color-primary-light)]">
               <Sparkles className="h-5 w-5" />
               Workflow Blueprint
+              {safeWorkflow?.human_in_loop && (
+                <span className="ml-2 md:ml-4 flex items-center gap-1.5 rounded-full bg-amber-500/20 border border-amber-500/50 px-3 py-0.5 text-[10px] font-bold tracking-wide text-amber-300 shadow-sm">
+                  <UserCheck className="h-3 w-3" />
+                  HUMAN IN LOOP
+                </span>
+              )}
             </div>
             <div className="flex flex-col items-start gap-2 text-left md:items-end md:text-right">
               <div className="flex flex-wrap items-center gap-2">
@@ -1494,7 +1793,7 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
           </div>
           
           <div className="space-y-5">
-            <h1 className={`${typography.display.xl} ${colors.text.primary} drop-shadow-lg break-words max-w-full leading-tight overflow-hidden`}>
+            <h1 className={`${fonts.heading} font-black text-xl sm:text-2xl md:text-3xl lg:text-4xl ${colors.text.primary} drop-shadow-lg break-words max-w-full leading-tight overflow-hidden`}>
           {String(safeWorkflow?.name || 'Generated Workflow')}
             </h1>
           </div>
@@ -1509,14 +1808,14 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-bold transition-all ${
+              className={`flex flex-1 flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 rounded-lg px-2 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm font-bold transition-all ${
                 isActive
                   ? 'bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-secondary)] text-white shadow-lg'
                   : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
               }`}
             >
               <Icon className="h-4 w-4" />
-              <span className="hidden sm:inline">{tab.label}</span>
+              <span className="text-[10px] sm:text-xs leading-tight text-center">{tab.label}</span>
             </button>
           );
         })}
@@ -1620,7 +1919,7 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
             
             {phases.length === 0 && (
               <div className="rounded-2xl border-2 border-dashed border-slate-600 bg-slate-900/50 p-12 text-center">
-                <p className="text-base font-medium text-slate-400">No phases defined. Ask the ActionPlanArchitect to generate at least one phase.</p>
+                <p className="text-base font-medium text-slate-400">No phases defined. Please ensure the ActionPlan includes at least one phase.</p>
               </div>
             )}
             

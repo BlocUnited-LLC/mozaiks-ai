@@ -5,6 +5,11 @@ services:
       dockerfile: infra/docker/Dockerfile
     image: mozaiksai-app:latest
     container_name: mozaiksai-app
+    command: >
+      watchmedo auto-restart 
+      --patterns="*.py" 
+      --recursive -- 
+      python run_server.py
     env_file:
       - ../../.env
     ports:
@@ -16,6 +21,7 @@ services:
       DOCKERIZED: "true"
       # AZURE_* and MONGO_URI still supplied via env_file
     volumes:
+      - ../../:/app
       - ../../logs/logs:/app/logs/logs
     restart: unless-stopped
     healthcheck:

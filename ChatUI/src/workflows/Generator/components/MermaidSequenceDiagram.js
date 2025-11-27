@@ -50,6 +50,7 @@ const MermaidSequenceDiagram = ({
       const safeRender = () => {
         try {
           const id = `seq-${Math.random().toString(36).slice(2)}`;
+              const narrowMinHeight = (typeof window !== 'undefined' && window.innerWidth < 768) ? '260px' : '440px';
           const mermaidConfig = {
             startOnLoad: false,
             theme: 'dark',
@@ -90,8 +91,10 @@ const MermaidSequenceDiagram = ({
               const svgEl = mermaidRef.current.querySelector('svg');
               if (svgEl) {
                 svgEl.style.maxWidth = '100%';
-                svgEl.style.height = 'auto';
-                svgEl.style.minHeight = '440px';
+                    svgEl.style.width = '100%';
+                    svgEl.style.height = 'auto';
+                    svgEl.style.minHeight = narrowMinHeight;
+                    svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
               }
             }
           }).catch((err) => {
@@ -193,7 +196,7 @@ const MermaidSequenceDiagram = ({
       </header>
 
       <div className="rounded-2xl border-2 border-slate-700 bg-slate-900/70">
-        <div ref={mermaidRef} className="min-h-[420px] overflow-auto bg-slate-850 p-6" />
+        <div ref={mermaidRef} className="min-h-[320px] md:min-h-[420px] overflow-auto bg-slate-850 p-4 md:p-6 rounded-xl" />
       </div>
 
       {(legendItems.length > 0 || notes) && (

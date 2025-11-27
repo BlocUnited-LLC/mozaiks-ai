@@ -30,7 +30,7 @@ async def _update_workflow_dependency_graph(
     wf_logger,
 ) -> None:
     """
-    Extract workflow_dependencies and workflow_provides from TechnicalBlueprint 
+    Extract workflow_dependencies from TechnicalBlueprint 
     and update the WorkflowDependencies collection.
     
     Args:
@@ -51,13 +51,11 @@ async def _update_workflow_dependency_graph(
             wf_logger.debug("No TechnicalBlueprint found in WorkflowArchitectAgent output")
             return
         
-        # Extract workflow_dependencies and workflow_provides
+        # Extract workflow_dependencies
         workflow_dependencies = technical_blueprint.get("workflow_dependencies")
-        workflow_provides = technical_blueprint.get("workflow_provides")
         
         # Convert to proper format (null becomes None for Python)
         dependencies = None
-        provides = None
         
         if workflow_dependencies and isinstance(workflow_dependencies, dict):
             dependencies = {
@@ -69,25 +67,16 @@ async def _update_workflow_dependency_graph(
                           f"{len(dependencies.get('required_context_vars', []))} context vars, "
                           f"{len(dependencies.get('required_artifacts', []))} artifacts")
         
-        if workflow_provides and isinstance(workflow_provides, dict):
-            provides = {
-                "context_vars": workflow_provides.get("context_vars", []),
-                "artifacts": workflow_provides.get("artifacts", [])
-            }
-            wf_logger.info(f"📊 Extracted workflow_provides: {len(provides.get('context_vars', []))} context vars, "
-                          f"{len(provides.get('artifacts', []))} artifacts")
-        
         # Update dependency graph in database
-        if dependencies or provides:
+        if dependencies:
             await dependency_manager.update_workflow_graph(
                 enterprise_id=enterprise_id,
                 workflow_name=workflow_name_pascal,
-                dependencies=dependencies,
-                provides=provides
+                dependencies=dependencies
             )
             wf_logger.info(f"✅ Updated WorkflowDependencies collection for workflow '{workflow_name_pascal}'")
         else:
-            wf_logger.debug(f"No dependencies or provides found for workflow '{workflow_name_pascal}', skipping graph update")
+            wf_logger.debug(f"No dependencies found for workflow '{workflow_name_pascal}', skipping graph update")
             
     except Exception as dep_err:
         # Non-critical error - log but don't fail workflow generation
@@ -336,7 +325,7 @@ async def generate_and_download(
     if isinstance(context_vars_data, dict):
         payload["context_variables_output"] = context_vars_data
     
-    # ToolsManagerAgent -> ToolsManagerAgentOutput (tools + lifecycle_tools manifest)
+    # ToolsManagerAgent -> ToolsManifest (tools + lifecycle_tools manifest)
     tools_manager_data = collected.get("ToolsManagerAgent") or collected.get("tools_manager_output", {})
     if isinstance(tools_manager_data, dict):
         payload["tools_manager_output"] = tools_manager_data

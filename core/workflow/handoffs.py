@@ -506,6 +506,47 @@ def _patch_autogen_handoff_logging() -> None:
             setattr(_mozaiks_evaluate_after_works, "__mozaiks_instrumented__", True)
             ag_group_utils._evaluate_after_works_conditions = _mozaiks_evaluate_after_works
 
+        original_create_funcs = ag_group_utils.create_on_condition_handoff_functions
+        if not getattr(original_create_funcs, "__mozaiks_instrumented__", False):
+            
+            @wraps(original_create_funcs)
+            def _mozaiks_create_on_condition_handoff_functions(agent):
+                # Re-implementation with instrumentation
+                agent.handoffs.set_llm_function_names()
+                for on_condition in agent.handoffs.llm_conditions:
+                    # Create the base transfer function
+                    base_func = ag_group_utils._create_on_condition_handoff_function(on_condition.target)
+                    
+                    # Wrap it to emit event
+                    @wraps(base_func)
+                    def _instrumented_transfer():
+                        try:
+                            agent_name = sanitize_identifier(agent) or "Unknown"
+                            target_name = _describe_target(on_condition.target)
+                            payload = {
+                                "source_agent": agent_name,
+                                "target": target_name,
+                                "trigger": "llm_condition",
+                                "available": True
+                            }
+                            payload.update(_extract_context_metadata(agent))
+                            emit_handoff_event("llm_condition", payload)
+                            log.info(f"[HANDOFFS][LLM] Triggered LLM handoff {agent_name}->{target_name}")
+                        except Exception as e:
+                            log.warning(f"⚠️ [HANDOFFS][LLM] Event emission failed: {e}")
+                        return base_func()
+
+                    agent._add_single_function(
+                        _instrumented_transfer,
+                        on_condition.llm_function_name,
+                        on_condition.condition.get_prompt(agent, []),
+                    )
+                
+                log.info(f"[HANDOFFS][LLM] Registered {len(agent.handoffs.llm_conditions)} LLM handoff functions for {sanitize_identifier(agent)}")
+
+            setattr(_mozaiks_create_on_condition_handoff_functions, "__mozaiks_instrumented__", True)
+            ag_group_utils.create_on_condition_handoff_functions = _mozaiks_create_on_condition_handoff_functions
+
         setattr(_patch_autogen_handoff_logging, "_applied", True)
         log.info("[HANDOFFS] Runtime handoff instrumentation enabled")
     except Exception as exc:  # pragma: no cover - defensive guard

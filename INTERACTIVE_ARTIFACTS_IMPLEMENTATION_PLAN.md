@@ -109,7 +109,7 @@ Artifacts can emit structured action events that bypass chat history and enable 
    - React component for multi-step database configuration
    - Steps: Connection Test, URI Input, Database Name, Confirmation
    - Uses shared design system tokens
-   - Exports `componentMetadata` with interaction_pattern: "multi_step"
+   - Exports `componentMetadata` with ui_pattern: "multi_step"
 
 3. **`docs/runtime/INTERACTIVE_ARTIFACTS.md`** (NEW)
    - Comprehensive guide for interactive artifacts
@@ -132,7 +132,7 @@ Artifacts can emit structured action events that bypass chat history and enable 
    - Add configure_database UI_Tool entry
    - tool_type: "UI_Tool"
    - ui.component: "ConfigureDatabaseWizard"
-   - ui.interaction_pattern: "multi_step"
+   - ui.ui_pattern: "multi_step"
    - ui.display: "inline"
    - ui.label: "Configure MongoDB Connection"
 
@@ -159,7 +159,7 @@ Artifacts can emit structured action events that bypass chat history and enable 
    - Show handoff routing example
    - Explain when artifacts should trigger tools vs. direct actions
 
-10. **`docs/workflows/UI_INTERACTION_PATTERNS.md`**
+10. **`docs/workflows/UI_ui_patternS.md`**
     - Add Pattern 4: "Artifact-Triggered Interaction"
     - Document flow: Artifact button → Chat message → Handoff → UI_Tool
     - Show code examples for both artifact side and agent side
@@ -247,7 +247,7 @@ These files must be updated to ensure agents (UIFileGenerator, AgentToolsGenerat
 
 1. **`docs/frontend/unified_ui_tools_and_design.md`** ⭐
    - **Primary prompt source for UIFileGenerator**
-   - Must document artifact interaction patterns
+   - Must document artifact UI patterns
    - Must show sendMessage() usage in artifacts
    - Must provide code templates
 
@@ -256,14 +256,14 @@ These files must be updated to ensure agents (UIFileGenerator, AgentToolsGenerat
    - Must show artifact-triggered flows
    - UIFileGenerator reads this for context
 
-3. **`docs/workflows/UI_INTERACTION_PATTERNS.md`**
+3. **`docs/workflows/UI_ui_patternS.md`**
    - Pattern library for tool/UI coordination
    - Must include Artifact-Triggered pattern
    - Agents reference this for interaction design
 
 4. **`workflows/Generator/structured_outputs.json`**
    - Schema definitions for agent outputs
-   - No changes needed (interaction_pattern already supports multi_step)
+   - No changes needed (ui_pattern already supports multi_step)
    - Agents use this to validate structured outputs
 
 ### Agent Prompt Updates Needed
@@ -310,7 +310,7 @@ These files must be updated to ensure agents (UIFileGenerator, AgentToolsGenerat
 **Documentation:**
 - [ ] Create docs/runtime/INTERACTIVE_ARTIFACTS.md
 - [ ] Update docs/workflows/ui_tool_pipeline.md
-- [ ] Update docs/workflows/UI_INTERACTION_PATTERNS.md
+- [ ] Update docs/workflows/UI_ui_patternS.md
 - [ ] Update docs/frontend/ui_components.md
 - [ ] Update docs/frontend/unified_ui_tools_and_design.md
 - [ ] Update docs/frontend/chatui_architecture.md
@@ -431,7 +431,7 @@ const MyArtifact = ({ data, sendMessage }) => {
   "tool_type": "UI_Tool",
   "ui": {
     "component": "MyCustomComponent",
-    "interaction_pattern": "single_step",
+    "ui_pattern": "single_step",
     "display": "inline"
   }
 }
@@ -688,10 +688,6 @@ Review the interview context and workflow purpose to determine if this workflow 
    - If consuming variables from another workflow → Add to required_context_vars
    - If consuming artifacts (ActionPlan, BuildManifest) → Add to required_artifacts
 
-4. What does THIS workflow produce for downstream workflows?
-   - Context variables it sets (list in workflow_provides.context_vars)
-   - Artifacts it generates (list in workflow_provides.artifacts)
-
 **Natural Dependency Patterns**:
 - Workflow involves "building" or "implementing" → Likely needs Generator outputs
 - Workflow involves "deploying" or "launching" → Likely needs Build outputs  
@@ -700,7 +696,6 @@ Review the interview context and workflow purpose to determine if this workflow 
 
 **Output Format**: Populate these new TechnicalBlueprint fields:
 - workflow_dependencies: {required_workflows[], required_context_vars[], required_artifacts[]}
-- workflow_provides: {context_vars[], artifacts[]}
 
 Note: If this is the first workflow being generated (no existing workflows in this enterprise), dependencies will typically be empty.
 ```
@@ -773,8 +768,7 @@ class WorkflowDependencyManager:
         self, 
         enterprise_id: str, 
         workflow_name: str,
-        dependencies: Dict[str, Any],
-        provides: Dict[str, Any]
+        dependencies: Dict[str, Any]
     ):
         """Add or update workflow in dependency graph."""
         coll = await self._get_dependencies_collection()
@@ -788,8 +782,7 @@ class WorkflowDependencyManager:
                         "workflow_name": workflow_name,
                         "created_at": datetime.utcnow().isoformat(),
                         "status": "active",
-                        "dependencies": dependencies,
-                        "provides": provides
+                        "dependencies": dependencies
                     }
                 }
             },
@@ -913,8 +906,7 @@ class WorkflowDependencyManager:
                 "workflow_name": wf_name,
                 "available": is_available,
                 "reason": reason or "All dependencies met",
-                "dependencies": wf_entry.get("dependencies", {}),
-                "provides": wf_entry.get("provides", {})
+                "dependencies": wf_entry.get("dependencies", {})
             })
         
         return workflows
@@ -1013,7 +1005,7 @@ const ActionPlan = ({ data, sendMessage }) => {
 - [ ] Update `workflows/Generator/agents.json` → WorkflowArchitectAgent prompt
 - [ ] Add Step 2.5: "Analyze Workflow Dependencies" (natural reasoning, not rules)
 - [ ] Add dependency analysis questions (consumption patterns, not hardcoded tree)
-- [ ] Update structured_outputs.json with `TechnicalBlueprint.workflow_dependencies` + `workflow_provides` fields
+- [ ] Update structured_outputs.json with `TechnicalBlueprint.workflow_dependencies` field
 - [ ] **Implementation Note** (not in prompt): Database context becomes implicit requirement
   * When workflow has dependencies → Agent will naturally need database context to query validation state
   * No explicit "database is mandatory" rule—emerges from dependency reasoning

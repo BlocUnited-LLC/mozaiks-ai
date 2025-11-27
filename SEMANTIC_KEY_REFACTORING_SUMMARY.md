@@ -13,7 +13,7 @@ Successfully refactored `structured_outputs.json` and agent prompts to use **sem
 ```json
 {
   "PatternAgent": "PatternSelectionCall",          // "Call" suffix
-  "ToolsManagerAgent": "ToolsManagerAgentOutput",  // Agent name in output
+  "ToolsManagerAgent": "ToolsManifest",  // Agent name in output
   "AgentsAgent": "AgentsAgentOutput"               // Redundant "Agent"
 }
 ```
@@ -36,7 +36,7 @@ Successfully refactored `structured_outputs.json` and agent prompts to use **sem
 | WorkflowArchitectAgent | TechnicalBlueprintCall | TechnicalBlueprintOutput | `TechnicalBlueprint` |
 | WorkflowImplementationAgent | PhaseAgentsCall | PhaseAgentsOutput | `PhaseAgents` |
 | ProjectOverviewAgent | MermaidSequenceDiagramCall | MermaidSequenceDiagramOutput | `MermaidSequenceDiagram` |
-| **ToolsManagerAgent** | ToolsManagerAgentOutput | **ToolsManifestOutput** | `ToolsManifest` |
+| **ToolsManagerAgent** | ToolsManifest | **ToolsManifestOutput** | `ToolsManifest` |
 | UIFileGenerator | UIFileGeneratorOutput | UIToolsFilesOutput | `UIToolsFiles` |
 | AgentToolsFileGenerator | AgentToolsFileGeneratorOutput | AgentToolsFilesOutput | `AgentToolsFiles` |
 | HookAgent | HookAgentOutput | HookFilesOutput | `HookFiles` |
@@ -54,7 +54,7 @@ Successfully refactored `structured_outputs.json` and agent prompts to use **sem
 ### Old Way (Confusing):
 ```markdown
 **Tools Manifest** (from ToolsManagerAgent):
-- Navigate to: `message.content['ToolsManagerAgentOutput']['tools']`
+- Navigate to: `message.content['ToolsManifest']['tools']`
 ```
 
 ### New Way (Clear & Semantic):
@@ -70,7 +70,7 @@ Successfully refactored `structured_outputs.json` and agent prompts to use **sem
 ## Benefits
 
 ### 1. **Self-Documenting**
-- ❌ Old: "ToolsManagerAgentOutput" → technical, agent-centric
+- ❌ Old: "ToolsManifest" → technical, agent-centric
 - ✅ New: "ToolsManifest" → semantic, describes the data
 
 ### 2. **No Redundancy**
@@ -83,7 +83,7 @@ Successfully refactored `structured_outputs.json` and agent prompts to use **sem
 - Easy to remember: search for the concept (e.g., "ToolsManifest"), not the agent
 
 ### 4. **LLM-Friendly**
-- Intuitive search: `{"ToolsManifest": ...}` vs `{"ToolsManagerAgentOutput": ...}`
+- Intuitive search: `{"ToolsManifest": ...}` vs `{"ToolsManifest": ...}`
 - Clearer navigation instructions
 - Reduces prompt verbosity
 

@@ -9,6 +9,8 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from .adapter import create_context_container
+from .data_entity import DataEntityManager
+from .db_adapters import get_db_adapter
 from .schema import (
     ContextVariablesPlan,
     ContextVariableDefinition,
@@ -59,22 +61,16 @@ def _coerce_value(definition: Optional[ContextVariableDefinition], raw_value: An
     return raw_value
 
 
-def _resolve_environment(definition: ContextVariableDefinition) -> Any:
+def _resolve_config(definition: ContextVariableDefinition) -> Any:
     source = definition.source
     env_var = source.env_var
-    if not env_var:
-        return _coerce_value(definition, source.default)
-    env_value = os.getenv(env_var)
-    if env_value is None:
-        return _coerce_value(definition, source.default)
-    return _coerce_value(definition, env_value)
+    value = os.getenv(env_var) if env_var else source.default
+    if value is None and source.required:
+        raise ValueError(f"Required config variable '{env_var}' is not set")
+    return _coerce_value(definition, value)
 
 
-def _resolve_static(definition: ContextVariableDefinition) -> Any:
-    return _coerce_value(definition, definition.source.value)
-
-
-def _resolve_derived_default(definition: ContextVariableDefinition) -> Any:
+def _resolve_state_default(definition: ContextVariableDefinition) -> Any:
     return _coerce_value(definition, definition.source.default)
 
 
@@ -98,73 +94,134 @@ def _create_minimal_context(workflow_name: str, enterprise_id: Optional[str]):
 def _database_defaults(raw_section: Dict[str, Any]) -> Optional[str]:
     defaults = None
     if isinstance(raw_section, dict):
-        candidate = raw_section.get("database_defaults")
-        if isinstance(candidate, dict):
-            defaults = candidate.get("database_name")
-        defaults = defaults or raw_section.get("default_database_name")
+        defaults = raw_section.get("default_database_name")
         defaults = defaults or raw_section.get("default_database")
     return defaults
 
 
-# ---------------------------------------------------------------------------
-# Database loading
-# ---------------------------------------------------------------------------
+def _resolve_template_value(template: Any, context: Any, enterprise_id: str) -> Any:
+    if not isinstance(template, str) or not template.startswith("{{") or not template.endswith("}}"):
+        return template
+    inner = template[2:-2].strip()
+    if not inner:
+        return template
 
-async def _load_database_variables(
-    items: List[Tuple[str, ContextVariableDefinition]],
-    default_database_name: Optional[str],
+    # runtime scoped value (e.g., {{runtime.enterprise_id}})
+    if inner.startswith("runtime."):
+        key = inner.split(".", 1)[1]
+        if key == "enterprise_id":
+            return enterprise_id
+        try:
+            return context.get(key)  # type: ignore[attr-defined]
+        except Exception:
+            return getattr(context, key, None)
+
+    parts = inner.split(".")
+    base_name = parts[0]
+    try:
+        base_value = context.get(base_name)  # type: ignore[attr-defined]
+    except Exception:
+        base_value = getattr(context, base_name, None)
+    for part in parts[1:]:
+        if isinstance(base_value, dict):
+            base_value = base_value.get(part)
+        else:
+            base_value = getattr(base_value, part, None)
+    return base_value
+
+
+def _materialize_query_template(
+    template: Optional[Dict[str, Any]],
+    context: Any,
     enterprise_id: str,
 ) -> Dict[str, Any]:
-    loaded: Dict[str, Any] = {}
-    if not items:
-        return loaded
+    if not template:
+        return {"enterprise_id": enterprise_id}
+    resolved: Dict[str, Any] = {}
+    for key, value in template.items():
+        resolved[key] = _resolve_template_value(value, context, enterprise_id)
+    return resolved
+
+
+async def _load_data_reference_value(
+    name: str,
+    definition: ContextVariableDefinition,
+    *,
+    default_database_name: Optional[str],
+    enterprise_id: str,
+    context: Any,
+) -> Any:
+    source = definition.source
+    
+    adapter = get_db_adapter(source)
+    if not adapter:
+        business_logger.warning(
+            "Skipping data_reference variable %s (no suitable db adapter found)", name
+        )
+        return None
 
     try:
-        from core.core_config import get_mongo_client
-        from bson import ObjectId
-    except Exception as import_err:  # pragma: no cover
-        business_logger.error(f"Database load unavailable: {import_err}")
-        return loaded
+        query = _materialize_query_template(source.query_template, context, enterprise_id)
+        projection = {field: 1 for field in (source.fields or [])} or None
+        
+        business_logger.info(f"[DATA_REFERENCE] Resolved query for '{name}': query={query}, projection={projection}, enterprise_id={enterprise_id}")
+        
+        doc = await adapter.fetch_one(source, query, projection)
 
-    client = get_mongo_client()
+        if doc is None:
+            if source.default is not None:
+                return _coerce_value(definition, source.default)
+            return None
 
-    for name, definition in items:
-        source = definition.source
-        db_name = source.database_name or default_database_name
-        collection = source.collection
-        if not db_name or not collection:
-            business_logger.warning(
-                f"Skipping database variable '{name}' (database_name={db_name}, collection={collection})"
-            )
-            continue
+        if isinstance(doc, dict) and "_id" in doc:
+            doc = {k: v for k, v in doc.items() if k != "_id"}
 
-        search_by = source.search_by or "enterprise_id"
-        field = source.field
+        # If only one field was requested, extract it directly.
+        if source.fields and len(source.fields) == 1:
+            field_value = doc.get(source.fields[0])
+            business_logger.info(f"Extracted single field '{source.fields[0]}' from document: value={'<present>' if field_value else '<missing>'}")
+            coerced = _coerce_value(definition, field_value)
+            business_logger.info(f"After coercion for '{name}': type={type(coerced).__name__}, length={len(str(coerced)) if coerced else 0}")
+            return coerced
 
-        try:
-            db = client[db_name]
-            business_logger.info(f"Loading {name} from database", extra={"database": db_name, "collection": collection})
-            if search_by == "enterprise_id":
-                try:
-                    query = {search_by: ObjectId(enterprise_id)}
-                except Exception:
-                    query = {search_by: enterprise_id}
-            else:
-                query = {search_by: enterprise_id}
+        business_logger.info(f"Returning full document for '{name}': keys={list(doc.keys()) if isinstance(doc, dict) else 'not_dict'}")
+        return _coerce_value(definition, doc)
+    except Exception as err:
+        business_logger.error(f"Failed loading data_reference '{name}': {err}")
+        return None
 
-            document = await db[collection].find_one(query)
-            if not document:
-                business_logger.info(f"No document found for {name}")
-                continue
 
-            if field:
-                loaded[name] = document.get(field)
-            else:
-                loaded[name] = document
-        except Exception as load_err:
-            business_logger.error(f"Failed loading database variable '{name}': {load_err}")
+def _create_data_entity_manager(
+    name: str,
+    definition: ContextVariableDefinition,
+    *,
+    default_database_name: Optional[str],
+) -> Optional[DataEntityManager]:
+    source = definition.source
+    db_name = source.database_name or default_database_name
+    collection = source.collection
+    if not db_name or not collection:
+        business_logger.warning(
+            "Skipping data_entity %s (database_name=%s, collection=%s)",
+            name,
+            db_name,
+            collection,
+        )
+        return None
 
-    return loaded
+    try:
+        manager = DataEntityManager(
+            database_name=db_name,
+            collection=collection,
+            schema=source.schema,
+            indexes=source.indexes,
+            write_strategy=source.write_strategy or "immediate",
+            search_by=source.search_by,
+        )
+        return manager
+    except Exception as err:
+        business_logger.error(f"Failed creating DataEntityManager for {name}: {err}")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +375,8 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]):
     plan, raw_context_section = _load_workflow_plan(workflow_name)
 
     # Optional schema overview (gated by env)
+    schema_capability_enabled = False
+    schema_capability_db: Optional[str] = None
     if isinstance(raw_context_section, dict):
         try:
             include_schema = os.getenv("CONTEXT_INCLUDE_SCHEMA", "false").lower() in _TRUE_FLAG_VALUES
@@ -328,9 +387,11 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]):
                     if isinstance(schema_cfg, dict):
                         db_name = schema_cfg.get("database_name")
                 if db_name:
+                    schema_capability_db = db_name
                     overview_info = await _get_database_schema_async(db_name)
                     overview_text = overview_info.get("schema_overview")
                     if overview_text:
+                        schema_capability_enabled = True
                         if len(overview_text) > TRUNCATE_CHARS:
                             overview_text = f"{overview_text[:TRUNCATE_CHARS]}... [truncated {len(overview_text) - TRUNCATE_CHARS} chars]"
                         context.set("schema_overview", overview_text)
@@ -342,43 +403,64 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]):
         except Exception as schema_err:  # pragma: no cover
             business_logger.debug(f"Schema overview skipped: {schema_err}")
 
-    definitions = plan.definitions or {}
+    context.set("database_schema_available", schema_capability_enabled)
+    context.set("database_schema_db", schema_capability_db)
 
-    database_items: List[Tuple[str, ContextVariableDefinition]] = []
+    definitions = plan.definitions or {}
+    default_db = _database_defaults(raw_context_section)
+    data_entity_managers: List[DataEntityManager] = []
+
     for name, definition in definitions.items():
         source = definition.source
-        if source.type == "environment":
-            value = _resolve_environment(definition)
-            context.set(name, value)
-            business_logger.info(f"Loaded environment variable {name}", extra={"value": value})
-        elif source.type == "static":
-            value = _resolve_static(definition)
-            context.set(name, value)
-            business_logger.info(f"Loaded static variable {name}")
-        elif source.type == "derived":
-            # Derived variables (both agent_text and ui_response triggers)
-            # Seed with default value; updates handled by:
-            # - DerivedContextManager for agent_text triggers
-            # - Tool code for ui_response triggers
-            value = _resolve_derived_default(definition)
-            context.set(name, value)
-            
-            # Log trigger types for debugging
-            trigger_types = [t.type for t in source.triggers] if source.triggers else []
-            business_logger.info(
-                f"Seeded derived variable {name} with default={value}, triggers={trigger_types}"
-            )
-        elif source.type == "database":
-            database_items.append((name, definition))
-        else:
-            business_logger.debug(f"Unsupported source type for {name}: {source.type}")
+        source_type = source.type
 
-    if database_items and internal_enterprise_id:
-        default_db = _database_defaults(raw_context_section)
-        db_values = await _load_database_variables(database_items, default_db, internal_enterprise_id)
-        for name, value in db_values.items():
-            coerced = _coerce_value(definitions.get(name), value) if definitions.get(name) else value
-            context.set(name, coerced)
+        if source_type == "config":
+            value = _resolve_config(definition)
+            context.set(name, value)
+            business_logger.info("Loaded config variable %s", name)
+        elif source_type == "data_reference":
+            business_logger.info(f"[DATA_REFERENCE] Loading '{name}' for enterprise_id={internal_enterprise_id}")
+            value = await _load_data_reference_value(
+                name,
+                definition,
+                default_database_name=default_db,
+                enterprise_id=internal_enterprise_id,
+                context=context,
+            )
+            context.set(name, value)
+            business_logger.info(f"[DATA_REFERENCE] Loaded '{name}' - type={type(value).__name__}, value_preview={str(value)[:100] if value else 'None'}")
+            business_logger.info("Loaded data_reference %s", name)
+        elif source_type == "data_entity":
+            manager = _create_data_entity_manager(
+                name,
+                definition,
+                default_database_name=default_db,
+            )
+            if manager:
+                data_entity_managers.append(manager)
+                context.set(name, manager)
+                business_logger.info("Initialized data_entity manager for %s", name)
+        elif source_type == "computed":
+            context.set(name, None)
+            business_logger.debug("Registered computed variable %s (on-demand)", name)
+        elif source_type == "state":
+            value = _resolve_state_default(definition)
+            context.set(name, value)
+            transition_count = len(source.transitions)
+            business_logger.info(
+                "Initialized state variable %s with default=%s, transitions=%d",
+                name,
+                value,
+                transition_count,
+            )
+        elif source_type == "external":
+            context.set(name, None)
+            business_logger.debug("Registered external variable %s (fetched by tools)", name)
+        else:
+            business_logger.debug("Unsupported source type for %s: %s", name, source_type)
+
+    if data_entity_managers:
+        setattr(context, "_mozaiks_data_entity_managers", data_entity_managers)
 
     # Expose definitions and agent plan on the context container for downstream consumers
     if definitions:

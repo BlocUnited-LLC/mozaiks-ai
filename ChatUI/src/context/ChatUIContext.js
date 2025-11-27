@@ -40,7 +40,7 @@ export const ChatUIProvider = ({
   const [layoutMode, setLayoutMode] = useState('full'); // 'full' | 'split' | 'minimized'
   const [previousLayoutMode, setPreviousLayoutMode] = useState('full'); // Remember state before minimizing
   const [isArtifactOpen, setIsArtifactOpen] = useState(false);
-  const [isInDiscoveryMode, setIsInDiscoveryMode] = useState(false); // Track if on workflows page
+  const [isInWidgetMode, setIsInWidgetMode] = useState(false); // Track if chat is in persistent widget mode (non-ChatPage routes)
 
   // Conversation mode + general chat state (Ask Mozaiks integration)
   const [conversationMode, setConversationMode] = useState(() => {
@@ -57,6 +57,9 @@ export const ChatUIProvider = ({
   const [activeGeneralChatId, setActiveGeneralChatId] = useState(null);
   const [generalChatSummary, setGeneralChatSummary] = useState(null);
   const [generalChatSessions, setGeneralChatSessions] = useState([]);
+  
+  // Workflow sessions list for future dropdown (IN_PROGRESS workflows)
+  const [workflowSessions, setWorkflowSessions] = useState([]);
 
   useEffect(() => {
     try {
@@ -159,8 +162,8 @@ export const ChatUIProvider = ({
     setPreviousLayoutMode,
     isArtifactOpen,
     setIsArtifactOpen,
-    isInDiscoveryMode,
-    setIsInDiscoveryMode,
+    isInWidgetMode,
+    setIsInWidgetMode,
     conversationMode,
     setConversationMode,
     activeGeneralChatId,
@@ -169,6 +172,8 @@ export const ChatUIProvider = ({
     setGeneralChatSummary,
     generalChatSessions,
     setGeneralChatSessions,
+    workflowSessions,
+    setWorkflowSessions,
 
     // Configuration
     config: config.getConfig(),

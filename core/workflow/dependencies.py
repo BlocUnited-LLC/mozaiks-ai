@@ -107,8 +107,7 @@ class WorkflowDependencyManager:
         self, 
         enterprise_id: str, 
         workflow_name: str,
-        dependencies: Dict[str, Any],
-        provides: Dict[str, Any]
+        dependencies: Dict[str, Any]
     ):
         """
         Add or update workflow in dependency graph.
@@ -128,11 +127,6 @@ class WorkflowDependencyManager:
                         {"artifact_type": "ActionPlan", "workflow": "Generator", "reason": "..."}
                     ]
                 }
-            provides: What this workflow outputs
-                {
-                    "context_vars": ["built_workflow_name", "build_status"],
-                    "artifacts": []
-                }
         """
         coll = await self._get_dependencies_collection()
         
@@ -147,8 +141,7 @@ class WorkflowDependencyManager:
                         "workflow_name": workflow_name,
                         "created_at": datetime.utcnow().isoformat(),
                         "status": "active",
-                        "dependencies": dependencies or {},
-                        "provides": provides or {}
+                        "dependencies": dependencies or {}
                     }
                 }
             },
@@ -315,8 +308,7 @@ class WorkflowDependencyManager:
                     "workflow_name": "Build",
                     "available": True,
                     "reason": "All dependencies met",
-                    "dependencies": {...},
-                    "provides": {...}
+                    "dependencies": {...}
                 }
             ]
         """
@@ -339,8 +331,7 @@ class WorkflowDependencyManager:
                 "workflow_name": wf_name,
                 "available": is_available,
                 "reason": reason or "All dependencies met",
-                "dependencies": wf_entry.get("dependencies", {}),
-                "provides": wf_entry.get("provides", {})
+                "dependencies": wf_entry.get("dependencies", {})
             })
         
         logger.info(f"Found {len(workflows)} workflows in graph")

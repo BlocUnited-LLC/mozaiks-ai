@@ -211,6 +211,7 @@ class AG2PersistenceManager:
     def __init__(self):
         self.persistence = PersistenceManager()
         logger.info("AG2PersistenceManager (lean) ready")
+        self._workflow_stats_indexes_checked = False
 
     async def _coll(self):
         await self.persistence._ensure_client()
@@ -220,7 +221,29 @@ class AG2PersistenceManager:
     async def _workflow_stats_coll(self):
         await self.persistence._ensure_client()
         assert self.persistence.client is not None, "Mongo client not initialized"
-        return self.persistence.client["MozaiksAI"]["WorkflowStats"]
+        coll = self.persistence.client["MozaiksAI"]["WorkflowStats"]
+        if not getattr(self, "_workflow_stats_indexes_checked", False):
+            await self._ensure_workflow_stats_indexes(coll)
+        return coll
+
+    async def _ensure_workflow_stats_indexes(self, coll):
+        """Drop legacy unique indexes that conflict with rollup documents."""
+        try:
+            existing = await coll.list_indexes().to_list(length=None)
+            legacy_index_names = {"ux_chat_seq", "ux_workflow_chat_seq"}
+            for idx in existing:
+                name = idx.get("name")
+                if name in legacy_index_names:
+                    try:
+                        await coll.drop_index(name)
+                        logger.info("Dropped legacy WorkflowStats index %s", name)
+                    except Exception as drop_err:
+                        logger.warning("Failed to drop legacy WorkflowStats index %s: %s", name, drop_err)
+            self._workflow_stats_indexes_checked = True
+        except Exception as idx_err:
+            logger.warning("WorkflowStats index check failed: %s", idx_err)
+            # Avoid repeated attempts in tight loops if Mongo unavailable
+            self._workflow_stats_indexes_checked = True
 
     async def _general_coll(self):
         await self.persistence._ensure_client()
@@ -1190,28 +1213,21 @@ class AG2PersistenceManager:
                             f"agents.{agent_name}.avg.avg_duration_sec": (adur / an),
                         }})
                 
-                # Real-time billing - debit tokens immediately if not free trial
+                # Real-time billing via TokenManager
                 if total_tokens > 0:
-                    cfg = get_free_trial_config()
-                    if not bool(cfg.get("enabled", False)):
-                        result = await self.debit_tokens(
-                            user_id, enterprise_id, total_tokens, 
-                            reason="realtime_usage", strict=False, 
-                            meta={"chat_id": chat_id, "workflow": workflow_name, "cost": cost_usd, "agent": agent_name}
-                        )
-                        # If debit failed due to insufficient tokens, emit pause event
-                        if result is None:
-                            # SessionPausedEvent temporarily disabled - commenting out to prevent import errors
-                            # from core.events import get_event_dispatcher, SessionPausedEvent
-                            # dispatcher = get_event_dispatcher()
-                            # await dispatcher.dispatch(SessionPausedEvent(
-                            #     chat_id=chat_id,
-                            #     reason="insufficient_tokens",
-                            #     required_tokens=total_tokens,
-                            #     user_id=user_id,
-                            #     enterprise_id=enterprise_id
-                            # ))
-                            logger.warning(f"Token debit failed for chat {chat_id} - insufficient tokens ({total_tokens} required)")
+                    from core.tokens.manager import TokenManager
+                    await TokenManager.handle_turn_usage(
+                        chat_id=chat_id,
+                        enterprise_id=enterprise_id,
+                        user_id=user_id,
+                        workflow_name=workflow_name,
+                        usage_snapshot={
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": total_tokens
+                        },
+                        persistence_manager=self
+                    )
                 
         except Exception as e:  # pragma: no cover
             logger.error(f"Failed to update session metrics for {chat_id}: {e}")

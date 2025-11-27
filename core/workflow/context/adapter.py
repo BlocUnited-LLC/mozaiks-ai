@@ -23,10 +23,12 @@ except Exception:  # pragma: no cover
 
 
 class _RuntimeContextVariables:
-    def __init__(self, initial: dict[str, Any] | None = None) -> None:
+    def __init__(self, initial: dict[str, Any] | None = None, chat_id: str | None = None, enterprise_id: str | None = None) -> None:
         # Keep a shallow copy for local reads while optionally tracking the original
         self._data: dict[str, Any] = dict(initial or {})
         self._backing: dict[str, Any] | None = initial if isinstance(initial, dict) else None
+        self._chat_id = chat_id
+        self._enterprise_id = enterprise_id
 
     def get(self, key: str, default: Any | None = None) -> Any:
         return self._data.get(key, default)
@@ -35,6 +37,21 @@ class _RuntimeContextVariables:
         self._data[key] = value
         if self._backing is not None:
             self._backing[key] = value
+        
+        # Auto-persist if context is bound to a session
+        if self._chat_id and self._enterprise_id:
+            try:
+                import asyncio
+                from core.data.persistence.persistence_manager import AG2PersistenceManager
+                # Fire and forget persistence to avoid blocking
+                pm = AG2PersistenceManager()
+                asyncio.create_task(pm.persist_context_variables(
+                    chat_id=self._chat_id,
+                    enterprise_id=self._enterprise_id,
+                    variables=self._data
+                ))
+            except Exception:
+                pass # Fail silently on persistence to not break runtime flow
 
     def remove(self, key: str) -> bool:
         removed = self._data.pop(key, None)
@@ -58,7 +75,7 @@ def _vendor_is_usable(obj: Any) -> bool:
     return all(hasattr(obj, n) for n in required)
 
 
-def create_context_container(initial: dict[str, Any] | None = None):
+def create_context_container(initial: dict[str, Any] | None = None, chat_id: str | None = None, enterprise_id: str | None = None):
     if VendorContextVariables:
         try:
             inst = VendorContextVariables(data=initial or {})  # type: ignore[call-arg]
@@ -66,7 +83,7 @@ def create_context_container(initial: dict[str, Any] | None = None):
                 return inst
         except Exception:
             pass
-    return _RuntimeContextVariables(initial=initial)
+    return _RuntimeContextVariables(initial=initial, chat_id=chat_id, enterprise_id=enterprise_id)
 
 __all__ = ["create_context_container"]
 

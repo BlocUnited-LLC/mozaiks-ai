@@ -13,7 +13,7 @@ This document clarifies the conceptual model for human participation in workflow
 **Meaning**: "Does this phase require ANY human participation at some point?"
 
 **Decision Logic**:
-- `true` → Phase involves human input, review, approval, or decision-making
+- `true` → Phase involves human context (input), review, approval, or decision-making
 - `false` → Phase is fully automated (agents work backend without human involvement)
 
 **Examples**:
@@ -42,7 +42,7 @@ This document clarifies the conceptual model for human participation in workflow
   "label": "Provide Requirements",
   "component": "RequirementsForm",
   "display": "inline|artifact",
-  "interaction_pattern": "single_step|two_step_confirmation|multi_step",
+  "ui_pattern": "single_step|two_step_confirmation|multi_step",
   "summary": "User provides project requirements via inline form"
 }
 ```
@@ -53,7 +53,7 @@ This document clarifies the conceptual model for human participation in workflow
 - `inline` → Embedded in chat flow (lightweight, contextual, doesn't interrupt conversation)
 - `artifact` → Separate panel/tray delivery (rich content, reviewed asynchronously)
 
-**`interaction_pattern`** (HOW complex the interaction is):
+**`ui_pattern`** (HOW complex the interaction is):
 - `single_step` → User acts immediately (submit form, click button, provide input)
 - `two_step_confirmation` → User previews content THEN confirms/rejects (approval workflow)
 - `multi_step` → Sequential wizard or iterative feedback loop (3+ steps)
@@ -75,7 +75,7 @@ This document clarifies the conceptual model for human participation in workflow
 **Meaning**: "HOW this specific agent engages with humans during execution"
 
 **Values**:
-- `"input"` → Agent collects data from user (forms, structured input)
+- `"context"` → Agent collects data from user as part of a Q&A session
 - `"approval"` → Agent presents content for user review/decision (approval gates)
 - `"none"` → Agent operates autonomously (no human involvement)
 
@@ -86,15 +86,15 @@ For EACH agent:
   1. Check: Does an UI_Component exist for this phase + agent?
   
   2. If YES:
-     - interaction_pattern="single_step" → human_interaction="input"
+     - ui_pattern="single_step" → human_interaction="context"
        * User provides data through UI (inline or artifact display)
        * Include operations for data validation and processing
      
-     - interaction_pattern="two_step_confirmation" → human_interaction="approval"
+     - ui_pattern="two_step_confirmation" → human_interaction="approval"
        * User reviews content then confirms/rejects
        * Include operations for presenting content and handling decisions
      
-     - interaction_pattern="multi_step" → human_interaction="approval"
+     - ui_pattern="multi_step" → human_interaction="approval"
        * Multi-step flows typically involve iterative review
        * Include operations for stage progression and revision cycles
   
@@ -143,7 +143,7 @@ For EACH agent:
       "label": "Review Draft",
       "component": "ApprovalCard",
       "display": "artifact",  // ← Appears in side panel
-      "interaction_pattern": "two_step_confirmation",  // ← Preview then approve/reject
+      "ui_pattern": "two_step_confirmation",  // ← Preview then approve/reject
       "summary": "User reviews generated content in artifact tray and approves or requests revisions"
     }
   ]
@@ -174,7 +174,7 @@ For EACH agent:
       "agents": [
         {
           "agent_name": "ReviewAgent",
-          "human_interaction": "approval",  // ← interaction_pattern="two_step_confirmation"
+          "human_interaction": "approval",  // ← ui_pattern="two_step_confirmation"
           "agent_tools": [
             {
               "name": "submit_approval",
@@ -197,8 +197,8 @@ For EACH agent:
 | **Does phase need human?** | `human_in_loop: bool` | *(not represented)* | *(not represented)* |
 | **What interaction happens?** | *(not represented)* | `UI_Components[]` | *(reads from TechnicalBlueprint)* |
 | **Where UI renders?** | *(not represented)* | `display: "inline"\|"artifact"` | `interaction_mode: "inline"\|"artifact"\|"none"` |
-| **How complex?** | *(not represented)* | `interaction_pattern: "single_step"\|"two_step"\|"multi_step"` | *(informs human_interaction type)* |
-| **How agent engages humans?** | *(not represented)* | *(not represented)* | `human_interaction: "input"\|"approval"\|"none"` |
+| **How complex?** | *(not represented)* | `ui_pattern: "single_step"\|"two_step"\|"multi_step"` | *(informs human_interaction type)* |
+| **How agent engages humans?** | *(not represented)* | *(not represented)* | `human_interaction: "context"\|"approval"\|"none"` |
 
 ---
 
@@ -222,14 +222,14 @@ For EACH agent:
 
 ## Common Pitfalls (Now Resolved)
 
-### ❌ Before (Confusing)
+### ❌ Confusing
 - "UI Components" implied visual components only
 - `human_in_loop` vs `human_interaction` terminology overlap was unclear
 - Chat interface treated as a UI Component when it's the transport
 - Decision logic based on keywords in interview instead of LLM judgment
 - Assumed trigger="chat" + human_in_loop=true always needs ui component
 
-### ✅ After (Clarified)
+### ✅ Clarity
 - "UI Components" captures full human-agent coordination spectrum
 - Clear three-level model: strategic intent → interaction design → agent implementation
 - Chat interface is transport; UI Components are elements WITHIN chat
@@ -243,7 +243,7 @@ For EACH agent:
 ### When to set human_in_loop=true (WorkflowStrategy)
 ```
 Does phase involve:
-- "review", "approve", "decide", "input", "feedback" → YES
+- "review", "approve", "decide", "context", "feedback" → YES
 - "analyze", "process", "generate", "send", "update" (automation) → NO
 - monetization_enabled=true AND phase delivers value to end user → YES
 ```
@@ -262,9 +262,9 @@ Phase has human_in_loop=true AND:
 Check TechnicalBlueprint.UI_Components for this phase + agent:
 
 IF UI_Component exists:
-  - interaction_pattern="single_step" → human_interaction="input"
-  - interaction_pattern="two_step_confirmation" → human_interaction="approval"
-  - interaction_pattern="multi_step" → human_interaction="approval"
+  - ui_pattern="single_step" → human_interaction="context"
+  - ui_pattern="two_step_confirmation" → human_interaction="approval"
+  - ui_pattern="multi_step" → human_interaction="approval"
 
 IF NO UI_Component:
   - human_interaction="none"

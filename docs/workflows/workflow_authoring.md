@@ -300,14 +300,18 @@ Defines all variables available to agents during execution, with sources and tri
         "type": "boolean",
         "description": "True once InterviewAgent has enough context to proceed",
         "source": {
-          "type": "derived",
+          "type": "state",
           "default": false,
-          "triggers": [
+          "transitions": [
             {
-              "type": "agent_text",
-              "agent": "InterviewAgent",
-              "match": { "equals": "NEXT" },
-              "ui_hidden": true
+              "from_state": false,
+              "to_state": true,
+              "trigger": {
+                "type": "agent_text",
+                "agent": "InterviewAgent",
+                "match": { "equals": "NEXT" },
+                "ui_hidden": true
+              }
             }
           ]
         }

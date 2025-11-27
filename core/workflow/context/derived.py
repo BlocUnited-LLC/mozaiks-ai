@@ -79,6 +79,8 @@ class AgentTextTrigger:
     equals: Optional[str] = None
     contains: Optional[str] = None
     regex: Optional[str] = None
+    value: Any = True
+    from_state: Optional[str] = None
     _compiled: Optional[re.Pattern[str]] = None
 
     def __post_init__(self) -> None:
@@ -167,8 +169,17 @@ class DerivedVariableSpec:
             if trigger.matches(event):
                 for provider in providers:
                     if hasattr(provider, "set"):
+                        if trigger.from_state is not None:
+                            current = None
+                            if hasattr(provider, "get"):
+                                try:
+                                    current = provider.get(self.name)
+                                except Exception:  # pragma: no cover
+                                    current = None
+                            if current != trigger.from_state:
+                                continue
                         try:
-                            provider.set(self.name, True)  # type: ignore[attr-defined]
+                            provider.set(self.name, trigger.value)  # type: ignore[attr-defined]
                         except Exception as err:  # pragma: no cover
                             logger.debug(f"Derived variable update failed: {err}")
                 return True
@@ -195,11 +206,11 @@ class DerivedContextManager:
         if self.variables:
             self.seed_defaults()
             logger.info(
-                f"[DERIVED_CONTEXT] Loaded {len(self.variables)} derived variables: {[v.name for v in self.variables]}"
+                f"[DERIVED_CONTEXT] Loaded {len(self.variables)} state variables: {[v.name for v in self.variables]}"
             )
             self._register_agent_hooks(agents)
         else:
-            logger.debug("[DERIVED_CONTEXT] No derived variables configured")
+            logger.debug("[DERIVED_CONTEXT] No state variables configured")
 
     def _load_variables(self) -> List[DerivedVariableSpec]:
         definitions = getattr(self.base_context, "_mozaiks_context_definitions", None)
@@ -220,41 +231,38 @@ class DerivedContextManager:
             source = getattr(definition, "source", None)
             if not source:
                 continue
-            
+
             source_type = getattr(source, "type", None)
-            
-            # Only process derived variables
-            if source_type != "derived":
+            if source_type != "state":
                 continue
-            
-            # Filter for agent_text triggers only (skip ui_response triggers)
+
             triggers: List[AgentTextTrigger] = []
-            for trig_spec in getattr(source, "triggers", []) or []:
-                # Skip ui_response triggers (tool code handles them)
-                if getattr(trig_spec, "type", None) == "ui_response":
-                    logger.debug(
-                        f"[DERIVED_CONTEXT] Skipping ui_response trigger for '{name}' (tool-driven)"
-                    )
-                    continue
-                
-                # Only process agent_text triggers
-                if getattr(trig_spec, "type", None) != "agent_text":
-                    continue
-                    
-                try:
-                    trigger = AgentTextTrigger(
-                        agent=trig_spec.agent,
-                        equals=trig_spec.match.equals if trig_spec.match else None,
-                        contains=trig_spec.match.contains if trig_spec.match else None,
-                        regex=trig_spec.match.regex if trig_spec.match else None,
-                    )
-                    triggers.append(trigger)
-                except Exception as err:  # pragma: no cover
-                    logger.debug(f"Skipping invalid derived trigger for {name}: {err}")
-            
+
+            # State transitions
+            if source_type == "state" and getattr(source, "transitions", None):
+                for transition in getattr(source, "transitions", []) or []:
+                    trig_spec = getattr(transition, "trigger", None)
+                    if not trig_spec or getattr(trig_spec, "type", None) != "agent_text":
+                        continue
+                    if not getattr(trig_spec, "agent", None):
+                        continue
+                    try:
+                        triggers.append(
+                            AgentTextTrigger(
+                                agent=trig_spec.agent,
+                                equals=trig_spec.match.equals if trig_spec.match else None,
+                                contains=trig_spec.match.contains if trig_spec.match else None,
+                                regex=trig_spec.match.regex if trig_spec.match else None,
+                                value=getattr(transition, "to_state", True),
+                                from_state=getattr(transition, "from_state", None),
+                            )
+                        )
+                    except Exception as err:  # pragma: no cover
+                        logger.debug(f"Skipping invalid state transition trigger for {name}: {err}")
+
             if not triggers:
                 continue
-            
+
             results.append(
                 DerivedVariableSpec(
                     name=name,
@@ -309,17 +317,33 @@ class DerivedContextManager:
             should_hide = False
             for var, trigger in trigger_pairs:
                 if self._matches_trigger(trigger, candidate):
+                    # Determine value to set (handle dynamic extraction)
+                    value_to_set = trigger.value
+                    if value_to_set == "$1" and trigger._compiled:
+                        m = trigger._compiled.search(candidate)
+                        if m and m.groups():
+                            value_to_set = m.group(1)
+
                     updated = False
                     for provider in self.providers:
                         if hasattr(provider, "set"):
+                            if trigger.from_state is not None:
+                                current = None
+                                if hasattr(provider, "get"):
+                                    try:
+                                        current = provider.get(var.name)
+                                    except Exception:  # pragma: no cover
+                                        current = None
+                                if current != trigger.from_state:
+                                    continue
                             try:
-                                provider.set(var.name, True)  # type: ignore[attr-defined]
+                                provider.set(var.name, value_to_set)  # type: ignore[attr-defined]
                                 updated = True
                             except Exception as err:  # pragma: no cover
                                 logger.debug(f"[DERIVED_CONTEXT] pre-send update failed: {err}")
                     if updated:
                         logger.info(
-                            f"[DERIVED_CONTEXT] {self.workflow_name}: {var.name} -> True (pre-send, agent={agent_name})"
+                            f"[DERIVED_CONTEXT] {self.workflow_name}: {var.name} -> {value_to_set!r} (pre-send, agent={agent_name})"
                         )
                     should_hide = True
             if should_hide:

@@ -1,17 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChatUI } from '../context/ChatUIContext';
+import { useWidgetMode } from '../hooks/useWidgetMode';
 import Header from '../components/layout/Header';
 
 /**
  * My Workflows Page
- * 
+ *
  * Displays all created workflows/apps with search, filtering, and quick actions.
  * Users can view, resume, export, or delete their generated applications.
  */
 const MyWorkflowsPage = () => {
   const navigate = useNavigate();
-  const { config } = useChatUI();
+  const {
+    config
+  } = useChatUI();
+  useWidgetMode(); // Enable persistent chat widget for this page
   const [workflows, setWorkflows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -20,7 +24,7 @@ const MyWorkflowsPage = () => {
 
   // Enterprise ID for API calls (currently using mock data)
   // eslint-disable-next-line no-unused-vars
-  const currentEnterpriseId = config?.chat?.defaultEnterpriseId || '68542c1109381de738222350';
+  const currentEnterpriseId = config?.chat?.defaultEnterpriseId || process.env.REACT_APP_DEFAULT_ENTERPRISE_ID;
 
   useEffect(() => {
     loadWorkflows();
@@ -318,7 +322,6 @@ const MyWorkflowsPage = () => {
           </div>
         </div>
       </main>
-      
     </div>
   );
 };

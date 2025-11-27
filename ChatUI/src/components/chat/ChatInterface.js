@@ -144,13 +144,16 @@ const ModernChatInterface = ({
   onStartGeneralChat,
   generalChatSummary,
   generalSessionsLoading = false,
+  showAskHistoryMenu = false,
+  onAskHistoryToggle,
   structuredOutputs = {},
   startupMode,
   initialMessageToUser,
   onRetry,
   tokensExhausted = false,
   submitInputRequest,
-  onBrandClick // Optional callback when brand/logo clicked
+  onBrandClick, // Optional callback when brand/logo clicked
+  isOnChatPage = true // Whether we're on the primary chat page (not discovery/workflows)
 }) => {
   const [message, setMessage] = useState('');
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
@@ -163,7 +166,9 @@ const ModernChatInterface = ({
   const conversationSubtitle = conversationMode === 'ask'
     ? (generalChatSummary?.label || 'Ask Mozaiks Session')
     : (formattedWorkflowName || 'AI-Powered Workflow');
-  const modeLabel = conversationMode === 'ask' ? 'Ask Mozaiks' : 'Workflow';
+  // When not on chat page: only show 🧠 (ask→workflow toggle), hide 🤖 (workflow→ask toggle)
+  const showModeToggle = isOnChatPage || conversationMode === 'ask';
+  const showAskHistoryToggle = showAskHistoryMenu && typeof onAskHistoryToggle === 'function';
   const avatarIcon = conversationMode === 'ask' ? '🧠' : '🤖';
   const avatarTitle = onBrandClick
     ? 'Return to chat'
@@ -208,7 +213,7 @@ const ModernChatInterface = ({
   const onSubmitClick = (event) => {
     event.preventDefault();
     if (buttonText === 'NEXT') {
-      const currentEnterpriseId = enterpriseId || "68542c1109381de738222350";
+      const currentEnterpriseId = enterpriseId || process.env.REACT_APP_DEFAULT_ENTERPRISE_ID;
       navigate("/chat/blueprint/" + currentEnterpriseId);
       return;
     }
@@ -260,11 +265,22 @@ const ModernChatInterface = ({
     if (!onConversationModeChange) {
       return;
     }
-    const nextMode = conversationMode === 'workflow' ? 'ask' : 'workflow';
-    onConversationModeChange(nextMode);
-    if (nextMode === 'ask' && onStartGeneralChat && !generalChatSummary?.chatId) {
-      onStartGeneralChat();
+    console.log('🔘 [CHAT_INTERFACE] Mode toggle clicked, current mode:', conversationMode);
+    console.log('🔘 [CHAT_INTERFACE] isOnChatPage:', isOnChatPage);
+    console.log('🔘 [CHAT_INTERFACE] showModeToggle:', showModeToggle);
+    
+    // When NOT on chat page and switching from Ask → Workflow:
+    // Immediately switch mode (which triggers oldest workflow fetch), navigation will follow
+    if (!isOnChatPage && conversationMode === 'ask') {
+      console.log('🚀 [CHAT_INTERFACE] Off chat page in Ask mode → switching to workflow mode (will navigate)');
+      onConversationModeChange('workflow');
+      return;
     }
+    
+    const nextMode = conversationMode === 'workflow' ? 'ask' : 'workflow';
+    console.log('🔘 [CHAT_INTERFACE] Toggling to mode:', nextMode);
+    onConversationModeChange(nextMode);
+    // Note: chat.enter_general_mode automatically creates/reuses session, no need for separate call
   };
 
   const handleAvatarClick = () => {
@@ -272,8 +288,112 @@ const ModernChatInterface = ({
       onBrandClick();
       return;
     }
-    handleModeToggle();
+    // Only allow toggle if we're supposed to show it
+    if (showModeToggle) {
+      handleModeToggle();
+    }
   };
+
+  const renderedMessages = (() => {
+    // Determine the last chat index with a primary content message
+    let lastContentIndex = -1;
+    if (Array.isArray(messages)) {
+      messages.forEach((m, i) => {
+        if (m && m.content && !m.isTokenMessage && !m.isWarningMessage) {
+          lastContentIndex = i;
+        }
+      });
+    }
+
+    return messages?.map((chat, index) => {
+      if (!chat) {
+        return null;
+      }
+
+      const isEmptyContent = !(chat.content && String(chat.content).trim().length);
+      const hasStructured = !!(chat.structuredOutput && typeof chat.structuredOutput === 'object');
+      const hasUITool = !!chat.uiToolEvent;
+      const isSystem = chat.isTokenMessage || chat.isWarningMessage;
+      if (isEmptyContent && !chat.isThinking && !hasStructured && !hasUITool && !isSystem) {
+        return null;
+      }
+
+      const isStructuredCapable = typeof chat.isStructuredCapable === 'boolean' 
+        ? chat.isStructuredCapable 
+        : !!(chat.agentName && structuredOutputs[chat.agentName]);
+
+      try {
+        if (['1','true','on','yes'].includes((localStorage.getItem('mozaiks.debug_render')||'').toLowerCase())) {
+          console.log('[RENDER] ChatMessage', {
+            index,
+            id: chat.id,
+            agent: chat.agentName,
+            visual: chat.isVisual,
+            structured: isStructuredCapable,
+            streaming: chat.isStreaming,
+            preview: (chat.content||'').slice(0,80)
+          });
+        }
+      } catch {}
+
+      return (
+        <div key={index}>
+          <ChatMessage
+            message={chat.content}
+            message_from={chat.sender}
+            agentName={chat.agentName}
+            isTokenMessage={chat.isTokenMessage}
+            isWarningMessage={chat.isWarningMessage}
+            isLatest={index === lastContentIndex}
+            isStructuredCapable={isStructuredCapable}
+            structuredOutput={chat.structuredOutput}
+            structuredSchema={chat.structuredSchema}
+            isThinking={chat.isThinking}
+          />
+
+          {chat.uiToolEvent && (
+            <UIToolEventRenderer 
+              uiToolEvent={chat.uiToolEvent}
+              submitInputRequest={submitInputRequest}
+              isCompleted={chat.ui_tool_completed || false}
+              onResponse={(response) => {
+                handleAgentAction({
+                  type: 'ui_tool_response',
+                  ui_tool_id: chat.uiToolEvent.ui_tool_id,
+                  eventId: chat.uiToolEvent.eventId,
+                  response: response
+                });
+              }}
+            />
+          )}
+        </div>
+      );
+    });
+  })();
+
+  const messageStackClass = isOnChatPage
+    ? 'chat-feed-stream flex flex-col gap-3 md:gap-4'
+    : 'relative space-y-3 md:space-y-4';
+
+  const disableMobileShellChrome = conversationMode === 'ask';
+
+  const messageStack = (
+    <div className={messageStackClass}>
+      {/* Messages render below */}
+      {renderedMessages}
+      {/* Typing indicator slot (rendered when loading without messages updating) */}
+      {loading && (
+        <div className="flex justify-start px-0 message-container">
+          <div className="mt-1 px-2 py-1 rounded-md bg-transparent text-[rgba(var(--color-primary-light-rgb),0.7)] flex items-center gap-1 text-xs font-mono tracking-wide typing-indicator" aria-label="Assistant is typing" role="status">
+            <span className="typing-dot" />
+            <span className="typing-dot delay-150" />
+            <span className="typing-dot delay-300" />
+          </div>
+        </div>
+      )}
+      <div ref={chatEndRef} />
+    </div>
+  );
 
   return (
     <div className="flex flex-col h-full rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.3)] md:overflow-hidden overflow-visible shadow-2xl bg-gradient-to-br from-white/5 to-[rgba(var(--color-primary-rgb),0.05)] backdrop-blur-sm cosmic-ui-module artifact-panel p-0" style={{ overflow: 'clip' }}>
@@ -281,69 +401,63 @@ const ModernChatInterface = ({
       
       {/* Fixed Command Center Header - Dark background to match artifact */}
       <div className="flex-shrink-0 bg-[rgba(0,0,0,0.6)] border-b border-[rgba(var(--color-primary-light-rgb),0.2)] backdrop-blur-xl">
-        <div className="flex flex-col gap-4 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-col gap-3 flex-1 min-w-0">
-            <div className="flex items-center gap-3">
-            {/* Chat Icon + Title */}
-            <button
-              type="button"
-              onClick={handleAvatarClick}
-              className="flex items-center gap-3 focus:outline-none focus:ring-2 focus:ring-[var(--color-primary-light)]/60 rounded-xl"
-              title={avatarTitle}
-              aria-pressed={onBrandClick ? undefined : conversationMode === 'ask'}
-            >
-              <span className={`w-12 h-12 rounded-xl flex items-center justify-center shadow-lg transition-all duration-300 ${conversationMode === 'ask'
-                ? 'bg-gradient-to-br from-[var(--color-secondary)] to-[var(--color-primary)] scale-105'
-                : 'bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-secondary)]'}`}>
-                <span className="text-2xl" role="img" aria-hidden="true">{avatarIcon}</span>
-              </span>
-              <span className="text-left">
-                <span className="block text-xl font-bold text-white tracking-tight">MozaiksAI</span>
-                <span className="block text-xs text-gray-400">{conversationSubtitle}</span>
-              </span>
-            </button>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${conversationMode === 'ask'
-                  ? 'bg-[rgba(var(--color-secondary-rgb),0.15)] text-[var(--color-secondary-light)] border-[rgba(var(--color-secondary-light-rgb),0.5)]'
-                  : 'bg-[rgba(var(--color-primary-rgb),0.15)] text-[var(--color-primary-light)] border-[rgba(var(--color-primary-light-rgb),0.5)]'}`}
+        <div className="flex flex-row items-center justify-between px-3 py-2.5 sm:px-4 sm:py-3 md:px-5 md:py-3.5">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+            {showAskHistoryToggle && (
+              <button
+                type="button"
+                onClick={onAskHistoryToggle}
+                className="md:hidden inline-flex flex-col gap-1.5 p-2 rounded-lg border border-[rgba(var(--color-primary-light-rgb),0.35)] text-white/80 hover:text-white hover:border-[rgba(var(--color-primary-light-rgb),0.7)] transition focus:outline-none focus:ring-2 focus:ring-[rgba(var(--color-primary-light-rgb),0.6)]"
+                aria-label="Show Ask conversations"
               >
-                <span className="text-base" aria-hidden="true">{conversationMode === 'ask' ? '🧠' : '⚙️'}</span>
-                {modeLabel} Mode
-              </span>
-              {conversationMode === 'ask' && onStartGeneralChat && (
-                <button
-                  type="button"
-                  onClick={onStartGeneralChat}
-                  className="px-3 py-1 text-xs rounded-full border border-[var(--color-secondary-light)] text-[var(--color-secondary-light)] hover:bg-[rgba(var(--color-secondary-rgb),0.15)] transition-colors"
-                  disabled={generalSessionsLoading}
-                >
-                  {generalSessionsLoading ? 'Refreshing…' : 'New Ask'}
-                </button>
-              )}
-              {conversationMode === 'ask' && generalChatSummary?.label && (
-                <span
-                  className="text-[11px] text-gray-400 truncate max-w-[180px]"
-                  title={`Session ${generalChatSummary?.chatId || generalChatSummary?.label}`}
-                >
-                  Session: {generalChatSummary.label}
+                <span className="w-5 h-0.5 bg-current rounded-full"></span>
+                <span className="w-5 h-0.5 bg-current rounded-full"></span>
+                <span className="w-5 h-0.5 bg-current rounded-full"></span>
+              </button>
+            )}
+            {/* Chat Icon + Title */}
+            {showModeToggle ? (
+              <button
+                type="button"
+                onClick={handleAvatarClick}
+                className="flex items-center gap-2 sm:gap-3 focus:outline-none focus:ring-2 focus:ring-[var(--color-primary-light)]/60 rounded-xl min-w-0"
+                title={avatarTitle}
+                aria-pressed={onBrandClick ? undefined : conversationMode === 'ask'}
+              >
+                <span className={`w-9 h-9 sm:w-10 sm:h-10 md:w-12 md:h-12 rounded-lg sm:rounded-xl flex items-center justify-center shadow-lg transition-all duration-300 flex-shrink-0 ${conversationMode === 'ask'
+                  ? 'bg-gradient-to-br from-[var(--color-secondary)] to-[var(--color-primary)] scale-105'
+                  : 'bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-secondary)]'}`}>
+                  <span className="text-xl sm:text-2xl" role="img" aria-hidden="true">{avatarIcon}</span>
                 </span>
-              )}
-            </div>
+                <span className="text-left min-w-0 flex-1">
+                  <span className="block text-sm sm:text-lg md:text-xl font-bold text-white tracking-tight truncate">MozaiksAI</span>
+                  <span className="block text-[10px] sm:text-xs text-gray-400 truncate">{conversationSubtitle}</span>
+                </span>
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+                <span className="w-9 h-9 sm:w-10 sm:h-10 md:w-12 md:h-12 rounded-lg sm:rounded-xl flex items-center justify-center shadow-lg bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-secondary)] flex-shrink-0">
+                  <span className="text-xl sm:text-2xl" role="img" aria-hidden="true">🤖</span>
+                </span>
+                <span className="text-left min-w-0 flex-1">
+                  <span className="block text-sm sm:text-lg md:text-xl font-bold text-white tracking-tight truncate">MozaiksAI</span>
+                  <span className="block text-[10px] sm:text-xs text-gray-400 truncate">{conversationSubtitle}</span>
+                </span>
+              </div>
+            )}
           </div>
-          
+
           {/* Desktop: Artifact Canvas Toggle Button */}
           {onArtifactToggle && (
             <button
               onClick={onArtifactToggle}
-              className="hidden md:block group relative p-3 rounded-lg bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.1)] to-[rgba(var(--color-secondary-rgb),0.1)] border transition-all duration-300 backdrop-blur-sm artifact-hover-glow artifact-cta"
+              className="hidden md:block group relative p-2 md:p-3 rounded-lg bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.1)] to-[rgba(var(--color-secondary-rgb),0.1)] border transition-all duration-300 backdrop-blur-sm artifact-hover-glow artifact-cta flex-shrink-0"
               title={artifactToggleLabel || 'Toggle Artifact Canvas'}
             >
-              <img 
-                src="/mozaik_logo.svg" 
-                className="w-10 h-10 opacity-70 group-hover:opacity-100 transition-all duration-300 group-hover:scale-105" 
-                alt="Artifact Canvas" 
+              <img
+                src="/mozaik_logo.svg"
+                className="w-8 h-8 md:w-10 md:h-10 opacity-70 group-hover:opacity-100 transition-all duration-300 group-hover:scale-105"
+                alt="Artifact Canvas"
               />
               <div className="absolute inset-0 bg-[rgba(var(--color-primary-light-rgb),0.1)] rounded-lg blur opacity-0 group-hover:opacity-100 transition-opacity duration-300 -z-10"></div>
             </button>
@@ -352,12 +466,10 @@ const ModernChatInterface = ({
         
         {/* Initial Message - only show for UserDriven workflows and if message exists */}
         {startupMode === 'UserDriven' && initialMessageToUser && (
-          <div className="pb-3 px-4 md:px-6 flex justify-center">
-            <div className="relative px-3 py-1.5 rounded-lg bg-gradient-to-r from-[rgba(var(--color-secondary-rgb),0.2)] to-[rgba(var(--color-secondary-dark-rgb),0.2)] border border-[rgba(var(--color-secondary-rgb),0.3)] flex items-center justify-center space-x-2 backdrop-blur-sm max-w-md">
-              <div className="absolute inset-0 bg-gradient-to-r from-[rgba(var(--color-secondary-rgb),0.1)] to-[rgba(var(--color-secondary-dark-rgb),0.1)] rounded-lg blur-sm"></div>
-              {/* Animated pulse dot - aligned to left */}
-              <div className="relative w-2 h-2 bg-[rgba(var(--color-secondary-rgb),0.8)] rounded-full animate-pulse [box-shadow:0_0_6px_rgba(var(--color-secondary-rgb),0.5)] flex-shrink-0"></div>
-              <span className="relative text-[rgba(var(--color-secondary-rgb),0.7)] text-xs font-semibold tracking-wide oxanium text-center">
+          <div className="pb-2 sm:pb-3 px-3 sm:px-4 md:px-6 flex justify-center">
+            <div className="relative px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg bg-[rgba(var(--color-secondary-rgb),0.15)] border border-[rgba(var(--color-secondary-rgb),0.3)] flex items-center justify-center space-x-1.5 sm:space-x-2 backdrop-blur-sm max-w-full sm:max-w-md">
+              <div className="relative w-1.5 h-1.5 sm:w-2 sm:h-2 bg-[var(--color-secondary)] rounded-full animate-pulse flex-shrink-0"></div>
+              <span className="relative text-[var(--color-secondary-light)] text-[10px] sm:text-xs font-semibold tracking-wide oxanium text-center truncate">
                 {initialMessageToUser}
               </span>
             </div>
@@ -366,110 +478,22 @@ const ModernChatInterface = ({
       </div>
     {/* Chat Messages Area - ONLY THIS SCROLLS */}
     <div className="flex-1 relative overflow-hidden" role="log" aria-live="polite" aria-relevant="additions">
-        {/* Dim the galaxy background slightly for readability across the entire scroll area */}
-        <div className="absolute inset-0 pointer-events-none bg-[rgba(0,0,0,0.45)] z-0" />
+        <div className={`absolute inset-0 pointer-events-none ${isOnChatPage ? 'chat-feed-backdrop' : 'bg-[rgba(0,0,0,0.45)]'} z-0`} />
         <div 
           ref={chatContainerRef}
-  className="absolute inset-0 overflow-y-auto px-2 py-2 md:p-6 space-y-3 md:space-y-4 my-scroll1 z-10"
+          className={`absolute inset-0 overflow-y-auto my-scroll1 z-10 ${isOnChatPage ? '' : 'px-2 py-2 md:p-6'}`}
         >
-        <div className="relative">
-      {/* Messages render below */}
-          {(() => {
-            // Determine the last chat index with a primary content message
-            let lastContentIndex = -1;
-            if (Array.isArray(messages)) {
-              messages.forEach((m, i) => {
-                if (m && m.content && !m.isTokenMessage && !m.isWarningMessage) {
-                  lastContentIndex = i;
-                }
-              });
-            }
-
-            return messages?.map((chat, index) => {
-            // console.debug('Rendering message', index, chat?.id);
-            if (!chat) {
-              // console.warn(`Message at index ${index} is null/undefined`);
-              return null;
-            }
-
-              // Skip pure-empty placeholders (no content, no structured output, no ui tool event) to avoid blank bubble spacing
-              const isEmptyContent = !(chat.content && String(chat.content).trim().length);
-              const hasStructured = !!(chat.structuredOutput && typeof chat.structuredOutput === 'object');
-              const hasUITool = !!chat.uiToolEvent;
-              const isSystem = chat.isTokenMessage || chat.isWarningMessage;
-              if (isEmptyContent && !chat.isThinking && !hasStructured && !hasUITool && !isSystem) {
-                return null;
-              }
-            
-            // annotate message with workflow mapping if missing
-            const isStructuredCapable = typeof chat.isStructuredCapable === 'boolean' 
-              ? chat.isStructuredCapable 
-              : !!(chat.agentName && structuredOutputs[chat.agentName]);
-
-            try {
-              if (['1','true','on','yes'].includes((localStorage.getItem('mozaiks.debug_render')||'').toLowerCase())) {
-                console.log('[RENDER] ChatMessage', {
-                  index,
-                  id: chat.id,
-                  agent: chat.agentName,
-                  visual: chat.isVisual,
-                  structured: isStructuredCapable,
-                  streaming: chat.isStreaming,
-                  preview: (chat.content||'').slice(0,80)
-                });
-              }
-            } catch {}
-
-            return (
-                <div key={index}>
-                <ChatMessage
-                  message={chat.content}
-                  message_from={chat.sender}
-                  agentName={chat.agentName}
-                  isTokenMessage={chat.isTokenMessage}
-                  isWarningMessage={chat.isWarningMessage}
-                  isLatest={index === lastContentIndex}
-                  isStructuredCapable={isStructuredCapable}
-                  structuredOutput={chat.structuredOutput}
-                  structuredSchema={chat.structuredSchema}
-                  isThinking={chat.isThinking}
-                />
-                
-                {/* Render UI Tool Events */}
-                {chat.uiToolEvent && (
-                  <UIToolEventRenderer 
-                    uiToolEvent={chat.uiToolEvent}
-                    submitInputRequest={submitInputRequest}
-                    isCompleted={chat.ui_tool_completed || false}
-                    onResponse={(response) => {
-                      // console.debug('UI tool response from chat');
-                      // Use the handleAgentAction function to process the response
-                      handleAgentAction({
-                        type: 'ui_tool_response',
-                        ui_tool_id: chat.uiToolEvent.ui_tool_id,
-                        eventId: chat.uiToolEvent.eventId, // Include eventId for proper tracking
-                        response: response
-                      });
-                    }}
-                  />
-                )}
-              </div>
-            );
-            });
-          })()}
-          {/* Typing indicator slot (rendered when loading without messages updating) */}
-          {loading && (
-            <div className="flex justify-start px-0 message-container">
-              {/* Minimal, non-bubble typing indicator to avoid appearing as an empty chat bubble */}
-              <div className="mt-1 px-2 py-1 rounded-md bg-transparent text-[rgba(var(--color-primary-light-rgb),0.7)] flex items-center gap-1 text-xs font-mono tracking-wide typing-indicator" aria-label="Assistant is typing" role="status">
-                <span className="typing-dot" />
-                <span className="typing-dot delay-150" />
-                <span className="typing-dot delay-300" />
-              </div>
+          {isOnChatPage ? (
+            <div className={`chat-feed-shell ${conversationMode === 'ask' ? 'chat-feed-shell-ask' : ''}`}>
+              {messageStack}
             </div>
+          ) : disableMobileShellChrome ? (
+            <div className="px-2 pb-16 pt-3">
+              {messageStack}
+            </div>
+          ) : (
+            messageStack
           )}
-          <div ref={chatEndRef} />
-        </div>
         </div>
 
         {/* Jump to Present Button - Positioned over the messages area */}
@@ -486,8 +510,8 @@ const ModernChatInterface = ({
       </div>
 
   {/* Fixed Transmission Input Area - Never moves */}
-            <div className={`flex-shrink-0 p-1.5 md:p-3 border-t border-[rgba(var(--color-primary-light-rgb),0.2)] bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)] backdrop-blur-xl shadow-lg transition-all duration-500 transmission-input-tight rounded-b-[inherit]`}>
-        <form onSubmit={onSubmitClick} className="flex gap-3 flex-row items-center">
+            <div className={`flex-shrink-0 p-2 sm:p-2.5 md:p-3 border-t border-[rgba(var(--color-primary-light-rgb),0.2)] bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)] backdrop-blur-xl shadow-lg transition-all duration-500 transmission-input-tight rounded-b-[inherit]`}>
+        <form onSubmit={onSubmitClick} className="flex gap-2 sm:gap-3 flex-row items-center">
           <div className="flex-1 relative min-w-0 flex items-center">
             <textarea
               value={message}
@@ -500,42 +524,42 @@ const ModernChatInterface = ({
               }}
               onKeyPress={handleKeyPress}
               onFocus={() => setHasUserInteracted(true)}
-              placeholder={tokensExhausted ? "Tokens exhausted - please upgrade to continue..." : "Transmit your message..."}
+              placeholder={tokensExhausted ? "Tokens exhausted - please upgrade..." : "Transmit your message..."}
               disabled={buttonText === 'NEXT' || tokensExhausted}
               rows={1}
-              className={`w-full bg-white/10 border-2 rounded-xl px-3 py-2 mt-0.5 text-[var(--color-text-primary)] text-slate-100 placeholder:text-[var(--color-text-secondary)] placeholder:text-slate-400 focus:outline-none resize-none transition-all duration-300 transmission-typing-font min-h-[40px] max-h-[120px] my-scroll1 backdrop-blur-sm ${
-                hasUserInteracted 
-                  ? 'border-[rgba(var(--color-primary-light-rgb),0.5)] focus:border-[rgba(var(--color-primary-light-rgb),0.8)] focus:bg-white/15 focus:shadow-[0_0_25px_rgba(var(--color-primary-light-rgb),0.4)]' 
+              className={`w-full bg-white/10 border-2 rounded-lg sm:rounded-xl px-2.5 sm:px-3 py-1.5 sm:py-2 mt-0.5 text-[var(--color-text-primary)] text-slate-100 text-sm sm:text-base placeholder:text-[var(--color-text-secondary)] placeholder:text-slate-400 placeholder:text-xs sm:placeholder:text-sm focus:outline-none resize-none transition-all duration-300 transmission-typing-font min-h-[36px] sm:min-h-[40px] max-h-[120px] my-scroll1 backdrop-blur-sm ${
+                hasUserInteracted
+                  ? 'border-[rgba(var(--color-primary-light-rgb),0.5)] focus:border-[rgba(var(--color-primary-light-rgb),0.8)] focus:bg-white/15 focus:shadow-[0_0_25px_rgba(var(--color-primary-light-rgb),0.4)]'
                   : 'border-[rgba(var(--color-primary-light-rgb),0.3)] focus:border-[rgba(var(--color-primary-light-rgb),0.7)] focus:bg-white/15 focus:shadow-[0_0_30px_rgba(var(--color-primary-light-rgb),0.5)] shadow-[0_0_15px_rgba(var(--color-primary-light-rgb),0.2)]'
               }`}
-              style={{ 
-                height: '40px',
+              style={{
+                height: '36px',
                 overflowY: message.split('\n').length > 2 || message.length > 100 ? 'auto' : 'hidden'
               }}
             />
             {!hasUserInteracted && (
-              <div className="absolute -top-1 -right-1 md:-top-2 md:-right-2 input-prompt-ping rounded-full subtle-ping" aria-hidden="true"></div>
+              <div className="absolute -top-1 -right-1 input-prompt-ping rounded-full subtle-ping" aria-hidden="true"></div>
             )}
           </div>
-          
+
           {/* Command Button - icon-only for simplicity */}
           <button
             type="submit"
             disabled={!message.trim() || tokensExhausted}
             className={`
-              px-2 py-1.5 rounded-md transition-all duration-300 min-w-[40px] w-auto h-9 oxanium font-bold text-[13px] flex items-center justify-center letter-spacing-wide border-2
+              px-2 py-1.5 rounded-md transition-all duration-300 min-w-[36px] sm:min-w-[40px] w-auto h-8 sm:h-9 oxanium font-bold text-[13px] flex items-center justify-center letter-spacing-wide border-2 flex-shrink-0
               ${(!message.trim() || tokensExhausted)
-                ? 'bg-gray-800/50 text-gray-400 cursor-not-allowed border-gray-600/50' 
-                : 'bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.8)] to-[rgba(var(--color-primary-dark-rgb),0.8)] hover:from-[rgba(var(--color-primary-light-rgb),0.9)] hover:to-[rgba(var(--color-primary-light-rgb),0.9)] text-white border-[rgba(var(--color-primary-light-rgb),0.5)] hover:border-[rgba(var(--color-primary-light-rgb),0.7)] shadow-sm [box-shadow:0_0_0_rgba(var(--color-primary-rgb),0.1)] hover:[box-shadow:0_0_0_rgba(var(--color-primary-light-rgb),0.2)] hover:scale-105 active:scale-95'
+                ? 'bg-gray-800/50 text-gray-400 cursor-not-allowed border-gray-600/50'
+                : 'bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.8)] to-[rgba(var(--color-primary-dark-rgb),0.8)] hover:from-[rgba(var(--color-primary-light-rgb),0.9)] hover:to-[rgba(var(--color-primary-light-rgb),0.9)] text-white border-[rgba(var(--color-primary-light-rgb),0.5)] hover:border-[rgba(var(--color-primary-light-rgb),0.7)] shadow-sm [box-shadow:0_0_0_rgba(var(--color-primary-rgb),0.1)] hover:[box-shadow:0_0_0_rgba(var(--color-primary-light-rgb),0.2)] active:scale-95'
               }
             `}
           >
             {tokensExhausted ? (
-              <span className="text-lg" aria-label="Upgrade required" role="img">💰</span>
+              <span className="text-base sm:text-lg" aria-label="Upgrade required" role="img">💰</span>
             ) : buttonText === 'NEXT' ? (
-              <span className="text-lg" aria-label="Launch" role="img">🚀</span>
+              <span className="text-base sm:text-lg" aria-label="Launch" role="img">🚀</span>
             ) : (
-              <span className="text-lg" aria-label="Transmit" role="img">📡</span>
+              <span className="text-base sm:text-lg" aria-label="Transmit" role="img">📡</span>
             )}
           </button>
         </form>
