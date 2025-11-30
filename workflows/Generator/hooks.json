@@ -1,6 +1,12 @@
 {
   "hooks": [
     {
+      "hook_type": "update_agent_state",
+      "hook_agent": "all",
+      "filename": "hook_universal_prompts.py",
+      "function": "inject_universal_prompts"
+    },
+    {
       "hook_type": "process_message_before_send",
       "hook_agent": "DownloadAgent",
       "filename": "hook_tokengate.py",

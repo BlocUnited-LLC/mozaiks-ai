@@ -28,7 +28,7 @@
       "agent": "WorkflowStrategyAgent",
       "file": "workflow_strategy.py",
       "function": "workflow_strategy",
-      "description": "Cache high-level workflow architecture (pattern, trigger, phases) in context variables.",
+      "description": "Cache high-level workflow architecture (pattern, trigger, modules) in context variables.",
       "tool_type": "Agent_Tool",
       "auto_invoke": true,
       "ui": {
@@ -50,9 +50,9 @@
     },
     {
       "agent": "WorkflowImplementationAgent",
-      "file": "phase_agents_plan.py",
-      "function": "phase_agents_plan",
-      "description": "Submit agent specifications that merge with workflow strategy phases.",
+      "file": "module_agents_plan.py",
+      "function": "module_agents_plan",
+      "description": "Submit agent specifications that merge with workflow strategy modules.",
       "tool_type": "UI_Tool",
       "auto_invoke": true,
       "ui": {
