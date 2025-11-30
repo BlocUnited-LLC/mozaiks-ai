@@ -1,0 +1,209 @@
+{
+  "workflow_name": "Content Feedback Loop",
+  "pattern_id": 3,
+  "pattern_name": "Feedback Loop",
+  "trigger": "chat",
+  "initiated_by": "user",
+  "human_in_loop": true,
+  "modules": [
+    {
+      "module_index": 0,
+      "module_name": "Draft, Review, Revise",
+      "module_description": "Iterate on a single artifact with structured reviews until quality gates are met.",
+      "pattern_id": 3,
+      "pattern_name": "Feedback Loop",
+      "context_variables": [
+        {
+          "name": "current_stage",
+          "type": "state",
+          "description": "Tracks planning, drafting, review, revision, or finalization."
+        },
+        {
+          "name": "iteration_needed",
+          "type": "state",
+          "description": "Whether another revision cycle is required."
+        },
+        {
+          "name": "document_draft",
+          "type": "data_entity",
+          "description": "Latest working draft for reviewers."
+        }
+      ],
+      "agents": [
+        {
+          "agent_name": "FacilitatorAgent",
+          "agent_type": "intake",
+          "objective": "Captures the brief, defines done criteria, and keeps the loop on track.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "capture_brief",
+              "integration": null,
+              "purpose": "Inline form for goals, audience, tone, and deadlines.",
+              "interaction_mode": "inline"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "context",
+          "max_consecutive_auto_reply": 20
+        },
+        {
+          "agent_name": "DraftingAgent",
+          "agent_type": "generator",
+          "objective": "Produces the working draft aligned to the brief and quality bar.",
+          "generation_mode": "text",
+          "agent_tools": [
+            {
+              "name": "produce_draft",
+              "integration": "OpenAI",
+              "purpose": "Generate draft content with rationale.",
+              "interaction_mode": "none"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "none",
+          "max_consecutive_auto_reply": 30
+        },
+        {
+          "agent_name": "ReviewAgent",
+          "agent_type": "evaluator",
+          "objective": "Scores the draft, captures structured feedback, and decides if another revision is needed.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "collect_feedback",
+              "integration": null,
+              "purpose": "Artifact form for scoring and comments.",
+              "interaction_mode": "artifact"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "feedback",
+          "max_consecutive_auto_reply": 5
+        },
+        {
+          "agent_name": "RevisionAgent",
+          "agent_type": "worker",
+          "objective": "Applies accepted feedback, updates the draft, and re-requests review if needed.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "apply_feedback",
+              "integration": "OpenAI",
+              "purpose": "Rewrite sections using reviewer guidance.",
+              "interaction_mode": "none"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "none",
+          "max_consecutive_auto_reply": 30
+        },
+        {
+          "agent_name": "FinalizerAgent",
+          "agent_type": "worker",
+          "objective": "Polishes the approved draft and prepares the delivery package.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "finalize_asset",
+              "integration": "OpenAI",
+              "purpose": "Produce ready-to-ship output and summary.",
+              "interaction_mode": "none"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "none",
+          "max_consecutive_auto_reply": 30
+        }
+      ],
+      "handoffs": [
+        {
+          "from": "FacilitatorAgent",
+          "to": "DraftingAgent",
+          "condition": "current_stage == 'drafting'",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "DraftingAgent",
+          "to": "ReviewAgent",
+          "condition": "current_stage == 'review'",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "ReviewAgent",
+          "to": "RevisionAgent",
+          "condition": "iteration_needed == True",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "RevisionAgent",
+          "to": "ReviewAgent",
+          "condition": "current_stage == 'review'",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "ReviewAgent",
+          "to": "FinalizerAgent",
+          "condition": "iteration_needed == False",
+          "type": "OnContextCondition"
+        }
+      ],
+      "tools": [
+        {
+          "agent": "FacilitatorAgent",
+          "function": "capture_brief",
+          "file": "capture_brief.py",
+          "description": "Inline brief capture for the artifact.",
+          "tool_type": "UI_Tool",
+          "auto_invoke": true,
+          "ui": {
+            "component": "BriefForm",
+            "mode": "inline",
+            "ui_pattern": "multi_step"
+          },
+          "integration": null
+        },
+        {
+          "agent": "ReviewAgent",
+          "function": "collect_feedback",
+          "file": "collect_feedback.py",
+          "description": "Artifact feedback form with scoring and comments.",
+          "tool_type": "UI_Tool",
+          "auto_invoke": true,
+          "ui": {
+            "component": "FeedbackForm",
+            "mode": "artifact",
+            "ui_pattern": "multi_step"
+          },
+          "integration": null
+        },
+        {
+          "agent": "RevisionAgent",
+          "function": "apply_feedback",
+          "file": "apply_feedback.py",
+          "description": "Rewrite draft sections using reviewer guidance.",
+          "tool_type": "Agent_Tool",
+          "auto_invoke": false,
+          "ui": null,
+          "integration": "OpenAI"
+        }
+      ],
+      "hooks": {
+        "before_chat": null,
+        "after_chat": null,
+        "agent_hooks": []
+      },
+      "orchestrator": {
+        "type": "DefaultPattern",
+        "config": {
+          "start_agent": "FacilitatorAgent"
+        }
+      }
+    }
+  ]
+}

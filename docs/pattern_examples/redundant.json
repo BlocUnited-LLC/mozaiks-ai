@@ -1,0 +1,194 @@
+{
+  "workflow_name": "Parallel Options Evaluator",
+  "pattern_id": 7,
+  "pattern_name": "Redundant",
+  "trigger": "chat",
+  "initiated_by": "system",
+  "human_in_loop": true,
+  "modules": [
+    {
+      "module_index": 0,
+      "module_name": "Parallel Exploration and Evaluation",
+      "module_description": "Spin up multiple approaches in isolation, then score and select the best.",
+      "pattern_id": 7,
+      "pattern_name": "Redundant",
+      "context_variables": [
+        {
+          "name": "task_payload",
+          "type": "data_entity",
+          "description": "Task brief shared with all worker agents."
+        },
+        {
+          "name": "worker_results",
+          "type": "collection",
+          "description": "Captured outputs from each worker."
+        },
+        {
+          "name": "selected_approach",
+          "type": "state",
+          "description": "Which worker result won evaluation."
+        }
+      ],
+      "agents": [
+        {
+          "agent_name": "TaskmasterAgent",
+          "agent_type": "router",
+          "objective": "Defines the task, seeds nested workers, and forwards results for evaluation.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "initiate_nested_tasks",
+              "integration": null,
+              "purpose": "Inline confirmation of the task payload before dispatching.",
+              "interaction_mode": "inline"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "context",
+          "max_consecutive_auto_reply": 20
+        },
+        {
+          "agent_name": "AnalyticalWorker",
+          "agent_type": "worker",
+          "objective": "Produces structured/analytical solution.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "deliver_analytical_result",
+              "integration": "OpenAI",
+              "purpose": "Return structured analysis and assumptions.",
+              "interaction_mode": "none"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "none",
+          "max_consecutive_auto_reply": 30
+        },
+        {
+          "agent_name": "CreativeWorker",
+          "agent_type": "worker",
+          "objective": "Produces creative alternative with novel angles.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "deliver_creative_result",
+              "integration": "OpenAI",
+              "purpose": "Share creative or lateral solution.",
+              "interaction_mode": "none"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "none",
+          "max_consecutive_auto_reply": 30
+        },
+        {
+          "agent_name": "ComprehensiveWorker",
+          "agent_type": "worker",
+          "objective": "Covers exhaustive edge cases and risks.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "deliver_comprehensive_result",
+              "integration": "OpenAI",
+              "purpose": "Provide exhaustive approach with risks and mitigations.",
+              "interaction_mode": "none"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "none",
+          "max_consecutive_auto_reply": 30
+        },
+        {
+          "agent_name": "EvaluatorAgent",
+          "agent_type": "evaluator",
+          "objective": "Scores each worker output, selects winner, and synthesizes the final recommendation.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "present_comparison",
+              "integration": null,
+              "purpose": "Artifact comparison table for stakeholder approval.",
+              "interaction_mode": "artifact"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "approval",
+          "max_consecutive_auto_reply": 5
+        }
+      ],
+      "handoffs": [
+        {
+          "from": "TaskmasterAgent",
+          "to": "AnalyticalWorker",
+          "condition": "task_payload is not None",
+          "type": "NestedChatTarget"
+        },
+        {
+          "from": "TaskmasterAgent",
+          "to": "CreativeWorker",
+          "condition": "task_payload is not None",
+          "type": "NestedChatTarget"
+        },
+        {
+          "from": "TaskmasterAgent",
+          "to": "ComprehensiveWorker",
+          "condition": "task_payload is not None",
+          "type": "NestedChatTarget"
+        },
+        {
+          "from": "TaskmasterAgent",
+          "to": "EvaluatorAgent",
+          "condition": "worker_results is not None",
+          "type": "OnContextCondition"
+        }
+      ],
+      "tools": [
+        {
+          "agent": "TaskmasterAgent",
+          "function": "initiate_nested_tasks",
+          "file": "initiate_nested_tasks.py",
+          "description": "Confirm task payload then dispatch nested chats.",
+          "tool_type": "UI_Tool",
+          "auto_invoke": true,
+          "ui": {
+            "component": "TaskConfirmation",
+            "mode": "inline",
+            "ui_pattern": "single_step"
+          },
+          "integration": null
+        },
+        {
+          "agent": "EvaluatorAgent",
+          "function": "present_comparison",
+          "file": "present_comparison.py",
+          "description": "Artifact comparing worker outputs with score rationale.",
+          "tool_type": "UI_Tool",
+          "auto_invoke": true,
+          "ui": {
+            "component": "ComparisonTable",
+            "mode": "artifact",
+            "ui_pattern": "two_step_confirmation"
+          },
+          "integration": null
+        }
+      ],
+      "hooks": {
+        "before_chat": null,
+        "after_chat": null,
+        "agent_hooks": []
+      },
+      "orchestrator": {
+        "type": "DefaultPattern",
+        "config": {
+          "start_agent": "TaskmasterAgent",
+          "nested_chat": true
+        }
+      }
+    }
+  ]
+}

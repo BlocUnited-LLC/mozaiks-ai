@@ -1,0 +1,223 @@
+{
+  "workflow_name": "Hierarchical Research Pod",
+  "pattern_id": 4,
+  "pattern_name": "Hierarchical",
+  "trigger": "chat",
+  "initiated_by": "user",
+  "human_in_loop": true,
+  "modules": [
+    {
+      "module_index": 0,
+      "module_name": "Executive -> Manager -> Specialist",
+      "module_description": "Top-down delegation where managers coordinate specialists and the executive synthesizes the final report.",
+      "pattern_id": 4,
+      "pattern_name": "Hierarchical",
+      "context_variables": [
+        {
+          "name": "research_plan",
+          "type": "data_entity",
+          "description": "Plan produced by the executive and managers."
+        },
+        {
+          "name": "manager_status",
+          "type": "state",
+          "description": "Completion flags per manager workstream."
+        },
+        {
+          "name": "final_brief",
+          "type": "data_entity",
+          "description": "Compiled executive summary for delivery."
+        }
+      ],
+      "agents": [
+        {
+          "agent_name": "ExecutiveLead",
+          "agent_type": "orchestrator",
+          "objective": "Defines scope, assigns managers, and synthesizes the final decision package.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "issue_brief",
+              "integration": null,
+              "purpose": "Inline capture of objective, constraints, and deadlines.",
+              "interaction_mode": "inline"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "context",
+          "max_consecutive_auto_reply": 20
+        },
+        {
+          "agent_name": "MarketManager",
+          "agent_type": "router",
+          "objective": "Owns market analysis workstream and coordinates specialists.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "assign_market_research",
+              "integration": "OpenAI",
+              "purpose": "Create subtasks and assign to market specialists.",
+              "interaction_mode": "none"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "none",
+          "max_consecutive_auto_reply": 30
+        },
+        {
+          "agent_name": "RiskManager",
+          "agent_type": "router",
+          "objective": "Owns risk/compliance workstream and aggregates findings.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "assign_risk_research",
+              "integration": "OpenAI",
+              "purpose": "Queue risk and compliance tasks.",
+              "interaction_mode": "none"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "none",
+          "max_consecutive_auto_reply": 30
+        },
+        {
+          "agent_name": "MarketSpecialist",
+          "agent_type": "worker",
+          "objective": "Executes market research tasks and returns findings to MarketManager.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "perform_market_research",
+              "integration": "OpenAI",
+              "purpose": "Collect competitive signals and TAM/SAM insights.",
+              "interaction_mode": "none"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "none",
+          "max_consecutive_auto_reply": 30
+        },
+        {
+          "agent_name": "RiskSpecialist",
+          "agent_type": "worker",
+          "objective": "Executes risk and compliance analysis and loops back to RiskManager.",
+          "generation_mode": null,
+          "agent_tools": [
+            {
+              "name": "perform_risk_review",
+              "integration": "OpenAI",
+              "purpose": "Assess regulatory and security risks.",
+              "interaction_mode": "none"
+            }
+          ],
+          "lifecycle_tools": [],
+          "system_hooks": [],
+          "human_interaction": "none",
+          "max_consecutive_auto_reply": 30
+        }
+      ],
+      "handoffs": [
+        {
+          "from": "ExecutiveLead",
+          "to": "MarketManager",
+          "condition": "research_plan is not None",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "ExecutiveLead",
+          "to": "RiskManager",
+          "condition": "research_plan is not None",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "MarketManager",
+          "to": "MarketSpecialist",
+          "condition": "manager_status.get('market') != 'complete'",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "RiskManager",
+          "to": "RiskSpecialist",
+          "condition": "manager_status.get('risk') != 'complete'",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "MarketSpecialist",
+          "to": "MarketManager",
+          "condition": "True",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "RiskSpecialist",
+          "to": "RiskManager",
+          "condition": "True",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "MarketManager",
+          "to": "ExecutiveLead",
+          "condition": "manager_status.get('market') == 'complete'",
+          "type": "OnContextCondition"
+        },
+        {
+          "from": "RiskManager",
+          "to": "ExecutiveLead",
+          "condition": "manager_status.get('risk') == 'complete'",
+          "type": "OnContextCondition"
+        }
+      ],
+      "tools": [
+        {
+          "agent": "ExecutiveLead",
+          "function": "issue_brief",
+          "file": "issue_brief.py",
+          "description": "Inline capture of objectives, constraints, and success metrics.",
+          "tool_type": "UI_Tool",
+          "auto_invoke": true,
+          "ui": {
+            "component": "BriefForm",
+            "mode": "inline",
+            "ui_pattern": "single_step"
+          },
+          "integration": null
+        },
+        {
+          "agent": "MarketManager",
+          "function": "assign_market_research",
+          "file": "assign_market_research.py",
+          "description": "Queue market research subtasks and deadlines.",
+          "tool_type": "Agent_Tool",
+          "auto_invoke": false,
+          "ui": null,
+          "integration": "OpenAI"
+        },
+        {
+          "agent": "RiskManager",
+          "function": "assign_risk_research",
+          "file": "assign_risk_research.py",
+          "description": "Queue risk research subtasks and deadlines.",
+          "tool_type": "Agent_Tool",
+          "auto_invoke": false,
+          "ui": null,
+          "integration": "OpenAI"
+        }
+      ],
+      "hooks": {
+        "before_chat": null,
+        "after_chat": null,
+        "agent_hooks": []
+      },
+      "orchestrator": {
+        "type": "DefaultPattern",
+        "config": {
+          "start_agent": "ExecutiveLead"
+        }
+      }
+    }
+  ]
+}
