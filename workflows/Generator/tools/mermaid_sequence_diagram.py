@@ -56,12 +56,12 @@ def _generate_fallback_diagram(legend: List[str], workflow_name: str) -> str:
     """Generate a simple, guaranteed-valid Mermaid diagram from legend entries.
     
     This is a fallback when the LLM-generated diagram has unfixable syntax errors.
-    Creates a basic linear flow: User -> P1 -> P2 -> ... -> User
+    Creates a basic linear flow: User -> M1 -> M2 -> ... -> User
     """
     if not legend:
-        return f"{MANDATORY_PREFIX}\n    participant User\n\n    User->>User: No phases defined"
+        return f"{MANDATORY_PREFIX}\n    participant User\n\n    User->>User: No modules defined"
     
-    # Parse legend entries (format: "P1: Phase Name")
+    # Parse legend entries (format: "M1: Module Name")
     participants = []
     for entry in legend:
         parts = entry.split(":", 1)
@@ -224,15 +224,15 @@ def _fix_mermaid_syntax(diagram_text: str) -> str:
 
 
 def _is_plan_complete(plan: Dict[str, Any]) -> bool:
-    """Check whether a cached action plan contains at least one phase."""
+    """Check whether a cached action plan contains at least one module."""
     if not isinstance(plan, dict):
         return False
-    phases = plan.get("phases")
-    return isinstance(phases, list) and len(phases) > 0
+    modules = plan.get("modules")
+    return isinstance(modules, list) and len(modules) > 0
 
 
-def _coerce_phase_agents_cache(value: Any) -> List[Dict[str, Any]]:
-    """Normalize cached phase_agents entries for downstream merging."""
+def _coerce_module_agents_cache(value: Any) -> List[Dict[str, Any]]:
+    """Normalize cached module_agents entries for downstream merging."""
     if not isinstance(value, list):
         return []
 
@@ -241,7 +241,7 @@ def _coerce_phase_agents_cache(value: Any) -> List[Dict[str, Any]]:
         if not isinstance(entry, dict):
             continue
         try:
-            phase_index = int(entry.get("phase_index", 0))
+            module_index = int(entry.get("module_index", entry.get("phase_index", 0)))
         except (TypeError, ValueError):
             continue
 
@@ -251,26 +251,22 @@ def _coerce_phase_agents_cache(value: Any) -> List[Dict[str, Any]]:
         else:
             agents = []
 
-        normalized.append({"phase_index": phase_index, "agents": agents})
+        normalized.append({"module_index": module_index, "agents": agents})
 
     return normalized
 
 
 def _compose_workflow_from_components(
     strategy: Optional[Dict[str, Any]],
-    phase_agents: List[Dict[str, Any]],
+    module_agents: List[Dict[str, Any]],
     existing_plan: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """Merge cached WorkflowStrategy + phase_agents into a workflow payload.
-
-    This enriches (or rebuilds) the cached action plan so ProjectOverviewAgent only
-    needs to focus on Mermaid diagram synthesis.
-    """
+    """Merge cached WorkflowStrategy + module_agents into a workflow payload."""
     plan: Dict[str, Any] = copy.deepcopy(existing_plan) if isinstance(existing_plan, dict) else {}
     if not isinstance(plan, dict):
         plan = {}
 
-    strategy_phases: List[Dict[str, Any]] = []
+    strategy_modules: List[Dict[str, Any]] = []
 
     if isinstance(strategy, dict):
         workflow_name = _coerce_str(strategy.get("workflow_name")) or _coerce_str(plan.get("name")) or "Generated Workflow"
@@ -279,9 +275,11 @@ def _compose_workflow_from_components(
         if workflow_description:
             plan["description"] = workflow_description
 
-        pattern = _coerce_str(strategy.get("pattern")) or _coerce_str(plan.get("pattern"))
-        if pattern:
-            plan["pattern"] = pattern
+        pattern_field = strategy.get("pattern")
+        if isinstance(pattern_field, list):
+            plan["pattern"] = [p for p in pattern_field if isinstance(p, str) and p.strip()]
+        elif isinstance(pattern_field, str) and pattern_field.strip():
+            plan["pattern"] = [pattern_field.strip()]
 
         trigger = _coerce_str(strategy.get("trigger")) or _coerce_str(plan.get("trigger"))
         trigger_type = _coerce_str(strategy.get("trigger_type")) or trigger
@@ -292,6 +290,7 @@ def _compose_workflow_from_components(
 
         initiated_by = _coerce_str(strategy.get("initiated_by")) or _coerce_str(plan.get("initiated_by")) or "user"
         plan["initiated_by"] = initiated_by
+        plan["human_in_loop"] = bool(strategy.get("human_in_loop", plan.get("human_in_loop", False)))
 
         lifecycle_ops = strategy.get("lifecycle_operations")
         if isinstance(lifecycle_ops, list):
@@ -303,22 +302,22 @@ def _compose_workflow_from_components(
         if strategy_notes:
             plan["strategy_notes"] = strategy_notes
 
-        phases_candidate = strategy.get("phases")
-        if isinstance(phases_candidate, list):
-            strategy_phases = [phase for phase in phases_candidate if isinstance(phase, dict)]
+        modules_candidate = strategy.get("modules") or strategy.get("phases")
+        if isinstance(modules_candidate, list):
+            strategy_modules = [module for module in modules_candidate if isinstance(module, dict)]
     else:
         if not isinstance(plan.get("lifecycle_operations"), list):
             plan["lifecycle_operations"] = []
 
-    existing_phases = plan.get("phases")
-    if not isinstance(existing_phases, list):
-        existing_phases = []
+    existing_modules = plan.get("modules")
+    if not isinstance(existing_modules, list):
+        existing_modules = []
 
-    merged_phases: Optional[List[Dict[str, Any]]] = None
-    if phase_agents:
+    merged_modules: Optional[List[Dict[str, Any]]] = None
+    if module_agents:
         agents_by_index: Dict[int, List[Dict[str, Any]]] = {}
-        for entry in phase_agents:
-            idx = entry.get("phase_index")
+        for entry in module_agents:
+            idx = entry.get("module_index", entry.get("phase_index"))
             try:
                 index = int(idx)
             except (TypeError, ValueError):
@@ -328,69 +327,56 @@ def _compose_workflow_from_components(
                 agents = []
             agents_by_index[index] = [copy.deepcopy(agent) for agent in agents if isinstance(agent, dict)]
 
-        merged_phases = []
-        if strategy_phases:
-            for idx, strategy_phase in enumerate(strategy_phases):
-                existing_phase: Dict[str, Any] = {}
-                if idx < len(existing_phases) and isinstance(existing_phases[idx], dict):
-                    existing_phase = existing_phases[idx]
+        merged_modules = []
+        if strategy_modules:
+            for idx, strategy_module in enumerate(strategy_modules):
+                existing_module: Dict[str, Any] = {}
+                if idx < len(existing_modules) and isinstance(existing_modules[idx], dict):
+                    existing_module = existing_modules[idx]
+
+                module_index_raw = strategy_module.get("module_index", idx)
+                try:
+                    module_index = int(module_index_raw)
+                except (TypeError, ValueError):
+                    module_index = idx
 
                 name = (
-                    _coerce_str(existing_phase.get("name"))
-                    or _coerce_str(strategy_phase.get("phase_name"))
-                    or _coerce_str(strategy_phase.get("name"))
-                    or f"Phase {idx + 1}"
+                    _coerce_str(existing_module.get("module_name") or existing_module.get("name"))
+                    or _coerce_str(strategy_module.get("module_name") or strategy_module.get("name"))
+                    or f"Module {idx + 1}"
                 )
                 description = (
-                    _coerce_str(existing_phase.get("description"))
-                    or _coerce_str(strategy_phase.get("phase_description"))
-                    or _coerce_str(strategy_phase.get("description"))
+                    _coerce_str(existing_module.get("module_description") or existing_module.get("description"))
+                    or _coerce_str(strategy_module.get("module_description") or strategy_module.get("description"))
                 )
-                objective = (
-                    _coerce_str(existing_phase.get("objective"))
-                    or _coerce_str(strategy_phase.get("phase_objective"))
-                    or _coerce_str(strategy_phase.get("objective"))
-                )
-                approval_required = (
-                    bool(existing_phase.get("approval_required"))
-                    or bool(strategy_phase.get("approval_required"))
-                    or bool(strategy_phase.get("requires_approval"))
-                )
+                agents_needed = strategy_module.get("agents_needed") if isinstance(strategy_module.get("agents_needed"), list) else []
+                pattern_id = strategy_module.get("pattern_id")
+                pattern_name = strategy_module.get("pattern_name")
 
-                agents_list = agents_by_index.get(idx, [])
-                merged_phase: Dict[str, Any] = {
-                    "name": name,
-                    "description": description,
-                    "objective": objective,
-                    "approval_required": approval_required,
+                agents_list = agents_by_index.get(module_index, [])
+                merged_module: Dict[str, Any] = {
+                    "module_name": name,
+                    "module_index": module_index,
+                    "module_description": description,
                     "agents": agents_list,
                 }
+                if agents_needed:
+                    merged_module["agents_needed"] = agents_needed
+                if pattern_id is not None:
+                    merged_module["pattern_id"] = pattern_id
+                if pattern_name is not None:
+                    merged_module["pattern_name"] = pattern_name
 
-                # Preserve optional metadata from strategy/existing phases when available
-                for optional_key in (
-                    "handoff_to_next",
-                    "handoff_from_previous",
-                    "entry_criteria",
-                    "exit_criteria",
-                    "success_criteria",
-                    "notes",
-                ):
-                    if optional_key in existing_phase and optional_key not in merged_phase:
-                        merged_phase[optional_key] = existing_phase[optional_key]
-                    elif optional_key in strategy_phase and optional_key not in merged_phase:
-                        merged_phase[optional_key] = strategy_phase[optional_key]
+                merged_modules.append(merged_module)
 
-                merged_phases.append(merged_phase)
-
-            extra_indices = sorted(idx for idx in agents_by_index.keys() if idx >= len(strategy_phases))
+            extra_indices = sorted(idx for idx in agents_by_index.keys() if idx >= len(strategy_modules))
             for idx in extra_indices:
                 agents_list = agents_by_index[idx]
-                merged_phases.append(
+                merged_modules.append(
                     {
-                        "name": f"Phase {idx + 1}",
-                        "description": "",
-                        "objective": "",
-                        "approval_required": False,
+                        "module_name": f"Module {idx + 1}",
+                        "module_description": "",
+                        "module_index": idx,
                         "agents": agents_list,
                     }
                 )
@@ -398,54 +384,52 @@ def _compose_workflow_from_components(
             sorted_indices = sorted(agents_by_index.keys())
             for position, idx in enumerate(sorted_indices):
                 agents_list = agents_by_index[idx]
-                existing_phase: Dict[str, Any] = {}
-                if idx < len(existing_phases) and isinstance(existing_phases[idx], dict):
-                    existing_phase = existing_phases[idx]
-                name = _coerce_str(existing_phase.get("name")) or f"Phase {idx + 1}"
-                description = _coerce_str(existing_phase.get("description"))
-                objective = _coerce_str(existing_phase.get("objective"))
-                approval_required = bool(existing_phase.get("approval_required"))
-                merged_phases.append(
+                existing_module: Dict[str, Any] = {}
+                if idx < len(existing_modules) and isinstance(existing_modules[idx], dict):
+                    existing_module = existing_modules[idx]
+                name = _coerce_str(existing_module.get("module_name") or existing_module.get("name")) or f"Module {idx + 1}"
+                description = _coerce_str(existing_module.get("module_description") or existing_module.get("description"))
+                merged_modules.append(
                     {
-                        "name": name,
-                        "description": description,
-                        "objective": objective,
-                        "approval_required": approval_required,
+                        "module_name": name,
+                        "module_description": description,
+                        "module_index": idx,
                         "agents": agents_list,
                     }
                 )
 
-    if merged_phases is not None:
-        plan["phases"] = merged_phases
-    elif strategy_phases and not _is_plan_complete(plan):
-        fallback_phases: List[Dict[str, Any]] = []
-        for idx, strategy_phase in enumerate(strategy_phases):
-            name = _coerce_str(strategy_phase.get("phase_name")) or _coerce_str(strategy_phase.get("name")) or f"Phase {idx + 1}"
-            description = _coerce_str(strategy_phase.get("phase_description")) or _coerce_str(strategy_phase.get("description"))
-            objective = _coerce_str(strategy_phase.get("phase_objective")) or _coerce_str(strategy_phase.get("objective"))
-            approval_required = bool(strategy_phase.get("approval_required") or strategy_phase.get("requires_approval"))
-            fallback_phases.append(
+    if merged_modules is not None:
+        plan["modules"] = merged_modules
+    elif strategy_modules and not _is_plan_complete(plan):
+        fallback_modules: List[Dict[str, Any]] = []
+        for idx, strategy_module in enumerate(strategy_modules):
+            name = _coerce_str(strategy_module.get("module_name") or strategy_module.get("name")) or f"Module {idx + 1}"
+            description = _coerce_str(strategy_module.get("module_description") or strategy_module.get("description"))
+            try:
+                module_index = int(strategy_module.get("module_index", idx))
+            except (TypeError, ValueError):
+                module_index = idx
+            fallback_modules.append(
                 {
-                    "name": name,
-                    "description": description,
-                    "objective": objective,
-                    "approval_required": approval_required,
+                    "module_name": name,
+                    "module_description": description,
+                    "module_index": module_index,
                     "agents": [],
                 }
             )
-        if fallback_phases:
-            plan["phases"] = fallback_phases
+        if fallback_modules:
+            plan["modules"] = fallback_modules
 
     if "pattern" not in plan:
-        plan["pattern"] = "Pipeline"
+        plan["pattern"] = ["Pipeline"]
     if "trigger_type" not in plan:
         plan["trigger_type"] = plan.get("trigger", "chat_start") or "chat_start"
     if "initiated_by" not in plan:
         plan["initiated_by"] = "user"
     if not isinstance(plan.get("lifecycle_operations"), list):
         plan["lifecycle_operations"] = []
-    if "phases" not in plan or not isinstance(plan["phases"], list):
-        plan["phases"] = []
+    if "modules" not in plan or not isinstance(plan["modules"], list):
+        plan["modules"] = []
 
     return plan or None
 
@@ -551,7 +535,7 @@ async def mermaid_sequence_diagram(
         resolved_agent_name = "Agent"
         wf_logger.debug("[MERMAID] No explicit agent_name supplied; using default label 'Agent' (attribution should be supplied by UI/transport layer)")
 
-    wf_logger.debug("🔍 [MERMAID] agent_name resolved (%s): %s", agent_name_source, resolved_agent_name)
+    wf_logger.debug("[MERMAID] agent_name resolved (%s): %s", agent_name_source, resolved_agent_name)
 
     diagram_source = "provided"
     diagram_text = provided_diagram
@@ -561,7 +545,7 @@ async def mermaid_sequence_diagram(
         if legend:
             diagram_text = _generate_fallback_diagram(legend, payload_workflow_name)
             wf_logger.warning(
-                "⚠️ [MERMAID] Provided mermaid_diagram missing or invalid; generated fallback from legend (%s phases)",
+                "[MERMAID] Provided mermaid_diagram missing or invalid; generated fallback from legend (%s modules)",
                 len(legend),
             )
         else:
@@ -572,11 +556,11 @@ async def mermaid_sequence_diagram(
                 "reason": "missing_diagram",
             }
     else:
-        wf_logger.info("✅ [MERMAID] Using provided mermaid_diagram text (%s characters)", len(diagram_text))
+        wf_logger.info("[MERMAID] Using provided mermaid_diagram text (%s characters)", len(diagram_text))
 
     stored_plan: Dict[str, Any] = {}
     workflow_strategy: Optional[Dict[str, Any]] = None
-    cached_phase_agents: List[Dict[str, Any]] = []
+    cached_module_agents: List[Dict[str, Any]] = []
     stored_technical_blueprint: Optional[Dict[str, Any]] = None
     if context_variables and hasattr(context_variables, "get"):
         try:
@@ -588,14 +572,18 @@ async def mermaid_sequence_diagram(
             if isinstance(strategy_candidate, dict):
                 workflow_strategy = strategy_candidate
 
-            phase_agents_candidate = context_variables.get("workflow_phase_agents")
-            cached_phase_agents = _coerce_phase_agents_cache(phase_agents_candidate)
+            module_agents_candidate = (
+                context_variables.get("module_agents")
+                or context_variables.get("workflow_module_agents")
+                or context_variables.get("workflow_phase_agents")
+            )
+            cached_module_agents = _coerce_module_agents_cache(module_agents_candidate)
             
             # Retrieve TechnicalBlueprint from context
             blueprint_candidate = context_variables.get("technical_blueprint")
             if isinstance(blueprint_candidate, dict):
                 stored_technical_blueprint = blueprint_candidate
-                wf_logger.info("✅ [MERMAID] Retrieved technical_blueprint from context with keys: %s", list(blueprint_candidate.keys()))
+                wf_logger.info("[MERMAID] Retrieved technical_blueprint from context with keys: %s", list(blueprint_candidate.keys()))
         except Exception as ctx_err:
             wf_logger.debug("Unable to retrieve stored action plan: %s", ctx_err)
 
@@ -606,10 +594,10 @@ async def mermaid_sequence_diagram(
 
     plan_was_empty = not bool(stored_plan)
     plan_was_incomplete = not _is_plan_complete(stored_plan)
-    if workflow_strategy or cached_phase_agents:
+    if workflow_strategy or cached_module_agents:
         rebuilt_plan = _compose_workflow_from_components(
             workflow_strategy,
-            cached_phase_agents,
+            cached_module_agents,
             stored_plan if stored_plan else None,
         )
         if rebuilt_plan:
@@ -622,15 +610,15 @@ async def mermaid_sequence_diagram(
 
             if plan_was_empty:
                 wf_logger.info(
-                    "✅ [MERMAID] Reconstituted action plan from cached strategy and implementation outputs",
+                    "[MERMAID] Reconstituted action plan from cached strategy and implementation outputs",
                 )
             elif plan_was_incomplete and _is_plan_complete(stored_plan):
                 wf_logger.info(
-                    "✅ [MERMAID] Completed action plan phases using cached strategy + phase_agents data",
+                    "[MERMAID] Completed action plan modules using cached strategy + module_agents data",
                 )
             else:
                 wf_logger.debug(
-                    "🔄 [MERMAID] Synced action plan metadata from cached strategy/implementation components",
+                    "[MERMAID] Synced action plan metadata from cached strategy/implementation components",
                 )
 
     if not stored_plan:
@@ -649,7 +637,7 @@ async def mermaid_sequence_diagram(
         # Merge TechnicalBlueprint into workflow if available
         if stored_technical_blueprint:
             workflow_with_diagram["technical_blueprint"] = copy.deepcopy(stored_technical_blueprint)
-            wf_logger.info("✅ [MERMAID] Merged technical_blueprint into workflow payload for UI")
+            wf_logger.info("[MERMAID] Merged technical_blueprint into workflow payload for UI")
             
             # Also merge top-level fields from technical_blueprint for UI convenience
             if "global_context_variables" in stored_technical_blueprint:
@@ -709,7 +697,7 @@ async def mermaid_sequence_diagram(
         ui_payload["agentName"] = resolved_agent_name
         ui_payload["agent"] = resolved_agent_name
         wf_logger.info(
-            "✅ [MERMAID] Added agent_name to ui_payload (%s): %s",
+            "[MERMAID] Added agent_name to ui_payload (%s): %s",
             agent_name_source,
             resolved_agent_name,
         )
@@ -806,4 +794,3 @@ async def mermaid_sequence_diagram(
             "agent_message_id": agent_message_id,
             "diagram_source": diagram_source if "diagram_source" in locals() else "unknown",
         }
-

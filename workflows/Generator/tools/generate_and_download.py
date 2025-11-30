@@ -207,7 +207,7 @@ async def generate_and_download(
             wf_logger.info(f"   Type: {type(output_data).__name__}")
     wf_logger.info("=" * 80)
     
-    # Extract workflow name from ActionPlanArchitect output (user-friendly name)
+    # Extract workflow name from context_variables.action_plan or WorkflowStrategyAgent output
     # Then convert to PascalCase for folder/zip naming
     def _to_pascal_case(name: str) -> str:
         """Convert user-friendly name to PascalCase (e.g., 'Story Creator' -> 'StoryCreator')
@@ -248,35 +248,24 @@ async def generate_and_download(
     
     # PRIORITY 2: Try to extract from collected agent JSONs (fallback for non-auto-tool agents)
     if not wf_name_pascal:
-        action_plan_data = collected.get("ActionPlanArchitect")
-        if isinstance(action_plan_data, dict):
-            action_plan = action_plan_data.get("ActionPlan", {})
-            if isinstance(action_plan, dict):
-                workflow = action_plan.get("workflow", {})
-                if isinstance(workflow, dict):
-                    candidate_name = workflow.get("name")
-                    if isinstance(candidate_name, str) and candidate_name.strip():
-                        wf_name_user_friendly = candidate_name.strip()
-                        wf_name_pascal = _to_pascal_case(wf_name_user_friendly)
-                        wf_logger.info(f"📝 Extracted workflow name from collected.ActionPlanArchitect: '{wf_name_user_friendly}' → '{wf_name_pascal}'")
-        if not wf_name_pascal:
-            strategy_data = collected.get("WorkflowStrategyAgent")
-            if isinstance(strategy_data, dict):
-                strategy_payload = strategy_data.get("WorkflowStrategy") or strategy_data.get("workflow_strategy") or strategy_data
-                if isinstance(strategy_payload, dict):
-                    candidate_name = strategy_payload.get("workflow_name")
-                    if isinstance(candidate_name, str) and candidate_name.strip():
-                        wf_name_user_friendly = candidate_name.strip()
-                        wf_name_pascal = _to_pascal_case(wf_name_user_friendly)
-                        wf_logger.info(f"📝 Extracted workflow name from collected.WorkflowStrategyAgent: '{wf_name_user_friendly}' → '{wf_name_pascal}'")
-        if not wf_name_pascal:
-            orchestrator_snapshot = collected.get("OrchestratorAgent")
-            if isinstance(orchestrator_snapshot, dict):
-                candidate_name = orchestrator_snapshot.get("workflow_name")
+        strategy_data = collected.get("WorkflowStrategyAgent")
+        if isinstance(strategy_data, dict):
+            strategy_payload = strategy_data.get("WorkflowStrategy") or strategy_data.get("workflow_strategy") or strategy_data
+            if isinstance(strategy_payload, dict):
+                candidate_name = strategy_payload.get("workflow_name")
                 if isinstance(candidate_name, str) and candidate_name.strip():
                     wf_name_user_friendly = candidate_name.strip()
                     wf_name_pascal = _to_pascal_case(wf_name_user_friendly)
-                    wf_logger.info(f"📝 Extracted workflow name from collected.OrchestratorAgent: '{wf_name_user_friendly}' → '{wf_name_pascal}'")
+                    wf_logger.info(f"📝 Extracted workflow name from collected.WorkflowStrategyAgent: '{wf_name_user_friendly}' → '{wf_name_pascal}'")
+    
+    if not wf_name_pascal:
+        orchestrator_snapshot = collected.get("OrchestratorAgent")
+        if isinstance(orchestrator_snapshot, dict):
+            candidate_name = orchestrator_snapshot.get("workflow_name")
+            if isinstance(candidate_name, str) and candidate_name.strip():
+                wf_name_user_friendly = candidate_name.strip()
+                wf_name_pascal = _to_pascal_case(wf_name_user_friendly)
+                wf_logger.info(f"📝 Extracted workflow name from collected.OrchestratorAgent: '{wf_name_user_friendly}' → '{wf_name_pascal}'")
     
     # PRIORITY 3: Fallback to orchestrator or context workflow_name
     if not wf_name_pascal:

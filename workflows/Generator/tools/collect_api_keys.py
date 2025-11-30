@@ -1,6 +1,6 @@
 # ==============================================================================
 # FILE: workflows/Generator/tools/collect_api_keys.py  
-# DESCRIPTION: Lifecycle tool to extract agent integrations from ActionPlan and collect API keys
+# DESCRIPTION: Lifecycle tool to extract agent integrations from action_plan context and collect API keys
 # TRIGGER: before_agent (ContextVariablesAgent)
 # ==============================================================================
 
@@ -8,11 +8,11 @@
 Lifecycle Tool: API Key Collection from Action Plan
 
 This lifecycle tool executes before the ContextVariablesAgent runs, extracting
-integrations from the ActionPlanArchitect's structured output and prompting
-the user to provide any required API keys.
+integrations from the action_plan context variable (stored after user approval)
+and prompting the user to provide any required API keys.
 
 Flow:
-1. Extract Action Plan from context (cached by ActionPlanArchitect)
+1. Extract Action Plan from context (action_plan context variable)
 2. Parse all integrations from workflow phases/agents
 3. Deduplicate and normalize service names
 4. Prompt the user once for all required API keys via the consolidated UI tool
@@ -47,7 +47,7 @@ def _extract_integrations_from_action_plan(action_plan: Dict[str, Any]) -> List[
     Extract all integrations that require external API keys from the Action Plan.
 
     Args:
-        action_plan: Action Plan workflow payload as cached by ActionPlanArchitect.
+        action_plan: Action Plan workflow payload from the action_plan context variable.
 
     Returns:
         Deduplicated list of service metadata dicts containing normalized identifier and display label.
@@ -114,7 +114,7 @@ async def collect_api_keys_from_action_plan(context_variables: Any = None) -> Di
     
     Args:
         context_variables: AG2 ContextVariables instance with:
-            - action_plan: Cached Action Plan from ActionPlanArchitect
+            - action_plan: Action Plan from context variable (set after user approval)
             - chat_id, workflow_name, enterprise_id, user_id
     
     Returns:

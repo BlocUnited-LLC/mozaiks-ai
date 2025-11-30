@@ -42,6 +42,10 @@ def _build_normalized_blueprint(raw: Dict[str, Any]) -> Dict[str, Any]:
     if lifecycle_ops:
         normalized["lifecycle_operations"] = lifecycle_ops
 
+    workflow_dependencies = raw.get("workflow_dependencies")
+    if isinstance(workflow_dependencies, dict):
+        normalized["workflow_dependencies"] = workflow_dependencies
+
     return normalized
 
 

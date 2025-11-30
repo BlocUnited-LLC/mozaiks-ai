@@ -1,12 +1,14 @@
 """
-pattern_selection tool - Stores AG2 pattern selection from PatternAgent in context.
+pattern_selection tool - stores AG2 pattern selection from PatternAgent.
 
-This tool caches the selected pattern ID in context variables for consumption by
-update_agent_state hooks that inject pattern-specific guidance into agent prompts.
+Caches the selected pattern so update_agent_state hooks can inject pattern-specific
+guidance into downstream agent prompts.
 """
 
-from typing import Dict, Any, Annotated, Optional
+from __future__ import annotations
+
 import logging
+from typing import Annotated, Any, Dict, Optional
 
 _logger = logging.getLogger("tools.pattern_selection")
 
@@ -16,38 +18,26 @@ def pattern_selection(
     PatternSelection: Annotated[Optional[Dict[str, Any]], "Pattern selection payload"],
     context_variables: Annotated[Optional[Any], "Context variables provided by AG2"] = None,
 ) -> str:
-    """
-    Cache pattern selection from PatternAgent in context.
+    """Persist pattern selection for downstream prompt injections."""
 
-    This tool stores the selected AG2 orchestration pattern in context_variables
-    for use by update_agent_state hooks that inject pattern guidance into
-    WorkflowStrategyAgent, WorkflowImplementationAgent, ProjectOverviewAgent, and HandoffsAgent.
-
-    Args:
-        PatternSelection: Pattern selection data from PatternAgent (selected_pattern ID + pattern_name)
-        context_variables: AG2 context variables instance
-
-    Returns:
-        Status message confirming pattern storage
-    """
-    if not PatternSelection:
+    if not PatternSelection or not isinstance(PatternSelection, dict):
         _logger.warning("pattern_selection called with no PatternSelection data")
-        return "❌ No pattern selection provided"
+        return "No pattern selection provided"
 
-    if not context_variables:
-        _logger.error("pattern_selection called without context_variables")
-        return "❌ Context variables unavailable"
+    selected_pattern = PatternSelection.get("selected_pattern")
+    pattern_name = PatternSelection.get("pattern_name", "Unknown")
 
-    # Extract pattern details
-    selected_pattern = PatternSelection.get('selected_pattern')
-    pattern_name = PatternSelection.get('pattern_name', 'Unknown')
+    if context_variables and hasattr(context_variables, "set"):
+        try:
+            context_variables.set("PatternSelection", PatternSelection)  # type: ignore[attr-defined]
+        except Exception as exc:  # pragma: no cover - defensive logging
+            _logger.error("Failed to cache PatternSelection via context_variables.set: %s", exc)
+    if context_variables and hasattr(context_variables, "data"):
+        try:
+            context_variables.data["PatternSelection"] = PatternSelection  # type: ignore[attr-defined]
+        except Exception as exc:  # pragma: no cover
+            _logger.debug("Unable to assign PatternSelection into context_variables.data: %s", exc)
 
-    # Store in context for update_agent_state hooks
-    context_variables.data['PatternSelection'] = PatternSelection
+    _logger.info("Cached pattern selection: %s (ID: %s)", pattern_name, selected_pattern)
 
-    _logger.info(
-        f"✓ Pattern selection cached: {pattern_name} (ID: {selected_pattern})"
-    )
-
-    # Return status message
-    return f"✓ Selected Pattern: **{pattern_name}** (ID: {selected_pattern})"
+    return f"Selected Pattern: {pattern_name} (ID: {selected_pattern})"
