@@ -49,7 +49,7 @@
   - `pattern_selection` (PatternAgent)
   - `workflow_strategy` (WorkflowStrategyAgent)
   - `technical_blueprint` (WorkflowArchitectAgent)
-  - `phase_agents_plan` (WorkflowImplementationAgent)
+  - `module_agents_plan` (WorkflowImplementationAgent)
   - `mermaid_sequence_diagram` (ProjectOverviewAgent)
   - `collect_api_keys_from_action_plan` (ContextVariablesAgent)
 

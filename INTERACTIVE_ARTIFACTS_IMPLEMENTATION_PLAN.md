@@ -122,7 +122,7 @@ Artifacts can emit structured action events that bypass chat history and enable 
 
 4. **`workflows/Generator/agents.json`**
    - Add `DatabaseConfigAgent` definition
-   - 9-section prompt structure
+   - 6-section prompt structure (universal sections hook-injected)
    - Role: Database configuration specialist
    - Tool: configure_database
    - auto_tool_mode: true

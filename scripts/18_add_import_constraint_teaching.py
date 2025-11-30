@@ -6,7 +6,7 @@ to teach them about the critical import constraint for dynamically loaded tools:
 - Relative imports DON'T work (module isn't part of a package)
 - Absolute imports with sys.path manipulation DO work
 
-Context: phase_agents_plan.py import error revealed this gap in agent knowledge.
+Context: module_agents_plan.py import error revealed this gap in agent knowledge.
 """
 
 import json

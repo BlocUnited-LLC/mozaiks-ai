@@ -117,7 +117,7 @@ Each should have their [INSTRUCTIONS] updated to explicitly reference the inject
 
 ## Conclusion
 
-WorkflowStrategyAgent is now **complete** (9/9 sections fully populated and aligned with runtime hooks). It serves as a reference implementation for agents using dynamic `update_agent_state` injection patterns.
+WorkflowStrategyAgent is now **complete** (6 agent-specific sections, universal sections now hook-injected via `hook_universal_prompts.py`). It serves as a reference implementation for agents using dynamic `update_agent_state` injection patterns.
 
 ---
 **Status**: ✅ COMPLETE  

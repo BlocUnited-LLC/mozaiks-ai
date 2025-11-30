@@ -49,14 +49,14 @@ Why: PatternAgent's selection must be stored in context BEFORE lifecycle tool ru
   "ui": {"component": null, "mode": null}
 }
 ```
-Why: Strategy must be cached in context for WorkflowImplementationAgent to read phases.
+Why: Strategy must be cached in context for WorkflowImplementationAgent to read modules.
 
 3. **UI_Tool with default auto_invoke** (no explicit field needed):
 ```json
 {
   "agent": "WorkflowImplementationAgent",
-  "file": "phase_agents_plan.py",
-  "function": "phase_agents_plan",
+  "file": "module_agents_plan.py",
+  "function": "module_agents_plan",
   "tool_type": "UI_Tool",
   // auto_invoke not specified → defaults to true for UI_Tool
   "ui": {"component": "ActionPlan", "mode": "artifact"}

@@ -1,5 +1,7 @@
 # Schema Alignment Issues: agents.json vs structured_outputs.json
 
+> ⚠️ **SUPERSEDED**: This document was created on 2025-11-03 and may contain outdated information. The `agents_needed` enum mentioned below has been replaced with `list[str]` (array of agent names). See `docs/TAXONOMY_SOURCE_OF_TRUTH.md` for current authoritative schema definitions.
+
 **Date**: 2025-11-03  
 **Comparison Source**: AGENT_OUTPUT_FORMATS_VALIDATION.md (ground truth from agents.json [OUTPUT FORMAT]) vs structured_outputs.json
 
