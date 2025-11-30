@@ -480,7 +480,7 @@ export const layouts = {
     spacing.padding.xl,
   ].join(' '),
   
-  // Two-column grid (phases + flowchart)
+  // Two-column grid (modules + flowchart)
   twoColumnGrid: 'grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]',
   
   // Tool grid

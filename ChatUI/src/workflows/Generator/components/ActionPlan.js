@@ -1,7 +1,7 @@
 // ============================================================================
 // FILE: ChatUI/src/workflows/Generator/components/ActionPlan.js
 // REWRITE: Accordion-based Action Plan artifact (schema: { workflow:{...}, agent_message })
-// PURPOSE: Present hierarchical workflow (phases -> agents -> tools) with robust, defensive parsing.
+// PURPOSE: Present hierarchical workflow (modules -> agents -> tools) with robust, defensive parsing.
 // ============================================================================
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -27,7 +27,7 @@ const TRIGGER_TYPE = {
 };
 
 const PATTERN_META = {
-  pipeline: { label: 'Pipeline', desc: 'Sequential handoffs across phases', color: 'violet' },
+  pipeline: { label: 'Pipeline', desc: 'Sequential handoffs across modules', color: 'violet' },
   hierarchical: { label: 'Hierarchical', desc: 'Lead agent delegates work to specialists', color: 'cyan' },
   star: { label: 'Star', desc: 'Central coordinator distributes and gathers work', color: 'emerald' },
   redundant: { label: 'Redundant', desc: 'Parallel agents produce overlapping outputs', color: 'amber' },
@@ -155,7 +155,7 @@ const ToolSection = ({ title, icon: Icon = Zap, items, type = 'integration' }) =
 const ComponentCard = ({ component, idx }) => {
   if (!component || typeof component !== 'object') return null;
   const label = String(component?.label || component?.tool || `component ${idx + 1}`);
-  const phaseName = String(component?.phase_name || 'Phase');
+  const moduleName = String(component?.module_name || 'Module');
   const agentName = String(component?.agent || 'Agent');
   const toolName = String(component?.tool || '').trim();
   const componentName = String(component?.component || '').trim();
@@ -186,7 +186,7 @@ const ComponentCard = ({ component, idx }) => {
       </div>
       <div className="mt-2 md:mt-3 space-y-1 text-xs text-slate-300">
         <div className="break-words">
-          <span className="font-semibold text-white">Phase:</span> {phaseName}
+          <span className="font-semibold text-white">Module:</span> {moduleName}
         </div>
         <div className="break-words">
           <span className="font-semibold text-white">Agent:</span> {agentName}
@@ -420,7 +420,7 @@ const AgentAccordionRow = ({ agent, index, isOpen, onToggle, agentLifecycleHooks
 
   // Determine interaction type from human_interaction field
   const humanInteraction = String(agent?.human_interaction || 'none').toLowerCase();
-  const interactionType = ['none', 'context', 'approval'].includes(humanInteraction) 
+  const interactionType = ['none', 'context', 'approval', 'feedback', 'single'].includes(humanInteraction) 
     ? humanInteraction 
     : 'none';
   
@@ -446,6 +446,20 @@ const AgentAccordionRow = ({ agent, index, isOpen, onToggle, agentLifecycleHooks
       iconColor: 'text-[var(--color-accent-light)]',
       badgeClass: 'bg-[var(--color-accent)] text-white shadow-lg [box-shadow:0_0_0_rgba(var(--color-accent-rgb),0.5)]',
       badgeText: 'REQUIRES APPROVAL'
+    },
+    feedback: {
+      icon: MessageSquare,
+      bgClass: 'bg-[rgba(var(--color-secondary-rgb),0.2)] ring-2 ring-[rgba(var(--color-secondary-light-rgb),0.5)]',
+      iconColor: 'text-[var(--color-secondary-light)]',
+      badgeClass: 'bg-[var(--color-secondary)] text-white shadow-lg [box-shadow:0_0_0_rgba(var(--color-secondary-rgb),0.4)]',
+      badgeText: 'FEEDBACK LOOP'
+    },
+    single: {
+      icon: UserCheck,
+      bgClass: 'bg-[rgba(var(--color-primary-rgb),0.2)] ring-2 ring-[rgba(var(--color-primary-light-rgb),0.5)]',
+      iconColor: 'text-[var(--color-primary-light)]',
+      badgeClass: 'bg-slate-700 text-slate-200',
+      badgeText: 'SINGLE STEP'
     }
   };
   
@@ -534,8 +548,8 @@ const AgentAccordionRow = ({ agent, index, isOpen, onToggle, agentLifecycleHooks
   );
 };
 
-const PhaseAccordion = ({ phase, index, open, onToggle, lifecycleOperations = [] }) => {
-  const agents = Array.isArray(phase?.agents) ? phase.agents : [];
+const ModuleAccordion = ({ module, index, open, onToggle, lifecycleOperations = [] }) => {
+  const agents = Array.isArray(module?.agents) ? module.agents : [];
   const [openAgents, setOpenAgents] = useState({});
   const toggleAgent = (i) => setOpenAgents(prev => ({ ...prev, [i]: !prev[i] }));
 
@@ -559,9 +573,9 @@ const PhaseAccordion = ({ phase, index, open, onToggle, lifecycleOperations = []
   ).length;
   
   // Monetization logic
-  const monetizationScope = String(phase?.monetization_scope || 'free_trial').toLowerCase();
+  const monetizationScope = String(module?.monetization_scope || 'free_trial').toLowerCase();
   const isPaid = monetizationScope === 'paid';
-  const isFreeTrialEntry = phase?.free_trial_entry === true;
+  const isFreeTrialEntry = module?.free_trial_entry === true;
   
   return (
     <div className={`overflow-hidden rounded-2xl transition-all ${open ? components.accordionOpen : components.accordionClosed}`}>
@@ -580,7 +594,7 @@ const PhaseAccordion = ({ phase, index, open, onToggle, lifecycleOperations = []
         <div className="flex flex-col gap-1">
             <div className="flex items-center gap-4">
               <span className="text-xl font-black text-white">
-                {String(phase?.name || `Phase ${index + 1}`)}
+                {String(module?.module_name || `Module ${index + 1}`)}
               </span>
               {/* Monetization Badge */}
               {isPaid ? (
@@ -626,7 +640,7 @@ const PhaseAccordion = ({ phase, index, open, onToggle, lifecycleOperations = []
         <div className="space-y-4 md:space-y-6 border-t-4 border-[rgba(var(--color-primary-light-rgb),0.3)] bg-slate-900 p-4 md:p-6">
           <div className="rounded-lg bg-slate-800/50 p-5 border-l-4 border-[var(--color-primary-light)]">
             <p className="text-base leading-relaxed text-slate-200">
-              {String(phase?.description || 'No description provided.')}
+              {String(module?.module_description || 'No description provided.')}
             </p>
           </div>
           <div className="space-y-4">
@@ -651,7 +665,7 @@ const PhaseAccordion = ({ phase, index, open, onToggle, lifecycleOperations = []
               })
             ) : (
               <div className="rounded-lg border-2 border-dashed border-slate-600 bg-slate-800/30 p-8 text-center text-sm font-medium text-slate-400">
-                No agents defined in this phase
+                No agents defined in this module
               </div>
             )}
           </div>
@@ -1504,7 +1518,7 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
   // CRITICAL: All hooks MUST be called before any conditional returns (React rules of hooks)
   // Initialize state first
   const [pending, setPending] = useState(false);
-  const [openPhases, setOpenPhases] = useState({ 0: true });
+  const [openModules, setOpenModules] = useState({ 0: true });
   const [activeTab, setActiveTab] = useState('workflow'); // Tab state: 'workflow' | 'data' | 'interactions' | 'diagram'
   
   // CRITICAL: Early validation to prevent null reference errors on revision (AFTER hooks)
@@ -1560,7 +1574,7 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
   }
 
   const safeWorkflow = (workflow && typeof workflow === 'object' && !Array.isArray(workflow)) ? workflow : {};
-  const phases = Array.isArray(safeWorkflow?.phases) ? safeWorkflow.phases : [];
+  const modules = Array.isArray(safeWorkflow?.modules) ? safeWorkflow.modules : [];
 
   const technicalBlueprintCandidates = [
     safeWorkflow?.technical_blueprint,
@@ -1652,20 +1666,20 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
     afterChat: chatLevelHooks.after_chat
   });
 
-  // Agent-level hooks will be distributed to individual agents within phases
+  // Agent-level hooks will be distributed to individual agents within modules
 
   // agent_message intentionally ignored inside artifact to avoid duplicate display in chat; previously parsed here.
   // (If future logic needs it for analytics, reintroduce as const agentMessage = String(payload?.agent_message || '') and use.)
 
   // Derived counts (computed; not part of schema)
-  const agentCount = phases.reduce((acc, p) => acc + (Array.isArray(p?.agents) ? p.agents.length : 0), 0);
+  const agentCount = modules.reduce((acc, m) => acc + (Array.isArray(m?.agents) ? m.agents.length : 0), 0);
   
   // Tool count: deduplicate integrations across all agents (same integration used multiple times = 1 tool)
   const uniqueToolNames = new Set();
   const uniqueIntegrations = new Set();
-  phases.forEach(phase => {
-    if (!Array.isArray(phase?.agents)) return;
-    phase.agents.forEach(agent => {
+  modules.forEach(module => {
+    if (!Array.isArray(module?.agents)) return;
+    module.agents.forEach(agent => {
       const agentTools = Array.isArray(agent?.agent_tools) ? agent.agent_tools : [];
       if (agentTools.length > 0) {
         agentTools.forEach(tool => {
@@ -1706,7 +1720,7 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
   // Logging / action integration
   const agentMessageId = payload?.agent_message_id || payload?.agentMessageId || null;
   const tlog = createToolsLogger({ tool: ui_tool_id || componentId, eventId, workflowName, agentMessageId });
-  const togglePhase = (idx) => setOpenPhases(prev => ({ ...prev, [idx]: !prev[idx] }));
+  const toggleModule = (idx) => setOpenModules(prev => ({ ...prev, [idx]: !prev[idx] }));
 
   const emit = async ({ action, planAcceptance = false, agentContextOverrides = {} }) => {
     if (pending) return;
@@ -1720,7 +1734,7 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
           action,
           workflow_name: String(safeWorkflow?.name || 'Generated Workflow'),
           trigger: String(safeWorkflow?.trigger || 'chatbot'),
-          phase_count: phases.length,
+          module_count: modules.length,
           agent_count: agentCount,
           tool_count: toolCount,
           ui_tool_id,
@@ -1897,7 +1911,7 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
         </div>
       )}
 
-      {/* Workflow Tab - Lifecycle hooks + Phase details */}
+      {/* Workflow Tab - Lifecycle hooks + Module details */}
       {activeTab === 'workflow' && (
         <div className="space-y-8">
           {/* Workflow Description */}
@@ -1910,27 +1924,27 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
           {/* Setup Hooks (before_chat) */}
           <WorkflowLifecycleSection operations={chatLevelHooks.before_chat} type="before_chat" />
 
-          {/* Phases Section */}
+          {/* Modules Section */}
           <div className="space-y-6">
             <div className="flex items-center gap-3 rounded-lg bg-slate-800 px-6 py-4 border-l-4 border-[var(--color-primary-light)]">
               <Layers className="h-6 w-6 text-[var(--color-primary-light)]" />
-              <span className="text-xl font-black uppercase tracking-wider text-white">Execution Phases</span>
+              <span className="text-xl font-black uppercase tracking-wider text-white">Execution Modules</span>
             </div>
             
-            {phases.length === 0 && (
+            {modules.length === 0 && (
               <div className="rounded-2xl border-2 border-dashed border-slate-600 bg-slate-900/50 p-12 text-center">
-                <p className="text-base font-medium text-slate-400">No phases defined. Please ensure the ActionPlan includes at least one phase.</p>
+                <p className="text-base font-medium text-slate-400">No modules defined. Please ensure the ActionPlan includes at least one module.</p>
               </div>
             )}
             
             <div className="space-y-5">
-              {phases.map((phase, idx) => (
-                <PhaseAccordion
+              {modules.map((module, idx) => (
+                <ModuleAccordion
                   key={idx}
-                  phase={phase}
+                  module={module}
                   index={idx}
-                  open={!!openPhases[idx]}
-                  onToggle={() => togglePhase(idx)}
+                  open={!!openModules[idx]}
+                  onToggle={() => toggleModule(idx)}
                   lifecycleOperations={lifecycleOperations}
                 />
               ))}
