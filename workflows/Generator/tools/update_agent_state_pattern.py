@@ -1,7 +1,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Optional
 
 from core.workflow.agents.factory import _compose_prompt_sections
 
@@ -39,6 +39,44 @@ PATTERN_DISPLAY_NAME_BY_ID = {
 PATTERN_GUIDANCE_PLACEHOLDER = "{{PATTERN_GUIDANCE_AND_EXAMPLES}}"
 PATTERN_GUIDANCE_SECTION_IDS = {"pattern_guidance_and_examples"}
 PATTERN_GUIDANCE_SECTION_HEADING = "[PATTERN GUIDANCE AND EXAMPLES]"
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+PATTERN_GUIDANCE_PATH = REPO_ROOT / "docs" / "pattern_guidance.md"
+PATTERN_EXAMPLE_DIR = REPO_ROOT / "docs" / "pattern_examples"
+PATTERN_EXAMPLE_FILENAMES = {
+    1: "context_aware_routing.json",
+    2: "escalation.json",
+    3: "feedback_loop.json",
+    4: "hierarchical.json",
+    5: "organic.json",
+    6: "pipeline.json",
+    7: "redundant.json",
+    8: "star.json",
+    9: "triage_with_tasks.json",
+}
+
+
+def _load_pattern_guidance_text() -> str:
+    """Load consolidated pattern guidance from docs/pattern_guidance.md."""
+    try:
+        return PATTERN_GUIDANCE_PATH.read_text(encoding="utf-8")
+    except Exception as err:  # pragma: no cover - defensive logging
+        logger.debug(f"Unable to read pattern guidance doc: {err}")
+        return ""
+
+
+def _load_pattern_example_str(pattern_id: int) -> Optional[str]:
+    """Load the single-module example JSON for a pattern."""
+    filename = PATTERN_EXAMPLE_FILENAMES.get(pattern_id)
+    if not filename:
+        return None
+    path = PATTERN_EXAMPLE_DIR / filename
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return json.dumps(data, indent=2)
+    except Exception as err:  # pragma: no cover - defensive logging
+        logger.debug(f"Unable to load pattern example for id={pattern_id} at {path}: {err}")
+        return None
 
 
 def _apply_pattern_guidance(agent, guidance: str) -> bool:
@@ -213,12 +251,12 @@ def inject_workflow_strategy_guidance(agent, messages: List[Dict[str, Any]]) -> 
         "trigger": "chat|form_submit|schedule|database_condition|webhook",
         "initiated_by": "user|system|external_event",
         "pattern": ["<string>"],
-        "phases": [
+        "modules": [
           {
-            "phase_index": <int>,
-            "phase_name": "<string>",
-            "phase_description": "<string>",
-            "agents_needed": "single|sequential|nested"
+            "module_index": <int>,
+            "module_name": "<string>",
+            "module_description": "<string>",
+            "agents_needed": ["<agent_name>", ...]
           }
         ]
       }
@@ -262,24 +300,24 @@ IF you set `human_in_loop: false`, the workflow will run autonomously.
     "trigger": "chat",
     "initiated_by": "user",
     "pattern": ["Context-Aware Routing"],
-    "phases": [
+    "modules": [
       {
-        "phase_index": 0,
-        "phase_name": "Phase 1: Automated Intake & Signal Capture",
-        "phase_description": "Router agent gathers account metadata, parses the first message for domain cues, and records confidence scores.",
-        "agents_needed": "single"
+        "module_index": 0,
+        "module_name": "Module 1: Automated Intake & Signal Capture",
+        "module_description": "Router agent gathers account metadata, parses the first message for domain cues, and records confidence scores.",
+        "agents_needed": ["IntakeRouterAgent"]
       },
       {
-        "phase_index": 1,
-        "phase_name": "Phase 2: Specialist Routing & Engagement",
-        "phase_description": "Orchestrator selects the best specialist queue, invites the right agent, and hands off the enriched context payload.",
-        "agents_needed": "sequential"
+        "module_index": 1,
+        "module_name": "Module 2: Specialist Routing & Engagement",
+        "module_description": "Orchestrator selects the best specialist queue, invites the right agent, and hands off the enriched context payload.",
+        "agents_needed": ["RoutingOrchestratorAgent", "SpecialistDispatcherAgent"]
       },
       {
-        "phase_index": 2,
-        "phase_name": "Phase 3: Resolution & Post-Chat Summary",
-        "phase_description": "Specialist resolves the issue, Router agent validates satisfaction, and final disposition is synced to CRM.",
-        "agents_needed": "single"
+        "module_index": 2,
+        "module_name": "Module 3: Resolution & Post-Chat Summary",
+        "module_description": "Specialist resolves the issue, Router agent validates satisfaction, and final disposition is synced to CRM.",
+        "agents_needed": ["ResolutionSpecialistAgent"]
       }
     ]
   }
@@ -294,24 +332,24 @@ IF you set `human_in_loop: false`, the workflow will run autonomously.
     "trigger": "chat",
     "initiated_by": "user",
     "pattern": ["Context-Aware Routing"],
-    "phases": [
+    "modules": [
       {
-        "phase_index": 0,
-        "phase_name": "Phase 1: Employee Request Intake",
-        "phase_description": "Concierge agent identifies the employee, verifies department, and captures the details of the IT issue.",
-        "agents_needed": "single"
+        "module_index": 0,
+        "module_name": "Module 1: Employee Request Intake",
+        "module_description": "Concierge agent identifies the employee, verifies department, and captures the details of the IT issue.",
+        "agents_needed": ["ITConciergeAgent"]
       },
       {
-        "phase_index": 1,
-        "phase_name": "Phase 2: Issue Classification",
-        "phase_description": "Classifier agent analyzes the request to categorize it as Hardware, Software, or Access Control.",
-        "agents_needed": "single"
+        "module_index": 1,
+        "module_name": "Module 2: Issue Classification",
+        "module_description": "Classifier agent analyzes the request to categorize it as Hardware, Software, or Access Control.",
+        "agents_needed": ["IssueClassifierAgent"]
       },
       {
-        "phase_index": 2,
-        "phase_name": "Phase 3: Support Execution",
-        "phase_description": "The specific IT specialist (Hardware Tech, Software Admin, Security Ops) handles the request and provides a solution.",
-        "agents_needed": "nested"
+        "module_index": 2,
+        "module_name": "Module 3: Support Execution",
+        "module_description": "The specific IT specialist (Hardware Tech, Software Admin, Security Ops) handles the request and provides a solution.",
+        "agents_needed": ["ITSupportCoordinatorAgent", "HardwareTechAgent", "SoftwareAdminAgent"]
       }
     ]
   }
@@ -324,24 +362,24 @@ IF you set `human_in_loop: false`, the workflow will run autonomously.
     "trigger": "webhook",
     "initiated_by": "system",
     "pattern": ["Escalation"],
-    "phases": [
+    "modules": [
       {
-        "phase_index": 0,
-        "phase_name": "Phase 1: Alert Intake & Baseline Diagnostics",
-        "phase_description": "Automated triage agent ingests the alert, correlates recent deployments, and attempts scripted remediation steps.",
-        "agents_needed": "single"
+        "module_index": 0,
+        "module_name": "Module 1: Alert Intake & Baseline Diagnostics",
+        "module_description": "Automated triage agent ingests the alert, correlates recent deployments, and attempts scripted remediation steps.",
+        "agents_needed": ["AlertTriageAgent"]
       },
       {
-        "phase_index": 1,
-        "phase_name": "Phase 2: Tier Promotion & Context Packaging",
-        "phase_description": "Escalation coordinator assesses recovery confidence; if under 0.85 it bundles findings and pages the next responder tier.",
-        "agents_needed": "sequential"
+        "module_index": 1,
+        "module_name": "Module 2: Tier Promotion & Context Packaging",
+        "module_description": "Escalation coordinator assesses recovery confidence; if under 0.85 it bundles findings and pages the next responder tier.",
+        "agents_needed": ["EscalationCoordinatorAgent", "TierPromotionAgent"]
       },
       {
-        "phase_index": 2,
-        "phase_name": "Phase 3: Expert Mitigation & Stakeholder Updates",
-        "phase_description": "Site reliability lead executes advanced playbooks, involves human commander as needed, and publishes status to leadership.",
-        "agents_needed": "single"
+        "module_index": 2,
+        "module_name": "Module 3: Expert Mitigation & Stakeholder Updates",
+        "module_description": "Site reliability lead executes advanced playbooks, involves human commander as needed, and publishes status to leadership.",
+        "agents_needed": ["SRELeadAgent"]
       }
     ]
   }
@@ -354,30 +392,30 @@ IF you set `human_in_loop: false`, the workflow will run autonomously.
     "trigger": "chat",
     "initiated_by": "user",
     "pattern": ["Feedback Loop"],
-    "phases": [
+    "modules": [
       {
-        "phase_index": 0,
-        "phase_name": "Phase 1: Brief Capture & Acceptance Criteria",
-        "phase_description": "Facilitator agent collects campaign goals, tone, audience data, and defines done criteria with stakeholders.",
-        "agents_needed": "single"
+        "module_index": 0,
+        "module_name": "Module 1: Brief Capture & Acceptance Criteria",
+        "module_description": "Facilitator agent collects campaign goals, tone, audience data, and defines done criteria with stakeholders.",
+        "agents_needed": ["BriefFacilitatorAgent"]
       },
       {
-        "phase_index": 1,
-        "phase_name": "Phase 2: Draft Creation",
-        "phase_description": "Authoring agent generates initial announcement copy and attaches rationale mapped to the brief.",
-        "agents_needed": "single"
+        "module_index": 1,
+        "module_name": "Module 2: Draft Creation",
+        "module_description": "Authoring agent generates initial announcement copy and attaches rationale mapped to the brief.",
+        "agents_needed": ["CopyAuthoringAgent"]
       },
       {
-        "phase_index": 2,
-        "phase_name": "Phase 3: Structured Review",
-        "phase_description": "Review agent (or PMM) scores messaging pillars, leaves line-level comments, and flags blockers or minor tweaks.",
-        "agents_needed": "single"
+        "module_index": 2,
+        "module_name": "Module 3: Structured Review",
+        "module_description": "Review agent (or PMM) scores messaging pillars, leaves line-level comments, and flags blockers or minor tweaks.",
+        "agents_needed": ["ContentReviewAgent"]
       },
       {
-        "phase_index": 3,
-        "phase_name": "Phase 4: Revision & Approval",
-        "phase_description": "Authoring agent applies accepted feedback, rechecks criteria, and loops until reviewers sign off.",
-        "agents_needed": "sequential"
+        "module_index": 3,
+        "module_name": "Module 4: Revision & Approval",
+        "module_description": "Authoring agent applies accepted feedback, rechecks criteria, and loops until reviewers sign off.",
+        "agents_needed": ["RevisionAgent", "ApprovalGateAgent"]
       }
     ]
   }
@@ -390,30 +428,30 @@ IF you set `human_in_loop: false`, the workflow will run autonomously.
     "trigger": "chat",
     "initiated_by": "user",
     "pattern": ["Hierarchical"],
-    "phases": [
+    "modules": [
       {
-        "phase_index": 0,
-        "phase_name": "Phase 1: Executive Briefing & Workstream Plan",
-        "phase_description": "Strategy lead clarifies objectives, splits work into demand, competitor, and regulatory streams, and assigns managers.",
-        "agents_needed": "single"
+        "module_index": 0,
+        "module_name": "Module 1: Executive Briefing & Workstream Plan",
+        "module_description": "Strategy lead clarifies objectives, splits work into demand, competitor, and regulatory streams, and assigns managers.",
+        "agents_needed": ["StrategyLeadAgent"]
       },
       {
-        "phase_index": 1,
-        "phase_name": "Phase 2: Manager Task Framing",
-        "phase_description": "Each manager designs research backlogs, defines success metrics, and syncs expectations with their specialist pods.",
-        "agents_needed": "nested"
+        "module_index": 1,
+        "module_name": "Module 2: Manager Task Framing",
+        "module_description": "Each manager designs research backlogs, defines success metrics, and syncs expectations with their specialist pods.",
+        "agents_needed": ["ResearchManagerCoordinator", "DemandManagerAgent", "CompetitorManagerAgent"]
       },
       {
-        "phase_index": 2,
-        "phase_name": "Phase 3: Specialist Deep Dives",
-        "phase_description": "Specialists execute assigned analyses, share interim findings upward, and surface blockers requiring executive decisions.",
-        "agents_needed": "nested"
+        "module_index": 2,
+        "module_name": "Module 3: Specialist Deep Dives",
+        "module_description": "Specialists execute assigned analyses, share interim findings upward, and surface blockers requiring executive decisions.",
+        "agents_needed": ["AnalysisCoordinatorAgent", "MarketAnalystAgent", "RegulatoryAnalystAgent"]
       },
       {
-        "phase_index": 3,
-        "phase_name": "Phase 4: Executive Synthesis & Go/No-Go",
-        "phase_description": "Executive aggregates insights, prepares the narrative deck, and secures leadership approval on the market decision.",
-        "agents_needed": "single"
+        "module_index": 3,
+        "module_name": "Module 4: Executive Synthesis & Go/No-Go",
+        "module_description": "Executive aggregates insights, prepares the narrative deck, and secures leadership approval on the market decision.",
+        "agents_needed": ["ExecutiveSynthesisAgent"]
       }
     ]
   }
@@ -426,24 +464,24 @@ IF you set `human_in_loop: false`, the workflow will run autonomously.
     "trigger": "chat",
     "initiated_by": "user",
     "pattern": ["Organic"],
-    "phases": [
+    "modules": [
       {
-        "phase_index": 0,
-        "phase_name": "Phase 1: Brief Alignment & Inspiration",
-        "phase_description": "Facilitator agent gathers campaign goals, target personas, and product messaging while seeding the room with prior high-performing assets.",
-        "agents_needed": "single"
+        "module_index": 0,
+        "module_name": "Module 1: Brief Alignment & Inspiration",
+        "module_description": "Facilitator agent gathers campaign goals, target personas, and product messaging while seeding the room with prior high-performing assets.",
+        "agents_needed": ["CampaignFacilitatorAgent"]
       },
       {
-        "phase_index": 1,
-        "phase_name": "Phase 2: Collaborative Concept Jam",
-        "phase_description": "Copy, design, and growth contributors brainstorm in an open thread while ideation agents capture hooks, tag emerging themes, and surface gaps to the group.",
-        "agents_needed": "sequential"
+        "module_index": 1,
+        "module_name": "Module 2: Collaborative Concept Jam",
+        "module_description": "Copy, design, and growth contributors brainstorm in an open thread while ideation agents capture hooks, tag emerging themes, and surface gaps to the group.",
+        "agents_needed": ["IdeationAgent", "ThemeCapturerAgent"]
       },
       {
-        "phase_index": 2,
-        "phase_name": "Phase 3: Asset Assembly & Channel Packaging",
-        "phase_description": "Workflow compiles the strongest concepts into draft emails, social copy, and landing page variants, then routes them for stakeholder preview and scheduling.",
-        "agents_needed": "single"
+        "module_index": 2,
+        "module_name": "Module 3: Asset Assembly & Channel Packaging",
+        "module_description": "Workflow compiles the strongest concepts into draft emails, social copy, and landing page variants, then routes them for stakeholder preview and scheduling.",
+        "agents_needed": ["AssetAssemblyAgent"]
       }
     ]
   }
@@ -456,30 +494,30 @@ IF you set `human_in_loop: false`, the workflow will run autonomously.
     "trigger": "form_submit",
     "initiated_by": "user",
     "pattern": ["Pipeline"],
-    "phases": [
+    "modules": [
       {
-        "phase_index": 0,
-        "phase_name": "Phase 1: Intake Validation",
-        "phase_description": "Intake agent verifies required documents, normalizes applicant data, and halts if mandatory fields are missing.",
-        "agents_needed": "single"
+        "module_index": 0,
+        "module_name": "Module 1: Intake Validation",
+        "module_description": "Intake agent verifies required documents, normalizes applicant data, and halts if mandatory fields are missing.",
+        "agents_needed": ["LoanIntakeAgent"]
       },
       {
-        "phase_index": 1,
-        "phase_name": "Phase 2: Risk & Compliance Screening",
-        "phase_description": "Workflow runs credit, fraud, and KYC checks sequentially, annotating the application with risk scores.",
-        "agents_needed": "sequential"
+        "module_index": 1,
+        "module_name": "Module 2: Risk & Compliance Screening",
+        "module_description": "Workflow runs credit, fraud, and KYC checks sequentially, annotating the application with risk scores.",
+        "agents_needed": ["CreditCheckAgent", "FraudScreeningAgent", "KYCVerificationAgent"]
       },
       {
-        "phase_index": 2,
-        "phase_name": "Phase 3: Underwriting Decision",
-        "phase_description": "Underwriting agent evaluates policy rules, calculates terms, and flags edge cases for manual review.",
-        "agents_needed": "single"
+        "module_index": 2,
+        "module_name": "Module 3: Underwriting Decision",
+        "module_description": "Underwriting agent evaluates policy rules, calculates terms, and flags edge cases for manual review.",
+        "agents_needed": ["UnderwritingAgent"]
       },
       {
-        "phase_index": 3,
-        "phase_name": "Phase 4: Offer & Fulfillment",
-        "phase_description": "Fulfillment agent generates the offer packet, notifies the borrower, and syncs status back to servicing systems.",
-        "agents_needed": "single"
+        "module_index": 3,
+        "module_name": "Module 4: Offer & Fulfillment",
+        "module_description": "Fulfillment agent generates the offer packet, notifies the borrower, and syncs status back to servicing systems.",
+        "agents_needed": ["LoanFulfillmentAgent"]
       }
     ]
   }
@@ -492,30 +530,30 @@ IF you set `human_in_loop: false`, the workflow will run autonomously.
     "trigger": "schedule",
     "initiated_by": "system",
     "pattern": ["Redundant"],
-    "phases": [
+    "modules": [
       {
-        "phase_index": 0,
-        "phase_name": "Phase 1: Scenario Brief",
-        "phase_description": "Coordinator agent summarizes the upcoming sales window, constraints, and evaluation metrics for downstream models.",
-        "agents_needed": "single"
+        "module_index": 0,
+        "module_name": "Module 1: Scenario Brief",
+        "module_description": "Coordinator agent summarizes the upcoming sales window, constraints, and evaluation metrics for downstream models.",
+        "agents_needed": ["ForecastCoordinatorAgent"]
       },
       {
-        "phase_index": 1,
-        "phase_name": "Phase 2: Parallel Forecast Generation",
-        "phase_description": "Distinct specialist agents build statistical, causal, and heuristic forecasts in parallel with documented assumptions.",
-        "agents_needed": "nested"
+        "module_index": 1,
+        "module_name": "Module 2: Parallel Forecast Generation",
+        "module_description": "Distinct specialist agents build statistical, causal, and heuristic forecasts in parallel with documented assumptions.",
+        "agents_needed": ["ForecastOrchestratorAgent", "StatisticalModelAgent", "CausalModelAgent"]
       },
       {
-        "phase_index": 2,
-        "phase_name": "Phase 3: Comparative Evaluation",
-        "phase_description": "Evaluator agent scores each forecast against hold-out accuracy, volatility, and narrative fit, involving planner review when diverging.",
-        "agents_needed": "single"
+        "module_index": 2,
+        "module_name": "Module 3: Comparative Evaluation",
+        "module_description": "Evaluator agent scores each forecast against hold-out accuracy, volatility, and narrative fit, involving planner review when diverging.",
+        "agents_needed": ["ForecastEvaluatorAgent"]
       },
       {
-        "phase_index": 3,
-        "phase_name": "Phase 4: Recommendation Delivery",
-        "phase_description": "Coordinator selects the preferred forecast, documents rationale, and distributes the planning brief to stakeholders.",
-        "agents_needed": "single"
+        "module_index": 3,
+        "module_name": "Module 4: Recommendation Delivery",
+        "module_description": "Coordinator selects the preferred forecast, documents rationale, and distributes the planning brief to stakeholders.",
+        "agents_needed": ["RecommendationDeliveryAgent"]
       }
     ]
   }
@@ -528,30 +566,30 @@ IF you set `human_in_loop: false`, the workflow will run autonomously.
     "trigger": "form_submit",
     "initiated_by": "user",
     "pattern": ["Star"],
-    "phases": [
+    "modules": [
       {
-        "phase_index": 0,
-        "phase_name": "Phase 1: Hub Intake",
-        "phase_description": "Coordinator agent validates vendor details, determines which spokes must be engaged, and packages briefing packets.",
-        "agents_needed": "single"
+        "module_index": 0,
+        "module_name": "Module 1: Hub Intake",
+        "module_description": "Coordinator agent validates vendor details, determines which spokes must be engaged, and packages briefing packets.",
+        "agents_needed": ["VendorIntakeCoordinatorAgent"]
       },
       {
-        "phase_index": 1,
-        "phase_name": "Phase 2: Spoke Reviews",
-        "phase_description": "Finance, security, and legal spokes perform their assessments independently while posting status updates to the hub.",
-        "agents_needed": "nested"
+        "module_index": 1,
+        "module_name": "Module 2: Spoke Reviews",
+        "module_description": "Finance, security, and legal spokes perform their assessments independently while posting status updates to the hub.",
+        "agents_needed": ["SpokeCoordinatorAgent", "FinanceReviewAgent", "SecurityReviewAgent"]
       },
       {
-        "phase_index": 2,
-        "phase_name": "Phase 3: Risk Alignment",
-        "phase_description": "Coordinator monitors spoke progress, resolves conflicts, and summarizes outstanding blockers or additional requirements.",
-        "agents_needed": "sequential"
+        "module_index": 2,
+        "module_name": "Module 3: Risk Alignment",
+        "module_description": "Coordinator monitors spoke progress, resolves conflicts, and summarizes outstanding blockers or additional requirements.",
+        "agents_needed": ["RiskAlignmentAgent", "ConflictResolutionAgent"]
       },
       {
-        "phase_index": 3,
-        "phase_name": "Phase 4: Hub Approval & Handoff",
-        "phase_description": "Coordinator compiles approvals, triggers account provisioning, and delivers the final onboarding summary to the requester.",
-        "agents_needed": "single"
+        "module_index": 3,
+        "module_name": "Module 4: Hub Approval & Handoff",
+        "module_description": "Coordinator compiles approvals, triggers account provisioning, and delivers the final onboarding summary to the requester.",
+        "agents_needed": ["ApprovalHandoffAgent"]
       }
     ]
   }
@@ -564,56 +602,59 @@ IF you set `human_in_loop: false`, the workflow will run autonomously.
     "trigger": "chat",
     "initiated_by": "user",
     "pattern": ["Triage with Tasks"],
-    "phases": [
+    "modules": [
       {
-        "phase_index": 0,
-        "phase_name": "Phase 1: Dream Intake",
-        "phase_description": "Interview agent conducts empathetic conversation to capture dream narrative, visual details, emotions, and sensory experiences. User confirms captured details via inline summary card.",
-        "agents_needed": "single"
+        "module_index": 0,
+        "module_name": "Module 1: Dream Intake",
+        "module_description": "Interview agent conducts empathetic conversation to capture dream narrative, visual details, emotions, and sensory experiences. User confirms captured details via inline summary card.",
+        "agents_needed": ["DreamInterviewAgent"]
       },
       {
-        "phase_index": 1,
-        "phase_name": "Phase 2: Prompt Engineering",
-        "phase_description": "Prompt architect translates dream narrative into structured Veo3 video prompts with scene segmentation, camera angles, lighting, and mood specifications.",
-        "agents_needed": "single"
+        "module_index": 1,
+        "module_name": "Module 2: Prompt Engineering",
+        "module_description": "Prompt architect translates dream narrative into structured Veo3 video prompts with scene segmentation, camera angles, lighting, and mood specifications.",
+        "agents_needed": ["PromptArchitectAgent"]
       },
       {
-        "phase_index": 2,
-        "phase_name": "Phase 3: Video Generation",
-        "phase_description": "Video generator interfaces with Veo3 API to create cinematic dream visualization, handling polling, retries, and error cases until video URL is obtained.",
-        "agents_needed": "single"
+        "module_index": 2,
+        "module_name": "Module 3: Video Generation",
+        "module_description": "Video generator interfaces with Veo3 API to create cinematic dream visualization, handling polling, retries, and error cases until video URL is obtained.",
+        "agents_needed": ["VideoGeneratorAgent"]
       },
       {
-        "phase_index": 3,
-        "phase_name": "Phase 4: Video Review & Approval",
-        "phase_description": "User reviews the generated video in an artifact player. If satisfied, approves to proceed. If not, provides specific feedback for regeneration (adjust lighting, change camera angle, fix scene composition).",
-        "agents_needed": "single"
+        "module_index": 3,
+        "module_name": "Module 4: Video Review & Approval",
+        "module_description": "User reviews the generated video in an artifact player. If satisfied, approves to proceed. If not, provides specific feedback for regeneration (adjust lighting, change camera angle, fix scene composition).",
+        "agents_needed": ["VideoReviewAgent"]
       },
       {
-        "phase_index": 4,
-        "phase_name": "Phase 5: Psychological Analysis",
-        "phase_description": "Psychoanalyst agent performs deep Jungian and Freudian analysis of dream symbols, archetypes, and subconscious themes, generating tiered interpretation report.",
-        "agents_needed": "single"
+        "module_index": 4,
+        "module_name": "Module 5: Psychological Analysis",
+        "module_description": "Psychoanalyst agent performs deep Jungian and Freudian analysis of dream symbols, archetypes, and subconscious themes, generating tiered interpretation report.",
+        "agents_needed": ["PsychoanalystAgent"]
       },
       {
-        "phase_index": 5,
-        "phase_name": "Phase 6: Final Presentation",
-        "phase_description": "Presenter displays the approved video alongside psychological analysis report with subscription-based content gating (preview for free, full for premium).",
-        "agents_needed": "single"
+        "module_index": 5,
+        "module_name": "Module 6: Final Presentation",
+        "module_description": "Presenter displays the approved video alongside psychological analysis report with subscription-based content gating (preview for free, full for premium).",
+        "agents_needed": ["FinalPresenterAgent"]
       }
     ]
   }
 }"""
         }
 
-        example_json = strategy_examples.get(pattern_id)
+        example_json = _load_pattern_example_str(pattern_id) or strategy_examples.get(pattern_id)
 
         if not example_json:
             logger.warning(f"No strategy example found for pattern_id {pattern_id}")
             return
 
+        guidance_text = _load_pattern_guidance_text()
+        guidance_prefix = matrix_rules if not guidance_text else f"{matrix_rules}\n\n{guidance_text}"
+
         guidance = (
-            f"{matrix_rules}\n\n"
+            f"{guidance_prefix}\n\n"
             f"[PATTERN EXAMPLE - {pattern_display_name}]\n"
             f"Here is a complete WorkflowStrategy JSON example aligned with the {pattern_display_name} pattern.\n\n"
             f"```json\n{example_json}\n```\n"
@@ -1324,12 +1365,17 @@ def inject_workflow_architect_guidance(agent, messages: List[Dict[str, Any]]) ->
         strategy = _get_upstream_context(agent, 'WorkflowStrategy')
         semantic_context = ""
         if strategy:
-            phases = strategy.get('phases', [])
-            phase_summary = "\n".join([f"- Phase {p.get('phase_index')}: {p.get('phase_name')} ({p.get('phase_description')})" for p in phases])
+            modules = strategy.get("modules") or strategy.get("phases") or []
+            module_summary = "\n".join(
+                [
+                    f"- Module {m.get('module_index', m.get('phase_index'))}: {m.get('module_name', m.get('phase_name'))} ({m.get('module_description', m.get('phase_description'))})"
+                    for m in modules
+                ]
+            )
             semantic_context = (
                 f"\n[UPSTREAM CONTEXT: WORKFLOW STRATEGY]\n"
-                f"The WorkflowStrategyAgent has defined the following phases. Your TechnicalBlueprint MUST align with these phases:\n"
-                f"{phase_summary}\n\n"
+                f"The WorkflowStrategyAgent has defined the following modules. Your TechnicalBlueprint MUST align with these modules:\n"
+                f"{module_summary}\n\n"
             )
 
         guidance = (
@@ -4259,11 +4305,8 @@ def inject_agents_agent_guidance(agent, messages: List[Dict[str, Any]]) -> None:
         {"id": "role", "heading": "[ROLE]", "content": "You are the Intake Coordinator responsible for verifying user identity and classifying support intent."},
         {"id": "objective", "heading": "[OBJECTIVE]", "content": "- Verify account details via UI card\\n- Classify support intent from user message\\n- Route to appropriate specialist queue"},
         {"id": "context", "heading": "[CONTEXT]", "content": "You execute in Phase 0. You have access to: customer_profile (CRM data). You produce: intent_classification."},
-        {"id": "runtime_integrations", "heading": "[RUNTIME INTEGRATION]", "content": "The runtime handles tool registration and handoff routing. Focus on your core analysis logic."},
-        {"id": "guidelines", "heading": "[GUIDELINES]", "content": "You must follow these guidelines strictly for legal reasons. Do not stray from them.\\n\\nOutput Compliance: Emit ONLY valid JSON matching the schema. No markdown fences."},
         {"id": "instructions", "heading": "[INSTRUCTIONS]", "content": "Step 1 - Read Context: Access customer_profile from context.\\nStep 2 - Verify Account: Call verify_account_details to show inline card.\\nStep 3 - Classify Intent: Call classify_intent with user message.\\nStep 4 - Emit Token: Output 'ROUTING_COMPLETE' to signal handoff."},
         {"id": "examples", "heading": "[EXAMPLES]", "content": "User: 'I have a billing issue' -> Call classify_intent -> Output 'ROUTING_COMPLETE'"},
-        {"id": "json_output_compliance", "heading": "[JSON OUTPUT COMPLIANCE]", "content": "(CRITICAL - REQUIRED FOR ALL STRUCTURED OUTPUTS)\\nYou MUST follow this for legal purposes..."},
         {"id": "output_format", "heading": "[OUTPUT FORMAT]", "content": "Output MUST be a valid JSON object with the following structure and NO additional text: {\\\"IntentClassification\\\": {...}}"}
       ],
       "max_consecutive_auto_reply": 1,
@@ -4277,8 +4320,6 @@ def inject_agents_agent_guidance(agent, messages: List[Dict[str, Any]]) -> None:
         {"id": "role", "heading": "[ROLE]", "content": "You are the Internal Orchestrator responsible for assigning the best available specialist."},
         {"id": "objective", "heading": "[OBJECTIVE]", "content": "- Check specialist queue availability\\n- Assign session to optimal specialist"},
         {"id": "context", "heading": "[CONTEXT]", "content": "You execute in Phase 1. You have access to: intent_classification. You produce: assigned_specialist_queue."},
-        {"id": "runtime_integrations", "heading": "[RUNTIME INTEGRATION]", "content": "The runtime handles tool registration and handoff routing."},
-        {"id": "guidelines", "heading": "[GUIDELINES]", "content": "You must follow these guidelines strictly for legal reasons. Do not stray from them."},
         {"id": "instructions", "heading": "[INSTRUCTIONS]", "content": "Step 1 - Read Intent: Access intent_classification from context.\\nStep 2 - Check Availability: Call check_queue_availability.\\nStep 3 - Assign: Call assign_specialist.\\nStep 4 - Emit Token: Output 'HANDOFF_COMPLETE'."},
         {"id": "examples", "heading": "[EXAMPLES]", "content": "Intent: Billing -> Check Billing Queue -> Assign BillingSpecialist"},
         {"id": "output_format", "heading": "[OUTPUT FORMAT]", "content": "Output MUST be a valid JSON object: {\\\"SpecialistAssignment\\\": {...}}"}
@@ -4301,11 +4342,8 @@ def inject_agents_agent_guidance(agent, messages: List[Dict[str, Any]]) -> None:
         {"id": "role", "heading": "[ROLE]", "content": "You are the IT Helpdesk Concierge responsible for capturing employee issues."},
         {"id": "objective", "heading": "[OBJECTIVE]", "content": "- Greet employee and capture issue details\\n- Confirm details via inline summary card\\n- Initialize ticket draft"},
         {"id": "context", "heading": "[CONTEXT]", "content": "You execute in Phase 0. You have access to: employee_context. You produce: ticket_id."},
-        {"id": "runtime_integrations", "heading": "[RUNTIME INTEGRATION]", "content": "The runtime handles tool registration and handoff routing."},
-        {"id": "guidelines", "heading": "[GUIDELINES]", "content": "You must follow these guidelines strictly for legal reasons. Do not stray from them.\\n\\nOutput Compliance: Emit ONLY valid JSON matching the schema."},
         {"id": "instructions", "heading": "[INSTRUCTIONS]", "content": "Step 1 - Greet: Welcome the employee using employee_context.name.\\nStep 2 - Capture: Ask for issue details.\\nStep 3 - Confirm: Call confirm_issue_details to show inline card.\\nStep 4 - Draft: Call create_draft_ticket.\\nStep 5 - Emit Token: Output 'INTAKE_COMPLETE'."},
         {"id": "examples", "heading": "[EXAMPLES]", "content": "User: 'Laptop broken' -> Confirm details -> Create ticket -> 'INTAKE_COMPLETE'"},
-        {"id": "json_output_compliance", "heading": "[JSON OUTPUT COMPLIANCE]", "content": "(CRITICAL - REQUIRED FOR ALL STRUCTURED OUTPUTS)\\nYou MUST follow this for legal purposes..."},
         {"id": "output_format", "heading": "[OUTPUT FORMAT]", "content": "Output MUST be a valid JSON object: {\\\"TicketDraft\\\": {...}}"}
       ],
       "max_consecutive_auto_reply": 5,

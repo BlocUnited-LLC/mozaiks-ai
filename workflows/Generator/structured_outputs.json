@@ -19,6 +19,15 @@
           "purpose": {
             "type": "str",
             "description": "Brief explanation of what this tool does and why the agent needs it (<=140 chars)."
+          },
+          "interaction_mode": {
+            "type": "literal",
+            "values": [
+              "inline",
+              "artifact",
+              "none"
+            ],
+            "description": "Interaction surface for this tool: inline (chat-embedded), artifact (side panel or tray), none (backend-only or silent)."
           }
         }
       },
@@ -77,11 +86,13 @@
               "router",
               "worker",
               "evaluator",
-              "orchestrator"
+              "orchestrator",
+              "intake",
+              "generator"
             ],
-            "description": "Architectural role of the agent. router=control flow; worker=execution; evaluator=QA/decision; orchestrator=sub-team lead. Intake behavior is represented by router + human_interaction='context'."
+            "description": "Architectural role of the agent. router=control flow; worker=execution; evaluator=QA/decision; orchestrator=sub-team lead; intake=user-facing entry; generator=single-shot content generator."
           },
-          "description": {
+          "objective": {
             "type": "str",
             "description": "Short human-readable description of the agent's responsibilities (displayed in the UI)."
           },
@@ -105,107 +116,23 @@
             "allowed_values": [
               "none",
               "context",
-              "approval"
+              "approval",
+              "feedback",
+              "single"
             ],
-            "description": "Human involvement mode for THIS SPECIFIC AGENT. none = fully automated execution; context = conversational data collection or clarification; approval = explicit sign-off/decision gate."
+            "description": "Human involvement mode for THIS SPECIFIC AGENT. none = fully automated execution; context = conversational data collection or clarification; approval = explicit sign-off/decision gate; feedback = non-UI iterative refinement; single = one-shot invocation."
+          },
+          "generation_mode": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Generation mode for generator agents: allowed values text, image, video, audio. Use null for non-generator agents."
           },
           "max_consecutive_auto_reply": {
             "type": "int",
-            "description": "Maximum number of consecutive auto-replies allowed for this agent. Derived from human_interaction mode: none=30 (high autonomy), context=20 (conversational intake), approval=5 (low autonomy)."
-          }
-        }
-      },
-      "WorkflowPhase": {
-        "type": "model",
-        "fields": {
-          "name": {
-            "type": "str",
-            "description": "Phase title (e.g., Intake, Execution, QA)"
-          },
-          "description": {
-            "type": "str",
-            "description": "Description of the phase goals and outputs. Should include Phase prefix (e.g., 'Phase 1:') and handoff clause when applicable."
-          },
-          "agents": {
-            "type": "list",
-            "items": "WorkflowAgent",
-            "description": "Agents participating in this phase (at least one)."
-          }
-        }
-      },
-      "WorkflowSpec": {
-        "type": "model",
-        "fields": {
-          "name": {
-            "type": "str",
-            "description": "Human-readable workflow name"
-          },
-          "description": {
-            "type": "str",
-            "description": "Paragraph-length summary (400-600 chars) explaining when the workflow triggers, what it does, and what business value it delivers. MUST follow trigger-specific patterns defined in ActionPlanArchitect instructions."
-          },
-          "initiated_by": {
-            "type": "literal",
-            "values": [
-              "user",
-              "system",
-              "external_event"
-            ],
-            "description": "Who or what starts this workflow. user = human explicitly starts (form submit, button click, chat); system = platform automatically starts (cron schedule, database condition); external_event = external service triggers (webhook from third-party)."
-          },
-          "trigger_type": {
-            "type": "literal",
-            "values": [
-              "form_submit",
-              "chat_start",
-              "cron_schedule",
-              "webhook",
-              "database_condition"
-            ],
-            "description": "Specific mechanism that initiates workflow execution. form_submit = user submits web form; chat_start = user initiates conversational session; cron_schedule = time-based trigger; webhook = external service sends HTTP POST; database_condition = internal database state meets trigger criteria."
-          },
-          "pattern": {
-            "type": "literal",
-            "values": [
-              "ContextAwareRouting",
-              "Escalation",
-              "FeedbackLoop",
-              "Hierarchical",
-              "Organic",
-              "Pipeline",
-              "Redundant",
-              "Star",
-              "TriageWithTasks"
-            ],
-            "description": "AG2 orchestration pattern applied to the workflow."
-          },
-          "lifecycle_operations": {
-            "type": "list",
-            "items": "LifecycleOperation",
-            "description": "Lifecycle hooks executed between phases or agents (may be empty)."
-          },
-          "phases": {
-            "type": "list",
-            "items": "WorkflowPhase",
-            "description": "Ordered list of phases that make up the workflow. MUST mirror the phases list from WorkflowStrategyCall exactly (same count, same phase names including 'Phase N:' prefix, same order, same approval flags). Multi-phase workflows are expected; do not collapse phases."
-          }
-        }
-      },
-      "ActionPlan": {
-        "type": "model",
-        "fields": {
-          "workflow": {
-            "type": "WorkflowSpec",
-            "description": "Workflow definition produced by the ActionPlanArchitect"
-          }
-        }
-      },
-      "ActionPlanCall": {
-        "type": "model",
-        "fields": {
-          "ActionPlan": {
-            "type": "ActionPlan",
-            "description": "Workflow container passed to the Action Plan UI tool (PascalCase to match tool arg)."
+            "description": "Maximum number of consecutive auto-replies allowed for this agent. Calibrate from human_interaction: none=30 (high autonomy), context=20 (conversational intake), approval/feedback=5 (low autonomy), single=1 (one-shot)."
           }
         }
       },
@@ -223,7 +150,7 @@
           "legend": {
             "type": "list",
             "items": "str",
-            "description": "Optional phase legend entries (P1: Phase Name). Provide [] when no legend is required."
+            "description": "Optional module legend entries (M1: Module Name). Provide [] when no legend is required."
           }
         }
       },
@@ -388,7 +315,7 @@
               "str",
               "null"
             ],
-            "description": "When to refresh data: 'once' (cache indefinitely), 'per_phase' (refresh each phase), 'on_demand' (refresh when requested). Data_reference sources only."
+            "description": "When to refresh data: 'once' (cache indefinitely), 'per_module' (refresh each module), 'on_demand' (refresh when requested). Data_reference sources only."
           },
           "schema": {
             "type": "union",
@@ -412,7 +339,7 @@
               "str",
               "null"
             ],
-            "description": "When to persist entity: 'immediate' (on creation), 'on_phase_transition', 'on_workflow_end'. Data_entity sources only."
+            "description": "When to persist entity: 'immediate' (on creation), 'on_module_transition', 'on_workflow_end'. Data_entity sources only."
           },
           "search_by": {
             "type": "union",
@@ -731,7 +658,7 @@
       },
       "PromptSections": {
         "type": "model",
-        "description": "Standardized 9-section prompt structure for NEW agents. Enforces consistency and completeness via schema validation. Runtime is adaptable and can compose ANY section structure (use prompt_sections_custom for non-standard needs), but this fixed schema ensures future agents follow consistent patterns.",
+        "description": "Standardized 6-section prompt structure for runtime agents: role, objective, context, instructions, examples, output_format. Universal sections (compliance, guidelines, runtime context) are hook-injected at runtime via hook_universal_prompts.py.",
         "fields": {
           "role": {
             "type": "PromptSectionContent",
@@ -745,40 +672,25 @@
             "type": "PromptSectionContent",
             "description": "Inputs, outputs, workflow position, exposed context variables. Heading: [CONTEXT]"
           },
-          "runtime_integrations": {
-            "type": "PromptSectionContent",
-            "description": "What runtime handles automatically. Heading: [RUNTIME INTEGRATION]"
-          },
-          "guidelines": {
-            "type": "PromptSectionContent",
-            "description": "Legal compliance, output rules (MUST start with legal statement). Heading: [GUIDELINES]"
-          },
           "instructions": {
             "type": "PromptSectionContent",
             "description": "Step-by-step algorithm with embedded subsections (context variables, coordination tokens, tools). Heading: [INSTRUCTIONS]"
           },
           "examples": {
             "type": "PromptSectionContent",
-            "description": "Concrete usage examples. Heading: [EXAMPLES]"
-          },
-          "json_output_compliance": {
-            "type": "PromptSectionContent",
-            "description": "JSON escaping rules (ONLY if structured_outputs_required=true). Heading: [JSON OUTPUT COMPLIANCE]",
+            "description": "Concrete usage examples showing expected agent behavior. Include input/output examples and edge cases. Heading: [EXAMPLES]",
             "required": false
           },
           "output_format": {
             "type": "PromptSectionContent",
-            "description": "Expected schema. Heading: [OUTPUT FORMAT]"
+            "description": "Expected schema and examples. Heading: [OUTPUT FORMAT]"
           }
         },
         "required": [
           "role",
           "objective",
           "context",
-          "runtime_integrations",
-          "guidelines",
           "instructions",
-          "examples",
           "output_format"
         ]
       },
@@ -795,7 +707,7 @@
           },
           "prompt_sections": {
             "type": "PromptSections",
-            "description": "Standardized prompt sections (fixed 9-field structure). Factory._compose_prompt_sections() converts this to system_message string for ConversableAgent. ALL new agents MUST use this field with exactly 9 required sections (or 8 if json_output_compliance omitted). Enforces schema compliance and prevents section omission.",
+            "description": "Agent-specific prompt sections (6-field structure). Runtime hook_universal_prompts.py injects universal sections (compliance, guidelines, runtime context) at agent instantiation. Factory._compose_prompt_sections() converts this to system_message string for ConversableAgent.",
             "required": false
           },
           "max_consecutive_auto_reply": {
@@ -939,24 +851,33 @@
           }
         }
       },
-      "WorkflowStrategyPhase": {
+      "WorkflowStrategyModule": {
         "type": "model",
         "fields": {
-          "phase_name": {
+          "module_name": {
             "type": "str",
-            "description": "Phase name in format 'Phase N: Strategic Purpose'"
+            "description": "Module name in format 'Module N: Strategic Purpose'"
           },
-          "phase_index": {
+          "module_index": {
             "type": "int",
-            "description": "Zero-based index of this phase (0 = Phase 1, 1 = Phase 2, etc.)"
+            "description": "Zero-based index of this module (0 = Module 1, 1 = Module 2, etc.)"
           },
-          "phase_description": {
+          "module_description": {
             "type": "str",
-            "description": "Strategic description of what happens in this phase and why"
+            "description": "Strategic description of what happens in this module and why"
+          },
+          "pattern_id": {
+            "type": "int",
+            "description": "AG2 pattern ID (1-9) aligned to this module."
+          },
+          "pattern_name": {
+            "type": "str",
+            "description": "Human-readable AG2 pattern name aligned to this module."
           },
           "agents_needed": {
-            "type": "str",
-            "description": "Agent coordination pattern: 'single', 'parallel', or 'sequential'"
+            "type": "list",
+            "items": "str",
+            "description": "Agent names this module requires (guidance list; full specs defined in ModuleAgents)."
           }
         }
       },
@@ -978,7 +899,7 @@
           "pattern": {
             "type": "list",
             "items": "str",
-            "description": "List of AG2 orchestration patterns (e.g., ['sequential', 'nested_chats'])"
+            "description": "List of AG2 orchestration patterns"
           },
           "trigger": {
             "type": "literal",
@@ -1000,24 +921,24 @@
             ],
             "description": "Who/what initiates this workflow"
           },
-          "phases": {
+          "modules": {
             "type": "list",
-            "items": "WorkflowStrategyPhase",
-            "description": "Complete multi-phase roadmap. Must contain ALL phases implied by the user request (minimum 3 for complex workflows). Each phase must have unique numbered prefix (Phase 1:, Phase 2:, etc.) in sequential order."
+            "items": "WorkflowStrategyModule",
+            "description": "Complete multi-module roadmap. Must contain ALL modules implied by the user request (minimum 3 for complex workflows). Each module must have unique numbered prefix (Module 1:, Module 2:, etc.) in sequential order."
           }
         }
       },
-      "PhaseAgents": {
+      "ModuleAgents": {
         "type": "model",
         "fields": {
-          "phase_index": {
+          "module_index": {
             "type": "int",
-            "description": "Zero-based index matching the phase position in WorkflowStrategy.phases (0 = Phase 1, 1 = Phase 2, etc.)"
+            "description": "Zero-based index matching the module position in WorkflowStrategy.modules (0 = Module 1, 1 = Module 2, etc.)"
           },
           "agents": {
             "type": "list",
             "items": "WorkflowAgent",
-            "description": "Agent specifications for this phase (at least one). Use specialist_domains from strategy phase to guide agent design."
+            "description": "Agent specifications for this module (at least one). Use agents_needed from strategy module to guide agent design."
           }
         }
       },
@@ -1090,9 +1011,9 @@
             "type": "str",
             "allowed_values": [
               "shared",
-              "phase_specific"
+              "module_specific"
             ],
-            "description": "Tool scope: shared (multiple agents across phases use this) or phase_specific (single agent/phase owns this)"
+            "description": "Tool scope: shared (multiple agents across modules use this) or module_specific (single agent/module owns this)"
           },
           "purpose": {
             "type": "str",
@@ -1221,9 +1142,9 @@
       "WorkflowUIComponent": {
         "type": "model",
         "fields": {
-          "phase_name": {
+          "module_name": {
             "type": "str",
-            "description": "Phase name or label (as surfaced in the Action Plan) where this UI tool appears."
+            "description": "Module name or label (as surfaced in the Action Plan) where this UI tool appears."
           },
           "agent": {
             "type": "str",
@@ -1288,16 +1209,6 @@
             "type": "list",
             "items": "RequiredWorkflow",
             "description": "List of workflows that must complete before this workflow can start. Use [] when no workflow dependencies exist."
-          },
-          "required_context_vars": {
-            "type": "list",
-            "items": "str",
-            "description": "List of context variable names this workflow needs from other workflows. Use [] when no context variable dependencies exist."
-          },
-          "required_artifacts": {
-            "type": "list",
-            "items": "RequiredArtifact",
-            "description": "List of artifacts this workflow consumes from other workflows. Use [] when no artifact dependencies exist."
           }
         }
       },
@@ -1312,7 +1223,7 @@
           "ui_components": {
             "type": "list",
             "items": "WorkflowUIComponent",
-            "description": "Phase-aligned summary of expected UI interactions (inline vs artifact) so Action Plan narratives can highlight user components. Use [] when the workflow has no UI tools."
+            "description": "Module-aligned summary of expected UI interactions (inline vs artifact) so Action Plan narratives can highlight user components. Use [] when the workflow has no UI tools."
           },
           "before_chat_lifecycle": {
             "type": "union",
@@ -1336,7 +1247,7 @@
               "WorkflowDependencies",
               "null"
             ],
-            "description": "Dependencies on other workflows (required_workflows, required_context_vars, required_artifacts). Set to null for first/standalone workflows with no dependencies."
+            "description": "Dependencies on other workflows (required_workflows). Set to null for first/standalone workflows with no dependencies."
           }
         }
       },
@@ -1380,13 +1291,13 @@
           }
         }
       },
-      "PhaseAgentsOutput": {
+      "ModuleAgentsOutput": {
         "type": "model",
         "fields": {
-          "PhaseAgents": {
+          "ModuleAgents": {
             "type": "list",
-            "items": "PhaseAgents",
-            "description": "Ordered list of agent specifications, one entry per phase from WorkflowStrategy. Array length MUST match strategy phase count. Semantic wrapper key (PascalCase) for loose coupling - downstream agents reference PhaseAgents, not WorkflowImplementationAgent."
+            "items": "ModuleAgents",
+            "description": "Ordered list of agent specifications, one entry per module from WorkflowStrategy. Array length MUST match strategy module count. Semantic wrapper key (PascalCase) for loose coupling - downstream agents reference ModuleAgents, not WorkflowImplementationAgent."
           }
         }
       },
@@ -1558,7 +1469,7 @@
       "PatternAgent": "PatternSelectionOutput",
       "WorkflowStrategyAgent": "WorkflowStrategyOutput",
       "WorkflowArchitectAgent": "TechnicalBlueprintOutput",
-      "WorkflowImplementationAgent": "PhaseAgentsOutput",
+      "WorkflowImplementationAgent": "ModuleAgentsOutput",
       "ProjectOverviewAgent": "MermaidSequenceDiagramOutput",
       "ToolsManagerAgent": "ToolsManifestOutput",
       "UIFileGenerator": "UIToolsFilesOutput",
