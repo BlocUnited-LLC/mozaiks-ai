@@ -1,5 +1,23 @@
 # Action Plan Schema V2
 
+> ⚠️ **PARTIALLY DEPRECATED**: This document has useful reference content but some details are outdated.
+> 
+> **Canonical Reference**: See `docs/ACTION_PLAN_SOURCE_OF_TRUTH.md`
+>
+> **What's still valid**:
+> - Module terminology is correct
+> - Basic agent flow concept is accurate
+> - Human interaction modes are correct
+>
+> **What's outdated**:
+> - Agent execution order has WorkflowArchitectAgent BEFORE WorkflowImplementationAgent (not after)
+> - Some field names don't match current structured_outputs.json
+> - References deprecated models like `PhaseAgentsOutput`
+>
+> Always verify against structured_outputs.json for authoritative field names.
+
+---
+
 This document defines the new schema for the Action Plan agents, replacing "phases" with "modules" and restructuring the agent flow.
 
 ## Agent Execution Order (NEW)

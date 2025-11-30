@@ -29,7 +29,7 @@ These are **compound requests** that can't be handled by a single workflow patte
 
 **Scenario A: Single AG2 Session = One Pattern**
 
-In AG2's native model, a single `initiate_group_chat()` call uses ONE pattern (DefaultPattern, AutoPattern, etc.). The pattern defines:
+In AG2's native model, a single `run_group_chat()` call uses ONE pattern (DefaultPattern, AutoPattern, etc.). The pattern defines:
 - How agents are selected to speak
 - How handoffs work
 - The overall topology
@@ -535,17 +535,25 @@ This is the detailed, actionable checklist to achieve the complete V1/V1.5/V2 sy
 
 ---
 
+### Implementation Status (Updated)
+
+- ✅ Module-aware prompts now reflect the new module terminology, include the updated `human_interaction` enum, and re-state the three-layer contract for every Generator agent.
+- ✅ Tooling scripts (`workflow_strategy.py`, `technical_blueprint.py`, `pattern_selection.py`, and `mermaid_sequence_diagram.py`) now normalize modules instead of phases and safely cache the schema/state needed by downstream components.
+- ⏳ Remaining work: finish schema-template updates, runtime/UI integration checks, and any outstanding validation/handoff hooks listed below.
+
+---
+
 ### PHASE 1: Schema Refactoring (V1 Foundation)
 
 #### 1.1 Update `structured_outputs.json`
 
 **File:** `workflows/Generator/structured_outputs.json`
 
-- [ ] **1.1.1** Rename `WorkflowPhase` → `WorkflowModule`
+- [x] **1.1.1** Rename `WorkflowPhase` → `WorkflowModule`
   - Change model name
   - Update all references
 
-- [ ] **1.1.2** Update `WorkflowModule` fields:
+- [x] **1.1.2** Update `WorkflowModule` fields:
   - `name` → `module_name`
   - `description` → `module_description`
   - Add `module_index` (int)
@@ -553,25 +561,25 @@ This is the detailed, actionable checklist to achieve the complete V1/V1.5/V2 sy
   - Add `pattern_name` (string)
   - Add `agents_needed` (list of strings)
 
-- [ ] **1.1.3** Update `WorkflowSpec.phases` → `WorkflowSpec.modules`
+- [x] **1.1.3** Update `WorkflowSpec.phases` → `WorkflowSpec.modules`
   - Change field name
   - Update type to `list[WorkflowModule]`
 
-- [ ] **1.1.4** Update `WorkflowAgent` model:
+- [x] **1.1.4** Update `WorkflowAgent` model:
   - Add `agent_type` enum: `router | worker | evaluator | orchestrator | intake | generator`
   - Update `human_interaction` enum: `none | context | approval | feedback | single`
   - Add `generation_mode` (optional): `text | image | video | audio | null`
   - Rename `description` → `objective` (per V2 schema)
 
-- [ ] **1.1.5** Rename `PhaseAgents` → `ModuleAgents`
+- [x] **1.1.5** Rename `PhaseAgents` → `ModuleAgents`
   - Update model name
   - Update `phase_index` → `module_index`
   - Update `phase_agents` → `module_agents`
 
-- [ ] **1.1.6** Update `ActionPlan` model:
+- [x] **1.1.6** Update `ActionPlan` model:
   - Ensure `phases` → `modules` naming propagates
 
-- [ ] **1.1.7** Update `TechnicalBlueprint.ui_components`:
+- [x] **1.1.7** Update `TechnicalBlueprint.ui_components`:
   - `phase_name` → `module_name`
 
 ---
@@ -580,22 +588,22 @@ This is the detailed, actionable checklist to achieve the complete V1/V1.5/V2 sy
 
 **Files in `workflows/Generator/agents.json`**
 
-- [ ] **1.2.1** Update `WorkflowStrategyAgent`:
+- [x] **1.2.1** Update `WorkflowStrategyAgent`:
   - Change output schema references: `phases` → `modules`
   - Update [INSTRUCTIONS] Step 5 "Create Phase Scaffold" → "Create Module Scaffold"
   - Update pattern guidance injection to reference modules
   - Update output format section
 
-- [ ] **1.2.2** Reorder agent execution (per V2):
+- [x] **1.2.2** Reorder agent execution (per V2):
   - `WorkflowImplementationAgent` now runs BEFORE `WorkflowArchitectAgent`
   - Update handoffs.json accordingly (next task)
 
-- [ ] **1.2.3** Update `WorkflowArchitectAgent`:
+- [x] **1.2.3** Update `WorkflowArchitectAgent`:
   - Change `phase_name` → `module_name` references in [CONTEXT]
   - Update extraction patterns for ModuleAgents
   - Update validation checks
 
-- [ ] **1.2.4** Update `WorkflowImplementationAgent`:
+- [x] **1.2.4** Update `WorkflowImplementationAgent`:
   - Update to receive WorkflowStrategy (modules) instead of TechnicalBlueprint
   - Change `phase_index` → `module_index` references
   - Add new `agent_type` values in output schema
@@ -634,14 +642,14 @@ This is the detailed, actionable checklist to achieve the complete V1/V1.5/V2 sy
 
 **File:** `workflows/Generator/handoffs.json`
 
-- [ ] **1.3.1** Reorder agent execution sequence:
+- [x] **1.3.1** Reorder agent execution sequence:
   ```
   InterviewAgent → PatternAgent → WorkflowStrategyAgent → 
   WorkflowImplementationAgent → WorkflowArchitectAgent → 
   ProjectOverviewAgent → user approval → file generation
   ```
 
-- [ ] **1.3.2** Update handoff conditions mentioning phases → modules
+- [x] **1.3.2** Update handoff conditions mentioning phases → modules
 
 ---
 
@@ -649,10 +657,10 @@ This is the detailed, actionable checklist to achieve the complete V1/V1.5/V2 sy
 
 **Files in `workflows/Generator/tools/`**
 
-- [ ] **1.4.1** Update `action_plan.py`:
+- [x] **1.4.1** Update `action_plan.py`:
   - Change any `phases` references to `modules`
 
-- [ ] **1.4.2** Update `phase_agents_plan.py`:
+- [x] **1.4.2** Update `module_agents_plan.py`:
   - Rename file to `module_agents_plan.py`
   - Update function name
   - Update all references
@@ -669,6 +677,15 @@ This is the detailed, actionable checklist to achieve the complete V1/V1.5/V2 sy
 - [ ] **1.4.6** Update `mermaid_sequence_diagram.py`:
   - Change phase references to module references
 
+---
+
+### Carryover Notes for Next Session
+
+- Schema, ActionPlan merge, handoffs, and module_agents_plan/tool wiring are done; prompts still need full module/human_interaction v2 alignment.
+- Outstanding prompt work: WorkflowStrategyAgent, WorkflowArchitectAgent, WorkflowImplementationAgent (enum/output validation polish), ProjectOverviewAgent, ContextVariablesAgent, ToolsManagerAgent, UIFileGenerator, AgentToolsFileGenerator, AgentsAgent, StructuredOutputsAgent, HookAgent, HandoffsAgent, OrchestratorAgent, DownloadAgent.
+- Remaining tool updates: workflow_strategy.py, technical_blueprint.py, pattern_selection.py, mermaid_sequence_diagram.py.
+- Frontend: ActionPlan badges updated for feedback/single; confirm artifactDesignSystem changes as needed.
+- Keep agents stateless: reference semantic wrappers only (no agent names, no .md references). Use module terminology everywhere.
 ---
 
 ### PHASE 2: Pattern Guidance & Examples
@@ -1052,7 +1069,5 @@ After completing each phase, verify:
 5. 1.4.1-1.4.6 (tool code updates)
 6. 2.1.1-2.1.7 (pattern templates)
 7. 2.2.1-2.2.2 (pattern injection)
-
-**Can Do Later:**
 8. Phase 3-4 (runtime/UI)
 9. Phase 5-7 (V1.5/V2 features)

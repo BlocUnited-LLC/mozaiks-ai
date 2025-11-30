@@ -192,27 +192,26 @@ This document explains the automatic tool invocation system in MozaiksAI, coveri
 {
   "structured_outputs": {
     "models": {
-      "ActionPlanCall": {
+      "WorkflowStrategyOutput": {
         "type": "model",
         "fields": {
-          "ActionPlan": { "type": "ActionPlan", "description": "Workflow structure" },
-          "agent_message": { "type": "str", "description": "Review prompt" }
+          "WorkflowStrategy": { "type": "WorkflowStrategy", "description": "Workflow structure" }
         }
       }
     },
     "registry": {
-      "ContextAgent": "ActionPlanCall"      // ✅ Map agent to model
+      "WorkflowStrategyAgent": "WorkflowStrategyOutput"      // ✅ Map agent to model
     }
   }
 }
 ```
 
 **Binding Logic:**
-1. Agent emits JSON → Runtime validates against `ActionPlanCall` schema
-2. Validation succeeds → Runtime looks up `ContextAgent` in registry
-3. Registry maps to `ActionPlanCall` model
-4. Runtime finds UI_Tool owned by `ContextAgent`
-5. Runtime invokes `action_plan` tool function with validated data
+1. Agent emits JSON → Runtime validates against `WorkflowStrategyOutput` schema
+2. Validation succeeds → Runtime looks up `WorkflowStrategyAgent` in registry
+3. Registry maps to `WorkflowStrategyOutput` model
+4. Runtime finds UI_Tool owned by `WorkflowStrategyAgent`
+5. Runtime invokes tool function with validated data
 
 ## AutoToolEventHandler Architecture
 

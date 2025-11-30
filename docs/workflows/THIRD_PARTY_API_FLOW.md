@@ -1,5 +1,12 @@
 # Third-Party API Flow in Generated Workflows
 
+> ⚠️ **OUTDATED**: This document references legacy schemas (ActionPlan, ActionPlanArchitect) that have been replaced.
+> For current schema definitions, see:
+> - **Source of Truth**: `docs/ACTION_PLAN_SOURCE_OF_TRUTH.md`
+> - **Schema Definitions**: `workflows/Generator/structured_outputs.json`
+> 
+> Current agent registry: InterviewAgent → PatternAgent → WorkflowStrategyAgent → WorkflowArchitectAgent → WorkflowImplementationAgent → file generators.
+
 ## Overview
 This document explains how third-party vendor integrations (OpenAI, Slack, Stripe, etc.) flow through the Generator workflow from planning to implementation.
 

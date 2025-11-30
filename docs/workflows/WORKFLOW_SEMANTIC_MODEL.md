@@ -1,5 +1,12 @@
 # MozaiksAI Workflow Semantic Model
 
+> ⚠️ **PARTIALLY OUTDATED**: The "Generator Workflow Architecture" section references legacy agent names (e.g., ActionPlanArchitect).
+> For current agent registry and schema definitions, see:
+> - **Source of Truth**: `docs/ACTION_PLAN_SOURCE_OF_TRUTH.md`
+> - **Schema Definitions**: `workflows/Generator/structured_outputs.json` (registry section)
+> 
+> The semantic model concepts (trigger_type, initiated_by, interaction_mode) remain valid.
+
 ## Overview
 
 MozaiksAI uses an automation-first semantic model for workflow definitions. Every workflow is described using three orthogonal dimensions that separate **who/what initiates** the workflow from **how it starts** from **how humans interact** during execution.

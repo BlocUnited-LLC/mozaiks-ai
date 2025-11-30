@@ -1,5 +1,12 @@
 # Workflow Authoring Guide
 
+> ⚠️ **PARTIALLY OUTDATED**: This guide references legacy agent names (e.g., ActionPlanArchitect) that no longer exist.
+> For current agent registry and schema definitions, see:
+> - **Source of Truth**: `docs/ACTION_PLAN_SOURCE_OF_TRUTH.md`
+> - **Schema Definitions**: `workflows/Generator/structured_outputs.json` (registry section)
+> 
+> The structural concepts (directory layout, manifest files, tool patterns) remain valid.
+
 ## Purpose
 
 This guide explains how to create, structure, and configure multi-agent workflows in MozaiksAI. Workflows are the fundamental execution units that combine AG2 agents, tools, context variables, and UI integrations into cohesive automation pipelines.

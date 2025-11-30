@@ -1,5 +1,9 @@
 # Display Mode Auto-Resolution
 
+> ⚠️ **PARTIALLY OUTDATED**: Examples reference legacy agent name "ActionPlanArchitect".
+> For current agent registry, see: `workflows/Generator/structured_outputs.json` (registry section)
+> The display mode auto-resolution concept and implementation remain valid.
+
 ## Overview
 
 The MozaiksAI runtime now supports **automatic display mode resolution** for UI tools, eliminating redundancy between tool configuration (`tools.json`) and tool function implementations.

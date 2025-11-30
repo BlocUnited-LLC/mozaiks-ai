@@ -5,6 +5,13 @@
 **Pattern**: Stateless agent coordination via semantic wrappers  
 **Authoritative Source**: `docs/workflows/CONTEXT_VARIABLES_COMPLETE.md`
 
+> ⚠️ **PARTIALLY OUTDATED**: Some examples reference legacy schemas (ActionPlan, ActionPlanArchitect).
+> For current schema definitions, see:
+> - **Source of Truth**: `docs/ACTION_PLAN_SOURCE_OF_TRUTH.md`
+> - **Schema Definitions**: `workflows/Generator/structured_outputs.json`
+> 
+> The semantic wrapper patterns and stateless coordination concepts remain valid.
+
 ---
 
 ## Executive Summary
