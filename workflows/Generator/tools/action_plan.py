@@ -379,7 +379,7 @@ def _normalize_ui_components(value: Any) -> List[Dict[str, Any]]:
     for idx, raw in enumerate(value):
         if not isinstance(raw, dict):
             continue
-        phase_name = _coerce_str(raw.get("phase_name"), f"Phase {idx + 1}")
+        module_name = _coerce_str(raw.get("module_name"), f"Module {idx + 1}")
         agent = _coerce_str(raw.get("agent"), "Agent")
         tool = _coerce_str(raw.get("tool"), f"tool_{idx + 1}")
         label = _coerce_str(raw.get("label"))
@@ -390,7 +390,7 @@ def _normalize_ui_components(value: Any) -> List[Dict[str, Any]]:
 
         normalized.append(
             {
-                "phase_name": phase_name,
+                "module_name": module_name,
                 "agent": agent,
                 "tool": tool,
                 "label": label,
@@ -463,7 +463,7 @@ def _extract_agent_name(container: Any) -> Optional[str]:
     return None
 
 
-def _normalize_agents(value: Any, phase_index: int) -> List[Dict[str, Any]]:
+def _normalize_agents(value: Any, module_index: int) -> List[Dict[str, Any]]:
     agents: List[Dict[str, Any]] = []
     if not isinstance(value, list):
         return agents
@@ -471,13 +471,13 @@ def _normalize_agents(value: Any, phase_index: int) -> List[Dict[str, Any]]:
         if not isinstance(raw_agent, dict):
             continue
         base_name = raw_agent.get("agent_name") or raw_agent.get("name")
-        name = _coerce_str(base_name, f"Agent {phase_index + 1}-{idx + 1}").strip()
+        name = _coerce_str(base_name, f"Agent {module_index + 1}-{idx + 1}").strip()
         if not name:
-            name = f"Agent {phase_index + 1}-{idx + 1}"
-        description = _coerce_str(raw_agent.get("description"))
+            name = f"Agent {module_index + 1}-{idx + 1}"
+        description = _coerce_str(raw_agent.get("objective") or raw_agent.get("description"))
 
         human_interaction = _coerce_str(raw_agent.get("human_interaction"), "none").strip().lower()
-        if human_interaction not in {"none", "context", "approval"}:
+        if human_interaction not in {"none", "context", "approval", "feedback", "single"}:
             human_interaction = "none"
 
         agent_tools = _normalize_agent_tools(raw_agent.get("agent_tools"))
@@ -519,29 +519,29 @@ def _normalize_agents(value: Any, phase_index: int) -> List[Dict[str, Any]]:
     return agents
 
 
-def _normalize_phases(value: Any) -> List[Dict[str, Any]]:
-    phases: List[Dict[str, Any]] = []
+def _normalize_modules(value: Any) -> List[Dict[str, Any]]:
+    modules: List[Dict[str, Any]] = []
     if not isinstance(value, list):
-        return phases
-    for idx, raw_phase in enumerate(value):
-        if not isinstance(raw_phase, dict):
+        return modules
+    for idx, raw_module in enumerate(value):
+        if not isinstance(raw_module, dict):
             continue
-        name = _coerce_str(raw_phase.get("name"), f"Phase {idx + 1}").strip()
-        description = _coerce_str(raw_phase.get("description"))
-        agents = _normalize_agents(raw_phase.get("agents"), idx)
-        phase_index_raw = raw_phase.get("phase_index")
+        module_name = _coerce_str(raw_module.get("module_name") or raw_module.get("name"), f"Module {idx + 1}").strip()
+        module_description = _coerce_str(raw_module.get("module_description") or raw_module.get("description"))
+        agents = _normalize_agents(raw_module.get("agents"), idx)
+        module_index_raw = raw_module.get("module_index")
         try:
-            phase_index = int(phase_index_raw)
+            module_index = int(module_index_raw)
         except (TypeError, ValueError):
-            phase_index = idx
+            module_index = idx
 
-        phases.append({
-            "name": name,
-            "description": description,
-            "phase_index": phase_index,
+        modules.append({
+            "module_name": module_name,
+            "module_description": module_description,
+            "module_index": module_index,
             "agents": agents,
         })
-    return phases
+    return modules
 
 
 def _agent_tool_labels(agent: Dict[str, Any]) -> List[str]:
@@ -619,7 +619,7 @@ def _normalize_workflow(raw_workflow: Dict[str, Any]) -> Dict[str, Any]:
         pattern = "Pipeline"
     description = _coerce_str(raw_workflow.get("description"))
     human_in_loop = _coerce_bool(raw_workflow.get("human_in_loop"), False)
-    phases = _normalize_phases(raw_workflow.get("phases"))
+    modules = _normalize_modules(raw_workflow.get("modules"))
     lifecycle_operations = _normalize_lifecycle_operations(raw_workflow.get("lifecycle_operations"))
     workflow_payload: Dict[str, Any] = {
         "name": workflow_name,
@@ -629,7 +629,7 @@ def _normalize_workflow(raw_workflow: Dict[str, Any]) -> Dict[str, Any]:
         "pattern": pattern,
         "description": description,
         "human_in_loop": human_in_loop,
-        "phases": phases,
+        "modules": modules,
         "lifecycle_operations": lifecycle_operations,
     }
     if pattern_variants:
@@ -654,7 +654,7 @@ def _normalize_action_plan(ap: Dict[str, Any]) -> Dict[str, Any]:
             raw_workflow = ap["workflow"]
         elif "ActionPlan" in ap and isinstance(ap["ActionPlan"], dict):
             raw_workflow = ap["ActionPlan"].get("workflow", {})
-        elif all(k in ap for k in ("name", "description", "phases")) and any(k in ap for k in ("initiated_by", "trigger_type", "trigger")):
+        elif all(k in ap for k in ("name", "description", "modules")) and any(k in ap for k in ("initiated_by", "trigger_type", "trigger")):
             raw_workflow = ap
 
     if not isinstance(raw_workflow, dict):
@@ -689,18 +689,14 @@ async def action_plan(
     *,
     ActionPlan: Annotated[
         Optional[dict[str, Any]],
-        (
-            "DEPRECATED - Use phase_agents instead. Legacy Action Plan object with workflow details. "
-            "Expected keys: { 'workflow': { name, trigger, description, phases[...] } } "
-            "and a phases list that mirrors the upstream WorkflowStrategy semantic wrapper exactly (Phase N labels, order, and approvals)."
-        ),
+        "Array of modules and agents; will be constructed from workflow_strategy + module_agents when provided."
     ] = None,
-    phase_agents: Annotated[
+    module_agents: Annotated[
         Optional[List[Dict[str, Any]]],
         (
-            "NEW FORMAT: Array of {phase_index, agents[]} objects from PhaseAgents semantic wrapper. "
+            "Array of {module_index, agents[]} objects from ModuleAgents semantic wrapper. "
             "Will be merged with workflow_strategy from context to build complete ActionPlan. "
-            "Each entry must have phase_index (int) and agents (list of WorkflowAgent specs)."
+            "Each entry must have module_index (int) and agents (list of WorkflowAgent specs)."
         ),
     ] = None,
     MermaidSequenceDiagram: Annotated[
@@ -743,17 +739,28 @@ async def action_plan(
                                 "description": str
                             }
                         ],
-                        "phases": [
+                        "modules": [
                             {
-                                "name": str,
-                                "description": str,
+                                "module_index": int,
+                                "module_name": str,
+                                "module_description": str,
                                 "agents": [
                                     {
-                                        "name": str,
-                                        "description": str,
-                                        "human_interaction": "none"|"context"|"approval",
-                                        "integrations": [str],
-                                        "operations": [str]
+                                        "agent_name": str,
+                                        "agent_type": "router"|"worker"|"evaluator"|"orchestrator"|"intake"|"generator",
+                                        "objective": str,
+                                        "human_interaction": "none"|"context"|"approval"|"feedback"|"single",
+                                        "generation_mode": "text"|"image"|"video"|"audio"|null,
+                                        "agent_tools": [
+                                            {
+                                                "name": str,
+                                                "integration": str|null,
+                                                "purpose": str,
+                                                "interaction_mode": "none"|"inline"|"artifact"
+                                            }
+                                        ],
+                                        "lifecycle_tools": [],
+                                        "system_hooks": []
                                     }
                                 ]
                             }
@@ -762,8 +769,8 @@ async def action_plan(
                 }
 
             Notes:
-                - Phases MUST preserve the exact names, ordering, and approval flags provided by the upstream WorkflowStrategy semantic wrapper (e.g., "Phase 1: Discovery", "Phase 2: Drafting").
-                - Multi-phase workflows are expected; do not collapse loops or approvals into single entries.
+                - Modules MUST preserve the exact names and ordering provided by the upstream WorkflowStrategy semantic wrapper (e.g., "Module 1: Discovery", "Module 2: Drafting").
+                - Multi-module workflows are expected; do not collapse loops or approvals into single entries.
                 - Semantic model uses three orthogonal dimensions: initiated_by, trigger_type, pattern
                 - lifecycle_operations capture orchestration hooks between agents (before/after chat or agent triggers)
                 - "integrations" contains third-party APIs/services (PascalCase)
@@ -817,7 +824,7 @@ async def action_plan(
             if isinstance(meta_candidate, dict):
                 stored_diagram_meta = meta_candidate
             
-            # NEW: Extract workflow_strategy for phase merging
+            # Extract workflow_strategy for module merging
             strategy_candidate = context_variables.get("workflow_strategy")
             if isinstance(strategy_candidate, dict):
                 workflow_strategy = strategy_candidate
@@ -846,78 +853,82 @@ async def action_plan(
         _logger.warning("Missing routing keys: chat_id or enterprise_id not present on context_variables")
         return {"status": "error", "message": "chat_id and enterprise_id are required"}
 
-    # --- NEW: Phase Agents Merge Logic ---------------------------------------------
-    # If phase_agents is provided, merge with workflow_strategy to build ActionPlan
-    if phase_agents is not None and workflow_strategy is not None:
-        _logger.info("Merging phase_agents with workflow_strategy to construct ActionPlan")
-        
-        strategy_phases = workflow_strategy.get("phases", [])
-        if not isinstance(strategy_phases, list):
-            _logger.error("workflow_strategy.phases is not a list")
-            return {"status": "error", "message": "Invalid workflow_strategy: phases must be a list"}
-        
-        if not isinstance(phase_agents, list):
-            _logger.error("phase_agents is not a list")
-            return {"status": "error", "message": "Invalid phase_agents: must be a list"}
-        
-        if len(phase_agents) != len(strategy_phases):
+    # --- Module Agents Merge Logic ---------------------------------------------
+    # If module_agents is provided, merge with workflow_strategy to build ActionPlan
+    if module_agents is not None and workflow_strategy is not None:
+        _logger.info("Merging module_agents with workflow_strategy to construct ActionPlan")
+
+        strategy_modules = workflow_strategy.get("modules", [])
+        if not isinstance(strategy_modules, list):
+            _logger.error("workflow_strategy.modules is not a list")
+            return {"status": "error", "message": "Invalid workflow_strategy: modules must be a list"}
+
+        if not isinstance(module_agents, list):
+            _logger.error("module_agents is not a list")
+            return {"status": "error", "message": "Invalid module_agents: must be a list"}
+
+        if len(module_agents) != len(strategy_modules):
             _logger.error(
-                "Phase count mismatch: strategy has %d phases, implementation has %d phase_agents",
-                len(strategy_phases),
-                len(phase_agents)
+                "Module count mismatch: strategy has %d modules, implementation has %d module_agents",
+                len(strategy_modules),
+                len(module_agents)
             )
             return {
                 "status": "error",
-                "message": f"Phase count mismatch: strategy has {len(strategy_phases)} phases, implementation has {len(phase_agents)} phase_agents"
+                "message": f"Module count mismatch: strategy has {len(strategy_modules)} modules, implementation has {len(module_agents)} module_agents"
             }
-        
-        # Build merged phases
-        merged_phases = []
-        for idx, strategy_phase in enumerate(strategy_phases):
-            if not isinstance(strategy_phase, dict):
-                _logger.warning("Skipping non-dict strategy phase at index %d", idx)
+
+        # Build merged modules
+        merged_modules = []
+        for idx, strategy_module in enumerate(strategy_modules):
+            if not isinstance(strategy_module, dict):
+                _logger.warning("Skipping non-dict strategy module at index %d", idx)
                 continue
-            
-            # Find matching phase_agents entry
-            phase_agent_entry = None
-            for pa in phase_agents:
-                if isinstance(pa, dict) and pa.get("phase_index") == idx:
-                    phase_agent_entry = pa
+
+            # Find matching module_agents entry
+            module_agent_entry = None
+            for pa in module_agents:
+                if not isinstance(pa, dict):
+                    continue
+                pa_index = pa.get("module_index")
+                if pa_index == idx:
+                    module_agent_entry = pa
                     break
-            
-            if phase_agent_entry is None:
-                _logger.error("No phase_agents entry found for phase_index %d", idx)
-                return {"status": "error", "message": f"Missing phase_agents entry for phase_index {idx}"}
-            
-            agents_list = phase_agent_entry.get("agents", [])
+
+            if module_agent_entry is None:
+                _logger.error("No module_agents entry found for module_index %d", idx)
+                return {"status": "error", "message": f"Missing module_agents entry for module_index {idx}"}
+
+            agents_list = module_agent_entry.get("agents", [])
             if not isinstance(agents_list, list):
-                _logger.error("phase_agents[%d].agents is not a list", idx)
-                return {"status": "error", "message": f"Invalid agents for phase_index {idx}: must be a list"}
+                _logger.error("module_agents[%d].agents is not a list", idx)
+                return {"status": "error", "message": f"Invalid agents for module_index {idx}: must be a list"}
 
             normalized_agents = [copy.deepcopy(agent) for agent in agents_list if isinstance(agent, dict)]
-            
-            # Merge: phase metadata from strategy + agents from implementation
-            phase_name = strategy_phase.get("phase_name") or strategy_phase.get("name") or f"Phase {idx + 1}"
-            phase_description = strategy_phase.get("phase_description") or strategy_phase.get("description") or ""
-            phase_index_raw = strategy_phase.get("phase_index")
+
+            # Merge: module metadata from strategy + agents from implementation
+            module_name = strategy_module.get("module_name") or strategy_module.get("name") or f"Module {idx + 1}"
+            module_description = strategy_module.get("module_description") or strategy_module.get("description") or ""
+            module_index_raw = strategy_module.get("module_index")
             try:
-                phase_index = int(phase_index_raw)
+                module_index = int(module_index_raw)
             except (TypeError, ValueError):
-                phase_index = idx
-            merged_phase = {
-                "name": _coerce_str(phase_name, f"Phase {idx + 1}").strip() or f"Phase {idx + 1}",
-                "description": _coerce_str(phase_description),
-                "phase_index": phase_index,
+                module_index = idx
+            
+            merged_module = {
+                "module_name": _coerce_str(module_name, f"Module {idx + 1}").strip() or f"Module {idx + 1}",
+                "module_description": _coerce_str(module_description),
+                "module_index": module_index,
                 "agents": normalized_agents,
             }
-            merged_phases.append(merged_phase)
+            merged_modules.append(merged_module)
             _logger.debug(
-                "Merged phase %d: %s with %d agents",
+                "Merged module %d: %s with %d agents",
                 idx,
-                merged_phase["name"],
+                merged_module["module_name"],
                 len(agents_list)
             )
-        
+
         # Construct ActionPlan from merged data
         pattern_field = workflow_strategy.get("pattern")
         if isinstance(pattern_field, list):
@@ -941,14 +952,14 @@ async def action_plan(
                 "trigger_type": trigger_type,
                 "pattern": pattern_value,
                 "lifecycle_operations": workflow_strategy.get("lifecycle_operations", []),
-                "phases": merged_phases
+                "modules": merged_modules
             }
         }
         if pattern_variants:
             ActionPlan["workflow"]["pattern_variants"] = pattern_variants
         _logger.info(
-            "Successfully merged %d phases from strategy + implementation",
-            len(merged_phases)
+            "Successfully merged %d modules from strategy + implementation",
+            len(merged_modules)
         )
 
     # --- Action Plan normalization -------------------------------------------------
@@ -1245,4 +1256,3 @@ async def action_plan(
         "agent_message": final_agent_message,
         "agent_message_id": agent_message_id,
     }
-
