@@ -416,7 +416,7 @@ The Generator workflow contains **17 agents** across multiple phases. This audit
 **Semantic Wrapper Output:** ⚠️ Outputs `{"agents": [...]}` - should use `RuntimeAgentsCall` wrapper
 
 **Findings:**
-- ✅ Excellent 9-section prompt structure documentation
+- ✅ Excellent 6-section prompt structure (universal sections now hook-injected)
 - ✅ Good semantic reference guidance ("Use wrapper keys NOT agent names")
 - ✅ Schema naming contract (no circular references)
 - ✅ Production readiness enforcement (no TODOs)
@@ -591,11 +591,11 @@ This creates ambiguity - which format does the agent actually emit?
 
 ---
 
-### Issue 3: Nine-Section Standard
+### Issue 3: Six-Section Standard
 
-**Finding:** All agents now follow the 9-section structure (or appropriate subset). The AgentsAgent even documents this as the standard for generated runtime agents.
+**Finding:** All agents now follow the 6-section structure (role, objective, context, instructions, pattern_guidance_and_examples, output_format). Universal sections (compliance, agentic best practices, runtime context, JSON output compliance, semantic reference rules, validation checklist) are now hook-injected at runtime via `hook_universal_prompts.py`.
 
-**Variation:** DownloadAgent has a non-standard "NOTES" section - this should be merged into GUIDELINES or RUNTIME INTEGRATION.
+**Note:** The PromptSections schema in structured_outputs.json has been updated to match this 6-section architecture for generated runtime agents.
 
 ---
 

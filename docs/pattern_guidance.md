@@ -1,10 +1,14 @@
 # AG2 Pattern Guidance
 
 > **Last Verified Against**: AG2 Pattern Cookbook (docs.ag2.ai/latest/docs/user-guide/advanced-concepts/pattern-cookbook/)
-> **Verification Date**: 2025-06-27
+> **Verification Date**: 2025-06-28
 > **AG2 Version**: 0.10.1
 
-This document provides comprehensive guidance on the 9 AG2 orchestration patterns used in MozaiksAI workflow generation. Each pattern defines how agents coordinate, communicate, and hand off work.
+This document provides comprehensive guidance on the 9 AG2 orchestration patterns used in MozaiksAI workflow generation. Each pattern defines how agents coordinate, communicate, and hand off work while remaining modular, workflow-agnostic, and as stateless as possible.
+
+**Where to find runnable examples**
+- Single-module, module-terminology JSON examples for every pattern live in `docs/pattern_examples/*.json`. Each file is a complete module specimen (agents, context_variables, handoffs, tools, hooks, orchestrator) used by the pattern injection hook.
+- The generator’s `update_agent_state_pattern.py` hook should load guidance from this file plus the examples above to keep prompts hot-swappable and declarative.
 
 ---
 

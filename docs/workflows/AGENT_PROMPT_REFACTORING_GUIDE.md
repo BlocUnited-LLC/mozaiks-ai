@@ -15,25 +15,25 @@
 
 #### ✅ CORRECT - Use Semantic Wrapper Keys
 ```
-- Read ActionPlan.workflow.phases[] from conversation history
-- Extract PhaseAgents.phase_agents[].agents[] for agent roster
-- Locate TechnicalBlueprint.phase_technical_requirements[]
+- Read ActionPlan.workflow.modules[] from conversation history
+- Extract ModuleAgents.module_agents[].agents[] for agent roster
+- Locate TechnicalBlueprint.ui_components[]
 - Access PatternSelection.selected_pattern
-- Reference WorkflowStrategy.phases[]
+- Reference WorkflowStrategy.modules[]
 ```
 
 #### ❌ WRONG - Agent Names or Variable Names
 ```
 - Read action_plan from context variables (set by action_plan.py tool)
 - Get output from ActionPlanAgent
-- Locate the phase_agents_plan tool output
+- Locate the module_agents_plan tool output
 - Access pattern_selection variable
 - Read from WorkflowStrategyAgent output
 ```
 
 **Why**: Semantic keys enable loose coupling. Agents consume outputs without knowing which specific agent produced them. This allows runtime flexibility and prevents brittle agent-to-agent dependencies.
 
-**Reference**: See `ACTION_PLAN_OWNERSHIP.md` for authoritative structured output schemas.
+**Reference**: See `docs/ACTION_PLAN_SOURCE_OF_TRUTH.md` for authoritative structured output schemas.
 
 ---
 
@@ -61,34 +61,39 @@ Every agent that produces structured outputs must:
    Reference: Use semantic key "ActionPlan" (NOT agent name, NOT variable name)
    ```
 
-**Structured Output Wrappers** (from ACTION_PLAN_OWNERSHIP.md):
-- `WorkflowStrategyCall` → wrapper: `WorkflowStrategy`
-- `TechnicalBlueprintCall` → wrapper: `TechnicalBlueprint`
-- `PhaseAgentsCall` → wrapper: `PhaseAgents`
-- `ProjectOverviewCall` → wrapper: `MermaidSequenceDiagram` (or similar)
-- `ContextVariablesAgentOutput` → wrapper: `ContextVariablesPlan`
-- `ActionPlanCall` → wrapper: `ActionPlan`
-- `PatternSelectionCall` → wrapper: `PatternSelection`
+**Structured Output Wrappers** (from ACTION_PLAN_SOURCE_OF_TRUTH.md):
+- `PatternSelectionOutput` → wrapper: `PatternSelection`
+- `WorkflowStrategyOutput` → wrapper: `WorkflowStrategy`
+- `TechnicalBlueprintOutput` → wrapper: `TechnicalBlueprint`
+- `ModuleAgentsOutput` → wrapper: `ModuleAgents`
+- `MermaidSequenceDiagramOutput` → wrapper: `MermaidSequenceDiagram`
+- `ContextVariablesPlanOutput` → wrapper: `ContextVariablesPlan`
 
 ---
 
-### 3. Standard 9-Section Structure
+### 3. Standard 6-Section Structure
 
-All Generator agents must have exactly 9 sections (or 8 if `json_output_compliance` omitted for free-form agents):
+All Generator agents (and generated agents) use exactly 6 agent-specific sections:
 
-1. **role** - Single sentence identity
+1. **role** - Single sentence identity and primary responsibility
 2. **objective** - Bulleted deliverables list (2-4 items)
 3. **context** - Workflow position, upstream inputs (by semantic key), downstream outputs, runtime storage
-4. **runtime_integrations** - What runtime handles automatically (don't duplicate effort)
-5. **guidelines** - Compliance rules, legal requirements, output standards
-6. **instructions** - Step-by-step execution algorithm
-7. **pattern_guidance_and_examples** - `{{PATTERN_GUIDANCE_AND_EXAMPLES}}` placeholder (for pattern-aware agents) OR hardcoded examples (for DownloadAgent only)
-8. **json_output_compliance** - JSON escaping rules (ONLY if `structured_outputs_required=true`)
-9. **output_format** - Expected output structure with schema
+4. **instructions** - Step-by-step execution algorithm
+5. **examples** - Concrete usage examples (for runtime agents) OR `{{PATTERN_GUIDANCE_AND_EXAMPLES}}` placeholder (for Generator agents)
+6. **output_format** - Expected output structure with schema
 
 **Section ID Requirements**:
-- Use exact IDs: `role`, `objective`, `context`, `runtime_integrations`, `guidelines`, `instructions`, `pattern_guidance_and_examples`, `json_output_compliance`, `output_format`
+- Generator agents: `role`, `objective`, `context`, `instructions`, `pattern_guidance_and_examples`, `output_format`
+- Runtime agents: `role`, `objective`, `context`, `instructions`, `examples`, `output_format`
 - NO custom section IDs (e.g., `responsibilities`, `notes`, `background`)
+
+**Hook-Injected Sections** (added at runtime via `hook_universal_prompts.py`):
+- Compliance requirements → All agents
+- Agentic best practices → All agents
+- Runtime context → Design agents only (WorkflowStrategyAgent, WorkflowArchitectAgent, etc.)
+- JSON output compliance → Agents with structured_outputs_required=true
+- Semantic reference rules → Cross-referencing agents
+- Validation checklist → Artifact-producing agents
 
 ---
 
@@ -132,8 +137,8 @@ The `[CONTEXT]` section must clearly document:
    - Reference: Use semantic key "PatternSelection"
 
 2. **WorkflowStrategy** (from WorkflowStrategyCall):
-   - Wrapper: {"WorkflowStrategy": {"phases": [...], ...}}
-   - What to extract: phases[], pattern, workflow metadata
+   - Wrapper: {"WorkflowStrategy": {"modules": [...], ...}}
+   - What to extract: modules[], pattern, workflow metadata
    - Why: Provides phase structure for agent design
    - Reference: Use semantic key "WorkflowStrategy"
 ```
@@ -141,10 +146,10 @@ The `[CONTEXT]` section must clearly document:
 #### Output Contract (Write Operations)
 ```
 **Output Contract**:
-- Structured output: PhaseAgentsCall with wrapper {"PhaseAgents": {...}}
-- Storage: Persisted to context variables as `phase_agents`
+- Structured output: ModuleAgentsCall with wrapper {"ModuleAgents": {...}}
+- Storage: Persisted to context variables as `module_agents`
 - Downstream consumers: AgentsAgent, HandoffsAgent, ContextVariablesAgent
-- Semantic reference: Downstream agents use "PhaseAgents.phase_agents[]"
+- Semantic reference: Downstream agents use "ModuleAgents.module_agents[]"
 ```
 
 #### RUNTIME INTEGRATION (What to NOT implement)
@@ -169,7 +174,7 @@ The `[CONTEXT]` section must clearly document:
 ```
 **Step 1 - Read ActionPlan Structured Output**:
 - Locate ActionPlan from conversation history (semantic wrapper key)
-- Extract: ActionPlan.workflow.phases[], flow_type, approval gates
+- Extract: ActionPlan.workflow.modules[], flow_type, approval gates
 - Note which agents exist per phase for coordination tokens
 ```
 
@@ -178,7 +183,7 @@ The `[CONTEXT]` section must clearly document:
 **Step N - Validate Output**:
 - Ensure all required fields present
 - Ensure phase_index values sequential (0, 1, 2, ...)
-- Ensure agent names reference valid agents from PhaseAgents output
+- Ensure agent names reference valid agents from ModuleAgents output
 ```
 
 #### Output Emission
@@ -238,16 +243,16 @@ Each agent has exclusive ownership of specific Action Plan fields:
 - Does NOT: Design agents or implement tools
 
 #### WorkflowImplementationAgent
-- Owns: `phases[].agents[]` with full agent specifications
+- Owns: `modules[].agents[]` with full agent specifications
 - Owns: `agent_tools`, `lifecycle_tools`, `system_hooks`, `integrations`, `human_interaction`
 - Does NOT: Modify phase structure or top-level metadata
 
 #### ProjectOverviewAgent
 - Owns: `mermaid_diagram`, `agent_message` (final synopsis)
-- Does NOT: Modify phases or agent configurations
+- Does NOT: Modify modules or agent configurations
 
 #### ContextVariablesAgent
-- Reads: ActionPlan, PhaseAgents, ToolsManifest
+- Reads: ActionPlan, ModuleAgents, ToolsManifest
 - Produces: ContextVariablesPlan (definitions + agent exposure mappings)
 - Does NOT: Modify workflow structure
 
@@ -290,7 +295,7 @@ Each agent has exclusive ownership of specific Action Plan fields:
 #### Issue 3: Missing Wrapper Documentation
 ```diff
 [CONTEXT] section:
-- Input: Action Plan with phases and agents
+- Input: Action Plan with modules and agents
 + Input: ActionPlan (from ActionPlanCall structured output)
 +   Wrapper: {"ActionPlan": {"workflow": {...}}}
 +   Reference: Use semantic key "ActionPlan"
@@ -346,8 +351,8 @@ For agents with ONLY Agent_Tools:
 Before marking an agent as "complete", verify:
 
 - [ ] Uses semantic wrapper keys for ALL upstream references
-- [ ] Has exactly 9 sections (or 8 if free-form agent)
-- [ ] Section IDs match standard list exactly
+- [ ] Has exactly 6 agent-specific sections
+- [ ] Section IDs match standard list exactly (role, objective, context, instructions, pattern_guidance_and_examples, output_format)
 - [ ] [CONTEXT] documents upstream inputs with wrapper structures
 - [ ] [CONTEXT] documents output contract with semantic reference
 - [ ] [INSTRUCTIONS] uses semantic keys in all steps
@@ -358,7 +363,6 @@ Before marking an agent as "complete", verify:
 - [ ] structured_outputs_required matches registry
 - [ ] No agent name references anywhere
 - [ ] No lowercase variable references (use wrapper keys)
-- [ ] Guidelines start with legal compliance statement
 - [ ] Instructions have clear step-by-step flow
 - [ ] Output format includes field rules and examples
 
@@ -369,8 +373,8 @@ Before marking an agent as "complete", verify:
 Agents must align with these runtime contracts:
 
 #### Structured Outputs
-- `structured_outputs_required=true` → Include `json_output_compliance` section
-- `structured_outputs_required=false` → Omit `json_output_compliance` section
+- `structured_outputs_required=true` → JSON output compliance injected via `hook_universal_prompts.py`
+- `structured_outputs_required=false` → No JSON compliance section added
 - All structured outputs must use wrapper pattern for semantic referencing
 
 #### Auto Tool Mode
@@ -450,7 +454,7 @@ For each agent:
 1. **Read current configuration** - Understand what it does
 2. **Check upstream inputs** - Identify what outputs it reads
 3. **Verify semantic references** - Replace agent names with wrapper keys
-4. **Standardize sections** - Ensure 9-section structure
+4. **Standardize sections** - Ensure 6-section structure
 5. **Complete [CONTEXT]** - Document inputs/outputs with wrappers
 6. **Update [INSTRUCTIONS]** - Use semantic keys in all steps
 7. **Fill [OUTPUT FORMAT]** - Complete schema with wrapper structure
@@ -466,7 +470,7 @@ For each agent:
 ```json
 {
   "id": "context",
-  "content": "Read the pattern selection from context variables. Get agent list from phase_agents_plan tool output. Access workflow strategy from upstream agent."
+  "content": "Read the pattern selection from context variables. Get agent list from module_agents_plan tool output. Access workflow strategy from upstream agent."
 }
 ```
 
@@ -474,7 +478,7 @@ For each agent:
 ```json
 {
   "id": "context",
-  "content": "(READ FROM CONVERSATION ARTIFACTS)\nYou MUST locate and read these exact structured output artifacts:\n\n1. **PatternSelection** (from PatternSelectionCall):\n   - Wrapper: {\"PatternSelection\": {\"selected_pattern\": <int>, ...}}\n   - What to extract: selected_pattern, pattern_name\n   - Reference: Use semantic key \"PatternSelection\"\n\n2. **PhaseAgents** (from PhaseAgentsCall):\n   - Wrapper: {\"PhaseAgents\": {\"phase_agents\": [...]}}\n   - What to extract: Agent roster with tools, hooks, integrations\n   - Reference: Use semantic key \"PhaseAgents\"\n\n3. **WorkflowStrategy** (from WorkflowStrategyCall):\n   - Wrapper: {\"WorkflowStrategy\": {\"phases\": [...], ...}}\n   - What to extract: Phase structure, pattern, metadata\n   - Reference: Use semantic key \"WorkflowStrategy\""
+  "content": "(READ FROM CONVERSATION ARTIFACTS)\nYou MUST locate and read these exact structured output artifacts:\n\n1. **PatternSelection** (from PatternSelectionCall):\n   - Wrapper: {\"PatternSelection\": {\"selected_pattern\": <int>, ...}}\n   - What to extract: selected_pattern, pattern_name\n   - Reference: Use semantic key \"PatternSelection\"\n\n2. **ModuleAgents** (from ModuleAgentsCall):\n   - Wrapper: {\"ModuleAgents\": {\"module_agents\": [...]}}\n   - What to extract: Agent roster with tools, hooks, integrations\n   - Reference: Use semantic key \"ModuleAgents\"\n\n3. **WorkflowStrategy** (from WorkflowStrategyCall):\n   - Wrapper: {\"WorkflowStrategy\": {\"modules\": [...], ...}}\n   - What to extract: Module structure, pattern, metadata\n   - Reference: Use semantic key \"WorkflowStrategy\""
 }
 ```
 
@@ -488,9 +492,9 @@ For each agent:
 | PatternAgent | concept_overview, interview | PatternSelection | true | true |
 | WorkflowStrategyAgent | PatternSelection | WorkflowStrategy | true | true |
 | WorkflowArchitectAgent | WorkflowStrategy, PatternSelection | TechnicalBlueprint | true | true |
-| WorkflowImplementationAgent | WorkflowStrategy, PatternSelection | PhaseAgents | true | true |
+| WorkflowImplementationAgent | WorkflowStrategy, PatternSelection | ModuleAgents | true | true |
 | ProjectOverviewAgent | ActionPlan | MermaidSequenceDiagram | true | true |
-| ContextVariablesAgent | ActionPlan, PhaseAgents, ToolsManagerOutput | ContextVariablesPlan | false | true |
+| ContextVariablesAgent | ActionPlan, ModuleAgents, ToolsManagerOutput | ContextVariablesPlan | false | true |
 | ToolsManagerAgent | ActionPlan, ContextVariablesPlan | ToolsManagerOutput | false | true |
 | StructuredOutputsAgent | ActionPlan, ContextVariablesPlan, Tools, UI/Tool files | StructuredOutputsOutput | false | true |
 | AgentsAgent | All upstream outputs | RuntimeAgentsCall | false | true |
@@ -506,7 +510,7 @@ For each agent:
 ```
 **Step 1 - Read Upstream Structured Outputs**:
 - Locate ActionPlan from conversation history
-- Locate PhaseAgents from conversation history
+- Locate ModuleAgents from conversation history
 - Locate ToolsManagerOutput from conversation history
 - Extract necessary fields from each wrapper
 ```
