@@ -240,6 +240,12 @@ These agents produce the **design-time Action Plan** that users approve before f
 | `purpose` | str | What the tool does (≤140 chars) |
 | `interaction_mode` | enum | inline \| artifact \| none |
 
+**SystemHook Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Hook function name (snake_case). Examples: update_agent_state, process_message_before_send |
+| `purpose` | str | Brief explanation of why the agent needs this hook (≤140 chars) |
+
 ---
 
 ### 3.5 ProjectOverviewAgent → `MermaidSequenceDiagramOutput`

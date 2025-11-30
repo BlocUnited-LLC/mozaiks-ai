@@ -1163,12 +1163,21 @@
             "description": "React component name (PascalCase) used by the UI tool."
           },
           "display": {
-            "type": "str",
-            "description": "Visual placement hint (inline | artifact) that mirrors tools manifest metadata."
+            "type": "literal",
+            "values": [
+              "inline",
+              "artifact"
+            ],
+            "description": "Visual placement hint: 'inline' (conversational, in chat flow) or 'artifact' (separate tray delivery)."
           },
           "ui_pattern": {
-            "type": "str",
-            "description": "Expected interaction cadence (single_step | two_step_confirmation | multi_step)."
+            "type": "literal",
+            "values": [
+              "single_step",
+              "two_step_confirmation",
+              "multi_step"
+            ],
+            "description": "Expected interaction cadence: 'single_step' (data collection, agent continues), 'two_step_confirmation' (user reviews and approves/rejects), 'multi_step' (iterative refinement loop)."
           },
           "summary": {
             "type": "str",
