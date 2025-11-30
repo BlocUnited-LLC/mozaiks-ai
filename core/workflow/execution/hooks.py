@@ -6,7 +6,7 @@ declared hook functions on the appropriate `ConversableAgent` instances.
 JSON FORMAT (current implementation expects either of these per entry):
 
   - hook_type: process_message_before_send | update_agent_state | process_last_received_message | process_all_messages_before_reply
-    hook_agent: <AgentName>
+    hook_agent: <AgentName> | "all"   # Use "all" to apply hook to every agent in workflow
     filename: redaction.py          # Python filename relative to workflow root OR tools/ directory
     function: echo_before_send       # Name of the function inside the file
 
@@ -189,11 +189,16 @@ def register_hooks_for_workflow(workflow_name: str, agents: Dict[str, Any], *, b
                 logger.warning(f"Missing hook_agent for hook_type '{hook_type}' in workflow {workflow_name}; skipping entry")
                 continue
 
-            agent_obj = agents.get(hook_agent)
-            if agent_obj is None:
-                skipped_missing_agent += 1
-                logger.warning(f"Hook agent '{hook_agent}' not found for workflow {workflow_name}; skipping entry")
-                continue
+            # Support "all" to apply hook to every agent in the workflow
+            if hook_agent.lower() == "all":
+                target_agents = list(agents.items())
+            else:
+                agent_obj = agents.get(hook_agent)
+                if agent_obj is None:
+                    skipped_missing_agent += 1
+                    logger.warning(f"Hook agent '{hook_agent}' not found for workflow {workflow_name}; skipping entry")
+                    continue
+                target_agents = [(hook_agent, agent_obj)]
 
             if not fn_value:
                 skipped_missing_function += 1
@@ -208,64 +213,68 @@ def register_hooks_for_workflow(workflow_name: str, agents: Dict[str, Any], *, b
             _validate_signature(hook_type, fn)
 
             # ------------------------------------------------------------------
-            # Instrument hook execution with timing + error logging.
-            # We wrap only once (idempotent) to avoid stacking decorators if
-            # register_hooks is forced multiple times.
+            # Register hook on each target agent (single agent or all agents)
             # ------------------------------------------------------------------
-            if getattr(fn, "_mozaiks_hook_wrapped", False):
-                wrapped_fn = getattr(fn, "_mozaiks_hook_wrapper", fn)
-            else:
-                orig_fn = fn
+            for target_agent_name, target_agent_obj in target_agents:
+                # ------------------------------------------------------------------
+                # Instrument hook execution with timing + error logging.
+                # We wrap only once (idempotent) to avoid stacking decorators if
+                # register_hooks is forced multiple times.
+                # ------------------------------------------------------------------
+                if getattr(fn, "_mozaiks_hook_wrapped", False):
+                    wrapped_fn = getattr(fn, "_mozaiks_hook_wrapper", fn)
+                else:
+                    orig_fn = fn
 
-                @wraps(orig_fn)
-                def _wrapped_hook(*args, __wf=workflow_name, __agent=hook_agent, __type=hook_type, __orig=orig_fn, **kwargs):  # type: ignore[override]
-                    start = time.perf_counter()
-                    logger.info(
-                        "🪝 [HOOK_EXEC] status=start type=%s agent=%s workflow=%s function=%s",
-                        __type,
-                        __agent,
-                        __wf,
-                        f"{__orig.__module__}.{__orig.__name__}",
-                    )
-                    try:
-                        result = __orig(*args, **kwargs)
-                        duration = (time.perf_counter() - start) * 1000.0
+                    @wraps(orig_fn)
+                    def _wrapped_hook(*args, __wf=workflow_name, __agent=target_agent_name, __type=hook_type, __orig=orig_fn, **kwargs):  # type: ignore[override]
+                        start = time.perf_counter()
                         logger.info(
-                            "🪝 [HOOK_EXEC] status=done type=%s agent=%s workflow=%s duration_ms=%.2f",
+                            "🪝 [HOOK_EXEC] status=start type=%s agent=%s workflow=%s function=%s",
                             __type,
                             __agent,
                             __wf,
-                            duration,
+                            f"{__orig.__module__}.{__orig.__name__}",
                         )
-                        return result
-                    except Exception as hook_err:  # pragma: no cover
-                        duration = (time.perf_counter() - start) * 1000.0
-                        logger.error(
-                            "🪝 [HOOK_EXEC] status=error type=%s agent=%s workflow=%s duration_ms=%.2f err=%s",
-                            __type,
-                            __agent,
-                            __wf,
-                            duration,
-                            hook_err,
-                            exc_info=True,
-                        )
-                        raise
+                        try:
+                            result = __orig(*args, **kwargs)
+                            duration = (time.perf_counter() - start) * 1000.0
+                            logger.info(
+                                "🪝 [HOOK_EXEC] status=done type=%s agent=%s workflow=%s duration_ms=%.2f",
+                                __type,
+                                __agent,
+                                __wf,
+                                duration,
+                            )
+                            return result
+                        except Exception as hook_err:  # pragma: no cover
+                            duration = (time.perf_counter() - start) * 1000.0
+                            logger.error(
+                                "🪝 [HOOK_EXEC] status=error type=%s agent=%s workflow=%s duration_ms=%.2f err=%s",
+                                __type,
+                                __agent,
+                                __wf,
+                                duration,
+                                hook_err,
+                                exc_info=True,
+                            )
+                            raise
 
-                setattr(_wrapped_hook, "_mozaiks_hook_wrapped", True)
+                    setattr(_wrapped_hook, "_mozaiks_hook_wrapped", True)
+                    try:
+                        setattr(orig_fn, "_mozaiks_hook_wrapped", True)
+                        setattr(orig_fn, "_mozaiks_hook_wrapper", _wrapped_hook)
+                    except Exception:  # pragma: no cover - some callables may deny attribute assignment
+                        pass
+                    wrapped_fn = _wrapped_hook
+
                 try:
-                    setattr(orig_fn, "_mozaiks_hook_wrapped", True)
-                    setattr(orig_fn, "_mozaiks_hook_wrapper", _wrapped_hook)
-                except Exception:  # pragma: no cover - some callables may deny attribute assignment
-                    pass
-                wrapped_fn = _wrapped_hook
-
-            try:
-                agent_obj.register_hook(hook_type, wrapped_fn)  # type: ignore[attr-defined]
-                registered.append(RegisteredHook(workflow=workflow_name, agent=hook_agent, hook_type=hook_type, function_qualname=qual))
-                logger.debug(f"Registered hook {hook_type} -> {qual} for agent {hook_agent}")
-            except Exception as e:  # pragma: no cover
-                logger.error(f"Failed registering hook {hook_type} for {hook_agent}: {e}")
-                continue
+                    target_agent_obj.register_hook(hook_type, wrapped_fn)  # type: ignore[attr-defined]
+                    registered.append(RegisteredHook(workflow=workflow_name, agent=target_agent_name, hook_type=hook_type, function_qualname=qual))
+                    logger.debug(f"Registered hook {hook_type} -> {qual} for agent {target_agent_name}")
+                except Exception as e:  # pragma: no cover
+                    logger.error(f"Failed registering hook {hook_type} for {target_agent_name}: {e}")
+                    continue
         except Exception as e:  # pragma: no cover
             logger.error(f"Unexpected error processing hook entry for {workflow_name}: {e}", exc_info=True)
 

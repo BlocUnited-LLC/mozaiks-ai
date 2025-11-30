@@ -52,7 +52,7 @@ PLATFORM CAPABILITIES (runtime layer)
 - Frontend: React ChatUI receives events and streams; runtime provides transport and metadata only.
 - Workflows: Declarative JSONs + optional stubs under `workflows/`; runtime resolves and executes them.
 - Observability: Unified logs, perf metrics endpoints, runtime logging export.
-- Discovery Mode: Dual-mode UI system (workflow GroupChat ↔ single-agent Ask mode) with mid-workflow navigation. See `ChatUI/AGENT_DISCOVERY_MODE.md`.
+- Discovery Mode: Dual-mode UI system (workflow GroupChat ↔ single-agent Ask mode) with mid-workflow navigation.
 
 INTERACTIONS WITH UI/TOOLS (runtime contract only)
 - The runtime forwards and correlates UI/tool interactions but does not define UI schemas.
