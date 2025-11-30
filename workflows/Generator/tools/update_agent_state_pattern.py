@@ -1399,47 +1399,48 @@ def inject_workflow_implementation_guidance(agent, messages: List[Dict[str, Any]
     AG2 update_agent_state hook for WorkflowImplementationAgent.
     Injects pattern-specific agent coordination guidance into system message.
 
-    WorkflowImplementationAgent OUTPUT FORMAT (PhaseAgents JSON):
+    WorkflowImplementationAgent OUTPUT FORMAT (ModuleAgentsOutput JSON):
     {
-      "PhaseAgents": {
-        "phase_agents": [
-          {
-            "phase_index": <int>,
-            "agents": [
-              {
-                "agent_name": "<string>",
-                "agent_type": "router|worker|evaluator|orchestrator|intake",
-                "description": "<string>",
-                "human_interaction": "none|single-llm|interview|iterative|approval",
-                "max_consecutive_auto_reply": <int>,
-                "agent_tools": [
-                  {
-                    "name": "<string>",
-                    "integration": "<string>|null",
-                    "purpose": "<string>",
-                    "interaction_mode": "inline|artifact|none"  // Optional, defaults to "none" when omitted
-                  }
-                ],
-                "lifecycle_tools": [
-                  {
-                    "name": "<string>",
-                    "integration": "<string>|null",
-                    "purpose": "<string>",
-                    "trigger": "before_agent|after_agent"
-                  }
-                ],
-                "system_hooks": [
-                  {
-                    "name": "<string>",
-                    "purpose": "<string>"
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      }
+      "ModuleAgents": [
+        {
+          "module_index": <int>,
+          "agents": [
+            {
+              "agent_name": "<string>",
+              "agent_type": "router|worker|evaluator|orchestrator|intake|generator",
+              "objective": "<string>",
+              "human_interaction": "none|context|approval|feedback|single",
+              "generation_mode": "<string>|null",
+              "max_consecutive_auto_reply": <int>,
+              "agent_tools": [
+                {
+                  "name": "<string>",
+                  "integration": "<string>|null",
+                  "purpose": "<string>",
+                  "interaction_mode": "inline|artifact|none"  // Optional, defaults to "none" when omitted
+                }
+              ],
+              "lifecycle_tools": [
+                {
+                  "name": "<string>",
+                  "integration": "<string>|null",
+                  "purpose": "<string>",
+                  "trigger": "before_chat|after_chat|before_agent|after_agent"
+                }
+              ],
+              "system_hooks": [
+                {
+                  "name": "<string>",
+                  "purpose": "<string>"
+                }
+              ]
+            }
+          ]
+        }
+      ]
     }
+    
+    NOTE: Pattern-specific examples are loaded from docs/pattern_examples/*.json
     """
     try:
         pattern = _get_pattern_from_context(agent)
@@ -1466,925 +1467,8 @@ You MUST align your `agent_type` and `human_interaction` with the TechnicalBluep
 IF TechnicalBlueprint has a UI component for an agent, set `agent_tools[].interaction_mode` to match the component's `display` (`inline` or `artifact`).
 """
 
-        # Pattern-specific complete JSON examples matching PhaseAgents schema
-        implementation_examples = {
-            1: """// EXAMPLE 1: SaaS Support Router
-{
-  "PhaseAgents": {
-    "phase_agents": [
-      {
-        "phase_index": 0,
-        "agents": [
-          {
-            "agent_name": "RouterAgent",
-            "description": "Handles initial user intake, verifies account identity via inline card, and classifies the support intent to determine the correct specialist queue.",
-            "human_interaction": "context",
-            "max_consecutive_auto_reply": 1,
-            "agent_tools": [
-              {"name": "verify_account_details", "integration": "Salesforce", "purpose": "Display account verification card to user", "interaction_mode": "inline"},
-              {"name": "classify_intent", "integration": "OpenAI", "purpose": "Analyze message content to determine support domain", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 1,
-        "agents": [
-          {
-            "agent_name": "RoutingOrchestrator",
-            "description": "Internal coordinator that selects the best available specialist based on intent classification and hands off the session.",
-            "human_interaction": "none",
-            "max_consecutive_auto_reply": 30,
-            "agent_tools": [
-              {"name": "check_queue_availability", "integration": "SalesforceServiceCloud", "purpose": "Check wait times for specialist queues", "interaction_mode": "none"},
-              {"name": "assign_specialist", "integration": null, "purpose": "Transfer session ownership to selected specialist", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "SupportSpecialist",
-            "description": "Domain expert that engages with the user to resolve their specific issue after being assigned by the orchestrator.",
-            "human_interaction": "interview",
-            "max_consecutive_auto_reply": 20,
-            "agent_tools": [
-              {"name": "search_knowledge_base", "integration": "Notion", "purpose": "Find relevant support articles", "interaction_mode": "none"},
-              {"name": "run_diagnostic", "integration": "Datadog", "purpose": "Check system health for user account", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 2,
-        "agents": [
-          {
-            "agent_name": "RouterAgent",
-            "description": "Re-engages after resolution to collect structured feedback via a side-panel artifact and close the session.",
-            "human_interaction": "context",
-            "max_consecutive_auto_reply": 1,
-            "agent_tools": [
-              {"name": "submit_feedback", "integration": "Qualtrics", "purpose": "Render feedback form in side panel", "interaction_mode": "artifact"},
-              {"name": "close_ticket", "integration": "Salesforce", "purpose": "Finalize ticket status", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      }
-    ]
-  }
-}
-
-// EXAMPLE 2: Internal IT Helpdesk Concierge
-{
-  "PhaseAgents": {
-    "phase_agents": [
-      {
-        "phase_index": 0,
-        "agents": [
-          {
-            "agent_name": "ConciergeAgent",
-            "description": "Front-line agent that greets the employee, captures the issue description, and confirms details via an inline summary card.",
-            "human_interaction": "approval",
-            "max_consecutive_auto_reply": 5,
-            "agent_tools": [
-              {"name": "confirm_issue_details", "integration": null, "purpose": "Present issue summary for employee confirmation", "interaction_mode": "inline"},
-              {"name": "create_draft_ticket", "integration": "ServiceNow", "purpose": "Initialize ticket record", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 1,
-        "agents": [
-          {
-            "agent_name": "IssueClassifier",
-            "description": "Backend analyzer that reviews the confirmed issue details to categorize it as Hardware, Software, or Access.",
-            "human_interaction": "none",
-            "max_consecutive_auto_reply": 30,
-            "agent_tools": [
-              {"name": "classify_ticket_category", "integration": "OpenAI", "purpose": "Determine ticket category from description", "interaction_mode": "none"},
-              {"name": "route_to_tier", "integration": null, "purpose": "Assign to correct support tier", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 2,
-        "agents": [
-          {
-            "agent_name": "HardwareSpecialist",
-            "description": "Specialist for hardware issues that can request remote access permissions via an inline confirmation card.",
-            "human_interaction": "approval",
-            "max_consecutive_auto_reply": 5,
-            "agent_tools": [
-              {"name": "request_remote_access", "integration": "TeamViewer", "purpose": "Request user permission for remote control", "interaction_mode": "inline"},
-              {"name": "diagnose_hardware", "integration": null, "purpose": "Run hardware diagnostics", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      }
-    ]
-  }
-}""",
-            2: """{
-  "PhaseAgents": {
-    "phase_agents": [
-      {
-        "phase_index": 0,
-        "agents": [
-          {
-            "agent_name": "IncidentTriageAgent",
-            "agent_type": "intake",
-            "description": "Ingests P1 alerts, runs baseline diagnostics, and attempts scripted remediation before any escalation.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "ingest_p1_alert", "integration": "Datadog", "purpose": "Pull alert metadata and context", "interaction_mode": "none"},
-              {"name": "run_baseline_diagnostics", "integration": null, "purpose": "Execute standard diagnostics", "interaction_mode": "none"},
-              {"name": "attempt_auto_remediation", "integration": null, "purpose": "Run automated fixes", "interaction_mode": "none"},
-              {"name": "acknowledge_incident_brief", "integration": null, "purpose": "Render inline incident card for responder confirmation before tiering", "interaction_mode": "inline"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 1,
-        "agents": [
-          {
-            "agent_name": "EscalationCoordinator",
-            "agent_type": "orchestrator",
-            "description": "Evaluates recovery confidence, packages investigation context, and triggers the next response tier when thresholds are missed.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "evaluate_recovery_confidence", "integration": null, "purpose": "Score recovery likelihood", "interaction_mode": "none"},
-              {"name": "package_incident_context", "integration": null, "purpose": "Bundle incident details", "interaction_mode": "none"},
-              {"name": "promote_response_tier", "integration": "PagerDuty", "purpose": "Escalate to next level", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 2,
-        "agents": [
-          {
-            "agent_name": "SRELeadAgent",
-            "agent_type": "worker",
-            "description": "Runs advanced mitigation playbooks, coordinates with the human incident commander, and publishes stakeholder status updates.",
-            "human_interaction": "approval",
-            "agent_tools": [
-              {"name": "execute_mitigation_playbook", "integration": null, "purpose": "Run advanced remediation", "interaction_mode": "none"},
-              {"name": "publish_status_update", "integration": "Slack", "purpose": "Broadcast incident status", "interaction_mode": "none"},
-              {"name": "publish_postmortem_outline", "integration": "StatusPage", "purpose": "Deliver artifact summarizing mitigation and follow-ups for sign-off", "interaction_mode": "artifact"}
-            ],
-            "lifecycle_tools": [
-              {"name": "allocate_incident_db_connection", "integration": null, "purpose": "Establish database connection pool for incident data retrieval", "trigger": "before_agent"},
-              {"name": "release_incident_db_connection", "integration": null, "purpose": "Close database connections and log query metrics", "trigger": "after_agent"}
-            ],
-            "system_hooks": [
-              {"name": "update_agent_state", "purpose": "Inject live incident severity data and SRE runbook references into system message"}
-            ]
-          }
-        ]
-      }
-    ]
-  }
-}""",
-            3: """{
-  "PhaseAgents": {
-    "phase_agents": [
-      {
-        "phase_index": 0,
-        "agents": [
-          {
-            "agent_name": "CampaignBriefFacilitator",
-            "agent_type": "intake",
-            "description": "Captures campaign goals, personas, and acceptance criteria while logging inspiration assets for the sprint.",
-            "human_interaction": "context",
-            "agent_tools": [
-              {"name": "capture_campaign_brief", "integration": "Notion", "purpose": "Gather campaign requirements", "interaction_mode": "none"},
-              {"name": "log_reference_assets", "integration": "Notion", "purpose": "Store inspiration materials", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 1,
-        "agents": [
-          {
-            "agent_name": "LaunchCopyGenerator",
-            "agent_type": "worker",
-            "description": "Generates messaging variants aligned to the brief and stores rationale for each headline and CTA.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "generate_launch_copy", "integration": "OpenAI", "purpose": "Create campaign copy variants", "interaction_mode": "none"},
-              {"name": "record_generation_rationale", "integration": "Notion", "purpose": "Log creative decisions", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 2,
-        "agents": [
-          {
-            "agent_name": "StakeholderReviewAgent",
-            "agent_type": "evaluator",
-            "description": "Collects structured reviewer feedback, scores messaging pillars, and flags blockers requiring human attention.",
-            "human_interaction": "approval",
-            "agent_tools": [
-              {"name": "collect_structured_feedback", "integration": "GoogleDocs", "purpose": "Render artifact form so reviewers can score pillars and submit revisions", "interaction_mode": "artifact"},
-              {"name": "score_messaging_pillars", "integration": null, "purpose": "Evaluate content quality", "interaction_mode": "none"},
-              {"name": "flag_campaign_blockers", "integration": "GoogleDocs", "purpose": "Surface approval issues", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": [
-              {"name": "update_agent_state", "purpose": "Inject dynamic brand guidelines and approval criteria from campaign context"},
-              {"name": "process_message_before_send", "purpose": "Format feedback summaries with color-coded severity indicators before display"}
-            ]
-          }
-        ]
-      },
-      {
-        "phase_index": 3,
-        "agents": [
-          {
-            "agent_name": "StakeholderApprovalAgent",
-            "agent_type": "evaluator",
-            "description": "Presents the approval gate summary, collects sign-off decisions, and logs rationale for audit.",
-            "human_interaction": "approval",
-            "agent_tools": [
-              {"name": "approve_final_copy", "integration": "Notion", "purpose": "Inline approval widget capturing decision and rationale", "interaction_mode": "inline"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "LaunchRevisionAgent",
-            "agent_type": "worker",
-            "description": "Applies accepted feedback, updates approval gate status, and re-triggers the review loop when needed.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "apply_feedback_actions", "integration": "Notion", "purpose": "Update content based on feedback", "interaction_mode": "none"},
-              {"name": "update_approval_status", "integration": "Notion", "purpose": "Track approval state", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      }
-    ]
-  }
-}""",
-            4: """{
-  "PhaseAgents": {
-    "phase_agents": [
-      {
-        "phase_index": 0,
-        "agents": [
-          {
-            "agent_name": "ExecutiveStrategyLead",
-            "agent_type": "orchestrator",
-            "description": "Breaks down market entry objectives, assigns workstreams, and broadcasts governance guidance to managers.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "decompose_market_objectives", "integration": "Notion", "purpose": "Structure market analysis tasks", "interaction_mode": "none"},
-              {"name": "assign_workstream_managers", "integration": null, "purpose": "Delegate research workstreams", "interaction_mode": "none"},
-              {"name": "publish_governance_brief", "integration": "Notion", "purpose": "Share strategy guidelines", "interaction_mode": "none"},
-              {"name": "share_strategy_overview", "integration": "Notion", "purpose": "Deliver artifact briefing executives and managers on objectives and guardrails", "interaction_mode": "artifact"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 1,
-        "agents": [
-          {
-            "agent_name": "DemandResearchManager",
-            "agent_type": "orchestrator",
-            "description": "Designs demand research backlog, sets metrics, and synchronizes expectations with specialists.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "plan_demand_research", "integration": "Notion", "purpose": "Define demand analysis scope", "interaction_mode": "none"},
-              {"name": "define_success_metrics", "integration": null, "purpose": "Set research KPIs", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "RegulatoryResearchManager",
-            "agent_type": "orchestrator",
-            "description": "Frames regulatory investigation tasks, collects compliance questions, and aligns review cadence.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "plan_regulatory_research", "integration": "Notion", "purpose": "Structure compliance review", "interaction_mode": "none"},
-              {"name": "log_compliance_questions", "integration": "Notion", "purpose": "Track regulatory queries", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "WorkstreamStatusManager",
-            "agent_type": "orchestrator",
-            "description": "Collects inline risk updates from managers and escalates blockers back to the executive hub.",
-            "human_interaction": "context",
-            "agent_tools": [
-              {"name": "capture_risk_update", "integration": "Notion", "purpose": "Inline capture of risk updates with severity and owner", "interaction_mode": "inline"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "CompetitiveLandscapeManager",
-            "agent_type": "orchestrator",
-            "description": "Structures competitive analysis workstream and tracks interim insights coming up from specialists.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "plan_competitive_analysis", "integration": "Notion", "purpose": "Define competitor research tasks", "interaction_mode": "none"},
-              {"name": "track_specialist_updates", "integration": null, "purpose": "Monitor research progress", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 2,
-        "agents": [
-          {
-            "agent_name": "DemandSpecialist",
-            "agent_type": "worker",
-            "description": "Executes demand-side research, benchmarks TAM/SAM, and passes synthesized notes back to managers.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "collect_demand_signals", "integration": "Perplexity", "purpose": "Gather market data", "interaction_mode": "none"},
-              {"name": "benchmark_market_size", "integration": null, "purpose": "Quantify TAM/SAM", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": [],
-            "integrations": ["Perplexity"]
-          },
-          {
-            "agent_name": "RegulatorySpecialist",
-            "agent_type": "worker",
-            "description": "Analyzes regulatory filings, identifies licensing hurdles, and escalates risks to managers.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "analyze_regulatory_climate", "integration": "Perplexity", "purpose": "Review compliance landscape", "interaction_mode": "none"},
-              {"name": "log_license_requirements", "integration": "Notion", "purpose": "Document licensing needs", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "CompetitiveSpecialist",
-            "agent_type": "worker",
-            "description": "Profiles competitors, tracks pricing models, and relays differentiators for executive synthesis.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "profile_competitors", "integration": "Perplexity", "purpose": "Analyze competitor landscape", "interaction_mode": "none"},
-              {"name": "analyze_pricing_models", "integration": null, "purpose": "Study pricing strategies", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 3,
-        "agents": [
-          {
-            "agent_name": "ExecutiveDecisionAgent",
-            "agent_type": "evaluator",
-            "description": "Aggregates manager findings, prepares the go/no-go briefing, and captures final decision rationale.",
-            "human_interaction": "approval",
-            "agent_tools": [
-              {"name": "aggregate_workstream_findings", "integration": "Notion", "purpose": "Synthesize research outputs", "interaction_mode": "none"},
-              {"name": "prepare_go_no_go_brief", "integration": "Notion", "purpose": "Generate decision document", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      }
-    ]
-  }
-}""",
-            5: """{
-  "PhaseAgents": {
-    "phase_agents": [
-      {
-        "phase_index": 0,
-        "agents": [
-          {
-            "agent_name": "CampaignFacilitator",
-            "agent_type": "orchestrator",
-            "description": "Aligns campaign goals, surfaces prior high performers, and seeds the inspiration backlog for collaborators.",
-            "human_interaction": "context",
-            "agent_tools": [
-              {"name": "collect_campaign_goals", "integration": "Notion", "purpose": "Gather campaign objectives", "interaction_mode": "inline"},
-              {"name": "surface_reference_assets", "integration": "Notion", "purpose": "Pull previous successes", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 1,
-        "agents": [
-          {
-            "agent_name": "CopyIdeationPartner",
-            "agent_type": "worker",
-            "description": "Generates copy hooks, tags emerging themes, and maintains the shared idea pool for the room.",
-            "human_interaction": "context",
-            "agent_tools": [
-              {"name": "generate_copy_hooks", "integration": null, "purpose": "Create messaging variants", "interaction_mode": "none"},
-              {"name": "tag_emerging_themes", "integration": "Notion", "purpose": "Categorize ideas", "interaction_mode": "none"},
-              {"name": "update_idea_pool", "integration": "Notion", "purpose": "Track brainstorm progress", "interaction_mode": "none"},
-              {"name": "submit_brainstorm_ideas", "integration": "Notion", "purpose": "Inline idea capture so contributors can log hooks without leaving chat", "interaction_mode": "inline"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "DesignIdeationPartner",
-            "agent_type": "worker",
-            "description": "Proposes visual directions, drafts quick wireframes, and syncs with the copy stream on core concepts.",
-            "human_interaction": "context",
-            "agent_tools": [
-              {"name": "propose_visual_directions", "integration": "Figma", "purpose": "Generate design concepts", "interaction_mode": "artifact"},
-              {"name": "draft_wireframe_sketches", "integration": "Figma", "purpose": "Create visual mockups", "interaction_mode": "artifact"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "GrowthSignalsSynthesizer",
-            "agent_type": "worker",
-            "description": "Pulls performance signals, spots gaps, and posts optimization prompts to guide the jam.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "pull_performance_signals", "integration": "GoogleAnalytics", "purpose": "Retrieve campaign metrics", "interaction_mode": "none"},
-              {"name": "identify_theme_gaps", "integration": null, "purpose": "Detect missing coverage", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 2,
-        "agents": [
-          {
-            "agent_name": "ContentAssemblerAgent",
-            "agent_type": "worker",
-            "description": "Builds draft channel assets, coordinates stakeholder previews, and records readiness notes for each surface.",
-            "human_interaction": "approval",
-            "agent_tools": [
-              {"name": "assemble_channel_assets", "integration": "HubSpot", "purpose": "Compile campaign materials", "interaction_mode": "artifact"},
-              {"name": "coordinate_stakeholder_preview", "integration": null, "purpose": "Gather final feedback", "interaction_mode": "inline"},
-              {"name": "review_asset_variants", "integration": "HubSpot", "purpose": "Deliver artifact board of creative variants for quick stakeholder decisions", "interaction_mode": "artifact"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "ChannelPackagingAgent",
-            "agent_type": "worker",
-            "description": "Formats assets for email, social, and landing pages while queuing scheduling metadata.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "format_multi_channel_assets", "integration": "HubSpot", "purpose": "Prepare platform-specific content", "interaction_mode": "artifact"},
-              {"name": "queue_scheduling_metadata", "integration": "HubSpot", "purpose": "Set publication timing", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      }
-    ]
-  }
-}""",
-            6: """{
-  "PhaseAgents": {
-    "phase_agents": [
-      {
-        "phase_index": 0,
-        "agents": [
-          {
-            "agent_name": "ApplicationIntakeAgent",
-            "agent_type": "intake",
-            "description": "Validates submitted documents, normalizes applicant data, and halts the run when mandatory inputs are missing.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "validate_required_documents", "integration": "Salesforce", "purpose": "Check document completeness", "interaction_mode": "none"},
-              {"name": "normalize_applicant_profile", "integration": "Salesforce", "purpose": "Standardize applicant data", "interaction_mode": "none"},
-              {"name": "collect_supporting_documents", "integration": "Salesforce", "purpose": "Inline checklist prompting applicant for missing uploads", "interaction_mode": "inline"}
-            ],
-            "lifecycle_tools": [
-              {"name": "validate_intake_prerequisites", "integration": null, "purpose": "Verify all required integrations are available before processing", "trigger": "before_agent"},
-              {"name": "log_intake_metrics", "integration": null, "purpose": "Record intake success rate and processing time", "trigger": "after_agent"}
-            ],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 1,
-        "agents": [
-          {
-            "agent_name": "RiskComplianceAgent",
-            "agent_type": "worker",
-            "description": "Runs credit, fraud, and KYC checks sequentially and annotates the application with risk findings.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "run_credit_report", "integration": "Experian", "purpose": "Pull credit history", "interaction_mode": "none"},
-              {"name": "execute_fraud_screen", "integration": null, "purpose": "Detect fraud signals", "interaction_mode": "none"},
-              {"name": "log_kyc_findings", "integration": "Salesforce", "purpose": "Document KYC results", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 2,
-        "agents": [
-          {
-            "agent_name": "UnderwritingDecisionAgent",
-            "agent_type": "evaluator",
-            "description": "Applies underwriting policy, calculates proposed terms, and escalates edge cases for manual review.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "apply_underwriting_policy", "integration": null, "purpose": "Evaluate loan eligibility", "interaction_mode": "none"},
-              {"name": "calculate_offer_terms", "integration": null, "purpose": "Determine loan parameters", "interaction_mode": "none"},
-              {"name": "share_underwriting_package", "integration": "Salesforce", "purpose": "Deliver artifact summarizing approval or decline rationale for review", "interaction_mode": "artifact"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 3,
-        "agents": [
-          {
-            "agent_name": "OfferFulfillmentAgent",
-            "agent_type": "worker",
-            "description": "Generates the borrower offer packet, triggers borrower notifications, and syncs fulfillment status back to core banking.",
-            "human_interaction": "approval",
-            "agent_tools": [
-              {"name": "generate_offer_packet", "integration": "Salesforce", "purpose": "Create loan offer document", "interaction_mode": "artifact"},
-              {"name": "notify_borrower", "integration": "Twilio", "purpose": "Send offer to applicant", "interaction_mode": "none"},
-              {"name": "sync_fulfillment_status", "integration": "Salesforce", "purpose": "Update loan status", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      }
-    ]
-  }
-}""",
-            7: """{
-  "PhaseAgents": {
-    "phase_agents": [
-      {
-        "phase_index": 0,
-        "agents": [
-          {
-            "agent_name": "PlanningCoordinator",
-            "agent_type": "orchestrator",
-            "description": "Prepares the scenario brief, distributes constraints, and locks evaluation metrics for downstream models.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "compile_scenario_brief", "integration": "Notion", "purpose": "Structure forecast requirements", "interaction_mode": "none"},
-              {"name": "lock_evaluation_metrics", "integration": "Notion", "purpose": "Define comparison criteria", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 1,
-        "agents": [
-          {
-            "agent_name": "StatisticalForecastAgent",
-            "agent_type": "worker",
-            "description": "Builds statistical projections, documents methodology, and posts forecast payload for comparison.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "train_statistical_model", "integration": null, "purpose": "Build time-series model", "interaction_mode": "none"},
-              {"name": "generate_statistical_projection", "integration": null, "purpose": "Create forecast output", "interaction_mode": "none"},
-              {"name": "publish_forecast_payload", "integration": "Notion", "purpose": "Share results", "interaction_mode": "artifact"},
-              {"name": "submit_forecast_bundle", "integration": "Notion", "purpose": "Inline uploader bundling assumptions, charts, and diagnostics per model", "interaction_mode": "inline"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "CausalForecastAgent",
-            "agent_type": "worker",
-            "description": "Constructs causal models, incorporates exogenous signals, and outputs scenario-aware forecasts.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "ingest_exogenous_signals", "integration": null, "purpose": "Load external variables", "interaction_mode": "none"},
-              {"name": "generate_causal_projection", "integration": null, "purpose": "Build causal forecast", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "HeuristicForecastAgent",
-            "agent_type": "worker",
-            "description": "Applies heuristics, stress-tests edge cases, and contributes alternative forecast bands.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "apply_heuristic_rules", "integration": null, "purpose": "Generate rule-based forecast", "interaction_mode": "none"},
-              {"name": "stress_test_edge_cases", "integration": null, "purpose": "Test extreme scenarios", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 2,
-        "agents": [
-          {
-            "agent_name": "ForecastEvaluator",
-            "agent_type": "evaluator",
-            "description": "Scores each forecast against accuracy and volatility thresholds, then recommends the winning model.",
-            "human_interaction": "approval",
-            "agent_tools": [
-              {"name": "score_forecast_accuracy", "integration": null, "purpose": "Evaluate model performance", "interaction_mode": "none"},
-              {"name": "analyze_volatility", "integration": null, "purpose": "Assess forecast stability", "interaction_mode": "none"},
-              {"name": "recommend_preferred_model", "integration": "Notion", "purpose": "Select best forecast", "interaction_mode": "artifact"},
-              {"name": "compare_forecasts", "integration": "Notion", "purpose": "Deliver artifact table comparing submissions side-by-side for decision", "interaction_mode": "artifact"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": [
-              {"name": "process_message_before_send", "purpose": "Transform forecast comparison tables into user-friendly visualizations before display"}
-            ]
-          }
-        ]
-      },
-      {
-        "phase_index": 3,
-        "agents": [
-          {
-            "agent_name": "RecommendationPublisher",
-            "agent_type": "worker",
-            "description": "Publishes the selected forecast, documents rationale, and distributes the planning brief to stakeholders.",
-            "human_interaction": "context",
-            "agent_tools": [
-              {"name": "publish_selected_forecast", "integration": "Notion", "purpose": "Share final forecast", "interaction_mode": "artifact"},
-              {"name": "document_selection_rationale", "integration": "Notion", "purpose": "Explain choice", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      }
-    ]
-  }
-}""",
-            8: """{
-  "PhaseAgents": {
-    "phase_agents": [
-      {
-        "phase_index": 0,
-        "agents": [
-          {
-            "agent_name": "VendorIntakeCoordinator",
-            "agent_type": "orchestrator",
-            "description": "Validates onboarding submissions, determines required checks, and assembles briefing packets for reviewers.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "validate_vendor_submission", "integration": "Salesforce", "purpose": "Check submission completeness", "interaction_mode": "none"},
-              {"name": "determine_required_checks", "integration": null, "purpose": "Identify review tracks", "interaction_mode": "none"},
-              {"name": "assemble_briefing_packet", "integration": "Salesforce", "purpose": "Package review materials", "interaction_mode": "artifact"},
-              {"name": "capture_vendor_profile", "integration": "Salesforce", "purpose": "Inline intake wizard capturing company facts before dispatch", "interaction_mode": "inline"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 1,
-        "agents": [
-          {
-            "agent_name": "FinanceReviewAgent",
-            "agent_type": "worker",
-            "description": "Runs financial risk checks, verifies banking details, and reports status back to the hub.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "run_financial_due_diligence", "integration": null, "purpose": "Assess financial risk", "interaction_mode": "none"},
-              {"name": "verify_banking_details", "integration": "Stripe", "purpose": "Validate payment info", "interaction_mode": "none"},
-              {"name": "post_finance_status", "integration": "Salesforce", "purpose": "Update review status", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "SecurityReviewAgent",
-            "agent_type": "worker",
-            "description": "Performs security questionnaire analysis, assesses risk exceptions, and updates the hub registry.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "analyze_security_questionnaire", "integration": "Salesforce", "purpose": "Review security posture", "interaction_mode": "none"},
-              {"name": "assess_security_risk", "integration": null, "purpose": "Score security compliance", "interaction_mode": "none"},
-              {"name": "post_security_status", "integration": "Salesforce", "purpose": "Update review status", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          },
-          {
-            "agent_name": "LegalReviewAgent",
-            "agent_type": "worker",
-            "description": "Reviews contract terms, flags compliance gaps, and publishes legal clearance status.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "review_contract_terms", "integration": "DocuSign", "purpose": "Analyze legal agreements", "interaction_mode": "none"},
-              {"name": "flag_compliance_gaps", "integration": "Salesforce", "purpose": "Identify legal issues", "interaction_mode": "none"},
-              {"name": "post_legal_status", "integration": "Salesforce", "purpose": "Update review status", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 2,
-        "agents": [
-          {
-            "agent_name": "RiskAlignmentMediator",
-            "agent_type": "orchestrator",
-            "description": "Monitors spoke progress, resolves conflicting decisions, and surfaces outstanding blockers.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "monitor_spoke_progress", "integration": "Salesforce", "purpose": "Track review completion", "interaction_mode": "none"},
-              {"name": "resolve_risk_conflicts", "integration": null, "purpose": "Mediate cross-spoke issues", "interaction_mode": "none"},
-              {"name": "publish_risk_clearance", "integration": "Salesforce", "purpose": "Deliver artifact summarizing finance/security/legal findings for approval", "interaction_mode": "artifact"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 3,
-        "agents": [
-          {
-            "agent_name": "OnboardingFinalizer",
-            "agent_type": "worker",
-            "description": "Compiles approvals, triggers account provisioning, and delivers the onboarding summary to the requester.",
-            "human_interaction": "approval",
-            "agent_tools": [
-              {"name": "compile_final_approvals", "integration": "Salesforce", "purpose": "Aggregate review decisions", "interaction_mode": "artifact"},
-              {"name": "trigger_account_provisioning", "integration": "Salesforce", "purpose": "Activate vendor account", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      }
-    ]
-  }
-}""",
-            9: """{
-  "PhaseAgents": {
-    "phase_agents": [
-      {
-        "phase_index": 0,
-        "agents": [
-          {
-            "agent_name": "DreamInterviewerAgent",
-            "agent_type": "intake",
-            "description": "Conducts an empathetic conversational interview to capture dream details, emotions, and sensory experiences. Asks clarifying questions about visual details, feelings, and narrative flow. Once sufficient context is gathered, presents an inline summary card for user confirmation before proceeding.",
-            "human_interaction": "approval",
-            "agent_tools": [
-              {"name": "confirm_dream_summary", "integration": null, "purpose": "Display inline summary card of captured dream details for user verification", "interaction_mode": "inline"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 1,
-        "agents": [
-          {
-            "agent_name": "PromptArchitectAgent",
-            "agent_type": "worker",
-            "description": "Translates the dream narrative into optimized video generation prompts. Analyzes the dream_narrative context variable to extract key visual elements (settings, characters, lighting, camera angles, mood). Generates structured prompts suitable for Veo3 API with scene segmentation and shot descriptions.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "generate_video_prompts", "integration": "OpenAI", "purpose": "Create detailed scene-by-scene video generation prompts from dream narrative", "interaction_mode": "none"},
-              {"name": "validate_prompt_quality", "integration": null, "purpose": "Ensure prompts meet Veo3 API requirements and creative standards", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 2,
-        "agents": [
-          {
-            "agent_name": "VideoGeneratorAgent",
-            "agent_type": "worker",
-            "description": "Interfaces with Veo3 API to generate dream visualization video. Takes video_prompts from context, submits generation requests, polls for completion status, and stores the final video URL. Handles API rate limits, retries, and error cases. Updates generated_video_url context variable upon successful generation.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "submit_veo3_generation", "integration": "Veo3", "purpose": "Submit video generation request to Veo3 API", "interaction_mode": "none"},
-              {"name": "poll_generation_status", "integration": "Veo3", "purpose": "Check video generation progress and retrieve final URL", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 3,
-        "agents": [
-          {
-            "agent_name": "VideoReviewAgent",
-            "agent_type": "evaluator",
-            "description": "Presents the generated video for user review and approval. Displays video in artifact player with approval controls. If user approves, updates video_approval_status to 'approved'. If user requests changes, captures detailed feedback in video_revision_feedback and triggers regeneration loop back to PromptArchitectAgent with specific revision notes.",
-            "human_interaction": "approval",
-            "agent_tools": [
-              {"name": "review_generated_video", "integration": null, "purpose": "Display video approval artifact with approve/revise controls", "interaction_mode": "artifact"},
-              {"name": "capture_revision_feedback", "integration": null, "purpose": "Collect user's specific feedback for video regeneration", "interaction_mode": "artifact"},
-              {"name": "trigger_video_regeneration", "integration": "Veo3", "purpose": "Submit revised prompts to Veo3 API when changes requested", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 4,
-        "agents": [
-          {
-            "agent_name": "PsychoanalystAgent",
-            "agent_type": "worker",
-            "description": "Performs deep psychological analysis of the dream content using Jungian and Freudian frameworks. Analyzes dream_narrative to identify archetypes, symbols, repressed emotions, and subconscious themes. Generates a structured psychoanalysis_report with summary, symbolism breakdown, and deep interpretation. Execution depends on user_subscription_tier (full analysis for premium, preview for free).",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "analyze_dream_archetypes", "integration": "OpenAI", "purpose": "Identify Jungian archetypes and symbolic patterns in dream", "interaction_mode": "none"},
-              {"name": "generate_psychoanalysis_report", "integration": "OpenAI", "purpose": "Create comprehensive psychological interpretation with tiered content", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      },
-      {
-        "phase_index": 5,
-        "agents": [
-          {
-            "agent_name": "DreamPresenterAgent",
-            "agent_type": "worker",
-            "description": "Orchestrates the final reveal experience. Displays the approved video via artifact player with download controls. Then presents the psychoanalysis report, checking user_subscription_tier to determine visibility: free users see summary + blurred 'Deep Dive' with upgrade CTA, premium users see full report. Coordinates two artifact displays in sequence.",
-            "human_interaction": "none",
-            "agent_tools": [
-              {"name": "present_video_artifact", "integration": null, "purpose": "Display approved video with cinematic player and download option", "interaction_mode": "artifact"},
-              {"name": "present_analysis_artifact", "integration": null, "purpose": "Display analysis report with tiered content based on subscription", "interaction_mode": "artifact"},
-              {"name": "check_upgrade_eligibility", "integration": "Stripe", "purpose": "Determine if user can upgrade and generate upgrade link", "interaction_mode": "none"}
-            ],
-            "lifecycle_tools": [],
-            "system_hooks": []
-          }
-        ]
-      }
-    ]
-  }
-}"""
-        }
-        
-        example_json = implementation_examples.get(pattern_id)
+        # Load pattern example from external JSON file
+        example_json = _load_pattern_example_str(pattern_id)
 
         if not example_json:
             logger.warning(f"No implementation example found for pattern_id {pattern_id}")
@@ -2399,21 +1483,21 @@ IF TechnicalBlueprint has a UI component for an agent, set `agent_tools[].intera
             semantic_context = "\n[UPSTREAM CONTEXT: STRATEGY & BLUEPRINT]\n"
             
             if strategy:
-                phases = strategy.get('phases', [])
-                phase_summary = "\n".join([f"- Phase {p.get('phase_index')}: {p.get('phase_name')}" for p in phases])
-                semantic_context += f"Defined Phases (You MUST create agents for these phases):\n{phase_summary}\n\n"
+                modules = strategy.get('modules', [])
+                module_summary = "\n".join([f"- Module {m.get('module_index')}: {m.get('module_name')}" for m in modules])
+                semantic_context += f"Defined Modules (You MUST create agents for these modules):\n{module_summary}\n\n"
                 
             if blueprint:
                 components = blueprint.get('ui_components', [])
                 if components:
-                    comp_summary = "\n".join([f"- Phase '{c.get('phase_name')}': Agent '{c.get('agent')}' uses tool '{c.get('tool')}'" for c in components])
+                    comp_summary = "\n".join([f"- Module '{c.get('module_name')}': Agent '{c.get('agent')}' uses tool '{c.get('tool')}'" for c in components])
                     semantic_context += f"Defined UI Components (Ensure these agents and tools exist):\n{comp_summary}\n"
 
         guidance = (
             f"{matrix_rules}\n\n"
             f"{semantic_context}"
             f"[PATTERN EXAMPLE - {pattern_display_name}]\n"
-            f"Here is a complete PhaseAgents JSON example aligned with the {pattern_display_name} pattern.\n\n"
+            f"Here is a complete ModuleAgents example showing a runtime workflow aligned with the {pattern_display_name} pattern.\n\n"
             f"```json\n{example_json}\n```\n"
         )
         
@@ -2916,19 +2000,18 @@ def inject_agent_tools_file_generator_guidance(agent, messages: List[Dict[str, A
             return
 
         # Semantic Context Injection
-        phase_agents = _get_upstream_context(agent, 'PhaseAgents')
+        module_agents = _get_upstream_context(agent, 'ModuleAgents')
         semantic_context = ""
-        if phase_agents:
-            phases = phase_agents.get('phase_agents', [])
+        if module_agents:
             tool_summary = ""
-            for phase in phases:
-                for ag in phase.get('agents', []):
+            for module in module_agents:
+                for ag in module.get('agents', []):
                     for tool in ag.get('agent_tools', []):
                         tool_summary += f"- Tool: {tool.get('name')} (Integration: {tool.get('integration')})\n  Purpose: {tool.get('purpose')}\n"
             
             if tool_summary:
                 semantic_context = (
-                    f"\n[UPSTREAM CONTEXT: PHASE AGENTS]\n"
+                    f"\n[UPSTREAM CONTEXT: MODULE AGENTS]\n"
                     f"The WorkflowImplementationAgent has defined the following tools. You MUST generate the Python code for these EXACT tools:\n"
                     f"{tool_summary}\n\n"
                 )
@@ -4721,10 +3804,10 @@ def inject_hook_agent_guidance(agent, messages: List[Dict[str, Any]]) -> None:
 
         # Semantic Context Injection
         blueprint = _get_upstream_context(agent, 'TechnicalBlueprint')
-        phase_agents = _get_upstream_context(agent, 'PhaseAgents')
+        module_agents = _get_upstream_context(agent, 'ModuleAgents')
         
         semantic_context = ""
-        if blueprint or phase_agents:
+        if blueprint or module_agents:
             semantic_context = "\n[UPSTREAM CONTEXT: HOOK DEFINITIONS]\n"
             
             if blueprint:
@@ -4735,10 +3818,9 @@ def inject_hook_agent_guidance(agent, messages: List[Dict[str, Any]]) -> None:
                 if after:
                     semantic_context += f"- Lifecycle Hook (after_chat): {after.get('name')} - {after.get('purpose')}\n"
             
-            if phase_agents:
-                phases = phase_agents.get('phase_agents', [])
-                for phase in phases:
-                    for ag in phase.get('agents', []):
+            if module_agents:
+                for module in module_agents:
+                    for ag in module.get('agents', []):
                         for hook in ag.get('system_hooks', []):
                             semantic_context += f"- System Hook (update_agent_state): {hook.get('name')} - {hook.get('purpose')} (Agent: {ag.get('agent_name')})\n"
             
