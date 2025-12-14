@@ -1,5 +1,5 @@
 # ==============================================================================
-# FILE: workflows/Generator/tools/collect_api_keys.py  
+# FILE: workflows/AgentGenerator/tools/collect_api_keys.py  
 # DESCRIPTION: Lifecycle tool to extract agent integrations from action_plan context and collect API keys
 # TRIGGER: before_agent (ContextVariablesAgent)
 # ==============================================================================
@@ -126,7 +126,7 @@ async def collect_api_keys_from_action_plan(context_variables: Any = None) -> Di
     
     # Extract context data
     data = getattr(context_variables, 'data', {})
-    workflow_name = data.get('workflow_name', 'Generator')
+    workflow_name = data.get('workflow_name', 'AgentGenerator')
     chat_id = data.get('chat_id')
     
     wf_logger = get_workflow_logger(workflow_name=workflow_name, chat_id=chat_id)

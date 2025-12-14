@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 import copy
 
-# Add workflows/Generator/tools to path for absolute import
+# Add workflows/AgentGenerator/tools to path for absolute import
 _tools_dir = Path(__file__).parent
 if str(_tools_dir) not in sys.path:
     sys.path.insert(0, str(_tools_dir))

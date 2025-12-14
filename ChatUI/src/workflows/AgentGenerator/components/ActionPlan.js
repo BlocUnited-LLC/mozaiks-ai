@@ -1,5 +1,5 @@
 // ============================================================================
-// FILE: ChatUI/src/workflows/Generator/components/ActionPlan.js
+// FILE: ChatUI/src/workflows/AgentGenerator/components/ActionPlan.js
 // REWRITE: Accordion-based Action Plan artifact (schema: { workflow:{...}, agent_message })
 // PURPOSE: Present hierarchical workflow (modules -> agents -> tools) with robust, defensive parsing.
 // ============================================================================

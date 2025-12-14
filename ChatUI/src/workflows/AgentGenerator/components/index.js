@@ -1,34 +1,34 @@
 // ==============================================================================
-// FILE: ChatUI/src/workflows/Generator/components/index.js
-// DESCRIPTION: Export Generator workflow-specific UI components
+// FILE: ChatUI/src/workflows/AgentGenerator/components/index.js
+// DESCRIPTION: Export AgentGenerator workflow-specific UI components
 // ==============================================================================
 
-// Import Generator-specific components
+// Import AgentGenerator-specific components
 import AgentAPIKeysBundleInput from './AgentAPIKeysBundleInput';
 import FileDownloadCenter from './FileDownloadCenter';
 import ActionPlan from './ActionPlan';
 import MermaidSequenceDiagram from './MermaidSequenceDiagram';
 
 /**
- * 🎯 GENERATOR WORKFLOW COMPONENTS
+ * 🎯 AGENT GENERATOR WORKFLOW COMPONENTS
  * 
- * This module exports ONLY Generator workflow-specific UI components.
+ * This module exports ONLY AgentGenerator workflow-specific UI components.
  * 
  * Components exported here:
  * - AgentAPIKeysBundleInput: Handles consolidated API key requests for multiple services
- * - FileDownloadCenter: Handles file downloads for Generator workflow
+ * - FileDownloadCenter: Handles file downloads for AgentGenerator workflow
  * - ActionPlan: Visualizes workflow steps and status
  * - MermaidSequenceDiagram: Presents the post-approval sequence diagram artifact
  */
 
-const GeneratorComponents = {
+const AgentGeneratorComponents = {
   AgentAPIKeysBundleInput,
   FileDownloadCenter,
   ActionPlan,
   MermaidSequenceDiagram
 };
 
-export default GeneratorComponents;
+export default AgentGeneratorComponents;
 
 // Named exports for convenience
 export {

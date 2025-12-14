@@ -1,5 +1,5 @@
 # ==============================================================================
-# FILE: workflows/Generator/tools/mermaid_sequence_diagram.py
+# FILE: workflows/AgentGenerator/tools/mermaid_sequence_diagram.py
 # DESCRIPTION: UI tool responsible for rendering the Mermaid sequence diagram
 #              produced by ProjectOverviewAgent after the Action Plan is approved.
 # ==============================================================================
@@ -744,7 +744,7 @@ async def mermaid_sequence_diagram(
                             lifecycle_workflow_name = context_variables.get("workflow_name")  # type: ignore[attr-defined]
                         except Exception:
                             lifecycle_workflow_name = None
-                        lifecycle_manager = get_lifecycle_manager(lifecycle_workflow_name or "Generator")
+                        lifecycle_manager = get_lifecycle_manager(lifecycle_workflow_name or "AgentGenerator")
                         await lifecycle_manager.trigger_before_agent(
                             agent_name="ContextVariablesAgent",
                             context_variables=context_variables,

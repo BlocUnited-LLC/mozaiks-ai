@@ -1,5 +1,5 @@
 {
-    "workflow_name":  "Generator",
+    "workflow_name":  "AgentGenerator",
     "max_turns":  25,
     "human_in_the_loop":  true,
     "startup_mode":  "AgentDriven",

@@ -1,5 +1,5 @@
 # ==============================================================================
-# FILE: workflows/Generator/tools/workflow_converter.py
+# FILE: workflows/AgentGenerator/tools/workflow_converter.py
 # DESCRIPTION: Self-contained workflow file creator for Generator workflow
 # ==============================================================================
 

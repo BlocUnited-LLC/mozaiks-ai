@@ -1,6 +1,6 @@
 // ==============================================================================
-// FILE: ChatUI/src/workflows/generator/components/FileDownloadCenter.js
-// DESCRIPTION: Generator workflow component for file downloads with AG2 integration
+// FILE: ChatUI/src/workflows/AgentGenerator/components/FileDownloadCenter.js
+// DESCRIPTION: AgentGenerator workflow component for file downloads with AG2 integration
 // ==============================================================================
 
 import React, { useMemo, useState } from 'react';

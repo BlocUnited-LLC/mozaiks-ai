@@ -1,5 +1,5 @@
 # ==============================================================================
-# FILE: workflows/Generator/tools/action_plan.py
+# FILE: workflows/AgentGenerator/tools/action_plan.py
 # DESCRIPTION: Normalize and cache ActionPlan semantic wrapper output for Mermaid enrichment
 # CONTRACT:
 #   - INPUT: action_plan (matches ActionPlan schema) from upstream agent

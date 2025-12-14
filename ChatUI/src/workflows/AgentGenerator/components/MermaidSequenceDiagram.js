@@ -1,5 +1,5 @@
 // =============================================================================
-// FILE: ChatUI/src/workflows/Generator/components/MermaidSequenceDiagram.js
+// FILE: ChatUI/src/workflows/AgentGenerator/components/MermaidSequenceDiagram.js
 // PURPOSE: Artifact component that renders the Mermaid sequence diagram emitted
 //          after the Action Plan has been approved.
 // =============================================================================

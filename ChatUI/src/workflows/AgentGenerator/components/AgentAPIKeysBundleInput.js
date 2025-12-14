@@ -1,5 +1,5 @@
 // ==============================================================================
-// FILE: ChatUI/src/workflows/Generator/components/AgentAPIKeysBundleInput.js
+// FILE: ChatUI/src/workflows/AgentGenerator/components/AgentAPIKeysBundleInput.js
 // DESCRIPTION: Consolidated API key intake component for multi-service collection
 // ==============================================================================
 

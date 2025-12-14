@@ -1,5 +1,5 @@
 # ==============================================================================
-# FILE: workflows/Generator/tools/request_api_key.py
+# FILE: workflows/AgentGenerator/tools/request_api_key.py
 # DESCRIPTION: UI tool function to request an external service API key from the user.
 #              Never logs, returns, or echoes any portion (even masked) of the API key.
 # RUNTIME PARAMS (injected via **runtime): chat_id, enterprise_id, workflow_name, context_variables.
