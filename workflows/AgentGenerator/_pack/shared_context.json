@@ -1,0 +1,10 @@
+{
+  "shared_variables": [
+    "concept_overview",
+    "project_name",
+    "decomposition_plan"
+  ],
+  "context_mapping": {
+    "concept_overview": "instructions"
+  }
+}

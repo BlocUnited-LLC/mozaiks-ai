@@ -13,12 +13,6 @@
       "function": "add_usage_footer"
     },
     {
-      "hook_type": "process_last_received_message",
-      "hook_agent": "WorkflowImplementationAgent",
-      "filename": "hook_gaurdrail.py",
-      "function": "soft_policy_label"
-    },
-    {
       "hook_type": "update_agent_state",
       "hook_agent": "WorkflowStrategyAgent",
       "filename": "update_agent_state_pattern.py",
@@ -26,15 +20,27 @@
     },
     {
       "hook_type": "update_agent_state",
-      "hook_agent": "WorkflowArchitectAgent",
+      "hook_agent": "StateArchitectAgent",
       "filename": "update_agent_state_pattern.py",
-      "function": "inject_workflow_architect_guidance"
+      "function": "inject_state_architect_guidance"
     },
     {
       "hook_type": "update_agent_state",
-      "hook_agent": "WorkflowImplementationAgent",
+      "hook_agent": "UXArchitectAgent",
       "filename": "update_agent_state_pattern.py",
-      "function": "inject_workflow_implementation_guidance"
+      "function": "inject_ux_architect_guidance"
+    },
+    {
+      "hook_type": "update_agent_state",
+      "hook_agent": "AgentRosterAgent",
+      "filename": "update_agent_state_pattern.py",
+      "function": "inject_agent_roster_guidance"
+    },
+    {
+      "hook_type": "update_agent_state",
+      "hook_agent": "ToolPlanningAgent",
+      "filename": "update_agent_state_pattern.py",
+      "function": "inject_tool_planning_guidance"
     },
     {
       "hook_type": "update_agent_state",

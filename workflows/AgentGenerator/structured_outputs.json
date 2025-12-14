@@ -51,8 +51,8 @@
             "description": "Brief explanation of what this lifecycle operation does (<=140 chars)."
           },
           "trigger": {
-            "type": "str",
-            "allowed_values": [
+            "type": "literal",
+            "values": [
               "before_agent",
               "after_agent"
             ],
@@ -65,11 +65,29 @@
         "fields": {
           "name": {
             "type": "str",
-            "description": "System hook identifier (snake_case). Examples: 'update_agent_state', 'process_message_before_send', 'process_last_received_message', 'process_all_messages_before_reply'."
+            "description": "Hook function name (snake_case). The actual callable that executes the hook logic."
+          },
+          "agent": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Agent name this hook applies to. Use null for global hooks."
+          },
+          "trigger": {
+            "type": "literal",
+            "values": [
+              "process_message_before_send",
+              "update_agent_state",
+              "process_last_received_message",
+              "process_all_messages_before_reply"
+            ],
+            "description": "The AG2 hook trigger point."
           },
           "purpose": {
             "type": "str",
-            "description": "Brief explanation of why this agent needs this specific system hook (<=140 chars)."
+            "description": "Brief explanation of why this hook is needed (<=140 chars)."
           }
         }
       },
@@ -82,15 +100,7 @@
           },
           "agent_type": {
             "type": "str",
-            "allowed_values": [
-              "router",
-              "worker",
-              "evaluator",
-              "orchestrator",
-              "intake",
-              "generator"
-            ],
-            "description": "Architectural role of the agent. router=control flow; worker=execution; evaluator=QA/decision; orchestrator=sub-team lead; intake=user-facing entry; generator=single-shot content generator."
+            "description": "Descriptive architectural role of the agent (e.g., 'Research Specialist', 'Code Reviewer')."
           },
           "objective": {
             "type": "str",
@@ -109,11 +119,11 @@
           "system_hooks": {
             "type": "list",
             "items": "SystemHook",
-            "description": "System hooks this agent uses for runtime behavior modification. Each hook specifies name and purpose. Use [] when no system hooks are required."
+            "description": "System hooks this agent uses for runtime behavior modification. Each hook specifies name, trigger, and purpose. Use [] when no system hooks are required."
           },
           "human_interaction": {
-            "type": "str",
-            "allowed_values": [
+            "type": "literal",
+            "values": [
               "none",
               "context",
               "approval",
@@ -129,10 +139,6 @@
               "null"
             ],
             "description": "Generation mode for generator agents: allowed values text, image, video, audio. Use null for non-generator agents."
-          },
-          "max_consecutive_auto_reply": {
-            "type": "int",
-            "description": "Maximum number of consecutive auto-replies allowed for this agent. Calibrate from human_interaction: none=30 (high autonomy), context=20 (conversational intake), approval/feedback=5 (low autonomy), single=1 (one-shot)."
           }
         }
       },
@@ -523,29 +529,13 @@
             ],
             "description": "React component name (UI_Tool only)"
           },
-          "display": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
+          "mode": {
+            "type": "literal",
+            "values": [
+              "inline",
+              "artifact"
             ],
-            "description": "Primary rendering hint for runtime events: inline or artifact."
-          },
-          "label": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Primary call-to-action or heading copy surfaced by the UI component."
-          },
-          "description": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Helper copy that must be rendered verbatim in the UI tool."
+            "description": "Placement hint for ChatUI. Mirrors the existing tools.json schema (inline vs artifact). Optional; omit to fall back to runtime defaults."
           }
         }
       },
@@ -584,39 +574,72 @@
             ],
             "description": "Controls whether tool is automatically invoked when agent produces structured output. Default: true for UI_Tool, false for Agent_Tool. Set true for Agent_Tools whose structured output must be stored in context for downstream agents to access. Omit (null) to use defaults."
           },
+          "integration": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Third-party service this tool integrates with (e.g., 'Slack', 'GitHub'). Use null for internal tools."
+          },
           "ui": {
             "type": "UIConfig",
-            "description": "UI metadata (nulls for Agent_Tool)"
+            "description": "UI metadata (component + mode). Use null for Agent_Tool entries."
           }
         }
       },
-      "UIToolFile": {
+      "LifecycleToolSpec": {
         "type": "model",
         "fields": {
-          "tool_name": {
-            "type": "str",
-            "description": "Tool function name (snake_case, basename only, no path prefix)"
+          "trigger": {
+            "type": "literal",
+            "values": [
+              "before_chat",
+              "after_chat",
+              "before_agent",
+              "after_agent"
+            ],
+            "description": "Lifecycle boundary where the hook executes."
           },
-          "py_content": {
-            "type": "str",
-            "description": "Complete Python async function source code as string (no placeholders)"
+          "agent": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Agent name when the lifecycle tool is scoped to a single agent; null for chat-level hooks."
           },
-          "js_content": {
+          "file": {
             "type": "str",
-            "description": "Complete React component source code as string (no placeholders)"
-          }
-        }
-      },
-      "AgentToolFile": {
-        "type": "model",
-        "fields": {
-          "tool_name": {
-            "type": "str",
-            "description": "Tool function name (snake_case, basename only, no path prefix)"
+            "description": "Python module file name"
           },
-          "py_content": {
+          "function": {
             "type": "str",
-            "description": "Complete Python function source code as string (no placeholders, can be sync or async)"
+            "description": "Async function inside the file"
+          },
+          "description": {
+            "type": "str",
+            "description": "Lifecycle purpose (<=140 chars, no secrets)"
+          },
+          "tool_type": {
+            "type": "literal",
+            "values": [
+              "UI_Tool",
+              "Agent_Tool"
+            ],
+            "description": "Classification for parity with runtime loader (defaults to UI_Tool today)."
+          },
+          "auto_invoke": {
+            "type": "union",
+            "variants": [
+              "bool",
+              "null"
+            ],
+            "description": "Controls whether tool is automatically invoked when agent produces structured output. Default: true for UI_Tool, false for Agent_Tool. Set true for Agent_Tools whose structured output must be stored in context for downstream agents to access. Omit (null) to use defaults."
+          },
+          "ui": {
+            "type": "UIConfig",
+            "description": "Optional UI metadata when lifecycle operations surface a UI_Tool (matches tools.json)."
           }
         }
       },
@@ -632,9 +655,12 @@
             "values": [
               "before_chat",
               "after_chat",
-              "update_agent_state"
+              "update_agent_state",
+              "process_message_before_send",
+              "process_last_received_message",
+              "process_all_messages_before_reply"
             ],
-            "description": "Lifecycle hook type"
+            "description": "Lifecycle or system hook type"
           },
           "py_content": {
             "type": "str",
@@ -642,10 +668,14 @@
           }
         }
       },
-      "PromptSectionContent": {
+      "PromptSection": {
         "type": "model",
-        "description": "Content container for a single prompt section (heading + text)",
+        "description": "Content container for a single prompt section (id + heading + text)",
         "fields": {
+          "id": {
+            "type": "str",
+            "description": "Section identifier (role, objective, context, instructions, examples, output_format)"
+          },
           "heading": {
             "type": "str",
             "description": "Section heading as displayed in system message (UPPERCASE with [BRACKETS])"
@@ -655,44 +685,6 @@
             "description": "Section text content"
           }
         }
-      },
-      "PromptSections": {
-        "type": "model",
-        "description": "Standardized 6-section prompt structure for runtime agents: role, objective, context, instructions, examples, output_format. Universal sections (compliance, guidelines, runtime context) are hook-injected at runtime via hook_universal_prompts.py.",
-        "fields": {
-          "role": {
-            "type": "PromptSectionContent",
-            "description": "Agent identity (single sentence). Heading: [ROLE]"
-          },
-          "objective": {
-            "type": "PromptSectionContent",
-            "description": "Key deliverables (2-4 bullets). Heading: [OBJECTIVE]"
-          },
-          "context": {
-            "type": "PromptSectionContent",
-            "description": "Inputs, outputs, workflow position, exposed context variables. Heading: [CONTEXT]"
-          },
-          "instructions": {
-            "type": "PromptSectionContent",
-            "description": "Step-by-step algorithm with embedded subsections (context variables, coordination tokens, tools). Heading: [INSTRUCTIONS]"
-          },
-          "examples": {
-            "type": "PromptSectionContent",
-            "description": "Concrete usage examples showing expected agent behavior. Include input/output examples and edge cases. Heading: [EXAMPLES]",
-            "required": false
-          },
-          "output_format": {
-            "type": "PromptSectionContent",
-            "description": "Expected schema and examples. Heading: [OUTPUT FORMAT]"
-          }
-        },
-        "required": [
-          "role",
-          "objective",
-          "context",
-          "instructions",
-          "output_format"
-        ]
       },
       "AgentDefinition": {
         "type": "model",
@@ -706,8 +698,9 @@
             "description": "Agent display name"
           },
           "prompt_sections": {
-            "type": "PromptSections",
-            "description": "Agent-specific prompt sections (6-field structure). Runtime hook_universal_prompts.py injects universal sections (compliance, guidelines, runtime context) at agent instantiation. Factory._compose_prompt_sections() converts this to system_message string for ConversableAgent.",
+            "type": "list",
+            "items": "PromptSection",
+            "description": "Agent-specific prompt sections (ordered list). Runtime hook_universal_prompts.py injects universal sections (compliance, guidelines, runtime context) at agent instantiation.",
             "required": false
           },
           "max_consecutive_auto_reply": {
@@ -762,11 +755,8 @@
           "condition_scope": {
             "type": "union",
             "variants": [
-              "literal",
+              "str",
               "null"
-            ],
-            "values": [
-              "pre"
             ],
             "description": "Evaluation timing for context conditions: 'pre' for pre-reply evaluation (re-checks every turn, ideal for UI interactions), null for default (Post-Reply). NEVER use 'after'."
           },
@@ -834,23 +824,6 @@
           }
         }
       },
-      "DownloadRequest": {
-        "type": "model",
-        "fields": {
-          "confirmation_only": {
-            "type": "bool",
-            "description": "If true, show confirmation UI before creating files; if false, create files immediately then show download UI. Recommended: true for user control."
-          },
-          "storage_backend": {
-            "type": "str",
-            "description": "Storage backend for uploads: 'none' (default, browser download only), 's3' (future: S3 upload), 'local' (future: server-side copy). Use 'none' unless specific storage required."
-          },
-          "description": {
-            "type": "optional_str",
-            "description": "Optional description for download (currently unused; reserve for future metadata). Use null unless specific requirement."
-          }
-        }
-      },
       "WorkflowStrategyModule": {
         "type": "model",
         "fields": {
@@ -901,76 +874,19 @@
             "items": "str",
             "description": "List of AG2 orchestration patterns"
           },
-          "trigger": {
+          "startup_mode": {
             "type": "literal",
             "values": [
-              "chat",
-              "form_submit",
-              "schedule",
-              "database_condition",
-              "webhook"
+              "UserDriven",
+              "AgentDriven",
+              "BackendOnly"
             ],
-            "description": "Workflow trigger mechanism"
-          },
-          "initiated_by": {
-            "type": "literal",
-            "values": [
-              "user",
-              "system",
-              "external_event"
-            ],
-            "description": "Who/what initiates this workflow"
+            "description": "How the workflow is initiated: UserDriven (user speaks first), AgentDriven (system/agent speaks first with context), BackendOnly (no UI interaction)"
           },
           "modules": {
             "type": "list",
             "items": "WorkflowStrategyModule",
             "description": "Complete multi-module roadmap. Must contain ALL modules implied by the user request (minimum 3 for complex workflows). Each module must have unique numbered prefix (Module 1:, Module 2:, etc.) in sequential order."
-          }
-        }
-      },
-      "ModuleAgents": {
-        "type": "model",
-        "fields": {
-          "module_index": {
-            "type": "int",
-            "description": "Zero-based index matching the module position in WorkflowStrategy.modules (0 = Module 1, 1 = Module 2, etc.)"
-          },
-          "agents": {
-            "type": "list",
-            "items": "WorkflowAgent",
-            "description": "Agent specifications for this module (at least one). Use agents_needed from strategy module to guide agent design."
-          }
-        }
-      },
-      "LifecycleOperation": {
-        "type": "model",
-        "fields": {
-          "name": {
-            "type": "str",
-            "description": "Human-readable lifecycle operation label."
-          },
-          "trigger": {
-            "type": "literal",
-            "values": [
-              "before_chat",
-              "after_chat",
-              "before_agent",
-              "after_agent"
-            ],
-            "description": "Lifecycle boundary where this operation executes."
-          },
-          "target": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Agent name for agent-scoped hooks; null for chat-level triggers.",
-            "default": null
-          },
-          "description": {
-            "type": "str",
-            "description": "Purpose of the lifecycle operation."
           }
         }
       },
@@ -992,56 +908,6 @@
           }
         }
       },
-      "RequiredTool": {
-        "type": "model",
-        "fields": {
-          "name": {
-            "type": "str",
-            "description": "Tool function name (snake_case, e.g., 'analyze_request', 'submit_feedback')"
-          },
-          "type": {
-            "type": "str",
-            "allowed_values": [
-              "Agent_Tool",
-              "UI_Tool"
-            ],
-            "description": "Tool type: Agent_Tool (agent explicitly calls) or UI_Tool (runtime auto-invokes when structured output emitted)"
-          },
-          "scope": {
-            "type": "str",
-            "allowed_values": [
-              "shared",
-              "module_specific"
-            ],
-            "description": "Tool scope: shared (multiple agents across modules use this) or module_specific (single agent/module owns this)"
-          },
-          "purpose": {
-            "type": "str",
-            "description": "What this tool does and why it's needed (1-2 sentences)"
-          }
-        }
-      },
-      "ThirdPartyIntegration": {
-        "type": "model",
-        "fields": {
-          "service": {
-            "type": "str",
-            "description": "Official third-party service name (PascalCase, e.g., 'Stripe', 'HubSpot', 'SalesforceServiceCloud')."
-          },
-          "capabilities": {
-            "type": "str",
-            "description": "What this integration enables for the workflow (1-2 sentences grounded in user requirements)."
-          },
-          "auth": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Authentication mechanism required (e.g., 'OAuth2', 'API Key'). Use null only when user explicitly states auth is handled elsewhere."
-          }
-        }
-      },
       "RequiredContextVariable": {
         "type": "model",
         "fields": {
@@ -1050,8 +916,8 @@
             "description": "Variable name (snake_case, e.g., 'routing_started', 'current_iteration')"
           },
           "type": {
-            "type": "str",
-            "allowed_values": [
+            "type": "literal",
+            "values": [
               "config",
               "data_reference",
               "data_entity",
@@ -1072,70 +938,6 @@
           "purpose": {
             "type": "str",
             "description": "What this variable tracks and why it's needed (1-2 sentences)"
-          }
-        }
-      },
-      "RequiredLifecycleOperation": {
-        "type": "model",
-        "fields": {
-          "name": {
-            "type": "str",
-            "description": "Operation name (e.g., 'Log Domain Classification', 'Increment Iteration')"
-          },
-          "trigger": {
-            "type": "str",
-            "allowed_values": [
-              "before_chat",
-              "after_chat",
-              "before_agent",
-              "after_agent"
-            ],
-            "description": "When this operation executes relative to agent/chat lifecycle"
-          },
-          "target": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Target agent name (PascalCase) for agent-level hooks; use null for chat-level hooks. See docs/runtime/lifecycle_tools.md for trigger/target contract."
-          },
-          "integration": {
-            "type": "str",
-            "description": "Which third-party service this lifecycle operation interacts with (e.g., 'Stripe', 'MongoDB', 'none' for internal-only)"
-          },
-          "purpose": {
-            "type": "str",
-            "description": "Why this lifecycle operation exists and what business value it provides (1-2 sentences)"
-          }
-        }
-      },
-      "WorkflowLifecycleToolRef": {
-        "type": "model",
-        "fields": {
-          "name": {
-            "type": "str",
-            "description": "Lifecycle tool name (e.g., 'initialize_context', 'finalize_transcript')"
-          },
-          "purpose": {
-            "type": "str",
-            "description": "What the lifecycle tool accomplishes for the workflow (1-2 sentences)"
-          },
-          "trigger": {
-            "type": "literal",
-            "values": [
-              "before_chat",
-              "after_chat"
-            ],
-            "description": "When this lifecycle tool runs relative to the chat session"
-          },
-          "integration": {
-            "type": "union",
-            "variants": [
-              "str",
-              "null"
-            ],
-            "description": "Third-party service engaged by this lifecycle tool (use null when none)"
           }
         }
       },
@@ -1185,91 +987,52 @@
           }
         }
       },
-      "RequiredWorkflow": {
+      "WorkflowInPack": {
         "type": "model",
         "fields": {
-          "workflow": {
+          "name": {
             "type": "str",
-            "description": "Name of the workflow that must be completed before this workflow can start (e.g., 'Generator', 'Build')"
+            "description": "Workflow name in PascalCase (e.g., 'ITSupportBot', 'KnowledgeBase')"
           },
-          "status": {
+          "role": {
+            "type": "literal",
+            "values": ["primary", "supporting"],
+            "description": "Role in the pack: 'primary' is the entry point, 'supporting' workflows are called by primary or other workflows"
+          },
+          "description": {
             "type": "str",
-            "description": "Required completion status for the prerequisite workflow (typically 'completed')"
-          }
-        }
-      },
-      "RequiredArtifact": {
-        "type": "model",
-        "fields": {
-          "artifact_type": {
+            "description": "Brief description of what this workflow does (<=100 chars)"
+          },
+          "pattern_id": {
+            "type": "int",
+            "description": "AG2 pattern ID (1-9) for this specific workflow"
+          },
+          "pattern_name": {
             "type": "str",
-            "description": "Type of artifact this workflow consumes (e.g., 'ActionPlan', 'BuildManifest', 'DeploymentConfig')"
-          },
-          "source_workflow": {
-            "type": "str",
-            "description": "Name of the workflow that produces this artifact (e.g., 'Generator' produces ActionPlan)"
-          }
-        }
-      },
-      "WorkflowDependencies": {
-        "type": "model",
-        "fields": {
-          "required_workflows": {
-            "type": "list",
-            "items": "RequiredWorkflow",
-            "description": "List of workflows that must complete before this workflow can start. Use [] when no workflow dependencies exist."
-          }
-        }
-      },
-      "TechnicalBlueprint": {
-        "type": "model",
-        "fields": {
-          "global_context_variables": {
-            "type": "list",
-            "items": "RequiredContextVariable",
-            "description": "Workflow-wide context variables that downstream agents must honor"
-          },
-          "ui_components": {
-            "type": "list",
-            "items": "WorkflowUIComponent",
-            "description": "Module-aligned summary of expected UI interactions (inline vs artifact) so Action Plan narratives can highlight user components. Use [] when the workflow has no UI tools."
-          },
-          "before_chat_lifecycle": {
-            "type": "union",
-            "variants": [
-              "WorkflowLifecycleToolRef",
-              "null"
-            ],
-            "description": "Lifecycle tool executed before the chat session begins (null when not needed)"
-          },
-          "after_chat_lifecycle": {
-            "type": "union",
-            "variants": [
-              "WorkflowLifecycleToolRef",
-              "null"
-            ],
-            "description": "Lifecycle tool executed after the chat session completes (null when not needed)"
-          },
-          "workflow_dependencies": {
-            "type": "union",
-            "variants": [
-              "WorkflowDependencies",
-              "null"
-            ],
-            "description": "Dependencies on other workflows (required_workflows). Set to null for first/standalone workflows with no dependencies."
+            "description": "Human-readable pattern name for this workflow"
           }
         }
       },
       "PatternSelection": {
         "type": "model",
         "fields": {
-          "selected_pattern": {
-            "type": "int",
-            "description": "Pattern ID (1-9) representing the selected AG2 orchestration pattern. Pattern Legend: 1=Context-Aware Routing, 2=Escalation, 3=Feedback Loop, 4=Hierarchical, 5=Organic, 6=Pipeline, 7=Redundant, 8=Star, 9=Triage with Tasks"
+          "is_multi_workflow": {
+            "type": "bool",
+            "description": "Whether this request requires multiple workflows (pack) or a single workflow"
           },
-          "pattern_name": {
+          "decomposition_reason": {
+            "type": "union",
+            "variants": ["str", "null"],
+            "description": "If is_multi_workflow is true, explains why decomposition is needed. Null for single workflows."
+          },
+          "pack_name": {
             "type": "str",
-            "description": "Human-readable pattern name (e.g., 'Context-Aware Routing', 'Pipeline', etc.)"
+            "description": "Name for the workflow pack (Title Case, 2-4 words). Used as pack_name in manifest."
+          },
+          "workflows": {
+            "type": "list",
+            "items": "WorkflowInPack",
+            "description": "List of workflows in this pack. Single-workflow packs have exactly one item with role='primary'."
           }
         }
       },
@@ -1278,7 +1041,7 @@
         "fields": {
           "PatternSelection": {
             "type": "PatternSelection",
-            "description": "AG2 pattern selection with ID and name only (guidance injected via hooks)"
+            "description": "Pack-aware pattern selection with decomposition decision and per-workflow patterns"
           }
         }
       },
@@ -1288,25 +1051,6 @@
           "WorkflowStrategy": {
             "type": "WorkflowStrategy",
             "description": "High-level workflow architecture"
-          }
-        }
-      },
-      "TechnicalBlueprintOutput": {
-        "type": "model",
-        "fields": {
-          "TechnicalBlueprint": {
-            "type": "TechnicalBlueprint",
-            "description": "Workflow-wide context variables and lifecycle hooks authored by WorkflowArchitectAgent. Semantic wrapper key (PascalCase) for loose coupling - downstream agents reference TechnicalBlueprint, not WorkflowArchitectAgent."
-          }
-        }
-      },
-      "ModuleAgentsOutput": {
-        "type": "model",
-        "fields": {
-          "ModuleAgents": {
-            "type": "list",
-            "items": "ModuleAgents",
-            "description": "Ordered list of agent specifications, one entry per module from WorkflowStrategy. Array length MUST match strategy module count. Semantic wrapper key (PascalCase) for loose coupling - downstream agents reference ModuleAgents, not WorkflowImplementationAgent."
           }
         }
       },
@@ -1342,8 +1086,8 @@
           },
           "lifecycle_tools": {
             "type": "list",
-            "items": "ToolSpec",
-            "description": "List of lifecycle tool entries (optional, can be empty array or omitted). These are workflow-level hooks that execute at orchestration boundaries (before_chat, after_chat, before_agent, after_agent)."
+            "items": "LifecycleToolSpec",
+            "description": "List of lifecycle tool entries (optional, can be empty array or omitted). Matches the current tools.json structure with explicit trigger + agent metadata."
           }
         }
       },
@@ -1451,14 +1195,14 @@
             ],
             "description": "Initial workflow message (AgentDriven/BackendOnly)"
           },
-          "recipient": {
+          "initial_agent": {
             "type": "str",
-            "description": "First agent to receive message"
+            "description": "Name of the first agent that receives control when the workflow starts (matches AG2 pattern 'initial_agent' parameter)."
           },
           "visual_agents": {
             "type": "list",
             "items": "str",
-            "description": "Agents whose messages are visible in UI"
+            "description": "Agents permitted to render UI/text to the user (mirrors ui_config.json visual_agents list)."
           }
         }
       },
@@ -1471,24 +1215,382 @@
             "description": "Array of hook file objects (can be empty [] if no custom hooks needed)"
           }
         }
+      },
+      "LifecycleRequirements": {
+        "type": "model",
+        "fields": {
+          "before_chat": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Name of the lifecycle hook that must run before the chat session starts, or null when no initialization is required."
+          },
+          "after_chat": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Name of the lifecycle hook that runs after the workflow completes, or null when no teardown is needed."
+          }
+        }
+      },
+      "StateArchitecture": {
+        "type": "model",
+        "fields": {
+          "global_context_variables": {
+            "type": "list",
+            "items": "RequiredContextVariable",
+            "description": "Workflow-wide context variables that downstream agents must honor"
+          },
+          "lifecycle_requirements": {
+            "type": "union",
+            "variants": [
+              "LifecycleRequirements",
+              "null"
+            ],
+            "description": "Lifecycle hooks required for the workflow (before_chat, after_chat). Use null when no hooks are needed."
+          },
+          "workflow_dependencies": {
+            "type": "list",
+            "items": "str",
+            "description": "Dependencies on other workflows"
+          }
+        },
+        "required": [
+          "global_context_variables",
+          "lifecycle_requirements",
+          "workflow_dependencies"
+        ]
+      },
+      "UXArchitecture": {
+        "type": "model",
+        "fields": {
+          "ui_requirements": {
+            "type": "list",
+            "items": "WorkflowUIComponent",
+            "description": "Module-aligned summary of expected UI interactions"
+          }
+        }
+      },
+      "AgentRoster": {
+        "type": "model",
+        "fields": {
+          "agents": {
+            "type": "list",
+            "items": "WorkflowAgent",
+            "description": "Ordered list of agent specifications"
+          }
+        }
+      },
+      "ToolPlanning": {
+        "type": "model",
+        "fields": {
+          "agent_tools": {
+            "type": "list",
+            "items": "PlannedAgentTool",
+            "description": "List of backend/logic tools required by agents (excludes UI tools defined in UXArchitecture)."
+          },
+          "lifecycle_tools": {
+            "type": "list",
+            "items": "LifecycleTool",
+            "description": "Lifecycle operation tools"
+          },
+          "system_hooks": {
+            "type": "list",
+            "items": "SystemHook",
+            "description": "System hooks required"
+          }
+        }
+      },
+      "StateArchitectureOutput": {
+        "type": "model",
+        "fields": {
+          "StateArchitecture": {
+            "type": "StateArchitecture",
+            "description": "State & Data Architecture"
+          }
+        }
+      },
+      "UXArchitectureOutput": {
+        "type": "model",
+        "fields": {
+          "UXArchitecture": {
+            "type": "UXArchitecture",
+            "description": "User Experience Architecture"
+          }
+        }
+      },
+      "AgentRosterOutput": {
+        "type": "model",
+        "fields": {
+          "AgentRoster": {
+            "type": "AgentRoster",
+            "description": "Agent Roster"
+          }
+        }
+      },
+      "ToolPlanningOutput": {
+        "type": "model",
+        "fields": {
+          "ToolPlanning": {
+            "type": "ToolPlanning",
+            "description": "Tool & Hook Planning"
+          }
+        }
+      },
+      "PlannedAgentTool": {
+        "type": "model",
+        "fields": {
+          "name": {
+            "type": "str",
+            "description": "Tool function name (snake_case)."
+          },
+          "agent": {
+            "type": "str",
+            "description": "Name of the agent that uses this tool."
+          },
+          "integration": {
+            "type": "union",
+            "variants": [
+              "str",
+              "null"
+            ],
+            "description": "Third-party service (PascalCase) or null."
+          },
+          "purpose": {
+            "type": "str",
+            "description": "Brief explanation of tool functionality."
+          },
+          "interaction_mode": {
+            "type": "literal",
+            "values": [
+              "inline",
+              "artifact",
+              "none"
+            ],
+            "description": "Interaction surface: inline (chat), artifact (panel), none (backend)."
+          }
+        }
+      },
+      "PackWorkflowEntry": {
+        "type": "model",
+        "fields": {
+          "name": {
+            "type": "str",
+            "description": "Workflow name (PascalCase)"
+          },
+          "description": {
+            "type": "str",
+            "description": "Brief description of the workflow"
+          },
+          "role": {
+            "type": "literal",
+            "values": ["primary", "supporting"],
+            "description": "Role in the pack"
+          },
+          "startup_mode": {
+            "type": "literal",
+            "values": ["UserDriven", "AgentDriven", "BackendOnly"],
+            "description": "How this workflow starts"
+          }
+        }
+      },
+      "PackManifest": {
+        "type": "model",
+        "fields": {
+          "pack_name": {
+            "type": "str",
+            "description": "Name of the workflow pack (Title Case)"
+          },
+          "pack_description": {
+            "type": "str",
+            "description": "Brief description of what the pack does"
+          },
+          "version": {
+            "type": "str",
+            "description": "Semantic version (e.g., '1.0.0')"
+          },
+          "entry_point": {
+            "type": "str",
+            "description": "Name of the primary workflow (entry point)"
+          },
+          "workflows": {
+            "type": "list",
+            "items": "PackWorkflowEntry",
+            "description": "List of workflows in this pack"
+          },
+          "ui_config": {
+            "type": "PackUIConfig",
+            "description": "UI configuration for workflow transitions"
+          }
+        }
+      },
+      "PackUIConfig": {
+        "type": "model",
+        "fields": {
+          "show_workflow_transitions": {
+            "type": "bool",
+            "description": "Whether to show workflow transition messages to user"
+          },
+          "transition_style": {
+            "type": "literal",
+            "values": ["dropdown", "inline", "hidden"],
+            "description": "How to display workflow transitions: dropdown (visual stack), inline (text message), hidden (seamless)"
+          }
+        }
+      },
+      "WorkflowGraphNode": {
+        "type": "model",
+        "fields": {
+          "id": {
+            "type": "str",
+            "description": "Workflow name (matches workflow folder name)"
+          },
+          "type": {
+            "type": "literal",
+            "values": ["primary", "supporting"],
+            "description": "Node type in the graph"
+          }
+        }
+      },
+      "WorkflowGraphEdge": {
+        "type": "model",
+        "fields": {
+          "from": {
+            "type": "str",
+            "description": "Source workflow name"
+          },
+          "to": {
+            "type": "str",
+            "description": "Target workflow name"
+          },
+          "trigger": {
+            "type": "literal",
+            "values": ["context_variable", "completion", "explicit_call"],
+            "description": "What triggers this edge: context_variable (DB watch), completion (workflow ends), explicit_call (agent tool)"
+          },
+          "condition": {
+            "type": "union",
+            "variants": ["str", "null"],
+            "description": "Condition expression for context_variable triggers (e.g., 'needs_kb_search == true')"
+          },
+          "description": {
+            "type": "str",
+            "description": "Human-readable description of when this transition happens"
+          },
+          "sync": {
+            "type": "bool",
+            "description": "Whether to wait for target workflow to complete (true) or fire-and-forget (false)"
+          }
+        }
+      },
+      "WorkflowGraph": {
+        "type": "model",
+        "fields": {
+          "nodes": {
+            "type": "list",
+            "items": "WorkflowGraphNode",
+            "description": "All workflows in the pack as graph nodes"
+          },
+          "edges": {
+            "type": "list",
+            "items": "WorkflowGraphEdge",
+            "description": "Connections between workflows"
+          }
+        }
+      },
+      "SharedContextVariable": {
+        "type": "model",
+        "fields": {
+          "name": {
+            "type": "str",
+            "description": "Variable name (snake_case)"
+          },
+          "type": {
+            "type": "literal",
+            "values": ["state", "config", "data_reference", "data_entity", "computed", "external", "content", "collection"],
+            "description": "Variable type from the 6+2 type taxonomy"
+          },
+          "owner": {
+            "type": "str",
+            "description": "Workflow that creates/owns this variable"
+          },
+          "consumers": {
+            "type": "list",
+            "items": "str",
+            "description": "Workflows that read this variable"
+          },
+          "description": {
+            "type": "str",
+            "description": "What this variable represents"
+          }
+        }
+      },
+      "SharedContext": {
+        "type": "model",
+        "fields": {
+          "variables": {
+            "type": "list",
+            "items": "SharedContextVariable",
+            "description": "Variables shared across workflows"
+          },
+          "refresh_strategy": {
+            "type": "literal",
+            "values": ["db_watch", "polling", "explicit"],
+            "description": "How consuming workflows detect changes"
+          },
+          "db_collection": {
+            "type": "str",
+            "description": "MongoDB collection name for shared context"
+          }
+        }
+      },
+      "PackMetadataOutput": {
+        "type": "model",
+        "description": "Combined output for all pack metadata files",
+        "fields": {
+          "PackMetadata": {
+            "type": "model",
+            "fields": {
+              "manifest": {
+                "type": "PackManifest",
+                "description": "Pack manifest for _pack/manifest.json"
+              },
+              "workflow_graph": {
+                "type": "WorkflowGraph",
+                "description": "Workflow dependency graph for _pack/workflow_graph.json"
+              },
+              "shared_context": {
+                "type": "SharedContext",
+                "description": "Shared context configuration for _pack/shared_context.json"
+              }
+            }
+          }
+        }
       }
     },
     "registry": {
       "InterviewAgent": null,
       "PatternAgent": "PatternSelectionOutput",
       "WorkflowStrategyAgent": "WorkflowStrategyOutput",
-      "WorkflowArchitectAgent": "TechnicalBlueprintOutput",
-      "WorkflowImplementationAgent": "ModuleAgentsOutput",
+      "StateArchitectAgent": "StateArchitectureOutput",
+      "UXArchitectAgent": "UXArchitectureOutput",
+      "AgentRosterAgent": "AgentRosterOutput",
+      "ToolPlanningAgent": "ToolPlanningOutput",
       "ProjectOverviewAgent": "MermaidSequenceDiagramOutput",
+      "ContextVariablesAgent": "ContextVariablesPlanOutput",
       "ToolsManagerAgent": "ToolsManifestOutput",
       "UIFileGenerator": "UIToolsFilesOutput",
       "AgentToolsFileGenerator": "AgentToolsFilesOutput",
       "HookAgent": "HookFilesOutput",
       "AgentsAgent": "RuntimeAgentsOutput",
-      "ContextVariablesAgent": "ContextVariablesPlanOutput",
       "OrchestratorAgent": "OrchestrationConfigOutput",
       "HandoffsAgent": "HandoffRulesOutput",
       "StructuredOutputsAgent": "StructuredModelsOutput",
+      "PackMetadataAgent": "PackMetadataOutput",
       "DownloadAgent": "DownloadRequestOutput"
     }
   }

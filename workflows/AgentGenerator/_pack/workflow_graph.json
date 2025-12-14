@@ -1,0 +1,16 @@
+{
+  "nested_chats": [
+    {
+      "id": "implementation_loop",
+      "trigger_agent": "PatternAgent",
+      "resume_agent": "ProjectOverviewAgent",
+      "logic": "Analyze the user's request. Trigger decomposition if the request involves generating multiple distinct, independent components such as: separate frontend and backend applications, multiple microservices, or multi-platform deliverables (web + mobile + API). Once the agent roster is this is determined, proceed to plan the necessary tools and technologies required for implementation. Do NOT trigger for simple single-application requests."
+    },
+    {
+      "id": "workflow_finalization",
+      "trigger_agent": "ContextVariablesAgent",
+      "resume_agent": "DownloadAgent",
+      "logic": "After the user accepts the proposed workflow strategy, finalize the generation process by gathering all necessary information required to generate the complete workflow(s). This includes data for agents.json, context_variables.json, tools.json, and any /tool files. Ensure all components are validated and ready for download."
+    }
+  ]
+}
