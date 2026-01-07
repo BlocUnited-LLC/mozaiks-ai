@@ -38,7 +38,7 @@
 
 #### 2. Pattern System: AG2 Orchestration Patterns (NOT Separate Approval/Feedback Patterns)
 
-**Question**: "Where are these patterns? workflows/Generator/patterns/{pattern_name}.json? I don't think we have separate patterns or a PatternAgent that generates patterns."
+**Question**: "Where are these patterns? workflows/AgentGenerator/patterns/{pattern_name}.json? I don't think we have separate patterns or a PatternAgent that generates patterns."
 
 **Answer**: You're right to be confused. Let me clarify:
 
@@ -48,8 +48,8 @@
 - **NOT** UI UI patterns or human approval workflows
 
 **Where Pattern Examples Live**:
-- ❌ **NOT** in `workflows/Generator/patterns/{pattern_name}.json` (this doesn't exist)
-- ✅ **YES** in `workflows/Generator/tools/update_agent_state_pattern.py` (lines 200-4334)
+- ❌ **NOT** in `workflows/AgentGenerator/patterns/{pattern_name}.json` (this doesn't exist)
+- ✅ **YES** in `workflows/AgentGenerator/tools/update_agent_state_pattern.py` (lines 200-4334)
 - Pattern examples are **HARDCODED Python dictionaries** embedded in the tool file
 - Each AG2 pattern (1-9) has example WorkflowStrategy/WorkflowArchitect/WorkflowImplementation outputs showing how to structure phases/agents for that orchestration pattern
 
@@ -1321,7 +1321,7 @@ Pattern-specific examples are **injected at runtime** via the `update_agent_stat
 4. Agents receive complete examples showing correct three-layer alignment for the selected AG2 orchestration pattern
 
 **IMPORTANT CLARIFICATION**:
-- There are NO separate JSON pattern files in `workflows/Generator/patterns/`
+- There are NO separate JSON pattern files in `workflows/AgentGenerator/patterns/`
 - Pattern examples are EMBEDDED as Python dictionaries inside `update_agent_state_pattern.py`
 - Each AG2 pattern (1-9) has hardcoded examples for WorkflowStrategy, WorkflowArchitect, and WorkflowImplementation
 - These examples show how to structure phases/agents for that specific orchestration pattern (e.g., Pipeline → sequential phases, Star → hub coordinator + spoke specialists)

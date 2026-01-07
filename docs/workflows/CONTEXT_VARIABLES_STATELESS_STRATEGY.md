@@ -8,7 +8,7 @@
 > ⚠️ **PARTIALLY OUTDATED**: Some examples reference legacy schemas (ActionPlan, ActionPlanArchitect).
 > For current schema definitions, see:
 > - **Source of Truth**: `docs/ACTION_PLAN_SOURCE_OF_TRUTH.md`
-> - **Schema Definitions**: `workflows/Generator/structured_outputs.json`
+> - **Schema Definitions**: `workflows/AgentGenerator/structured_outputs.json`
 > 
 > The semantic wrapper patterns and stateless coordination concepts remain valid.
 
@@ -16,7 +16,7 @@
 
 ## Executive Summary
 
-Context variables are **the single most critical input** for stateless LLM prompt engineering. Unlike stateful systems where agents maintain memory, our Generator workflow operates in **pure stateless mode** - each agent receives ONLY:
+Context variables are **the single most critical input** for stateless LLM prompt engineering. Unlike stateful systems where agents maintain memory, our AgentGenerator workflow operates in **pure stateless mode** - each agent receives ONLY:
 
 1. **System Message** (role, instructions, guidelines)
 2. **Conversation History** (prior agent outputs as semantic wrappers)
@@ -24,7 +24,7 @@ Context variables are **the single most critical input** for stateless LLM promp
 
 **No agent remembers what it previously generated.** Every output must be reconstructible from conversation history alone.
 
-This document defines the **semantic wrapper contracts** and **extraction patterns** that enable deterministic context variable generation across the entire Generator agent chain.
+This document defines the **semantic wrapper contracts** and **extraction patterns** that enable deterministic context variable generation across the entire AgentGenerator agent chain.
 
 ---
 
@@ -1534,4 +1534,4 @@ Step 3: Extract fields: name, type, trigger_hint, purpose
 
 **End of Document**
 
-This strategy ensures **deterministic, stateless context variable generation** across the entire Generator workflow. Every agent receives exactly the context it needs from conversation history, with zero implicit state or hardcoded assumptions.
+This strategy ensures **deterministic, stateless context variable generation** across the entire AgentGenerator workflow. Every agent receives exactly the context it needs from conversation history, with zero implicit state or hardcoded assumptions.

@@ -20,3 +20,6 @@ build/
 dist/
 autogen/
 nul
+
+# Azure CLI alternate extension dir (used by scripts)
+.azextensions/

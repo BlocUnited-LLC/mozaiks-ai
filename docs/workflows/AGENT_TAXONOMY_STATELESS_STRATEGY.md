@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2025-06-27  
 > **Status**: Implemented  
-> **Concept**: Stateless propagation of Agent Roles (`agent_type`) through the Generator Workflow.
+> **Concept**: Stateless propagation of Agent Roles (`agent_type`) through the AgentGenerator Workflow.
 
 ---
 
@@ -14,7 +14,7 @@ Just like the Human Interaction model, the Agent Taxonomy relies entirely on **S
 
 ## The Stateless Data Flow
 
-The taxonomy flows linearly through the Generator chain, with each agent deriving or consuming the `agent_type` based solely on upstream JSON outputs.
+The taxonomy flows linearly through the AgentGenerator chain, with each agent deriving or consuming the `agent_type` based solely on upstream JSON outputs.
 
 ### Step 1: Derivation (The Origin)
 **Agent**: `WorkflowImplementationAgent`  
