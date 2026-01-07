@@ -4,6 +4,9 @@ site_url: https://docs.mozaiks.ai
 repo_url: https://github.com/BlocUnited-LLC/MozaiksAI
 repo_name: BlocUnited-LLC/MozaiksAI
 
+# Publish from a dedicated folder so internal repo docs under /docs are not exposed.
+docs_dir: opensoourcedocs
+
 theme:
   name: material
   palette:
@@ -66,26 +69,19 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started:
-      - Quickstart: getting-started/quickstart.md
-      - Installation: getting-started/installation.md
-      - Deployment Guide: getting-started/deployment.md
-  - Architecture:
-      - Overview: architecture/overview.md
-      - Runtime Boundaries: architecture/runtime-boundaries.md
-      - Workflow System: architecture/workflow-system.md
-      - Multi-Tenancy: architecture/multi-tenancy.md
-      - Capabilities: architecture/capabilities.md
+    - Quickstart: getting-started/quickstart.md
+    - Local Preview: getting-started/local-preview.md
+    - Deploy (Azure): getting-started/deploy-azure-static-web-apps.md
+  - Concepts:
+    - Ecosystem: concepts/ecosystem.md
+    - Runtime Boundaries: concepts/runtime-boundaries.md
+    - Auth Boundary: concepts/auth-boundary.md
+    - Multi-Tenancy: concepts/multi-tenancy.md
+    - Workflows (YAML): concepts/workflows-yaml.md
   - Guides:
-      - Creating Workflows: guides/creating-workflows.md
-      - YAML Schema: guides/yaml-schema.md
-      - Custom Tools: guides/custom-tools.md
-      - WebSocket Protocol: guides/websocket-protocol.md
-      - Authentication: guides/authentication.md
+    - Embed In Your App: guides/embed-in-your-app.md
+    - Create a Workflow: guides/create-a-workflow.md
+    - Self-Hosting: guides/self-hosting.md
   - Reference:
-      - Environment Variables: reference/environment-variables.md
-      - API Reference: reference/api.md
-      - Hooks System: reference/hooks.md
-      - Pattern Guidance: reference/patterns.md
-  - Examples:
-      - Workflow Samples: examples/workflow-samples.md
-      - Integration Examples: examples/integrations.md
+    - Runtime API: reference/runtime-api.md
+    - Configuration: reference/configuration.md

@@ -25,5 +25,3 @@ tree-sitter-javascript
 tree-sitter-css
 aiohttp>=3.8.0
 
-# Documentation
-mkdocs-material>=9.5.0

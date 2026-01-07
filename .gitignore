@@ -21,5 +21,8 @@ dist/
 autogen/
 nul
 
+# MkDocs build output
+site/
+
 # Azure CLI alternate extension dir (used by scripts)
 .azextensions/
