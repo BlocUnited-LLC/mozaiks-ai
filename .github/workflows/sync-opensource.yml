@@ -36,6 +36,7 @@ jobs:
           rm -rf docs/chatui 2>/dev/null || true
           rm -rf docs/operations 2>/dev/null || true
           rm -rf docs/_archive 2>/dev/null || true
+          rm -f docs/KEY_VAULT_INTEGRATION.md 2>/dev/null || true
           
           echo "✅ Proprietary code removed"
           echo ""
