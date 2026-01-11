@@ -19,26 +19,38 @@ export class ApiAdapter {
     return raw;
   }
 
-  async sendMessage(_message, _enterpriseId, _userId) {
+  getWsBaseUrl() {
+    const fallback = typeof config?.get === 'function' ? config.get('api.wsUrl') : undefined;
+    const raw = this.config?.wsUrl
+      || this.config?.api?.wsUrl
+      || fallback
+      || 'ws://localhost:8000';
+    if (typeof raw === 'string' && raw.endsWith('/')) {
+      return raw.slice(0, -1);
+    }
+    return raw;
+  }
+
+  async sendMessage(_message, _appId, _userId) {
     throw new Error('sendMessage must be implemented');
   }
 
-  async sendMessageToWorkflow(message, enterpriseId, userId, workflowname = null, chatId = null) {
+  async sendMessageToWorkflow(message, appId, userId, workflowname = null, chatId = null) {
     // Use dynamic default workflow type
     const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     console.log(`Sending message to workflow: ${actualworkflowname}`);
     throw new Error('sendMessageToWorkflow must be implemented');
   }
 
-  createWebSocketConnection(_enterpriseId, _userId, _callbacks, _workflowname = null, _chatId = null) {
+  createWebSocketConnection(_appId, _userId, _callbacks, _workflowname = null, _chatId = null) {
     throw new Error('createWebSocketConnection must be implemented');
   }
 
-  async getMessageHistory(_enterpriseId, _userId) {
+  async getMessageHistory(_appId, _userId) {
     throw new Error('getMessageHistory must be implemented');
   }
 
-  async uploadFile(_file, _enterpriseId, _userId) {
+  async uploadFile(_file, _appId, _userId) {
     throw new Error('uploadFile must be implemented');
   }
 
@@ -46,18 +58,18 @@ export class ApiAdapter {
     throw new Error('getWorkflowTransport must be implemented');
   }
 
-  async startChat(_enterpriseId, _workflowname, _userId) {
+  async startChat(_appId, _workflowname, _userId) {
     throw new Error('startChat must be implemented');
   }
 
-  async listGeneralChats(enterpriseId, userId, limit = 50) {
+  async listGeneralChats(appId, userId, limit = 50) {
     const baseUrl = this.getHttpBaseUrl();
     const searchParams = new URLSearchParams();
     if (limit !== undefined && limit !== null) {
       searchParams.set('limit', String(limit));
     }
 
-    const url = `${baseUrl}/api/general_chats/list/${encodeURIComponent(enterpriseId)}/${encodeURIComponent(userId)}?${searchParams.toString()}`;
+    const url = `${baseUrl}/api/general_chats/list/${encodeURIComponent(appId)}/${encodeURIComponent(userId)}?${searchParams.toString()}`;
 
     try {
       const response = await fetch(url);
@@ -71,7 +83,7 @@ export class ApiAdapter {
     }
   }
 
-  async fetchGeneralChatTranscript(enterpriseId, generalChatId, options = {}) {
+  async fetchGeneralChatTranscript(appId, generalChatId, options = {}) {
     const { afterSequence = -1, limit = 200 } = options;
     const baseUrl = this.getHttpBaseUrl();
     const searchParams = new URLSearchParams();
@@ -82,7 +94,7 @@ export class ApiAdapter {
       searchParams.set('limit', String(limit));
     }
 
-    const url = `${baseUrl}/api/general_chats/transcript/${encodeURIComponent(enterpriseId)}/${encodeURIComponent(generalChatId)}?${searchParams.toString()}`;
+    const url = `${baseUrl}/api/general_chats/transcript/${encodeURIComponent(appId)}/${encodeURIComponent(generalChatId)}?${searchParams.toString()}`;
 
     try {
       const response = await fetch(url);
@@ -105,6 +117,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
   constructor(config) {
     super(config);
     this.config = config || {};
+    this._chatConnections = new Map();
   }
 
   async sendMessage() {
@@ -113,7 +126,35 @@ export class WebSocketApiAdapter extends ApiAdapter {
     return { success: true };
   }
 
-  async sendMessageToWorkflow(message, enterpriseId, userId, workflowname = null, chatId = null) {
+  async sendMessageToWorkflow(message, appId, userId, workflowname = null, chatId = null) {
+    const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
+
+    if (!chatId) {
+      console.error('Chat ID is required for sending message to workflow');
+      return false;
+    }
+
+    const connection = this._chatConnections.get(chatId);
+    if (!connection || typeof connection.send !== 'function') {
+      console.error('WebSocket connection not available for chat', chatId);
+      return false;
+    }
+
+    return connection.send({
+      type: 'user.input.submit',
+      chat_id: chatId,
+      text: message,
+      context: {
+        source: 'chat_interface',
+        conversation_mode: 'workflow',
+        workflow_name: actualworkflowname,
+        app_id: appId,
+        user_id: userId,
+      },
+    });
+  }
+
+  async _legacySendMessageToWorkflowHttp(message, appId, userId, workflowname = null, chatId = null) {
     // Use dynamic default workflow type
     const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     
@@ -123,13 +164,13 @@ export class WebSocketApiAdapter extends ApiAdapter {
     }
     
     try {
-      const response = await fetch(`http://localhost:8000/chat/${enterpriseId}/${chatId}/${userId}/input`, {
+      const response = await fetch(`http://localhost:8000/chat/${appId}/${chatId}/${userId}/input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           message, 
           workflow_name: actualworkflowname,
-          enterprise_id: enterpriseId,
+          app_id: appId,
           user_id: userId 
         })
       });
@@ -148,7 +189,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
     }
   }
 
-  createWebSocketConnection(enterpriseId, userId, callbacks = {}, workflowname = null, chatId = null) {
+  createWebSocketConnection(appId, userId, callbacks = {}, workflowname = null, chatId = null) {
     const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     
     console.log('🛠️ [WS-CONN] WebSocket workflow resolution:', {
@@ -164,8 +205,8 @@ export class WebSocketApiAdapter extends ApiAdapter {
       return null;
     }
     
-    const wsBase = this.config.wsUrl || this.config.api?.wsUrl;
-    const wsUrl = `${wsBase}/ws/${actualworkflowname}/${enterpriseId}/${chatId}/${userId}`;
+    const wsBase = this.getWsBaseUrl();
+    const wsUrl = `${wsBase}/ws/${actualworkflowname}/${appId}/${chatId}/${userId}`;
     console.log(`🔗 Connecting to WebSocket: ${wsUrl}`);
     const socket = new WebSocket(wsUrl);
     
@@ -235,10 +276,11 @@ export class WebSocketApiAdapter extends ApiAdapter {
 
     socket.onclose = () => {
       console.log("WebSocket connection closed");
+      this._chatConnections.delete(chatId);
       if (callbacks.onClose) callbacks.onClose();
     };
 
-    return {
+    const connection = {
       socket,
       send: (message) => {
         if (socket.readyState === WebSocket.OPEN) {
@@ -257,14 +299,23 @@ export class WebSocketApiAdapter extends ApiAdapter {
         }
         return false;
       },
-      close: () => socket.close()
+      close: () => {
+        try {
+          socket.close();
+        } finally {
+          this._chatConnections.delete(chatId);
+        }
+      }
     };
+    this._chatConnections.set(chatId, connection);
+    return connection;
   }
 
-  async getMessageHistory(enterpriseId, userId) {
+  async getMessageHistory(appId, userId) {
     try {
+      const baseUrl = this.getHttpBaseUrl();
       const response = await fetch(
-        `http://localhost:8000/api/chat/history/${enterpriseId}/${userId}`
+        `${baseUrl}/api/chat/history/${encodeURIComponent(appId)}/${encodeURIComponent(userId)}`
       );
       if (response.ok) {
         return await response.json();
@@ -275,14 +326,23 @@ export class WebSocketApiAdapter extends ApiAdapter {
     return [];
   }
 
-  async uploadFile(file, enterpriseId, userId) {
+  async uploadFile(file, appId, userId, options = {}) {
+    const { chatId = null, intent = 'context', bundlePath = null } = options || {};
+    if (!chatId) {
+      return { success: false, error: 'chatId is required' };
+    }
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('enterpriseId', enterpriseId);
+    formData.append('appId', appId);
+    formData.append('appId', appId); // legacy
     formData.append('userId', userId);
+    formData.append('chatId', chatId);
+    if (intent) formData.append('intent', intent);
+    if (bundlePath) formData.append('bundle_path', bundlePath);
 
     try {
-      const response = await fetch(`http://localhost:8000/api/chat/upload`, {
+      const baseUrl = this.getHttpBaseUrl();
+      const response = await fetch(`${baseUrl}/api/chat/upload`, {
         method: 'POST',
         body: formData
       });
@@ -299,7 +359,8 @@ export class WebSocketApiAdapter extends ApiAdapter {
 
   async getWorkflowTransport(workflowname) {
     try {
-      const response = await fetch(`http://localhost:8000/api/workflows/${workflowname}/transport`);
+      const baseUrl = this.getHttpBaseUrl();
+      const response = await fetch(`${baseUrl}/api/workflows/${encodeURIComponent(workflowname)}/transport`);
       if (response.ok) {
         return await response.json();
       }
@@ -309,7 +370,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
     return null;
   }
 
-  async startChat(enterpriseId, workflowname, userId, fetchOpts = {}) {
+  async startChat(appId, workflowname, userId, fetchOpts = {}) {
     const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     const clientRequestId = crypto?.randomUUID ? crypto.randomUUID() : (Date.now()+"-"+Math.random().toString(36).slice(2));
     
@@ -327,7 +388,8 @@ export class WebSocketApiAdapter extends ApiAdapter {
         return { success: false, error: 'in_progress' };
       }
       this._startingChat = true;
-      const response = await fetch(`http://localhost:8000/api/chats/${enterpriseId}/${actualworkflowname}/start`, {
+      const baseUrl = this.getHttpBaseUrl();
+      const response = await fetch(`${baseUrl}/api/chats/${encodeURIComponent(appId)}/${encodeURIComponent(actualworkflowname)}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: userId, client_request_id: clientRequestId })
@@ -340,9 +402,21 @@ export class WebSocketApiAdapter extends ApiAdapter {
         this._startingChat = false;
         return result;
       } else {
-        console.error('Failed to start chat:', response.status, response.statusText);
+        let detail = null;
+        try {
+          const errJson = await response.json();
+          detail = errJson?.detail ?? errJson;
+        } catch (_e) {
+          try {
+            detail = await response.text();
+          } catch (_e2) {
+            detail = null;
+          }
+        }
+
+        console.error('Failed to start chat:', response.status, response.statusText, detail);
         this._startingChat = false;
-        return { success: false, error: `HTTP ${response.status}` };
+        return { success: false, error: `HTTP ${response.status}`, status: response.status, detail };
       }
     } catch (error) {
       console.error('Failed to start chat:', error);
@@ -360,12 +434,13 @@ export class RestApiAdapter extends ApiAdapter {
     this.activeChatSessions = new Map(); // Track active chat sessions to prevent duplicates
   }
 
-  async sendMessage(message, enterpriseId, userId) {
+  async sendMessage(message, appId, userId) {
     try {
-      const response = await fetch(`http://localhost:8000/api/chat/send`, {
+      const baseUrl = this.getHttpBaseUrl();
+      const response = await fetch(`${baseUrl}/api/chat/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, enterpriseId, userId })
+        body: JSON.stringify({ message, appId, userId })
       });
 
       if (response.ok) {
@@ -378,7 +453,7 @@ export class RestApiAdapter extends ApiAdapter {
     return { success: false, error: 'Failed to send message' };
   }
 
-  async sendMessageToWorkflow(message, enterpriseId, userId, workflowname = null, chatId = null) {
+  async sendMessageToWorkflow(message, appId, userId, workflowname = null, chatId = null) {
     // Use dynamic default workflow type
     const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     
@@ -388,13 +463,13 @@ export class RestApiAdapter extends ApiAdapter {
     }
     
     try {
-      const response = await fetch(`http://localhost:8000/chat/${enterpriseId}/${chatId}/${userId}/input`, {
+      const response = await fetch(`http://localhost:8000/chat/${appId}/${chatId}/${userId}/input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           message, 
           workflow_name: actualworkflowname,
-          enterprise_id: enterpriseId,
+          app_id: appId,
           user_id: userId 
         })
       });
@@ -419,10 +494,11 @@ export class RestApiAdapter extends ApiAdapter {
     return null;
   }
 
-  async getMessageHistory(enterpriseId, userId) {
+  async getMessageHistory(appId, userId) {
     try {
+      const baseUrl = this.getHttpBaseUrl();
       const response = await fetch(
-        `http://localhost:8000/api/chat/messages/${enterpriseId}/${userId}`
+        `${baseUrl}/api/chat/messages/${encodeURIComponent(appId)}/${encodeURIComponent(userId)}`
       );
       if (response.ok) {
         return await response.json();
@@ -433,13 +509,21 @@ export class RestApiAdapter extends ApiAdapter {
     return [];
   }
 
-  async uploadFile(file, enterpriseId, userId) {
+  async uploadFile(file, appId, userId, options = {}) {
+    const { chatId = null, intent = 'context', bundlePath = null } = options || {};
+    if (!chatId) {
+      return { success: false, error: 'chatId is required' };
+    }
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('chatId', chatId);
+    if (intent) formData.append('intent', intent);
+    if (bundlePath) formData.append('bundle_path', bundlePath);
 
     try {
+      const baseUrl = this.getHttpBaseUrl();
       const response = await fetch(
-        `http://localhost:8000/api/chat/upload/${enterpriseId}/${userId}`,
+        `${baseUrl}/api/chat/upload/${encodeURIComponent(appId)}/${encodeURIComponent(userId)}`,
         {
           method: 'POST',
           body: formData
@@ -458,7 +542,8 @@ export class RestApiAdapter extends ApiAdapter {
 
   async getWorkflowTransport(workflowname) {
     try {
-      const response = await fetch(`http://localhost:8000/api/workflows/${workflowname}/transport`);
+      const baseUrl = this.getHttpBaseUrl();
+      const response = await fetch(`${baseUrl}/api/workflows/${encodeURIComponent(workflowname)}/transport`);
       if (response.ok) {
         return await response.json();
       }
@@ -468,7 +553,7 @@ export class RestApiAdapter extends ApiAdapter {
     return null;
   }
 
-  async startChat(enterpriseId, workflowname, userId, fetchOpts = {}) {
+  async startChat(appId, workflowname, userId, fetchOpts = {}) {
     const actualworkflowname = workflowname || workflowConfig.getDefaultWorkflow();
     const clientRequestId = crypto?.randomUUID ? crypto.randomUUID() : (Date.now()+"-"+Math.random().toString(36).slice(2));
     
@@ -478,7 +563,8 @@ export class RestApiAdapter extends ApiAdapter {
         return { success: false, error: 'in_progress' };
       }
       this._startingChat = true;
-      const response = await fetch(`http://localhost:8000/api/chats/${enterpriseId}/${actualworkflowname}/start`, {
+      const baseUrl = this.getHttpBaseUrl();
+      const response = await fetch(`${baseUrl}/api/chats/${encodeURIComponent(appId)}/${encodeURIComponent(actualworkflowname)}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: userId, client_request_id: clientRequestId })
@@ -503,5 +589,5 @@ export class RestApiAdapter extends ApiAdapter {
   }
 }
 
-// Default API instance for enterprise usage
-export const enterpriseApi = new RestApiAdapter(config.get ? config.get('api') : config?.config?.api);
+// Default API instance (app-scoped; legacy: appApi)
+export const appApi = new RestApiAdapter(config.get ? config.get('api') : config?.config?.api);

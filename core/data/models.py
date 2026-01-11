@@ -15,23 +15,23 @@ Deliberate simplifications / removals:
     * Summary documents stored in the `WorkflowStats` collection as deterministic
     * rollup documents (prefixed with `mon_`) to avoid adding extra top-level
     * collections. WorkflowStats therefore contains three logical types:
-    *   - per-session metrics docs: `metrics_{chat_id}` (real-time billing/metrics)
+    *   - per-session metrics docs: `metrics_{chat_id}` (real-time usage/metrics)
     *   - append-only normalized event rows (audit/trace)
-    *   - pre-computed rollup summaries: `mon_{enterprise_id}_{workflow_name}`
+    *   - pre-computed rollup summaries: `mon_{app_id}_{workflow_name}` (legacy: app_id)
 
 Key Collections (post‑refactor):
     ChatSessions        : One doc per chat (messages + minimal usage + status)
     WorkflowStats       : (Managed elsewhere) Append‑only normalized event rows (+ single metrics doc w/out sequence)
-    WorkflowSummaries   : One aggregated rollup per (enterprise_id, workflow_name)
+    WorkflowSummaries   : One aggregated rollup per (app_id, workflow_name)
 
 ChatSessions Stored Fields (superset; some optional):
-    _id, enterprise_id, workflow_name, user_id, status, created_at, last_updated_at,
+    _id, app_id (+ legacy app_id), workflow_name, user_id, status, created_at, last_updated_at,
     completed_at?, trace_id?, duration_sec (float),
     usage_prompt_tokens_final?, usage_completion_tokens_final?, usage_total_tokens_final?,
     usage_total_cost_final?, usage_summary_raw?, messages[]
 
 WorkflowSummaryDoc Stored Fields:
-    _id, enterprise_id, workflow_name, overall_avg, chat_sessions, agents
+    _id, app_id (+ legacy app_id), workflow_name, overall_avg, chat_sessions, agents
 
 NOTE: We intentionally keep rollup computation *read‑only* over ChatSessions;
             token & cost fields are copied from flattened usage_* finals in sessions.
@@ -42,10 +42,11 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Mapping
 from collections import defaultdict
 from enum import IntEnum, Enum
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from pymongo.errors import DuplicateKeyError
 
 from core.core_config import get_mongo_client
+from core.multitenant import build_app_scope_filter, coalesce_app_id
 from logs.logging_config import get_workflow_logger
 
 logger = get_workflow_logger("chat_workflow_models")
@@ -99,12 +100,12 @@ class ChatSessionStats(BaseModel):
 class SessionMetricsDoc(BaseModel):
     """Real-time metrics tracking for WorkflowStats collection.
     
-    Created alongside ChatSession for immediate billing/tracking.
+    Created alongside ChatSession for immediate usage tracking.
     """
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     id: str = Field(alias="_id")  # format: "metrics_{chat_id}"
     chat_id: str
-    enterprise_id: str
+    app_id: str
     workflow_name: str
     user_id: str
     created_at: datetime
@@ -116,6 +117,17 @@ class SessionMetricsDoc(BaseModel):
     cost_total_usd: float = Field(0.0, ge=0)
     # Per-agent breakdown for dynamic agent tracking
     agent_metrics: Dict[str, ChatSessionStats] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_scope(cls, data: Any):  # noqa: ANN001
+        if isinstance(data, dict) and not data.get("app_id"):
+            for key in ("appId", "AppId", "AppID"):
+                if data.get(key):
+                    data = dict(data)
+                    data["app_id"] = data.get(key)
+                    break
+        return data
 
     @property
     def _id(self) -> str:  # noqa: D401
@@ -131,12 +143,12 @@ class AgentAggregate(BaseModel):
 class WorkflowSummaryDoc(BaseModel):
     """Rollup document stored in `WorkflowSummaries` collection.
 
-    _id pattern: mon_{enterprise_id}_{workflow_name}
-    (Deterministic; one summary per (enterprise, workflow)).
+    _id pattern: mon_{app_id}_{workflow_name}
+    (Deterministic; one summary per (app, workflow)).
     """
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     id: str = Field(alias="_id")
-    enterprise_id: str
+    app_id: str
     user_id: Optional[str] = None
     workflow_name: str
     # When the summary was last updated (datetime stored as UTC)
@@ -151,6 +163,17 @@ class WorkflowSummaryDoc(BaseModel):
     )
     chat_sessions: Dict[str, ChatSessionStats] = Field(default_factory=dict)
     agents: Dict[str, AgentAggregate] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_scope(cls, data: Any):  # noqa: ANN001
+        if isinstance(data, dict) and not data.get("app_id"):
+            for key in ("appId", "AppId", "AppID"):
+                if data.get(key):
+                    data = dict(data)
+                    data["app_id"] = data.get(key)
+                    break
+        return data
 
     @property
     def _id(self) -> str:  # noqa: D401
@@ -172,11 +195,11 @@ class ChatSessionDoc(BaseModel):
     """Canonical ChatSessions document schema.
 
     Optional usage / duration fields are present only after workflow completes
-    or billing/usage updates occur.
+    or usage updates occur.
     """
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     id: str = Field(alias="_id")
-    enterprise_id: str
+    app_id: str
     workflow_name: str
     user_id: str
     status: WorkflowStatus  # stored as int (0/1)
@@ -195,6 +218,17 @@ class ChatSessionDoc(BaseModel):
     usage_total_cost_final: float = 0.0
     # messages and timestamps only; token/cost fields are stored in WorkflowStats
     messages: List[ChatMessage] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_scope(cls, data: Any):  # noqa: ANN001
+        if isinstance(data, dict) and not data.get("app_id"):
+            for key in ("appId", "AppId", "AppID"):
+                if data.get(key):
+                    data = dict(data)
+                    data["app_id"] = data.get(key)
+                    break
+        return data
 
     @property
     def _id(self) -> str:  # noqa: D401
@@ -248,8 +282,13 @@ class ChatWorkflowManager:
             # ChatSessions (query accelerators) - use consistent naming
             if not any(name in ["idx_ent_wf_created", "cs_ent_wf_created"] for name in index_names):
                 await self.chat_sessions.create_index([
-                    ("enterprise_id", 1), ("workflow_name", 1), ("created_at", -1)
+                    ("app_id", 1), ("workflow_name", 1), ("created_at", -1)
                 ], name="cs_ent_wf_created")
+
+            if "cs_app_wf_created" not in index_names:
+                await self.chat_sessions.create_index([
+                    ("app_id", 1), ("workflow_name", 1), ("created_at", -1)
+                ], name="cs_app_wf_created")
                 
             if not any(name in ["idx_status", "cs_status_created"] for name in index_names):
                 await self.chat_sessions.create_index([
@@ -310,19 +349,26 @@ class ChatWorkflowManager:
     # ROLLUP/AGGREGATION SERVICE
     # ===============================
     
-    async def compute_workflow_rollup(self, enterprise_id: str, workflow_name: str) -> WorkflowSummaryDoc:
+    async def compute_workflow_rollup(
+        self,
+        app_id: str,
+        workflow_name: str,
+    ) -> WorkflowSummaryDoc:
         await self._ensure_client()
+        resolved_app_id = coalesce_app_id(app_id=app_id)
+        if not resolved_app_id:
+            raise ValueError("app_id is required")
         assert self.chat_sessions is not None
         cursor = self.chat_sessions.find({
-            "enterprise_id": enterprise_id,
             "workflow_name": workflow_name,
-            "status": WorkflowStatus.COMPLETED
+            "status": WorkflowStatus.COMPLETED,
+            **build_app_scope_filter(str(resolved_app_id)),
         })
         sessions: List[Dict[str, Any]] = [doc async for doc in cursor]
         if not sessions:
             return WorkflowSummaryDoc(
-                _id=f"mon_{enterprise_id}_{workflow_name}",
-                enterprise_id=enterprise_id,
+                _id=f"mon_{resolved_app_id}_{workflow_name}",
+                app_id=str(resolved_app_id),
                 workflow_name=workflow_name,
             )
         overall_sessions: Dict[str, ChatSessionStats] = {}
@@ -380,8 +426,8 @@ class ChatWorkflowManager:
         # user_id: try to surface a representative user (first session's user_id)
         representative_user = sessions[0].get("user_id") if sessions else None
         return WorkflowSummaryDoc(
-            _id=f"mon_{enterprise_id}_{workflow_name}",
-            enterprise_id=enterprise_id,
+            _id=f"mon_{resolved_app_id}_{workflow_name}",
+            app_id=str(resolved_app_id),
             user_id=representative_user,
             workflow_name=workflow_name,
             last_updated_at=datetime.now(timezone.utc),
@@ -398,14 +444,21 @@ class ChatWorkflowManager:
         )
         return summary
     
-    async def get_workflow_summary(self, enterprise_id: str, workflow_name: str) -> WorkflowSummaryDoc:
+    async def get_workflow_summary(
+        self,
+        app_id: str,
+        workflow_name: str,
+    ) -> WorkflowSummaryDoc:
         await self._ensure_client()
-        summary_id = f"mon_{enterprise_id}_{workflow_name}"
+        resolved_app_id = coalesce_app_id(app_id=app_id)
+        if not resolved_app_id:
+            raise ValueError("app_id is required")
+        summary_id = f"mon_{resolved_app_id}_{workflow_name}"
         assert self.workflow_summaries is not None
         doc = await self.workflow_summaries.find_one({"_id": summary_id})
         if doc:
             return WorkflowSummaryDoc.model_validate(doc)
-        summary = await self.compute_workflow_rollup(enterprise_id, workflow_name)
+        summary = await self.compute_workflow_rollup(app_id=resolved_app_id, workflow_name=workflow_name)
         return await self.upsert_workflow_summary(summary)
 
 # ===========================================
@@ -432,34 +485,34 @@ async def complete_session(session_id: str) -> bool:
     """Mark session completed (reason removed)."""
     return await chat_workflow_manager.complete_chat_session(session_id)
 
-async def get_workflow_summary(enterprise_id: str, workflow_name: str) -> Optional[WorkflowSummaryDoc]:
+async def get_workflow_summary(app_id: str, workflow_name: str) -> WorkflowSummaryDoc:
     """Get workflow summary (computes rollup if needed)."""
-    return await chat_workflow_manager.get_workflow_summary(enterprise_id, workflow_name)
+    return await chat_workflow_manager.get_workflow_summary(app_id=app_id, workflow_name=workflow_name)
 
-async def refresh_workflow_rollup(enterprise_id: str, workflow_name: str) -> WorkflowSummaryDoc:
+async def refresh_workflow_rollup(app_id: str, workflow_name: str) -> WorkflowSummaryDoc:
     """Force refresh of workflow rollup."""
-    summary = await chat_workflow_manager.compute_workflow_rollup(enterprise_id, workflow_name)
+    summary = await chat_workflow_manager.compute_workflow_rollup(app_id=app_id, workflow_name=workflow_name)
     return await chat_workflow_manager.upsert_workflow_summary(summary)
 
 
 async def refresh_workflow_rollup_by_id(summary_id: str) -> WorkflowSummaryDoc:
     """Refresh rollup using the full summary _id (useful when caller already computes deterministic id).
 
-    Accepts ids like: mon_{enterprise_id}_{workflow_name}
+    Accepts ids like: mon_{app_id}_{workflow_name}
     """
-    # Defensive parsing: try to split the id pattern; fall back to compute by enterprise/workflow
+    # Defensive parsing: try to split the id pattern; fall back to compute by app/workflow
     try:
         if summary_id.startswith("mon_"):
             _, rest = summary_id.split("mon_", 1)
             parts = rest.split("_", 1)
             if len(parts) == 2:
-                enterprise_id, workflow_name = parts[0], parts[1]
-                summary = await chat_workflow_manager.compute_workflow_rollup(enterprise_id, workflow_name)
+                app_id, workflow_name = parts[0], parts[1]
+                summary = await chat_workflow_manager.compute_workflow_rollup(app_id=app_id, workflow_name=workflow_name)
                 return await chat_workflow_manager.upsert_workflow_summary(summary)
     except Exception:
         pass
-    # Fallback: attempt a compute using the whole id as enterprise (unlikely) — compute a best-effort empty summary
-    return await chat_workflow_manager.upsert_workflow_summary(WorkflowSummaryDoc(_id=summary_id, enterprise_id="", workflow_name=""))
+    # Fallback: attempt a compute using the whole id as app (unlikely) - compute a best-effort empty summary
+    return await chat_workflow_manager.upsert_workflow_summary(WorkflowSummaryDoc(_id=summary_id, app_id="", workflow_name=""))
 
 # Validation helpers
 def validate_chat_message(msg_dict: dict) -> ChatMessage:

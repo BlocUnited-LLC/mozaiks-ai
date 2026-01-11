@@ -9,7 +9,6 @@ ChatSession = ChatSessionDoc  # Backward compatibility alias
 from .persistence import (
     PersistenceManager,
     AG2PersistenceManager,
-    InvalidEnterpriseIdError,
     get_db_manager,
 )
 from .themes import (
@@ -31,7 +30,6 @@ __all__ = [
     "ChatSession",
     "PersistenceManager",
     "AG2PersistenceManager",
-    "InvalidEnterpriseIdError",
     "get_db_manager",
     "ThemeManager",
     "ThemeResponse",
@@ -44,4 +42,3 @@ __all__ = [
     "summarize_validation",
     "validate_theme",
 ]
-

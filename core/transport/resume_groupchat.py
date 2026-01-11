@@ -26,16 +26,16 @@ class GroupChatResumer:
         self,
         *,
         chat_id: str,
-        enterprise_id: Optional[str],
+        app_id: Optional[str],
         send_event: SendEventFunc,
         startup_mode: Optional[str] = None,
     ) -> Optional[int]:
         """Replay persisted messages for in-progress chats when a socket connects."""
-        if not enterprise_id:
-            self.logger.debug("[AUTO_RESUME] Missing enterprise_id for %s; skipping", chat_id)
+        if not app_id:
+            self.logger.debug("[AUTO_RESUME] Missing app_id for %s; skipping", chat_id)
             return None
 
-        doc = await self._fetch_chat_doc(chat_id, enterprise_id, projection={"status": 1, "messages": 1})
+        doc = await self._fetch_chat_doc(chat_id, app_id, projection={"status": 1, "messages": 1})
         if not doc:
             self.logger.debug("[AUTO_RESUME] No persisted chat found for %s", chat_id)
             return None
@@ -74,15 +74,15 @@ class GroupChatResumer:
         self,
         *,
         chat_id: str,
-        enterprise_id: Optional[str],
+        app_id: Optional[str],
         last_client_index: int,
         send_event: SendEventFunc,
     ) -> Dict[str, Any]:
         """Process an explicit client.resume handshake request."""
-        if not enterprise_id:
-            raise RuntimeError("Missing enterprise_id for resume flow")
+        if not app_id:
+            raise RuntimeError("Missing app_id for resume flow")
 
-        doc = await self._fetch_chat_doc(chat_id, enterprise_id, projection={"status": 1, "messages": 1})
+        doc = await self._fetch_chat_doc(chat_id, app_id, projection={"status": 1, "messages": 1})
         messages: List[Dict[str, Any]] = doc.get("messages", []) or []
         status = doc.get("status", "unknown")
 
@@ -297,13 +297,13 @@ class GroupChatResumer:
     async def _fetch_chat_doc(
         self,
         chat_id: str,
-        enterprise_id: str,
+        app_id: str,
         projection: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         try:
             pm = await self._ensure_persistence_manager()
             coll = await pm._coll()
-            return await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, projection) or {}
+            return await coll.find_one({"_id": chat_id, "app_id": app_id}, projection) or {}
         except Exception as exc:
             self.logger.warning("Failed to fetch chat doc for %s: %s", chat_id, exc)
             return {}

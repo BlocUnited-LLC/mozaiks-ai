@@ -17,7 +17,7 @@ This document explains the React-based ChatUI frontend architecture in MozaiksAI
 - **Event-Driven**: Processes `chat.*` events from runtime via Simple Events protocol
 - **Dynamic Component Loading**: Workflow UI components loaded on-demand
 - **Session Persistence**: Automatic chat resume with sequence tracking
-- **Multi-Tenant**: Supports enterprise_id/user_id/chat_id scoping
+- **Multi-Tenant**: Supports app_id/user_id/chat_id scoping
 
 ## Architecture Layers
 
@@ -35,8 +35,8 @@ This document explains the React-based ChatUI frontend architecture in MozaiksAI
 │             └─> Routes:                                             │
 │                  /                        → ChatPage               │
 │                  /chat                    → ChatPage               │
-│                  /chat/:enterpriseId      → ChatPage               │
-│                  /enterprise/:enterpriseId/:workflowname → ChatPage │
+│                  /chat/:appId      → ChatPage               │
+│                  /app/:appId/:workflowname → ChatPage │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -62,7 +62,7 @@ This document explains the React-based ChatUI frontend architecture in MozaiksAI
 │  adapters/api.js                                                     │
 │   • WebSocketApiAdapter.createWebSocketConnection()                 │
 │   • startChat() → POST /api/chat/start                             │
-│   • sendMessageToWorkflow() → POST /chat/{enterprise}/{chat}/input │
+│   • sendMessageToWorkflow() → POST /chat/{app}/{chat}/input │
 │   • getMessageHistory() → GET /api/chat/history                    │
 │   • WebSocket event handling (onopen, onmessage, onerror, onclose) │
 │   • Sequence tracking & resume (lastClientIndex)                    │
@@ -181,8 +181,8 @@ function App() {
         <Routes>
           <Route path="/" element={<ChatPage />} />
           <Route path="/chat" element={<ChatPage />} />
-          <Route path="/chat/:enterpriseId" element={<ChatPage />} />
-          <Route path="/enterprise/:enterpriseId/:workflowname" element={<ChatPage />} />
+          <Route path="/chat/:appId" element={<ChatPage />} />
+          <Route path="/app/:appId/:workflowname" element={<ChatPage />} />
           <Route path="*" element={<ChatPage />} />
         </Routes>
       </Router>
@@ -193,11 +193,11 @@ function App() {
 
 **Routing Patterns:**
 - `/` → Default chat with config defaults
-- `/chat/:enterpriseId` → Chat for specific enterprise
-- `/enterprise/:enterpriseId/:workflowname` → Specific workflow for enterprise
+- `/chat/:appId` → Chat for specific app
+- `/app/:appId/:workflowname` → Specific workflow for app
 
 **URL Parameters:**
-- `enterpriseId`: Multi-tenant enterprise identifier (e.g., `"68542c1109381de738222350"`)
+- `appId`: Multi-tenant app identifier (e.g., `"68542c1109381de738222350"`)
 - `workflowname`: Workflow to execute (e.g., `"Generator"`)
 
 ## ChatUIContext Provider
@@ -374,8 +374,8 @@ export default services;
 #### createWebSocketConnection
 
 ```javascript
-createWebSocketConnection(enterpriseId, userId, callbacks, workflowname, chatId) {
-  const wsUrl = `${wsBase}/ws/${workflowname}/${enterpriseId}/${chatId}/${userId}`;
+createWebSocketConnection(appId, userId, callbacks, workflowname, chatId) {
+  const wsUrl = `${wsBase}/ws/${workflowname}/${appId}/${chatId}/${userId}`;
   const socket = new WebSocket(wsUrl);
 
   // Sequence tracking for resume capability
@@ -437,7 +437,7 @@ createWebSocketConnection(enterpriseId, userId, callbacks, workflowname, chatId)
 **WebSocket URL Pattern:**
 
 ```
-ws://localhost:8000/ws/{workflow}/{enterprise_id}/{chat_id}/{user_id}
+ws://localhost:8000/ws/{workflow}/{app_id}/{chat_id}/{user_id}
 
 Example:
 ws://localhost:8000/ws/Generator/68542c1109381de738222350/chat_abc123/56132
@@ -454,13 +454,13 @@ ws://localhost:8000/ws/Generator/68542c1109381de738222350/chat_abc123/56132
 #### startChat
 
 ```javascript
-async startChat(enterpriseId, workflowname, userId, fetchOpts = {}) {
+async startChat(appId, workflowname, userId, fetchOpts = {}) {
   const clientRequestId = crypto.randomUUID();
   const response = await fetch(`http://localhost:8000/api/chat/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      enterprise_id: enterpriseId,
+      app_id: appId,
       user_id: userId,
       workflow_name: workflowname,
       client_request_id: clientRequestId
@@ -488,7 +488,7 @@ async startChat(enterpriseId, workflowname, userId, fetchOpts = {}) {
   "chat_id": "chat_abc123",
   "cache_seed": "12345",
   "workflow_name": "Generator",
-  "enterprise_id": "68542c1109381de738222350",
+  "app_id": "68542c1109381de738222350",
   "user_id": "56132",
   "status": "started"
 }
@@ -497,16 +497,16 @@ async startChat(enterpriseId, workflowname, userId, fetchOpts = {}) {
 #### sendMessageToWorkflow
 
 ```javascript
-async sendMessageToWorkflow(message, enterpriseId, userId, workflowname, chatId) {
+async sendMessageToWorkflow(message, appId, userId, workflowname, chatId) {
   const response = await fetch(
-    `http://localhost:8000/chat/${enterpriseId}/${chatId}/${userId}/input`,
+    `http://localhost:8000/chat/${appId}/${chatId}/${userId}/input`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message,
         workflow_name: workflowname,
-        enterprise_id: enterpriseId,
+        app_id: appId,
         user_id: userId
       })
     }
@@ -616,7 +616,7 @@ useEffect(() => {
   };
 
   initConnection();
-}, [currentEnterpriseId, currentUserId, currentWorkflowName]);
+}, [currentAppId, currentUserId, currentWorkflowName]);
 ```
 
 **Start New Chat:**
@@ -626,7 +626,7 @@ const startNewChat = async () => {
   try {
     // Call backend to create new chat
     const result = await api.startChat(
-      currentEnterpriseId,
+      currentAppId,
       currentWorkflowName,
       currentUserId
     );
@@ -678,7 +678,7 @@ const resumeChat = async (chatId) => {
 ```javascript
 const connectWebSocket = (chatId) => {
   const wsConnection = api.createWebSocketConnection(
-    currentEnterpriseId,
+    currentAppId,
     currentUserId,
     {
       onOpen: () => {
@@ -874,7 +874,7 @@ const sendMessage = async (messageText) => {
     type: 'user_message',
     content: messageText,
     chat_id: currentChatId,
-    enterprise_id: currentEnterpriseId,
+    app_id: currentAppId,
     user_id: currentUserId,
     workflow_name: currentWorkflowName
   });
@@ -1355,7 +1355,7 @@ location.reload();
 **Checks:**
 1. Backend running on expected port (default: 8000)
 2. WebSocket URL correct in config (`ws://localhost:8000`)
-3. Enterprise ID and user ID valid
+3. App ID and user ID valid
 4. Chat ID generated via `/api/chat/start`
 5. Check browser console for WebSocket errors
 

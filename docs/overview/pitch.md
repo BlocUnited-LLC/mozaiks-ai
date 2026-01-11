@@ -12,8 +12,8 @@ MozaiksAI is an AG2-based, multi-agent runtime that executes declarative, hot‑
 - Orchestration: GroupChat, tool binding, lifecycle hooks, retries, timeouts
 - Persistence: Mongo-backed session/state with idempotency and audit trails
 - Observability: Unified logs, perf metrics, runtime logging export
-- Multi‑tenant boundaries: enterprise_id/user_id isolation; cache seeds per chat
-- Monetization hooks: token tracking via MozaiksStream (usage/cost per tenant/user)
+- Multi‑tenant boundaries: app_id/user_id isolation; cache seeds per chat
+- Monetization hooks: token tracking via MozaiksPay (usage/cost per tenant/user)
 - Extensibility: Tools declared in JSON and loaded at runtime; no hardcoded routes
 
 The Generator doesn't just output JSON—it writes working code: tool stubs (.py/.js) and UI interaction components that wire directly into the React ChatUI. The runtime loads these declarative specs, validates structured outputs, auto‑calls tools (including custom UI elements), and streams live results. You get a running app with interactive UI, not just a spec file. Because workflows are declarative and hot‑swappable, you can iterate quickly without refactoring the runtime. The result isn't just an LLM demo—it's a production‑ready, instrumented app that ships with agentic features and cost controls.
@@ -24,7 +24,7 @@ The Generator doesn't just output JSON—it writes working code: tool stubs (.py
 - Declarative workflows, hot‑swappable: Update JSON specs to change behavior; no hardcoded orchestration.
 - Multi‑tenant and production‑minded: Built‑in isolation, idempotency, retries, timeouts, and structured logging.
 - Tooling neutrality: Load tools from manifests; align to stable AG2 patterns—no lock‑in to brittle, private APIs.
-- First‑class observability and token accounting: Track per enterprise/user, making ops and monetization practical from day one.
+- First‑class observability and token accounting: Track per app/user, making ops and monetization practical from day one.
 - UI/tool contract without schema coupling: The runtime forwards and correlates UI/tool events while keeping schemas modular and replaceable.
 
 ## Competitor comparison (lite)

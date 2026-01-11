@@ -802,17 +802,17 @@ Each workflow's components bundled separately for optimal code splitting.
 **Backend (shared_app.py):**
 
 ```python
-@app.post("/api/chats/{enterprise_id}/{workflow_name}/start")
-async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
+@app.post("/api/chats/{app_id}/{workflow_name}/start")
+async def start_chat(app_id: str, workflow_name: str, request: Request):
   payload = await request.json()
   user_id = payload["user_id"]
 
   chat_id = str(uuid4())
-  cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, enterprise_id)
+  cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, app_id)
 
   await persistence_manager.create_chat_session(
     chat_id=chat_id,
-    enterprise_id=enterprise_id,
+    app_id=app_id,
     user_id=user_id,
     workflow_name=workflow_name,
     cache_seed=cache_seed,
@@ -822,7 +822,7 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
     "chat_id": chat_id,
     "cache_seed": cache_seed,
     "workflow_name": workflow_name,
-    "enterprise_id": enterprise_id,
+    "app_id": app_id,
   }
 ```
 
@@ -830,7 +830,7 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
 
 ```javascript
 const startNewChat = async () => {
-  const result = await api.startChat(enterpriseId, workflowName, userId);
+  const result = await api.startChat(appId, workflowName, userId);
   
   const { chat_id, cache_seed } = result;
   

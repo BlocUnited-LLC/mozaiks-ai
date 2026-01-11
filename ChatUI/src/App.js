@@ -3,28 +3,20 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ChatUIProvider } from './context/ChatUIContext';
 import ChatPage from './pages/ChatPage';
 import MyWorkflowsPage from './pages/MyWorkflowsPage';
+import ArtifactPage from './pages/ArtifactPage';
 import './styles/TransportAwareChat.css';
 
 /**
  * AppContent - Inner component that has access to context and location
  */
-const NullRoute = () => null;
-
 const AppContent = () => {
-  // Widget mode is now managed by individual pages via useWidgetMode() hook
-  // and by ChatPage when processing returns from widget mode.
-  // No need for App.js to manage it centrally.
-
   return (
-    <>
-      <ChatPage />
-      <Routes>
-        <Route path="/" element={<NullRoute />} />
-        <Route path="/workflows" element={<MyWorkflowsPage />} />
-        <Route path="/my-workflows" element={<MyWorkflowsPage />} />
-        <Route path="*" element={<NullRoute />} />
-      </Routes>
-    </>
+    <Routes>
+      <Route path="/artifacts/:artifactId" element={<ArtifactPage />} />
+      <Route path="/workflows" element={<MyWorkflowsPage />} />
+      <Route path="/my-workflows" element={<MyWorkflowsPage />} />
+      <Route path="*" element={<ChatPage />} />
+    </Routes>
   );
 };
 

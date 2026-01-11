@@ -202,8 +202,8 @@ if ($Mode -eq 'docker') {
 # Local mode: ensure infra running, stop app container if present, run local app using .venv
 Write-Host "Local-dev mode: starting infra-only and running app locally" -ForegroundColor Green
 
-# Start infra (start compose but stop the app service immediately if it starts)
-docker compose -f infra/compose/docker-compose.yml up -d
+# Start infra only (mongo). This avoids the app container binding port 8000.
+docker compose -f infra/compose/docker-compose.yml up -d mongo
 # If an app container is running, stop it to free the port
 $appContainer = Get-ContainerByName mozaiksai-app
 if ($appContainer) {
@@ -221,22 +221,22 @@ if (Test-PortInUse -Port $AppPort) {
 Write-Host "Activating virtualenv and starting local backend..." -ForegroundColor Green
 if (Test-Path ".venv\Scripts\Activate.ps1") {
     # Use the venv activation script in the current shell
-    . .\venv\Scripts\Activate.ps1
+    . .\.venv\Scripts\Activate.ps1
 } elseif (Test-Path ".venv\Scripts\activate") {
     # fallback (cmd style)
-    . .\venv\Scripts\activate
+    . .\.venv\Scripts\activate
 } else {
     Write-Host "No .venv found. Please create one or run the app manually." -ForegroundColor Red
     exit 1
 }
 
-if (Test-Path ".\start-app.ps1") {
-    Write-Host "Running .\start-app.ps1 (this will run in the current terminal)..." -ForegroundColor Green
-    .\start-app.ps1
-} else {
-    Write-Host "start-app.ps1 not found; please run the backend start command manually." -ForegroundColor Red
-    exit 1
+if (-not $env:AUTH_ENABLED) {
+    # Local dev default: disable auth so ChatUI can call APIs without tokens.
+    $env:AUTH_ENABLED = "false"
 }
+
+Write-Host "Starting local backend on http://localhost:$AppPort (AUTH_ENABLED=$($env:AUTH_ENABLED))" -ForegroundColor Yellow
+python run_server.py
 
 if ($StartFrontend) {
     Write-Host "Starting frontend (ChatUI) in a new process..." -ForegroundColor Green

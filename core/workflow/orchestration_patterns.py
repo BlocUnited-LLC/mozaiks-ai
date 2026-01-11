@@ -159,17 +159,17 @@ async def _resume_or_initialize_chat(
     termination_handler,
     config: Dict[str, Any],
     chat_id: str,
-    enterprise_id: str,
+    app_id: str,
     workflow_name: str,
     user_id: Optional[str],
     initial_message: Optional[str],
     wf_logger,
 ):
-    resumed_messages = await persistence_manager.resume_chat(chat_id, enterprise_id) or []
+    resumed_messages = await persistence_manager.resume_chat(chat_id, app_id) or []
     resume_raw_count = len(resumed_messages)
     initial_messages: List[Dict[str, Any]] = []
 
-    # Strip Ask Mozaiks chatter before handing the transcript back to AG2 orchestration.
+    # Strip general-mode (non-AG2) chatter before handing the transcript back to AG2 orchestration.
     filtered_resumed_messages: List[Dict[str, Any]] = []
     skipped_general = 0
     for msg in resumed_messages:
@@ -182,7 +182,7 @@ async def _resume_or_initialize_chat(
 
     if skipped_general:
         wf_logger.info(
-            " [RESUME] Ignored %s Ask Mozaiks messages while preparing workflow resume",
+            " [RESUME] Ignored %s general-mode messages while preparing workflow resume",
             skipped_general,
         )
 
@@ -241,7 +241,7 @@ async def _resume_or_initialize_chat(
         try:
             await persistence_manager.create_chat_session(
                 chat_id=chat_id,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 workflow_name=workflow_name,
                 user_id=current_user_id,
             )
@@ -259,7 +259,7 @@ async def _resume_or_initialize_chat(
                 if initial_messages:
                     await persistence_manager.persist_initial_messages(
                         chat_id=chat_id,
-                        enterprise_id=enterprise_id,
+                        app_id=app_id,
                         messages=initial_messages,
                     )
             except Exception as init_persist_err:  # pragma: no cover
@@ -278,7 +278,7 @@ async def _resume_or_initialize_chat(
                 try:
                     await persistence_manager.persist_initial_messages(
                         chat_id=chat_id,
-                        enterprise_id=enterprise_id,
+                        app_id=app_id,
                         messages=initial_messages,
                     )
                 except Exception as seed_persist_err:  # pragma: no cover
@@ -304,25 +304,45 @@ async def _load_llm_config(workflow_name: str, wf_logger, workflow_name_upper: s
 async def _build_context_blocking(
     context_factory: Optional[Callable],
     workflow_name: str,
-    enterprise_id: str,
+    app_id: str,
     chat_id: str,
     user_id: Optional[str],
     wf_logger,
     workflow_name_upper: str,
+    frontend_context: Optional[Dict[str, Any]] = None,
 ):
     """Build context and wait for it to be fully populated before first turn.
 
     - If a context_factory is provided, supports both sync and async factories.
+    - If frontend_context is provided, it is merged into the context with 'ui_' prefix.
     """
     try:
         if context_factory:
             result = context_factory()
             if inspect.isawaitable(result):
-                return await result
-            return result
-        from .context.variables import _load_context_async
-        # Use the internal async loader directly to ensure blocking population
-        return await _load_context_async(workflow_name, enterprise_id)
+                ctx = await result
+            else:
+                ctx = result
+        else:
+            from .context.variables import _load_context_async
+            # Use the internal async loader directly to ensure blocking population
+            ctx = await _load_context_async(workflow_name, app_id)
+        
+        # Merge frontend context with ui_ prefix (avoids collisions with backend context)
+        if frontend_context and isinstance(frontend_context, dict) and ctx is not None:
+            for key, value in frontend_context.items():
+                prefixed_key = f"ui_{key}" if not key.startswith("ui_") else key
+                try:
+                    # Use set() method if available (RuntimeContextVariables/AG2ContextVariables)
+                    if hasattr(ctx, 'set'):
+                        ctx.set(prefixed_key, value)
+                    elif hasattr(ctx, '__setitem__'):
+                        ctx[prefixed_key] = value
+                    wf_logger.info(f" [{workflow_name_upper}] Merged frontend context: {prefixed_key}")
+                except Exception as fc_err:
+                    wf_logger.warning(f" [{workflow_name_upper}] Failed to set frontend context {prefixed_key}: {fc_err}")
+        
+        return ctx
     except Exception as e:
         wf_logger.error(f" [{workflow_name_upper}] Context load failed: {e}")
         return None
@@ -353,10 +373,11 @@ def _ensure_user_proxy(
     )
     if not user_proxy_exists:
         human_in_loop_flag = _normalize_human_in_the_loop(config.get("human_in_the_loop", False))
-        if startup_mode == "BackendOnly":
+        # ChatUI (and the HTTP transport) provide real user input and should never trigger
+        # AG2's terminal/CLI-style feedback prompts ("Please give feedback to chat_manager...").
+        # Keep the auto-created user proxy non-interactive.
+        if startup_mode in {"BackendOnly", "UserDriven"}:
             human_input_mode = "NEVER"
-        elif startup_mode == "UserDriven":
-            human_input_mode = "ALWAYS"
         else:
             human_input_mode = "TERMINATE"
         user_proxy_agent = UserProxyAgent(
@@ -442,7 +463,7 @@ async def _create_ag2_pattern(
     handoffs_factory: Optional[Callable],
     wf_logger,
     chat_id: str,
-    enterprise_id: str,
+    app_id: str,
     user_id: Optional[str],
 ):
     """Create AG2 Pattern with proper context variables integration."""
@@ -456,8 +477,8 @@ async def _create_ag2_pattern(
     # These may already be set by _build_context_blocking, but we ensure they're present
     if not ag2_context.get("workflow_name"):
         ag2_context.set("workflow_name", workflow_name)
-    if not ag2_context.get("enterprise_id"):
-        ag2_context.set("enterprise_id", enterprise_id)
+    if not ag2_context.get("app_id"):
+        ag2_context.set("app_id", app_id)
     if not ag2_context.get("chat_id"):
         ag2_context.set("chat_id", chat_id)
     # Optionally attach user_id if provided
@@ -469,7 +490,7 @@ async def _create_ag2_pattern(
     wf_logger.info(
         f"[CONTEXT] AG2 ContextVariables ready | total_keys={len(context_keys)} | "
         f"workflow_name={ag2_context.get('workflow_name')} | "
-        f"enterprise_id={ag2_context.get('enterprise_id')} | "
+        f"app_id={ag2_context.get('app_id')} | "
         f"chat_id={ag2_context.get('chat_id')} | "
         f"user_id={ag2_context.get('user_id')}"
     )
@@ -527,7 +548,7 @@ async def _stream_events(
     max_turns: int,
     agents: Dict[str, ConversableAgent],
     chat_id: str,
-    enterprise_id: str,
+    app_id: str,
     workflow_name: str,
     wf_logger,
     workflow_name_upper: str,
@@ -665,7 +686,7 @@ async def _stream_events(
     def _build_auto_tool_context_payload(turn_sequence: int) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "chat_id": chat_id,
-            "enterprise_id": enterprise_id,
+            "app_id": app_id,
             "workflow_name": workflow_name,
             "turn_sequence": turn_sequence,
         }
@@ -784,7 +805,7 @@ async def _stream_events(
             # TextEvent persistence + forwarding (wrapped in tight try so other event types continue on failure)
             if isinstance(ev, TextEvent):
                 try:
-                    await persistence_manager.save_event(ev, chat_id, enterprise_id)  # type: ignore[arg-type]
+                    await persistence_manager.save_event(ev, chat_id, app_id)  # type: ignore[arg-type]
                     if derived_context_manager:
                         derived_context_manager.handle_event(ev)
 
@@ -1030,7 +1051,7 @@ async def _stream_events(
                                     agent_name=sender_name,
                                     agent_output=message_content,
                                     chat_id=chat_id,
-                                    enterprise_id=enterprise_id,
+                                    app_id=app_id,
                                     context_variables=active_ctx,
                                     sequence_number=sequence_counter,
                                 )
@@ -1498,7 +1519,7 @@ async def _stream_events(
                                 trigger=LifecycleTrigger.ON_CONTEXT_CHANGE,
                                 workflow_name=workflow_name,
                                 chat_id=chat_id,
-                                enterprise_id=enterprise_id,
+                                app_id=app_id,
                                 context_key=context_key,
                                 old_value=old_value,
                                 new_value=new_value,
@@ -1537,7 +1558,7 @@ async def _stream_events(
                 trigger=LifecycleTrigger.AFTER_CHAT,
                 workflow_name=workflow_name,
                 chat_id=chat_id,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 user_id=user_id,
                 context_variables=active_ctx,
                 final_status=final_status,
@@ -1560,10 +1581,11 @@ async def _stream_events(
 
 async def run_workflow_orchestration(
     workflow_name: str,
-    enterprise_id: str,
+    app_id: str,
     chat_id: str,
     user_id: Optional[str] = None,
     initial_message: Optional[str] = None,
+    initial_agent_name_override: Optional[str] = None,
     agents_factory: Optional[Callable] = None,
     context_factory: Optional[Callable] = None,
     handoffs_factory: Optional[Callable] = None,
@@ -1577,7 +1599,7 @@ async def run_workflow_orchestration(
     # Create workflow logger for this session  
     wf_lifecycle_logger = get_workflow_logger(workflow_name, chat_id=chat_id)
     
-    wf_logger = get_workflow_logger(workflow_name, chat_id=chat_id, enterprise_id=enterprise_id)
+    wf_logger = get_workflow_logger(workflow_name, chat_id=chat_id, app_id=app_id)
     
     # Log orchestration start with session summary instead of verbose details
     logger.info(f" [ORCHESTRATION] Starting {workflow_name} workflow")
@@ -1594,7 +1616,7 @@ async def run_workflow_orchestration(
 
     termination_handler = create_termination_handler(
         chat_id=chat_id,
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         workflow_name=workflow_name,
         transport=transport
     )
@@ -1618,12 +1640,12 @@ async def run_workflow_orchestration(
 
     perf_mgr = await get_performance_manager()
     await perf_mgr.initialize()
-    await perf_mgr.record_workflow_start(chat_id, enterprise_id, workflow_name, user_id or "unknown")
+    await perf_mgr.record_workflow_start(chat_id, app_id, workflow_name, user_id or "unknown")
     await perf_mgr.attach_trace_id(chat_id, trace_id_hex)
 
     # Start AG2 runtime logging for this workflow session and keep it active
     # across the orchestration run so AG2 events (like LLM/tool calls) are captured.
-    with ag2_logging_session(chat_id, workflow_name, enterprise_id):
+    with ag2_logging_session(chat_id, workflow_name, app_id):
         # Set up realtime token logger for immediate token tracking
         try:
             from core.observability.realtime_token_logger import get_realtime_token_logger
@@ -1646,6 +1668,12 @@ async def run_workflow_orchestration(
             human_in_loop = cfg["human_in_loop"]
             initial_agent_name = cfg["initial_agent_name"]
 
+            # Adapter-level override: allow a caller to force where AG2 starts/resumes.
+            # This is intentionally generic (no workflow-specific knowledge) and is
+            # validated later by _resolve_initiating_agent.
+            if initial_agent_name_override:
+                initial_agent_name = str(initial_agent_name_override)
+
             # Brief, structured visibility into effective normalized config
             try:
                 wf_logger.info(
@@ -1662,7 +1690,7 @@ async def run_workflow_orchestration(
                 termination_handler=termination_handler,
                 config=config,
                 chat_id=chat_id,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 workflow_name=workflow_name,
                 user_id=user_id,
                 initial_message=initial_message,
@@ -1676,7 +1704,7 @@ async def run_workflow_orchestration(
             # 3) LLM config (per-chat cache seed)
             # -----------------------------------------------------------------
             try:
-                cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, enterprise_id)
+                cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, app_id)
             except Exception as seed_err:
                 cache_seed = None
                 wf_logger.debug(f" [{workflow_name_upper}] cache_seed assignment failed for chat {chat_id}: {seed_err}")
@@ -1699,7 +1727,7 @@ async def run_workflow_orchestration(
                 "WORKFLOW_STARTED",
                 event_type=f"{workflow_name_upper}_WORKFLOW_STARTED",
                 description=f"{workflow_name} workflow orchestration initialized",
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 chat_id=chat_id,
                 user_id=user_id,
                 pattern=orchestration_pattern,
@@ -1713,15 +1741,68 @@ async def run_workflow_orchestration(
             # -----------------------------------------------------------------
             context = None
             context_start = perf_counter()
+            
+            # Retrieve frontend context from transport connection metadata (set by host app)
+            frontend_context = None
+            try:
+                if transport and hasattr(transport, 'connections') and chat_id in transport.connections:
+                    frontend_context = transport.connections[chat_id].get("frontend_context")
+                    if frontend_context:
+                        wf_logger.info(f" [{workflow_name_upper}] Found frontend context: {list(frontend_context.keys())}")
+            except Exception as fc_lookup_err:
+                wf_logger.debug(f" [{workflow_name_upper}] Frontend context lookup failed: {fc_lookup_err}")
+            
             context = await _build_context_blocking(
                 context_factory=context_factory,
                 workflow_name=workflow_name,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 chat_id=chat_id,
                 user_id=user_id,
                 wf_logger=wf_logger,
                 workflow_name_upper=workflow_name_upper,
+                frontend_context=frontend_context,
             )
+
+            # Merge persisted session metadata (extra_fields) into context.
+            # This enables parent/child correlation and generator-subrun seeding.
+            try:
+                if context is not None:
+                    extra_ctx = await persistence_manager.fetch_chat_session_extra_context(chat_id=chat_id, app_id=app_id)
+                    if isinstance(extra_ctx, dict) and extra_ctx:
+                        for k, v in extra_ctx.items():
+                            try:
+                                # Do not clobber existing keys.
+                                existing = None
+                                if hasattr(context, "get"):
+                                    existing = context.get(k)  # type: ignore[call-arg]
+                                elif hasattr(context, "data") and isinstance(getattr(context, "data"), dict):
+                                    existing = getattr(context, "data").get(k)
+                                if existing is None:
+                                    if hasattr(context, "set"):
+                                        context.set(k, v)
+                                    elif hasattr(context, "__setitem__"):
+                                        context[k] = v
+                            except Exception:
+                                continue
+
+                        # Derive child marker when parent_chat_id exists.
+                        try:
+                            parent_chat_id = extra_ctx.get("parent_chat_id")
+                            if parent_chat_id and hasattr(context, "get") and not context.get("is_child_workflow"):
+                                context.set("is_child_workflow", True)
+                        except Exception:
+                            pass
+            except Exception as _seed_err:
+                wf_logger.debug(f" [{workflow_name_upper}] Failed merging persisted extra context: {_seed_err}")
+
+            # Permanent runtime variable: does this workflow declare nested child chats?
+            try:
+                if context is not None:
+                    from core.workflow.pack.graph import workflow_has_nested_chats
+
+                    context.set("has_children", bool(workflow_has_nested_chats(workflow_name)))
+            except Exception:
+                pass
             context_time = (perf_counter() - context_start) * 1000
             performance_logger.info(
                 "context_load_duration_ms",
@@ -1730,7 +1811,7 @@ async def run_workflow_orchestration(
                     "value": float(context_time),
                     "unit": "ms",
                     "workflow_name": workflow_name,
-                    "enterprise_id": enterprise_id,
+                    "app_id": app_id,
                 },
             )
 
@@ -1768,6 +1849,14 @@ async def run_workflow_orchestration(
                     wf_logger.debug(f"Failed registering derived listener: {_lerr}")
             else:
                 derived_context_manager = None
+
+            # Expose derived context manager to transport so UI tool responses can
+            # apply declarative ui_response triggers into AG2 ContextVariables.
+            if transport and derived_context_manager and hasattr(transport, "register_derived_context_manager"):
+                try:
+                    transport.register_derived_context_manager(chat_id, derived_context_manager)
+                except Exception as _reg_err:  # pragma: no cover
+                    wf_logger.debug(f"Failed registering derived context manager with transport: {_reg_err}")
 
             # Get tool binding data for summary
             from .agents.tools import load_agent_tool_functions
@@ -1871,7 +1960,7 @@ async def run_workflow_orchestration(
                 handoffs_factory=handoffs_factory,
                 wf_logger=wf_logger,
                 chat_id=chat_id,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 user_id=user_id,
             )
 
@@ -1977,7 +2066,7 @@ async def run_workflow_orchestration(
                 max_turns=max_turns,
                 agents=agents,
                 chat_id=chat_id,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 workflow_name=workflow_name,
                 wf_logger=wf_logger,
                 workflow_name_upper=workflow_name_upper,
@@ -2041,25 +2130,43 @@ async def run_workflow_orchestration(
                         f"without_cache={ag2_usage_excluding_cached}"
                     )
 
-                    # Compare AG2 totals vs PerformanceManager snapshot for reconciliation
-                    snapshot = await perf_mgr.snapshot_chat(chat_id)
-                    tracked_prompt = int(snapshot.get("prompt_tokens", 0)) if snapshot else 0
-                    tracked_completion = int(snapshot.get("completion_tokens", 0)) if snapshot else 0
-                    tracked_cost = float(snapshot.get("cost", 0.0)) if snapshot else 0.0
+                    # Compare AG2 totals vs persisted ChatSessions counters (avoid double counting).
+                    persisted_prompt = 0
+                    persisted_completion = 0
+                    persisted_cost = 0.0
+                    try:
+                        coll = await persistence_manager._coll()
+                        persisted = await coll.find_one(
+                            {"_id": chat_id, "app_id": app_id},
+                            {
+                                "usage_prompt_tokens_final": 1,
+                                "usage_completion_tokens_final": 1,
+                                "usage_total_cost_final": 1,
+                            },
+                        )
+                        if isinstance(persisted, dict):
+                            persisted_prompt = int(persisted.get("usage_prompt_tokens_final") or 0)
+                            persisted_completion = int(persisted.get("usage_completion_tokens_final") or 0)
+                            persisted_cost = float(persisted.get("usage_total_cost_final") or 0.0)
+                    except Exception as read_err:
+                        wf_logger.debug(f"[FINAL_RECONCILIATION] Failed to read persisted usage: {read_err}")
 
-                    final_cost_delta = max(0.0, ag2_total_cost - tracked_cost)
-                    final_prompt_delta = max(0, int(ag2_usage_excluding_cached.get("prompt_tokens", 0) or 0) - tracked_prompt)
-                    final_completion_delta = max(0, int(ag2_usage_excluding_cached.get("completion_tokens", 0) or 0) - tracked_completion)
+                    ag2_prompt_total = int(ag2_usage_excluding_cached.get("prompt_tokens", 0) or 0)
+                    ag2_completion_total = int(ag2_usage_excluding_cached.get("completion_tokens", 0) or 0)
+
+                    final_cost_delta = max(0.0, ag2_total_cost - persisted_cost)
+                    final_prompt_delta = max(0, ag2_prompt_total - persisted_prompt)
+                    final_completion_delta = max(0, ag2_completion_total - persisted_completion)
 
                     if final_cost_delta > 0.01 or final_prompt_delta or final_completion_delta:
                         wf_logger.warning(
                             "[FINAL_RECONCILIATION] Delta detected | "
-                            f"ag2_total=${ag2_total_cost:.4f} tracked_total=${tracked_cost:.4f} | "
+                            f"ag2_total=${ag2_total_cost:.4f} persisted_total=${persisted_cost:.4f} | "
                             f"delta=${final_cost_delta:.4f} prompt_delta={final_prompt_delta} completion_delta={final_completion_delta}"
                         )
                         await persistence_manager.update_session_metrics(
                             chat_id=chat_id,
-                            enterprise_id=enterprise_id,
+                            app_id=app_id,
                             user_id=user_id or "unknown",
                             workflow_name=workflow_name,
                             prompt_tokens=final_prompt_delta,
@@ -2071,7 +2178,7 @@ async def run_workflow_orchestration(
                     else:
                         wf_logger.info(
                             "o. [FINAL_RECONCILIATION] Usage tracking accurate | "
-                            f"ag2=${ag2_total_cost:.4f} tracked=${tracked_cost:.4f} | "
+                            f"ag2=${ag2_total_cost:.4f} persisted=${persisted_cost:.4f} | "
                             f"delta=${final_cost_delta:.4f}"
                         )
 
@@ -2104,13 +2211,15 @@ async def run_workflow_orchestration(
             except Exception as term_err:
                 logger.error(f" Termination handler failed: {term_err}")
 
-            # Safely extract messages for logging
+            # Safely extract messages for logging and returning.
+            # Some AG2 responses expose `messages` as an awaitable; never leak the coroutine.
+            messages_obj = None
             try:
                 messages_obj = getattr(response, 'messages', None)
                 if asyncio.iscoroutine(messages_obj):
                     messages_obj = await messages_obj
                 if messages_obj is not None:
-                    await log_conversation_to_agent_chat_file(messages_obj, chat_id, enterprise_id, workflow_name)
+                    await log_conversation_to_agent_chat_file(messages_obj, chat_id, app_id, workflow_name)
             except Exception as log_err:
                 logger.error(f" Failed to log conversation to agent chat file for {chat_id}: {log_err}")
 
@@ -2132,9 +2241,9 @@ async def run_workflow_orchestration(
             result_payload = {
                 "workflow_name": workflow_name,
                 "chat_id": chat_id,
-                "enterprise_id": enterprise_id,
+                "app_id": app_id,
                 "user_id": user_id,
-                "messages": getattr(response, 'messages', None),
+                "messages": messages_obj,
                 "max_turns_reached": max_turns_reached,
                 "response": response
             }
@@ -2170,7 +2279,7 @@ async def run_workflow_orchestration(
             agent_count=len(agents),
             pattern_used=orchestration_pattern,
             chat_id=chat_id,
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             result_status="success" if result_payload else "empty"
         )
         
@@ -2198,8 +2307,12 @@ async def run_workflow_orchestration(
             pass
         
     finally:
-        # Keeping block to preserve structure for future extension (e.g., tracing export hooks).
-        pass
+        # Transport cleanup: ensure per-chat trigger managers are released.
+        try:
+            if transport and hasattr(transport, "unregister_derived_context_manager"):
+                transport.unregister_derived_context_manager(chat_id)
+        except Exception:  # pragma: no cover
+            pass
 
     return result_payload
 
@@ -2208,7 +2321,7 @@ async def run_workflow_orchestration(
 # NOTE: create_ag2_pattern function has been extracted to pattern_factory.py
 # This refactoring improves modularity and maintainability.
 # Import: from .pattern_factory import create_ag2_pattern
-async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str, enterprise_id: str, workflow_name: str):
+async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str, app_id: str, workflow_name: str):
     """
     Log the complete AG2 conversation to the agent chat log file.
     """
@@ -2260,7 +2373,7 @@ async def log_conversation_to_agent_chat_file(conversation_history, chat_id: str
 
                 if clean_content:
                     agent_chat_logger.info(
-                        f"AGENT_MESSAGE | Chat: {chat_id} | Enterprise: {enterprise_id} | Agent: {sender_name} | Message #{i+1}: {clean_content}"
+                        f"AGENT_MESSAGE | Chat: {chat_id} | App: {app_id} | Agent: {sender_name} | Message #{i+1}: {clean_content}"
                     )
                     # Skip user proxy messages to prevent echo back to UI
                     message_role = message.get('role') if isinstance(message, dict) else None

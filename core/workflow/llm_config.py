@@ -27,6 +27,8 @@ import asyncio
 import logging
 import hashlib
 import json
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type, Set
 from pydantic import BaseModel
 
@@ -39,6 +41,54 @@ except Exception:  # pragma: no cover
     get_mongo_client = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+
+def _attach_autogen_cache(llm_config: Dict[str, Any]) -> None:
+    """Attach an Autogen disk cache rooted in a writable location.
+
+    Autogen's legacy cache behavior uses cache_root='.cache', which can fail on
+    Docker Desktop + bind mounts. Injecting a Cache object forces Autogen to use
+    our explicit cache root instead.
+    """
+
+    seed = llm_config.get("cache_seed")
+    if seed is None:
+        return
+    try:
+        cache_seed = int(seed)
+    except Exception:
+        return
+
+    try:
+        from autogen.cache import Cache  # type: ignore
+    except Exception as err:
+        logger.debug(f"[LLM_CONFIG] Autogen cache unavailable; skipping cache attach: {err}")
+        return
+
+    cache_root = (
+        os.getenv("MOZAIKS_AUTOGEN_CACHE_DIR")
+        or os.getenv("AUTOGEN_CACHE_DIR")
+        or os.path.join(tempfile.gettempdir(), "mozaiksai_autogen_cache")
+    )
+
+    try:
+        Path(cache_root).mkdir(parents=True, exist_ok=True)
+    except Exception as mk_err:
+        logger.warning(f"[LLM_CONFIG] Autogen cache disabled (cannot create dir {cache_root!r}): {mk_err}")
+        return
+
+    try:
+        cache_obj = Cache.disk(cache_seed, str(cache_root))
+    except Exception as cache_err:
+        logger.warning(f"[LLM_CONFIG] Autogen cache disabled (failed to init disk cache at {cache_root!r}): {cache_err}")
+        return
+
+    config_list = llm_config.get("config_list")
+    if not isinstance(config_list, list):
+        return
+    for entry in config_list:
+        if isinstance(entry, dict) and "cache" not in entry:
+            entry["cache"] = cache_obj
 
 # ---------------------------------------------------------------------------
 # Cache Structures
@@ -283,7 +333,9 @@ async def get_llm_config(
     )
     if cache and cache_key in _LLM_CONFIG_CACHE:
         import copy
-        return None, copy.deepcopy(_LLM_CONFIG_CACHE[cache_key])
+        cfg = copy.deepcopy(_LLM_CONFIG_CACHE[cache_key])
+        _attach_autogen_cache(cfg)
+        return None, cfg
 
     # Ensure base provider list loaded
     config_list = await _load_raw_config_list()
@@ -353,6 +405,7 @@ async def get_llm_config(
     
     # Final check - ensure we don't have any extra config modifications happening
     logger.debug(f"[LLM_CONFIG] About to return config with config_list length: {len(llm_config.get('config_list', []))}")
+    _attach_autogen_cache(llm_config)
     return None, llm_config
 
 

@@ -38,7 +38,7 @@ Two persistence mechanisms exist:
 From `persistence_manager.py`:
 ```python
 async def update_last_artifact(
-    self, *, chat_id: str, enterprise_id: str, artifact: Dict[str, Any]
+    self, *, chat_id: str, app_id: str, artifact: Dict[str, Any]
 ) -> None:
     """Persist latest artifact/tool panel context for multi-user resume.
     
@@ -51,14 +51,14 @@ async def update_last_artifact(
 **Location**: Stored directly in `ChatSessions` document under `last_artifact` field
 
 **Retrieval**: 
-- HTTP: `GET /api/chats/meta/{enterprise_id}/{workflow_name}/{chat_id}`
+- HTTP: `GET /api/chats/meta/{app_id}/{workflow_name}/{chat_id}`
 - Returns: `{exists: true, chat_id, workflow_name, cache_seed, last_artifact: {...}}`
 
 #### B. **Workflow Session Artifacts** (via `ArtifactInstances` collection)
 From `session_manager.py`:
 ```python
 async def create_artifact_instance(
-    enterprise_id: str,
+    app_id: str,
     workflow_name: str,
     artifact_type: str,
     initial_state: Optional[Dict[str, Any]] = None
@@ -68,7 +68,7 @@ async def create_artifact_instance(
 
 **Location**: Separate `ArtifactInstances` collection with full state object
 
-**Retrieval**: Via `get_artifact_instance(artifact_id, enterprise_id)`
+**Retrieval**: Via `get_artifact_instance(artifact_id, app_id)`
 
 ### 3. **Chat History Persistence** ✅
 
@@ -117,7 +117,7 @@ if (data.last_artifact && data.last_artifact.ui_tool_id) {
 When user returns to Generator workflow:
 
 1. Frontend knows `chat_id = chat_123`
-2. Frontend calls `/api/chats/meta/{enterprise_id}/Generator/{chat_123}`
+2. Frontend calls `/api/chats/meta/{app_id}/Generator/{chat_123}`
 3. Backend returns `last_artifact` (if it exists)
 4. **BUT**: If artifact is stored in `ArtifactInstances` collection, the `last_artifact` field might be null/outdated
 
@@ -149,8 +149,8 @@ Frontend: Restore artifact panel
 
 From `shared_app.py`:
 ```python
-@app.get("/api/chats/meta/{enterprise_id}/{workflow_name}/{chat_id}")
-async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
+@app.get("/api/chats/meta/{app_id}/{workflow_name}/{chat_id}")
+async def chat_meta(app_id: str, workflow_name: str, chat_id: str):
     coll = await _chat_coll()  # ← Gets ChatSessions
     projection = {"cache_seed": 1, "last_artifact": 1, "_id": 1, "workflow_name": 1}
     doc = await coll.find_one({"_id": chat_id, ...}, projection)
@@ -173,13 +173,13 @@ async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
 ### Fix 1: **Update chat_meta endpoint to include artifact_instance_id**
 
 ```python
-@app.get("/api/chats/meta/{enterprise_id}/{workflow_name}/{chat_id}")
-async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
+@app.get("/api/chats/meta/{app_id}/{workflow_name}/{chat_id}")
+async def chat_meta(app_id: str, workflow_name: str, chat_id: str):
     try:
         # Get from ChatSessions
         coll = await _chat_coll()
         projection = {"cache_seed": 1, "last_artifact": 1, "_id": 1, "workflow_name": 1}
-        doc = await coll.find_one({"_id": chat_id, "enterprise_id": eid, "workflow_name": workflow_name}, projection)
+        doc = await coll.find_one({"_id": chat_id, "app_id": eid, "workflow_name": workflow_name}, projection)
         
         # ALSO get from WorkflowSessions
         from core.workflow import session_manager
@@ -212,7 +212,7 @@ async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
 In `ChatPage.js`:
 ```javascript
 // After connecting to chat_123
-const metaResponse = await fetch(`/api/chats/meta/${enterpriseId}/${workflowName}/${chatId}`);
+const metaResponse = await fetch(`/api/chats/meta/${appId}/${workflowName}/${chatId}`);
 const meta = await metaResponse.json();
 
 if (meta.exists) {
@@ -229,7 +229,7 @@ if (meta.exists) {
     }
     // Option B: Fetch separately (if state too large for meta)
     else {
-      const artifactResponse = await fetch(`/api/artifacts/${enterpriseId}/${meta.artifact_instance_id}`);
+      const artifactResponse = await fetch(`/api/artifacts/${appId}/${meta.artifact_instance_id}`);
       const artifact = await artifactResponse.json();
       restoreArtifactFromState(artifact.state, meta.artifact_instance_id);
     }
@@ -249,7 +249,7 @@ from core.workflow import session_manager
 
 # Create persistent artifact instance
 artifact = await session_manager.create_artifact_instance(
-    enterprise_id=enterprise_id,
+    app_id=app_id,
     workflow_name="Generator",
     artifact_type="ActionPlan",
     initial_state={"workflow": action_plan_data}
@@ -259,13 +259,13 @@ artifact = await session_manager.create_artifact_instance(
 await session_manager.attach_artifact_to_session(
     chat_id=chat_id,
     artifact_id=artifact["_id"],
-    enterprise_id=enterprise_id
+    app_id=app_id
 )
 
 # ALSO persist as last_artifact for quick UI restore
 await persistence_manager.update_last_artifact(
     chat_id=chat_id,
-    enterprise_id=enterprise_id,
+    app_id=app_id,
     artifact={
         "ui_tool_id": "ActionPlan",
         "event_id": event_id,
@@ -324,7 +324,7 @@ Without this, users will see their chat history when returning to Generator, but
 
 Recent ChatUI changes keep the UI in sync with these persistence rules:
 
-- `ChatPage.js` now fetches `/api/sessions/list/{enterprise_id}/{user_id}` on load and whenever modes change, storing the ordered (oldest-first) list of `IN_PROGRESS` workflow sessions inside `ChatUIContext.workflowSessions`.
+- `ChatPage.js` now fetches `/api/sessions/list/{app_id}/{user_id}` on load and whenever modes change, storing the ordered (oldest-first) list of `IN_PROGRESS` workflow sessions inside `ChatUIContext.workflowSessions`.
 - Toggling from Ask Mozaiks back to workflow mode uses the cached session list when no `currentChatId` is present, defaulting to the oldest active workflow to guarantee deterministic restoration.
 - The persistent chat widget follows the same logic when the user toggles from `/workflows` or other routes: it navigates back to `/chat`, sends `chat.switch_workflow` for the resolved chat_id, and updates context so artifacts/UI snapshots can replay.
 - Ask-mode activation now refreshes both general chat sessions and workflow sessions, ensuring the frontend never points at a stale chat_id (critical when users complete or delete workflows outside the active tab).

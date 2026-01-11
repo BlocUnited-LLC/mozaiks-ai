@@ -5,6 +5,7 @@
 # ==============================================================================
 
 import json
+import yaml
 import importlib
 from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable, Set
 from pathlib import Path
@@ -76,8 +77,9 @@ class UnifiedWorkflowManager:
     # ------------------------- UI TOOLS -------------------------
     def _load_workflow_tools(self, workflow_path: str) -> None:
         from pathlib import Path as _P
-        tools_json_path = _P(workflow_path) / "tools.json"
-        if not tools_json_path.exists():
+        tools_yaml_path = _P(workflow_path) / "tools.yaml"
+        
+        if not tools_yaml_path.exists():
             return
 
         workflow_name = _P(workflow_path).name
@@ -85,11 +87,12 @@ class UnifiedWorkflowManager:
             return
 
         try:
-            with open(tools_json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f) or {}
+            with open(tools_yaml_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+            
             entries = data.get('tools', [])
             if not isinstance(entries, list):
-                logger.warning(f"Invalid tools list in {tools_json_path}")
+                logger.warning(f"Invalid tools list in workflow {workflow_name}")
                 return
 
             ui_ct = 0
@@ -288,13 +291,14 @@ class UnifiedWorkflowManager:
         workflows = []
         for item in self.workflows_base_path.iterdir():
             if item.is_dir() and not item.name.startswith('.'):
-                # Check for modular JSON files (orchestrator.json preferred)
-                if (item / "orchestrator.json").exists():
+                # Check for modular YAML config files
+                if (item / "orchestrator.yaml").exists():
                     workflows.append(item.name)
-                    logger.debug(f"Discovered workflow: {item.name}")
-                # Also treat workflows that declare configuration via tools.json as first-class
-                elif (item / "tools.json").exists() or (item / "tools").exists():
+                    logger.debug(f"Discovered workflow (orchestrator.yaml): {item.name}")
+                # Also treat workflows that declare configuration via tools.yaml as first-class
+                elif (item / "tools.yaml").exists() or (item / "tools").exists():
                     workflows.append(item.name)
+                    logger.debug(f"Discovered workflow (tools.yaml): {item.name}")
                     logger.debug(f"Discovered workflow (tools.json): {item.name}")
         
         return workflows
@@ -432,13 +436,23 @@ class UnifiedWorkflowManager:
         config = self.get_config(workflow_name)
         agents_data = config.get('agents', {})
         
+        agents_dict: Dict[str, Any] = {}
+
         # Handle double-nesting: agents.agents.{agent_name}
-        if 'agents' in agents_data and isinstance(agents_data['agents'], dict):
-            agents_dict = agents_data['agents']
+        if isinstance(agents_data, dict) and 'agents' in agents_data:
+            nested = agents_data.get('agents')
+            if isinstance(nested, dict):
+                agents_dict = nested
+            elif isinstance(nested, list):
+                for item in nested:
+                    if isinstance(item, dict) and isinstance(item.get('name'), str):
+                        agents_dict[item['name']] = item
         elif isinstance(agents_data, dict):
             agents_dict = agents_data
-        else:
-            agents_dict = {}
+        elif isinstance(agents_data, list):
+            for item in agents_data:
+                if isinstance(item, dict) and isinstance(item.get('name'), str):
+                    agents_dict[item['name']] = item
         
         auto_tool_agents: Set[str] = set()
         
@@ -471,23 +485,35 @@ class UnifiedWorkflowManager:
 
         hidden_triggers: Dict[str, Set[str]] = {}
 
-        for var_name, var_config in definitions.items():
+        # Most workflows use list-based definitions: [{name, type, source, ...}, ...]
+        if isinstance(definitions, list):
+            iterable = [(d.get('name'), d) for d in definitions if isinstance(d, dict)]
+        elif isinstance(definitions, dict):
+            iterable = list(definitions.items())
+        else:
+            iterable = []
+
+        for var_name, var_config in iterable:
             if not isinstance(var_config, dict):
                 continue
             source = var_config.get('source', {})
-            if source.get('type') == 'state' and isinstance(source.get('transitions'), list):
-                for transition in source['transitions']:
-                    if not isinstance(transition, dict):
+            if source.get('type') != 'state':
+                continue
+
+            # Parse triggers[] for ui_hidden triggers
+            if isinstance(source.get('triggers'), list):
+                for trigger in source['triggers']:
+                    if not isinstance(trigger, dict):
                         continue
-                    trigger = transition.get('trigger', {})
-                    # Check if this trigger should be hidden from UI
                     if trigger.get('ui_hidden') is True:
                         agent = trigger.get('agent')
-                        trigger_value = trigger.get('match', {}).get('equals')
-                        if agent and trigger_value:
-                            if agent not in hidden_triggers:
-                                hidden_triggers[agent] = set()
-                            hidden_triggers[agent].add(trigger_value)
+                        match = trigger.get('match', {})
+                        trigger_value = None
+                        if isinstance(match, dict):
+                            # Support both {equals: "NEXT"} and {contains: "NEXT"}
+                            trigger_value = match.get('equals') or match.get('contains')
+                        if isinstance(agent, str) and agent and isinstance(trigger_value, str) and trigger_value:
+                            hidden_triggers.setdefault(agent, set()).add(trigger_value)
 
         return hidden_triggers
 
@@ -627,25 +653,26 @@ class UnifiedWorkflowManager:
             return validation_result
         
         # Check for modern modular structure
-        orchestrator_json = workflow_path / "orchestrator.json"
-        if orchestrator_json.exists():
-            validation_result['info']['has_orchestrator_json'] = True
+        orchestrator_yaml = workflow_path / "orchestrator.yaml"
+        
+        if orchestrator_yaml.exists():
+            validation_result['info']['has_orchestrator_yaml'] = True
             try:
-                with open(orchestrator_json, 'r') as f:
-                    json.load(f)
-                validation_result['info']['orchestrator_json_valid'] = True
+                with open(orchestrator_yaml, 'r', encoding='utf-8') as f:
+                    yaml.safe_load(f)
+                validation_result['info']['orchestrator_yaml_valid'] = True
             except Exception as e:
-                validation_result['errors'].append(f"Invalid orchestrator.json: {e}")
+                validation_result['errors'].append(f"Invalid orchestrator.yaml: {e}")
                 validation_result['valid'] = False
         else:
-            validation_result['warnings'].append("No orchestrator.json found")
+            validation_result['warnings'].append("No orchestrator.yaml found")
         
-        # Check for other config files
-        config_files = ['agents.json', 'handoffs.json', 'tools.json', 'ui_config.json']
-        for config_file in config_files:
-            file_path = workflow_path / config_file
-            if file_path.exists():
-                validation_result['info'][f'has_{config_file.replace(".json", "")}'] = True
+        # Check for other config files (YAML only)
+        config_names = ['agents', 'handoffs', 'tools', 'ui_config', 'hooks']
+        for config_name in config_names:
+            yaml_path = workflow_path / f"{config_name}.yaml"
+            if yaml_path.exists():
+                validation_result['info'][f'has_{config_name}'] = True
         
         # Check for tools directory
         tools_dir = workflow_path / "tools"
@@ -702,54 +729,73 @@ class UnifiedWorkflowManager:
     # ========================================================================
     # INTERNAL CONFIG LOADING (replaces legacy file_manager)
     # ========================================================================
-    def _load_json_if_exists(self, path: Path) -> Dict[str, Any]:
+    def _load_config_if_exists(self, base_path: Path, config_name: str) -> Dict[str, Any]:
+        """Load YAML config file.
+        
+        Args:
+            base_path: Directory containing the config file
+            config_name: Base name without extension (e.g., 'orchestrator', 'agents')
+        
+        Returns:
+            Parsed config dict, or empty dict if file doesn't exist
+        """
+        yaml_path = base_path / f"{config_name}.yaml"
+        
+        if not yaml_path.exists():
+            return {}
+        
         try:
-            if path.exists():
-                with open(path, 'r', encoding='utf-8-sig') as f:
-                    return json.load(f) or {}
-        except Exception as e:  # pragma: no cover
-            logger.error(f"Failed reading JSON {path}: {e}")
-        return {}
+            with open(yaml_path, 'r', encoding='utf-8-sig') as f:
+                data = yaml.safe_load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.error(f"Failed reading YAML {yaml_path}: {e}")
+            return {}
 
     def _load_modular_workflow_config(self, workflow_path: Path) -> Dict[str, Any]:
-        """Load modular workflow configuration from standard JSON sections.
+        """Load modular workflow configuration from YAML files.
 
-        Canonical files: orchestrator.json, agents.json, handoffs.json, context_variables.json,
-        structured_outputs.json, tools.json, ui_config.json. Tools.json expected to expose
-        unified 'tools' list (no legacy agent_tools/ui_tools splitting). Top-level merge rules:
+        Canonical files: orchestrator.yaml, agents.yaml, handoffs.yaml, context_variables.yaml,
+        structured_outputs.yaml, tools.yaml, ui_config.yaml, hooks.yaml.
+        Tools file expected to expose unified 'tools' list (no legacy agent_tools/ui_tools splitting).
+        
+        Top-level merge rules:
           - orchestrator keys merged at root
           - explicit sections under their key (agents, handoffs, context_variables, structured_outputs)
-          - tools.json contributes its root keys (currently only 'tools') without transformation
-          - ui_config.json contributes its root keys
+          - tools contributes its root keys (currently only 'tools') without transformation
+          - ui_config contributes its root keys
         """
         config: Dict[str, Any] = {}
         if not workflow_path.exists():
             return config
-        # Orchestrator
-        orchestrator = self._load_json_if_exists(workflow_path / 'orchestrator.json')
+        
+        # Orchestrator (top-level keys)
+        orchestrator = self._load_config_if_exists(workflow_path, 'orchestrator')
         config.update(orchestrator)
+        
         # Sectioned files
-        for section_name, filename in [
-            ('agents', 'agents.json'),
-            ('handoffs', 'handoffs.json'),
-            ('context_variables', 'context_variables.json'),
-            ('structured_outputs', 'structured_outputs.json'),
-        ]:
-            data = self._load_json_if_exists(workflow_path / filename)
+        for section_name in ['agents', 'handoffs', 'context_variables', 'structured_outputs', 'hooks']:
+            data = self._load_config_if_exists(workflow_path, section_name)
             if data:
                 config[section_name] = data
-        # tools.json (canonical unified list under 'tools')
-        tools_data = self._load_json_if_exists(workflow_path / 'tools.json')
+        
+        # Tools file (canonical unified list under 'tools')
+        tools_data = self._load_config_if_exists(workflow_path, 'tools')
         if tools_data:
             # Validate: ensure only 'tools' key we care about; ignore legacy keys if appear
             tools_list = tools_data.get('tools')
+            lifecycle_tools = tools_data.get('lifecycle_tools')
             if isinstance(tools_list, list):
                 config['tools'] = tools_list
-        # ui_config.json
-        ui_data = self._load_json_if_exists(workflow_path / 'ui_config.json')
+            if isinstance(lifecycle_tools, list):
+                config['lifecycle_tools'] = lifecycle_tools
+        
+        # UI config
+        ui_data = self._load_config_if_exists(workflow_path, 'ui_config')
         if ui_data:
             # Merge UI config keys at root (e.g., visual_agents)
             config.update(ui_data)
+        
         return config
 
     # ========================================================================
@@ -778,11 +824,11 @@ class UnifiedWorkflowManager:
         if key in self._handlers:
             return self._handlers[key]
         # Lazy dynamic handler creation using orchestration engine
-        async def dynamic_handler(enterprise_id: str, chat_id: str, user_id: Optional[str] = None, initial_message: Optional[str] = None, **kwargs):
+        async def dynamic_handler(app_id: str, chat_id: str, user_id: Optional[str] = None, initial_message: Optional[str] = None, **kwargs):
             from .orchestration_patterns import run_workflow_orchestration
             return await run_workflow_orchestration(
                 workflow_name=workflow_name,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 chat_id=chat_id,
                 user_id=user_id,
                 initial_message=initial_message,

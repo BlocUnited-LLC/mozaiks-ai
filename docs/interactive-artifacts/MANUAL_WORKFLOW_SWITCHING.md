@@ -21,7 +21,7 @@ Users can start/pause/resume multiple workflows within a single WebSocket connec
    - `chat.enter_general_mode` - Pause all, enter general Q&A
 
 3. **Session List Endpoint** (`shared_app.py`)
-   - `GET /api/sessions/list/{enterprise_id}/{user_id}`
+   - `GET /api/sessions/list/{app_id}/{user_id}`
    - Returns all IN_PROGRESS sessions for UI tab rendering
 
 ---
@@ -78,13 +78,13 @@ User clicks "Generator ⏸️" tab
 import { useEffect, useState } from 'react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
-export function SessionTabs({ ws, enterpriseId, userId }) {
+export function SessionTabs({ ws, appId, userId }) {
   const [sessions, setSessions] = useState([]);
   const [activeTab, setActiveTab] = useState('general');
 
   // Fetch user's IN_PROGRESS sessions on mount
   useEffect(() => {
-    fetch(`/api/sessions/list/${enterpriseId}/${userId}`)
+    fetch(`/api/sessions/list/${appId}/${userId}`)
       .then(res => res.json())
       .then(data => {
         setSessions(data.sessions);
@@ -92,7 +92,7 @@ export function SessionTabs({ ws, enterpriseId, userId }) {
           setActiveTab(data.sessions[0].chat_id);
         }
       });
-  }, [enterpriseId, userId]);
+  }, [appId, userId]);
 
   // Listen for backend events (new workflow, context switch, mode change)
   useEffect(() => {
@@ -195,7 +195,7 @@ Starts a new workflow from UI button.
   "data": {
     "chat_id": "chat_inv_abc123",
     "workflow_name": "Investor",
-    "enterprise_id": "ent_001",
+    "app_id": "ent_001",
     "user_id": "user_456"
   }
 }
@@ -220,7 +220,7 @@ Switches to existing workflow tab (pauses current, resumes target).
     "to_chat_id": "chat_gen_123",
     "workflow_name": "Generator",
     "artifact_id": "artifact_xyz",
-    "enterprise_id": "ent_001"
+    "app_id": "ent_001"
   }
 }
 ```

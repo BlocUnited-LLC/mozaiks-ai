@@ -3,6 +3,8 @@ import logging
 from pathlib import Path
 from typing import Any, List, Dict, Optional
 
+import yaml
+
 from core.workflow.agents.factory import _compose_prompt_sections
 
 logger = logging.getLogger(__name__)
@@ -40,19 +42,19 @@ PATTERN_GUIDANCE_PLACEHOLDER = "{{PATTERN_GUIDANCE_AND_EXAMPLES}}"
 PATTERN_GUIDANCE_SECTION_IDS = {"pattern_guidance_and_examples"}
 PATTERN_GUIDANCE_SECTION_HEADING = "[PATTERN GUIDANCE AND EXAMPLES]"
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 PATTERN_GUIDANCE_PATH = REPO_ROOT / "docs" / "pattern_guidance.md"
 PATTERN_EXAMPLE_DIR = REPO_ROOT / "docs" / "pattern_examples"
 PATTERN_EXAMPLE_FILENAMES = {
-    1: "context_aware_routing.json",
-    2: "escalation.json",
-    3: "feedback_loop.json",
-    4: "hierarchical.json",
-    5: "organic.json",
-    6: "pipeline.json",
-    7: "redundant.json",
-    8: "star.json",
-    9: "triage_with_tasks.json",
+    1: "pattern_1_context_aware_routing.yaml",
+    2: "pattern_2_escalation.yaml",
+    3: "pattern_3_feedback_loop.yaml",
+    4: "pattern_4_hierarchical.yaml",
+    5: "pattern_5_organic.yaml",
+    6: "pattern_6_pipeline.yaml",
+    7: "pattern_7_redundant.yaml",
+    8: "pattern_8_star.yaml",
+    9: "pattern_9_triage_with_tasks.yaml",
 }
 
 
@@ -65,14 +67,28 @@ def _load_pattern_guidance_text() -> str:
         return ""
 
 
-def _load_pattern_example_str(pattern_id: int) -> Optional[str]:
-    """Load the single-module example JSON for a pattern."""
+def _load_pattern_example_str(pattern_id: int, section_key: str = "WorkflowStrategy") -> Optional[str]:
+    """Load a pattern example from docs/pattern_examples.
+
+    Supports YAML multi-doc examples (preferred) and JSON examples. For YAML, this
+    returns the first document containing `section_key` dumped as JSON so it can
+    be embedded into prompt examples consistently.
+    """
     filename = PATTERN_EXAMPLE_FILENAMES.get(pattern_id)
     if not filename:
         return None
     path = PATTERN_EXAMPLE_DIR / filename
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+        if path.suffix.lower() in {".yaml", ".yml"}:
+            for doc in yaml.safe_load_all(raw):
+                if not isinstance(doc, dict):
+                    continue
+                if section_key in doc:
+                    return json.dumps(doc, indent=2)
+            return None
+
+        data = json.loads(raw)
         return json.dumps(data, indent=2)
     except Exception as err:  # pragma: no cover - defensive logging
         logger.debug(f"Unable to load pattern example for id={pattern_id} at {path}: {err}")
@@ -148,64 +164,79 @@ def _apply_pattern_guidance(agent, guidance: str) -> bool:
         return False
 
 def _get_pattern_from_context(agent) -> Dict[str, Any]:
-    """Extract selected pattern (by name or id) from context_variables without external taxonomy.
+    """Extract the active pattern from cached PatternSelection.
 
-    Returns a minimal dict: {"id": int, "name": str}
+    PatternSelection is produced by PatternAgent and cached via the `pattern_selection`
+    tool in `context_variables` under the key `PatternSelection`.
+
+    For multi-workflow packs, the runtime should set `current_workflow_index` while
+    iterating generation so downstream agents receive the correct per-workflow pattern.
+
+    Returns a minimal dict: {"id": int, "name": str, "display_name": str}
     """
     try:
-        # Access context_variables from agent (AG2 provides this)
-        if not hasattr(agent, '_context_variables') and not hasattr(agent, 'context_variables'):
+        if not hasattr(agent, "_context_variables") and not hasattr(agent, "context_variables"):
             logger.debug("Agent has no context_variables attribute")
             return {}
 
-        context = getattr(agent, 'context_variables', None) or getattr(agent, '_context_variables', None)
+        context = getattr(agent, "context_variables", None) or getattr(agent, "_context_variables", None)
         if context is None:
             logger.debug("Agent context_variables is None")
             return {}
 
-        # Get PatternSelection from context data
-        if hasattr(context, 'data'):
-            pattern_selection = context.data.get('PatternSelection', {})
+        if hasattr(context, "data"):
+            data = context.data
         elif isinstance(context, dict):
-            pattern_selection = context.get('PatternSelection', {})
+            data = context
         else:
-            logger.debug(f"Unexpected context type: {type(context)}")
+            logger.debug("Unexpected context type: %s", type(context))
             return {}
 
-        if not pattern_selection:
+        pattern_selection = data.get("PatternSelection", {})
+        if not isinstance(pattern_selection, dict) or not pattern_selection:
             logger.debug("No PatternSelection found in context")
             return {}
 
-        selected = pattern_selection.get('selected_pattern')
-        if selected is None:
-            logger.debug("PatternSelection missing selected_pattern field")
+        workflows = pattern_selection.get("workflows")
+        if not isinstance(workflows, list) or not workflows:
+            logger.debug("PatternSelection missing workflows list")
             return {}
 
-        # Accept either an integer id or a string name/slug
-        pattern_id: int | None = None
-        pattern_name: str | None = None
+        current_index = data.get("current_workflow_index")
+        index = current_index if isinstance(current_index, int) and current_index >= 0 else 0
 
-        if isinstance(selected, int):
-            pattern_id = selected if selected in PATTERN_NAME_BY_ID else None
-            if pattern_id is None:
-                logger.warning(f"Unknown pattern id provided: {selected}")
-                return {}
-            pattern_name = PATTERN_NAME_BY_ID[pattern_id]
-        elif isinstance(selected, str):
-            norm = selected.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+        selected_workflow: Optional[Dict[str, Any]] = None
+        if index < len(workflows) and isinstance(workflows[index], dict):
+            selected_workflow = workflows[index]
+        if selected_workflow is None:
+            for wf in workflows:
+                if isinstance(wf, dict) and wf.get("role") == "primary":
+                    selected_workflow = wf
+                    break
+        if selected_workflow is None:
+            return {}
+
+        raw_id = selected_workflow.get("pattern_id")
+        raw_name = selected_workflow.get("pattern_name")
+
+        pattern_id: int | None = raw_id if isinstance(raw_id, int) else None
+        if pattern_id is None and isinstance(raw_name, str):
+            norm = raw_name.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
             pattern_id = PATTERN_ID_BY_NAME.get(norm)
-            if pattern_id is None:
-                logger.warning(f"Unknown pattern name provided: {selected}")
-                return {}
-            pattern_name = norm
-        else:
-            logger.debug(f"selected_pattern has unexpected type: {type(selected)}")
+
+        if pattern_id is None or pattern_id not in PATTERN_NAME_BY_ID:
+            logger.warning(
+                "Unknown pattern selection provided: id=%r name=%r (workflow=%r)",
+                raw_id,
+                raw_name,
+                selected_workflow.get("name"),
+            )
             return {}
 
-        # Return minimal structure used by downstream guidance functions
-        display_name = PATTERN_DISPLAY_NAME_BY_ID.get(pattern_id)
-        if not display_name and pattern_name:
-            display_name = pattern_name.replace("_", " ").title()
+        pattern_name = PATTERN_NAME_BY_ID[pattern_id]
+        display_name = PATTERN_DISPLAY_NAME_BY_ID.get(pattern_id) or (
+            raw_name if isinstance(raw_name, str) and raw_name.strip() else pattern_name.replace("_", " ").title()
+        )
 
         result = {"id": pattern_id, "name": pattern_name, "display_name": display_name}
         logger.info(f"✓ Pattern resolved for {agent.name}: id={pattern_id}, name={pattern_name}")
@@ -1407,7 +1438,6 @@ def inject_workflow_implementation_guidance(agent, messages: List[Dict[str, Any]
           "agents": [
             {
               "agent_name": "<string>",
-              "agent_type": "router|worker|evaluator|orchestrator|intake|generator",
               "objective": "<string>",
               "human_interaction": "none|context|approval|feedback|single",
               "generation_mode": "<string>|null",
@@ -1440,7 +1470,7 @@ def inject_workflow_implementation_guidance(agent, messages: List[Dict[str, Any]
       ]
     }
     
-    NOTE: Pattern-specific examples are loaded from docs/pattern_examples/*.json
+    NOTE: Pattern-specific examples are loaded from docs/pattern_examples/pattern_<id>_*.yaml
     """
     try:
         pattern = _get_pattern_from_context(agent)
@@ -1455,14 +1485,7 @@ def inject_workflow_implementation_guidance(agent, messages: List[Dict[str, Any]
         # Interaction Matrix Rules for Implementation
         matrix_rules = """
 [INTERACTION MATRIX RULES]
-You MUST align your `agent_type` and `human_interaction` with the TechnicalBlueprint:
-
-| UI Pattern | Agent Type | Human Interaction |
-| :--- | :--- | :--- |
-| `single_step` (Phase 1) | ROUTER (Intake) | `context` |
-| `single_step` (Later) | WORKER (Co-Pilot) | `context` |
-| `two_step_confirmation` | EVALUATOR | `approval` |
-| *No UI Component* | ROUTER (Silent) or WORKER | `none` |
+You MUST align your`human_interaction` with the TechnicalBlueprint:
 
 IF TechnicalBlueprint has a UI component for an agent, set `agent_tools[].interaction_mode` to match the component's `display` (`inline` or `artifact`).
 """

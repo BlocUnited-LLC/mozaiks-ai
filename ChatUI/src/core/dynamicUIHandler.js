@@ -9,7 +9,7 @@
  * Bridges transport system with UI components (no duplication)
  */
 
-import { enterpriseApi } from '../adapters/api';
+import { appApi } from '../adapters/api';
 import { createToolsLogger } from './toolsLogger';
 
 export class DynamicUIHandler {
@@ -148,7 +148,7 @@ export class DynamicUIHandler {
         type: 'component_update',
         componentId: data.component_id,
         updates: data.updates,
-        enterprise_id: data.enterprise_id
+        app_id: data.app_id
       });
     }
   }
@@ -204,13 +204,13 @@ export class DynamicUIHandler {
   }
 
   /**
-   * Get enterprise context for dynamic UI
-   * @param {string} enterpriseId - Enterprise ID
-   * @returns {Object} - Enterprise context
+   * Get app context for dynamic UI
+   * @param {string} appId - App ID
+   * @returns {Object} - App context
    */
-  getEnterpriseContext(enterpriseId) {
+  getappContext(appId) {
     return {
-      enterprise_id: enterpriseId
+      app_id: appId
     };
   }
 
@@ -229,7 +229,7 @@ export class DynamicUIHandler {
     }
 
     try {
-      const response = await enterpriseApi.get(`/workflow/${workflowname}/config`);
+      const response = await appApi.get(`/workflow/${workflowname}/config`);
       const config = response.data;
       
       this.workflowCache.set(cacheKey, config);

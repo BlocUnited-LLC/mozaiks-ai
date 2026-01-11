@@ -1,42 +1,18 @@
 # ==============================================================================
-# FILE: unified_event_dispatcher.py
-# DESCRIPTION: 
-# ==============================================================================
-
-# === MOZAIKS-CORE-HEADER ===
-
-# ==============================================================================
 # FILE: core/events/unified_event_dispatcher.py
 # DESCRIPTION: Centralized event dispatcher for all event types in MozaiksAI
 # ==============================================================================
 
-"""Unified Event                try:
-                    auto_tool_agents = workflow_manager.get_auto_tool_agents(workflow_name)  # type: ignore
-                    logger.info(f"🔍 [AUTO_TOOL_DEBUG] Got auto_tool agents: {auto_tool_agents}")
-                    logger.info(f"🔍 [AUTO_TOOL_DEBUG] Checking if '{agent_name}' is in auto_tool agents")
-                    
-                    if agent_name in auto_tool_agents:
-                        event_dict['_mozaiks_hide'] = True
-                        logger.info(f"🚫 [AUTO_TOOL_DEDUP] Suppressing text from auto_tool agent {agent_name}: '{content[:100]}'")
-                        return {
-                            "type": f"chat.{base_kind}",
-                            "data": event_dict,
-                            "chat_id": chat_id,
-                            "timestamp": timestamp
-                        }
-                    else:
-                        logger.info(f"🔍 [AUTO_TOOL_DEBUG] Agent '{agent_name}' NOT in auto_tool agents, allowing message")
-                except Exception as e:
-                    logger.warning(f"⚠️ [AUTO_TOOL_DEDUP] Failed to check auto_tool agents: {e}", exc_info=True)
-            
-            # Now check other agent flagsean version)
+"""Unified Event Dispatcher.
 
-This simplified implementation removes legacy forward-compat fallback logic.
-All AG2 runtime events should already be normalized into dicts with a 'kind'
-property (handled earlier by event_serialization / orchestration). Dispatcher
-focuses on:
-  - BusinessLogEvent / UIToolEvent internal domain events
-  - Lightweight outbound envelope construction for already-normalized events
+Centralized dispatcher for MozaiksAI runtime events.
+
+This module is responsible for:
+- BusinessLogEvent / UIToolEvent internal domain events
+- Lightweight outbound envelope construction for already-normalized chat/runtime events
+
+AG2 runtime events should already arrive normalized into dicts with a `kind` field
+(handled earlier by event serialization / orchestration).
 """
 
 import logging
@@ -50,6 +26,8 @@ from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 
 from core.events.auto_tool_handler import AutoToolEventHandler
+from core.workflow.pack.workflow_pack_coordinator import WorkflowPackCoordinator
+from core.workflow.pack.journey_orchestrator import JourneyOrchestrator
 from logs.logging_config import get_core_logger, get_workflow_logger
 from core.events.event_serialization import serialize_event_content
 
@@ -179,8 +157,14 @@ class UnifiedEventDispatcher:
             "created": datetime.now(UTC).isoformat(),
         }
         self._auto_tool_handler = AutoToolEventHandler()
+        self._pack_coordinator = WorkflowPackCoordinator()
+        self._journey_orchestrator = JourneyOrchestrator()
         self._setup_default_handlers()
         self.register_handler("chat.structured_output_ready", self._auto_tool_handler.handle_structured_output_ready)
+        self.register_handler("chat.structured_output_ready", self._pack_coordinator.handle_structured_output_ready)
+        self.register_handler("chat.run_complete", self._pack_coordinator.handle_run_complete)
+        # Journey auto-advance (pack v2)
+        self.register_handler("chat.run_complete", self._journey_orchestrator.handle_run_complete)
 
     def _setup_default_handlers(self):
         self.register_handler(BusinessLogHandler())
@@ -207,7 +191,11 @@ class UnifiedEventDispatcher:
             logger.debug("No listeners registered for event_type=%s", event_type)
             return
 
-        logger.info("[DISPATCH] Emitting event %s to %s listener(s) payload=%s", event_type, len(listeners), payload)
+        # Avoid log spam for high-frequency runtime measurement events.
+        if event_type.startswith("chat.usage_"):
+            logger.debug("[DISPATCH] Emitting event %s to %s listener(s)", event_type, len(listeners))
+        else:
+            logger.info("[DISPATCH] Emitting event %s to %s listener(s) payload=%s", event_type, len(listeners), payload)
 
         def _log_task_completion(task: asyncio.Future, evt: str) -> None:
             try:
@@ -401,8 +389,9 @@ class UnifiedEventDispatcher:
         ns_map = {
             'print': 'chat.print', 'text': 'chat.text', 'input_request': 'chat.input_request', 'input_ack': 'chat.input_ack',
             'input_timeout': 'chat.input_timeout', 'select_speaker': 'chat.select_speaker', 'resume_boundary': 'chat.resume_boundary',
-            'usage_summary': 'chat.usage_summary', 'run_complete': 'chat.run_complete', 'error': 'chat.error', 'tool_call': 'chat.tool_call', 'tool_response': 'chat.tool_response',
-            'structured_output_ready': 'chat.structured_output_ready', 'run_start': 'chat.run_start', 'ui_tool_dismiss': 'chat.ui_tool_dismiss'
+            'usage_delta': 'chat.usage_delta', 'usage_summary': 'chat.usage_summary', 'run_complete': 'chat.run_complete', 'error': 'chat.error', 'tool_call': 'chat.tool_call', 'tool_response': 'chat.tool_response',
+            'structured_output_ready': 'chat.structured_output_ready', 'run_start': 'chat.run_start', 'ui_tool_dismiss': 'chat.ui_tool_dismiss',
+            'attachment_uploaded': 'chat.attachment_uploaded'
         }
         mapped_type = kind if kind.startswith('chat.') else ns_map.get(kind, kind)
         

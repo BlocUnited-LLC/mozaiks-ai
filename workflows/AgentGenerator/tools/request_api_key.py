@@ -2,7 +2,7 @@
 # FILE: workflows/AgentGenerator/tools/request_api_key.py
 # DESCRIPTION: UI tool function to request an external service API key from the user.
 #              Never logs, returns, or echoes any portion (even masked) of the API key.
-# RUNTIME PARAMS (injected via **runtime): chat_id, enterprise_id, workflow_name, context_variables.
+# RUNTIME PARAMS (injected via **runtime): chat_id, app_id, workflow_name, context_variables.
 # ==============================================================================
 import uuid
 from typing import Any, Dict, Optional, Annotated, List
@@ -72,14 +72,14 @@ async def _persist_api_key_metadata(
             "updated_at": now_dt,
         }
 
-        enterprise_id = None
+        app_id = None
         if context_variables and hasattr(context_variables, "get"):
-            enterprise_id = context_variables.get("enterprise_id")
-        if enterprise_id:
+            app_id = context_variables.get("app_id")
+        if app_id:
             try:
-                metadata["enterprise_id"] = ObjectId(enterprise_id)
+                metadata["app_id"] = ObjectId(app_id)
             except Exception:
-                metadata["enterprise_id"] = enterprise_id
+                metadata["app_id"] = app_id
 
         insert_result = await collection.insert_one(metadata)
         inserted_id = str(insert_result.inserted_id)
@@ -155,7 +155,7 @@ async def request_api_key(
       - Automatically saves API key metadata to database (hardcoded settings)
       - Never stores actual API key - only service, length, timestamps, context
       - Database/collection names are configured in the tool code directly
-      - Automatically adds enterprise_id, timestamps, and chat context
+      - Automatically adds app_id, timestamps, and chat context
     """
     # Extract parameters from AG2 ContextVariables
     chat_id: Optional[str] = None

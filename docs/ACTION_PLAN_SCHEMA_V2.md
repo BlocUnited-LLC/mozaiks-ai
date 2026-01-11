@@ -35,13 +35,26 @@ This document defines the new schema for the Action Plan agents, replacing "phas
 
 ---
 
-## 1. PatternSelectionOutput (unchanged)
+## 1. PatternSelectionOutput
 
 ```json
 {
   "PatternSelection": {
-    "selected_pattern": 1,
-    "pattern_name": "Context-Aware Routing"
+    "is_multi_workflow": false,
+    "decomposition_reason": null,
+    "pack_name": "Customer Support Router",
+    "resume_agent": null,
+    "workflows": [
+      {
+        "name": "CustomerSupportRouter",
+        "role": "primary",
+        "description": "Routes support requests to the right specialists",
+        "pattern_id": 1,
+        "pattern_name": "Context-Aware Routing",
+        "initial_agent": null,
+        "initial_message": null
+      }
+    ]
   }
 }
 ```

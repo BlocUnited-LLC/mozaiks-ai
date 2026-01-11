@@ -22,9 +22,9 @@ const MyWorkflowsPage = () => {
   const [filterStatus, setFilterStatus] = useState('all'); // all, completed, in-progress
   const [sortBy, setSortBy] = useState('recent'); // recent, name, status
 
-  // Enterprise ID for API calls (currently using mock data)
+  // App ID for API calls (currently using mock data)
   // eslint-disable-next-line no-unused-vars
-  const currentEnterpriseId = config?.chat?.defaultEnterpriseId || process.env.REACT_APP_DEFAULT_ENTERPRISE_ID;
+  const currentAppId = config?.chat?.defaultAppId || process.env.REACT_APP_DEFAULT_APP_ID;
 
   useEffect(() => {
     loadWorkflows();
@@ -34,7 +34,7 @@ const MyWorkflowsPage = () => {
     setLoading(true);
     try {
       // TODO: Replace with actual API call to backend
-      // const response = await fetch(`/api/workflows/${currentEnterpriseId}`);
+      // const response = await fetch(`/api/workflows/${currentAppId}`);
       // const data = await response.json();
       
       // Mock data for now

@@ -15,7 +15,7 @@ This document explains the fundamental building blocks of the Interactive Artifa
 ```python
 {
   "_id": "chat_appbuilder_taskapp",  # Unique chat ID
-  "enterprise_id": "ent-001",        # User's account
+  "app_id": "ent-001",        # User's account
   "user_id": "user-456",             # Which user
   "workflow_name": "AppBuilder",     # AppBuilder | RevenueDashboard | InvestmentMarketplace | ChallengeTracker
   "status": "IN_PROGRESS",           # Current state (see lifecycle below)
@@ -64,7 +64,7 @@ await complete_workflow_session("chat_appbuilder_taskapp", "ent-001")
 ```python
 {
   "_id": "artifact_taskapp",
-  "enterprise_id": "ent-001",
+  "app_id": "ent-001",
   "workflow_name": "AppBuilder",
   "artifact_type": "AppBuilderArtifact",  # Type determines which React component renders it
   "state": {                              # Arbitrary JSON — whatever your artifact needs
@@ -242,7 +242,7 @@ sendArtifactAction({
 ```python
 {
   "_id": "ent-001",
-  "enterprise_id": "ent-001",
+  "app_id": "ent-001",
   "workflows": {
     "Build": {
       "dependencies": {
@@ -265,10 +265,12 @@ sendArtifactAction({
 
 **Validation Logic**:
 ```python
-is_valid, error_msg = await dependency_manager.validate_workflow_dependencies(
+from core.workflow.pack.gating import validate_pack_prereqs
+
+is_valid, error_msg = await validate_pack_prereqs(
+    app_id="ent-001",
+    user_id="user-456",
     workflow_name="Build",
-    enterprise_id="ent-001",
-    user_id="user-456"
 )
 
 if not is_valid:
@@ -396,7 +398,7 @@ websocket.send(JSON.stringify({
     chat_id: "chat_new456",  // New chat ID
     workflow_name: "Build",
     artifact_instance_id: "artifact_new789",
-    enterprise_id: "ent-001"
+    app_id: "ent-001"
   },
   timestamp: "2025-11-10T12:00:00Z"
 }
@@ -439,8 +441,8 @@ Users never see "workflow X depends on Y" — they just see natural error messag
 ## 🔗 Key Relationships
 
 ```
-Enterprise (App/Company)
-  └─► WorkflowDependencies (1 per enterprise)
+App (App/Company)
+  └─► WorkflowDependencies (1 per app)
        └─► workflows.{WorkflowName} (dependency graph)
 
 User

@@ -224,7 +224,7 @@ class PrettyConsoleFormatter(logging.Formatter):
     """Human-friendly console formatter with emojis, colors, and file context.
 
     Format:  HH:MM:SS.mmm [LEVEL] EMOJI logger  msg  (file.py:123 func)
-    Includes select extras (chat_id, workflow_name, enterprise_id) inline.
+    Includes select extras (chat_id, workflow_name, app_id) inline.
     """
     def __init__(self, no_color: Optional[bool] = None, *, max_length: int | None = None):
         super().__init__(datefmt="%H:%M:%S")
@@ -245,7 +245,7 @@ class PrettyConsoleFormatter(logging.Formatter):
         func = record.funcName
         # Pull a few common context keys into the line if present
         extras = []
-        for k in ("workflow_name", "chat_id", "enterprise_id", "agent_name", "transport_type"):
+        for k in ("workflow_name", "chat_id", "app_id", "agent_name", "transport_type"):
             v = getattr(record, k, None)
             if v is not None:
                 extras.append(f"{k}={v}")
@@ -495,12 +495,12 @@ class ContextLogger:
 def get_workflow_logger(
     workflow_name: str | None = None,
     chat_id: str | None = None,
-    enterprise_id: str | None = None,
+    app_id: str | None = None,
     *,
     base_logger: logging.Logger | None = None,
     **context,
 ):
-    ctx = {k:v for k,v in {"workflow_name":workflow_name, "chat_id":chat_id, "enterprise_id":enterprise_id}.items() if v}
+    ctx = {k:v for k,v in {"workflow_name":workflow_name, "chat_id":chat_id, "app_id":app_id}.items() if v}
     ctx.update(context)
     logger = base_logger or logging.getLogger("mozaiks.workflow")
     return ContextLogger(logger, ctx)

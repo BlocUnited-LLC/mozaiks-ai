@@ -51,7 +51,7 @@ replaying conversations.
    into manual switching automatically gets the companion experience.
 4. **Observability + billing ready:** Every Ask Mozaiks turn reports
    prompt/completion token usage through the same `update_session_metrics`
-   hook the workflows use, so MozaiksStream billing/analytics stay in
+   hook the workflows use, so MozaiksPay billing/analytics stay in
    sync.
 
 ---

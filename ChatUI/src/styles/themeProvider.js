@@ -1,12 +1,12 @@
 // ============================================================================
 // FILE: ChatUI/src/styles/themeProvider.js
 // PURPOSE: Dynamic theme system for multi-tenant branding
-// USAGE: Loads enterprise-specific fonts, colors, and design tokens
+// USAGE: Loads app-specific fonts, colors, and design tokens
 // ============================================================================
 
 /**
  * DEFAULT THEME (MozaiksAI brand)
- * Fallback when no enterprise-specific theme is configured
+ * Fallback when no app-specific theme is configured
  */
 const DEFAULT_THEME = {
   // Font configuration
@@ -110,34 +110,36 @@ const DEFAULT_THEME = {
 
 /**
  * THEME CACHE
- * Stores loaded themes by enterprise_id
+ * Stores loaded themes by app_id
  */
 const themeCache = new Map();
 
-function normalizeEnterpriseId(enterpriseId) {
-  if (enterpriseId == null) return 'default';
-  if (typeof enterpriseId === 'string') {
-    const trimmed = enterpriseId.trim();
+const CURRENT_APP_ID_STORAGE_KEY = 'mozaiks.current_app_id';
+
+function normalizeAppId(appId) {
+  if (appId == null) return 'default';
+  if (typeof appId === 'string') {
+    const trimmed = appId.trim();
     return trimmed.length > 0 ? trimmed : 'default';
   }
-  return String(enterpriseId) || 'default';
+  return String(appId) || 'default';
 }
 
-function cacheTheme(enterpriseId, theme, meta = null) {
-  themeCache.set(enterpriseId, { theme, meta });
+function cacheTheme(appId, theme, meta = null) {
+  themeCache.set(appId, { theme, meta });
 }
 
 /**
  * LOAD THEME FROM API
- * Fetches enterprise-specific theme configuration
+ * Fetches app-specific theme configuration
  * 
- * @param {string} enterpriseId - Unique enterprise identifier
+ * @param {string} appId - Unique app identifier
  * @returns {Promise<Object>} Theme configuration object
  */
-async function loadThemeFromAPI(enterpriseId) {
-  const normalizedId = normalizeEnterpriseId(enterpriseId);
+async function loadThemeFromAPI(appId) {
+  const normalizedId = normalizeAppId(appId);
   try {
-    console.log(`🎨 [THEME] Loading theme for enterprise: ${normalizedId}`);
+    console.log(`🎨 [THEME] Loading theme for app: ${normalizedId}`);
 
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), 8000);
@@ -153,7 +155,7 @@ async function loadThemeFromAPI(enterpriseId) {
 
       if (response.status === 404) {
         console.warn(`⚠️ [THEME] Theme not found for ${normalizedId}, using default`);
-        return { theme: DEFAULT_THEME, meta: { source: 'default', enterpriseId: normalizedId } };
+        return { theme: DEFAULT_THEME, meta: { source: 'default', appId: normalizedId } };
       }
 
       if (!response.ok) {
@@ -172,7 +174,7 @@ async function loadThemeFromAPI(enterpriseId) {
         theme,
         meta: {
           source: data?.source || 'custom',
-          enterpriseId: data?.enterprise_id || normalizedId,
+          appId: data?.app_id || data?.app_id || normalizedId,
           updatedAt: data?.updatedAt || null,
           updatedBy: data?.updatedBy || null,
         },
@@ -183,13 +185,13 @@ async function loadThemeFromAPI(enterpriseId) {
       } else {
         console.error(`❌ [THEME] Failed to fetch theme for ${normalizedId}:`, error);
       }
-      return { theme: DEFAULT_THEME, meta: { source: 'default', enterpriseId: normalizedId } };
+      return { theme: DEFAULT_THEME, meta: { source: 'default', appId: normalizedId } };
     } finally {
       globalThis.clearTimeout(timeout);
     }
   } catch (error) {
-    console.warn(`⚠️ [THEME] Failed to load theme for ${enterpriseId}, using default:`, error);
-    return { theme: DEFAULT_THEME, meta: { source: 'default', enterpriseId: normalizedId } };
+    console.warn(`⚠️ [THEME] Failed to load theme for ${appId}, using default:`, error);
+    return { theme: DEFAULT_THEME, meta: { source: 'default', appId: normalizedId } };
   }
 }
 
@@ -197,11 +199,11 @@ async function loadThemeFromAPI(enterpriseId) {
  * GET THEME
  * Retrieves theme with caching
  * 
- * @param {string} enterpriseId - Unique enterprise identifier
+ * @param {string} appId - Unique app identifier
  * @returns {Promise<Object>} Theme configuration
  */
-export async function getTheme(enterpriseId = 'default') {
-  const normalizedId = normalizeEnterpriseId(enterpriseId);
+export async function getTheme(appId = 'default') {
+  const normalizedId = normalizeAppId(appId);
   // Check cache first
   if (themeCache.has(normalizedId)) {
     const cached = themeCache.get(normalizedId);
@@ -218,8 +220,8 @@ export async function getTheme(enterpriseId = 'default') {
   return theme;
 }
 
-export function getThemeMetadata(enterpriseId = 'default') {
-  const normalizedId = normalizeEnterpriseId(enterpriseId);
+export function getThemeMetadata(appId = 'default') {
+  const normalizedId = normalizeAppId(appId);
   const cached = themeCache.get(normalizedId);
   return cached?.meta || null;
 }
@@ -413,49 +415,61 @@ function updateFavicon(faviconUrl) {
  * CLEAR THEME CACHE
  * Force reload of theme on next access
  * 
- * @param {string} enterpriseId - Optional specific enterprise to clear
+ * @param {string} appId - Optional specific app to clear
  */
-export function clearThemeCache(enterpriseId = null) {
-  if (!enterpriseId) {
+export function clearThemeCache(appId = null) {
+  if (!appId) {
     themeCache.clear();
     console.log('🧹 [THEME] Cleared all theme cache');
     return;
   }
 
-  const normalizedId = normalizeEnterpriseId(enterpriseId);
+  const normalizedId = normalizeAppId(appId);
   themeCache.delete(normalizedId);
   console.log(`🧹 [THEME] Cleared cache for ${normalizedId}`);
 }
 
 /**
  * INITIALIZE THEME
- * Main entry point - loads and applies theme for enterprise
+ * Main entry point - loads and applies theme for app
  * 
- * @param {string} enterpriseId - Unique enterprise identifier
+ * @param {string} appId - Unique app identifier
  * @returns {Promise<Object>} Applied theme configuration
  */
-export async function initializeTheme(enterpriseId = 'default') {
-  console.log(`🎨 [THEME] Initializing theme for ${enterpriseId}`);
+export async function initializeTheme(appId = 'default') {
+  const normalizedId = normalizeAppId(appId);
+  console.log(`🎨 [THEME] Initializing theme for ${normalizedId}`);
   
-  // Store current enterprise ID for hook access
-  if (enterpriseId) {
-    localStorage.setItem('mozaiks.current_enterprise_id', enterpriseId);
+  // Store current app ID for hook access
+  if (normalizedId) {
+    try {
+      localStorage.setItem(CURRENT_APP_ID_STORAGE_KEY, normalizedId);
+    } catch (_) {
+      /* ignore storage errors */
+    }
   }
   
-  const theme = await getTheme(enterpriseId);
+  const theme = await getTheme(normalizedId);
   applyTheme(theme);
   
   return theme;
 }
 
 /**
- * GET CURRENT ENTERPRISE ID
- * Helper to retrieve current enterprise context
+ * GET CURRENT app ID
+ * Helper to retrieve current app context
  * 
- * @returns {string} Current enterprise ID or 'default'
+ * @returns {string} Current app ID or 'default'
  */
-export function getCurrentEnterpriseId() {
-  return localStorage.getItem('mozaiks.current_enterprise_id') || 'default';
+export function getCurrentAppId() {
+  try {
+    const stored = localStorage.getItem(CURRENT_APP_ID_STORAGE_KEY);
+    if (!stored) return 'default';
+    const trimmed = stored.trim();
+    return trimmed.length > 0 ? trimmed : 'default';
+  } catch (_) {
+    return 'default';
+  }
 }
 
 // Export default theme for reference

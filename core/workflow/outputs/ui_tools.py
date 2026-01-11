@@ -156,13 +156,13 @@ async def use_ui_tool(
     if chat_id:
         try:
             from core.data.persistence import persistence_manager as pm
-            from core.core_config import get_enterprise_id_from_chat_or_context
+            from core.core_config import get_app_id_from_chat_or_context
             
-            enterprise_id = get_enterprise_id_from_chat_or_context(chat_id=chat_id)
-            if enterprise_id:
+            app_id = get_app_id_from_chat_or_context(chat_id=chat_id)
+            if app_id:
                 await pm.attach_ui_tool_metadata(
                     chat_id=chat_id,
-                    enterprise_id=enterprise_id,
+                    app_id=app_id,
                     event_id=event_id,
                     metadata={
                         "ui_tool_id": tool_id,
@@ -228,13 +228,13 @@ async def use_ui_tool(
             if chat_id:
                 try:
                     from core.data.persistence import persistence_manager as pm
-                    from core.core_config import get_enterprise_id_from_chat_or_context
+                    from core.core_config import get_app_id_from_chat_or_context
                     
-                    enterprise_id = get_enterprise_id_from_chat_or_context(chat_id=chat_id)
-                    if enterprise_id:
+                    app_id = get_app_id_from_chat_or_context(chat_id=chat_id)
+                    if app_id:
                         await pm.update_ui_tool_completion(
                             chat_id=chat_id,
-                            enterprise_id=enterprise_id,
+                            app_id=app_id,
                             event_id=event_id,
                             completed=True,
                             status=resp.get("status", "completed")

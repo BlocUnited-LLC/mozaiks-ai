@@ -30,6 +30,9 @@ class ContextTriggerSpec(BaseModel):
     tool: Optional[str] = None  # Tool name that handles UI interaction
     response_key: Optional[str] = None  # Key in response dict to extract
 
+    # Optional display control (primarily for agent_text triggers)
+    ui_hidden: Optional[bool] = None
+
     @model_validator(mode="before")
     def _normalize_match(cls, data: Any) -> Any:
         if not isinstance(data, dict):
@@ -45,14 +48,6 @@ class ContextTriggerSpec(BaseModel):
         return data
 
 
-class StateTransitionSpec(BaseModel):
-    """State transition metadata for workflow orchestration variables."""
-
-    from_state: Optional[str] = Field(default=None, alias="from")
-    to_state: Any = Field(default=True, alias="to")
-    trigger: ContextTriggerSpec
-
-
 class ContextVariableSource(BaseModel):
     """Source metadata for resolving a context variable.
     
@@ -65,7 +60,7 @@ class ContextVariableSource(BaseModel):
     - external: Third-party API data with caching/retry
     """
 
-    type: Literal["config", "data_reference", "data_entity", "computed", "state", "external"]
+    type: Literal["config", "data_reference", "data_entity", "computed", "state", "external", "file"]
     
     # Config source fields (type="config")
     env_var: Optional[str] = None
@@ -81,7 +76,7 @@ class ContextVariableSource(BaseModel):
     
     # Data entity source fields (type="data_entity")
     # Reuses database_name
-    schema: Optional[Dict[str, Any]] = None
+    entity_schema: Optional[Dict[str, Any]] = Field(default=None, alias="schema")
     indexes: Optional[List[Dict[str, Any]]] = None
     write_strategy: Optional[Literal["immediate", "on_phase_transition", "on_workflow_end"]] = None
     search_by: Optional[str] = None
@@ -93,7 +88,7 @@ class ContextVariableSource(BaseModel):
     persist_to: Optional[Dict[str, Any]] = None
     
     # State source fields (type="state")
-    transitions: List[StateTransitionSpec] = Field(default_factory=list)
+    triggers: List[ContextTriggerSpec] = Field(default_factory=list)
     persist: Optional[bool] = None
     
     # External source fields (type="external")
@@ -103,6 +98,11 @@ class ContextVariableSource(BaseModel):
     auth: Optional[Dict[str, Any]] = None
     cache: Optional[Dict[str, Any]] = None
     retry: Optional[Dict[str, Any]] = None
+
+    # File source fields (type="file")
+    path: Optional[str] = None
+    format: Optional[Literal["json", "yaml", "text"]] = None
+    encoding: Optional[str] = None
 
 
 class ContextVariableDefinition(BaseModel):

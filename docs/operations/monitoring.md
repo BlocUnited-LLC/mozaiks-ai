@@ -154,7 +154,7 @@ curl http://localhost:8000/health/active-runs
   "chats": [
     {
       "chat_id": "chat_abc123",
-      "enterprise_id": "acme_corp",
+      "app_id": "acme_corp",
       "workflow_name": "Generator",
       "user_id": "user_456",
       "runtime_sec": 1200.5,
@@ -202,7 +202,7 @@ curl http://localhost:8000/metrics/perf/aggregate | jq
 ```json
 {
   "chat_id": "chat_abc123",
-  "enterprise_id": "acme_corp",
+  "app_id": "acme_corp",
   "workflow_name": "Generator",
   "user_id": "user_456",
   "started_at": "2025-10-02T10:00:00Z",
@@ -659,10 +659,10 @@ docker exec mozaiksai-mongo du -sh /data/db
 
 **Metrics to Track:**
 - Chats per user
-- Workflows per enterprise
+- Workflows per app
 - Average session duration
 - Token consumption by workflow
-- Cost per user/enterprise
+- Cost per user/app
 
 **Custom Prometheus Metrics (Future):**
 
@@ -670,12 +670,12 @@ docker exec mozaiksai-mongo du -sh /data/db
 from prometheus_client import Counter, Histogram, Gauge
 
 # Custom metrics
-workflow_starts = Counter('mozaiksai_workflow_starts_total', 'Workflow starts', ['workflow', 'enterprise'])
+workflow_starts = Counter('mozaiksai_workflow_starts_total', 'Workflow starts', ['workflow', 'app'])
 session_duration = Histogram('mozaiksai_session_duration_seconds', 'Session duration', ['workflow'])
 concurrent_users = Gauge('mozaiksai_concurrent_users', 'Concurrent users')
 
 # Increment
-workflow_starts.labels(workflow='Generator', enterprise='acme_corp').inc()
+workflow_starts.labels(workflow='Generator', app='acme_corp').inc()
 ```
 
 ---

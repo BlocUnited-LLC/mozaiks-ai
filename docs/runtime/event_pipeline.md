@@ -44,7 +44,7 @@ class BusinessLogEvent:
     level: str = "info"  # "debug", "info", "warning", "error"
     message: str
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-    enterprise_id: Optional[str] = None
+    app_id: Optional[str] = None
     workflow_name: Optional[str] = None
     chat_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -60,7 +60,7 @@ await dispatcher.emit_business_event(
     log_event_type="WORKFLOW_STARTED",
     level="info",
     message="Starting Generator workflow",
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     workflow_name="Generator",
     chat_id="chat_abc123",
     metadata={"user_id": "user_456"}
@@ -83,7 +83,7 @@ class UIToolEvent:
     ui_tool_id: str  # e.g., "user_input", "confirmation", "file_upload"
     action: str  # e.g., "request_input", "show_confirmation"
     workflow_name: str
-    enterprise_id: Optional[str] = None
+    app_id: Optional[str] = None
     chat_id: Optional[str] = None
     agent_name: Optional[str] = None
     display: Optional[Dict[str, Any]] = None  # UI rendering hints
@@ -97,7 +97,7 @@ await dispatcher.emit_ui_tool_event(
     ui_tool_id="user_input",
     action="request_input",
     workflow_name="Generator",
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     chat_id="chat_abc123",
     agent_name="interviewer",
     display={
@@ -144,7 +144,7 @@ AG2 Engine → Event Serialization (build_ui_event_payload) → SimpleTransport 
 - Converts AG2 `BaseEvent` instances to frontend-ready JSON payloads
 - Adds `kind` field (e.g., `"agent_message"`, `"tool_call"`, `"workflow_complete"`)
 - Filters messages based on `visual_agents` configuration
-- Correlates events with `chat_id`, `enterprise_id`, `workflow_name`
+- Correlates events with `chat_id`, `app_id`, `workflow_name`
 
 **Example AG2 Event → Frontend Payload:**
 ```python
@@ -189,7 +189,7 @@ await dispatcher.emit_business_event(
     log_event_type: str,
     level: str = "info",
     message: str,
-    enterprise_id: Optional[str] = None,
+    app_id: Optional[str] = None,
     workflow_name: Optional[str] = None,
     chat_id: Optional[str] = None,
     metadata: Dict[str, Any] = {}
@@ -202,7 +202,7 @@ await dispatcher.emit_ui_tool_event(
     ui_tool_id: str,
     action: str,
     workflow_name: str,
-    enterprise_id: Optional[str] = None,
+    app_id: Optional[str] = None,
     chat_id: Optional[str] = None,
     agent_name: Optional[str] = None,
     display: Optional[Dict[str, Any]] = None,
@@ -281,7 +281,7 @@ class BusinessLogHandler(EventHandler):
         log_fn(
             f"[BUSINESS] type={event.log_event_type} msg={event.message}",
             extra={
-                "enterprise_id": event.enterprise_id,
+                "app_id": event.app_id,
                 "workflow_name": event.workflow_name,
                 "chat_id": event.chat_id,
                 "metadata": event.metadata,
@@ -292,7 +292,7 @@ class BusinessLogHandler(EventHandler):
 
 **Log Output Example:**
 ```
-2025-10-02 12:34:56 INFO [BUSINESS] type=WORKFLOW_STARTED msg=Starting Generator workflow enterprise_id=acme_corp workflow_name=Generator chat_id=chat_abc123
+2025-10-02 12:34:56 INFO [BUSINESS] type=WORKFLOW_STARTED msg=Starting Generator workflow app_id=acme_corp workflow_name=Generator chat_id=chat_abc123
 ```
 
 ---
@@ -357,7 +357,7 @@ class AutoToolEventHandler:
             ui_tool_id=ui_tool_id,
             action="request_input",
             workflow_name=payload["workflow_name"],
-            enterprise_id=payload["enterprise_id"],
+            app_id=payload["app_id"],
             chat_id=chat_id,
             agent_name=agent_name,
             display=payload.get("display", {})
@@ -376,7 +376,7 @@ await dispatcher.emit_business_event(
     log_event_type="WORKFLOW_STARTED",
     level="info",
     message="Generator workflow starting",
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     workflow_name="Generator",
     chat_id="chat_abc123"
 )
@@ -409,7 +409,7 @@ await dispatcher.emit_ui_tool_event(
     ui_tool_id="user_input",
     action="request_input",
     workflow_name="Generator",
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     chat_id="chat_abc123",
     agent_name="interviewer",
     display={
@@ -452,7 +452,7 @@ await dispatcher.emit(
         "agent_name": "interviewer",
         "ui_tool_id": "user_input",
         "workflow_name": "Generator",
-        "enterprise_id": "acme_corp",
+        "app_id": "acme_corp",
         "display": {"prompt": "What features?"}
     }
 )

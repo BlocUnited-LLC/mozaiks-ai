@@ -1,11 +1,11 @@
 # Runtime Tokens (ChatUI Layer)
 
-Mozaiks Runtime exposes a small set of CSS custom properties that every generated page can rely on. These tokens keep the floating widget, chat surfaces, and artifacts stylistically consistent across enterprises while still allowing per-tenant overrides.
+Mozaiks Runtime exposes a small set of CSS custom properties that every generated page can rely on. These tokens keep the floating widget, chat surfaces, and artifacts stylistically consistent across apps while still allowing per-tenant overrides.
 
 ## How to Use These Tokens
 
 - The defaults live in `src/index.css` under the `:root` selector.
-- To customize a token for a specific app/enterprise, set the variable on a scoped wrapper (e.g., `.enterprise-dark { --color-primary: #ff7ae6; }`).
+- To customize a token for a specific app/app, set the variable on a scoped wrapper (e.g., `.app-dark { --color-primary: #ff7ae6; }`).
 - Generators should reference these tokens instead of hardcoding colors, spacing, or shadows. This lets the runtime adjust platform-wide behavior without regenerating pages.
 
 ## Token Catalog
@@ -55,7 +55,7 @@ Mozaiks Runtime exposes a small set of CSS custom properties that every generate
 ## Guidance for Generator Agents
 
 1. **Use tokens, not literals** – reference the variables listed above instead of hardcoded hex values or pixel offsets whenever your UI mimics the runtime shell.
-2. **Scope overrides intentionally** – when an enterprise wants a different palette, set the variable on that enterprise's root container. Do not edit runtime components.
+2. **Scope overrides intentionally** – when an app wants a different palette, set the variable on that app's root container. Do not edit runtime components.
 3. **Extend via proposal** – if a new pattern repeatedly needs its own token (e.g., widget width, chat radius), add it to `src/index.css` and document it here so every agent can consume it safely.
 4. **Widget positioning** – never set `bottom` on the persistent widget. Use `widget-safe-bottom` and adjust `--widget-bottom-offset` if more clearance is required.
 

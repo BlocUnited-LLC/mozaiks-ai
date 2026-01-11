@@ -63,7 +63,7 @@ Follow these operational guides:
 |----------|-------------|
 | **[Architecture Overview](overview/architecture.md)** | System layers, subsystems, transport, events, persistence, observability |
 | **[Request Lifecycle](overview/lifecycle.md)** | End-to-end trace: HTTP request → AG2 execution → WebSocket response |
-| **[Multi-Tenancy & Security](overview/tenancy_and_security.md)** | Enterprise isolation, cache seeds, secret handling, context boundaries |
+| **[Multi-Tenancy & Security](overview/tenancy_and_security.md)** | App isolation, cache seeds, secret handling, context boundaries |
 
 **Start here if:** You're new to MozaiksAI and want to understand the big picture.
 
@@ -232,7 +232,7 @@ Follow these operational guides:
 3. [Monitoring Guide](operations/monitoring.md) – Set up metrics and logging
 4. [Troubleshooting](operations/troubleshooting.md) – Debug production issues
 
-**Next Steps:** Optimize performance or integrate with enterprise monitoring stacks.
+**Next Steps:** Optimize performance or integrate with app monitoring stacks.
 
 ---
 
@@ -260,7 +260,7 @@ All documentation follows these conventions:
 - **Code Examples**: Inline code uses `backticks`, blocks use triple backticks with language
 - **File Paths**: Absolute paths from repo root (e.g., `core/transport/simple_transport.py`)
 - **Module References**: Python dotted notation (e.g., `core.events.unified_event_dispatcher`)
-- **Endpoints**: HTTP endpoints prefixed with `/` (e.g., `/api/chats/{enterprise}/{workflow}/start`)
+- **Endpoints**: HTTP endpoints prefixed with `/` (e.g., `/api/chats/{app}/{workflow}/start`)
 - **JSON Schemas**: Include TypeScript-style type annotations for clarity
 
 ### Terminology
@@ -274,7 +274,7 @@ All documentation follows these conventions:
 | **Context Variable** | Shared state managed by `ContextVariableManager` |
 | **Visual Agent** | Agent whose messages appear in the chat UI |
 | **Cache Seed** | Deterministic per-chat seed for reproducibility |
-| **Enterprise ID** | Multi-tenant isolation boundary |
+| **App ID** | Multi-tenant isolation boundary |
 
 ---
 

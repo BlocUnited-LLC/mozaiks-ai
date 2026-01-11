@@ -29,7 +29,7 @@ class AG2RuntimeLoggingController:
         self._session_id: Optional[str] = None
         self._chat_id: Optional[str] = None
         self._workflow_name: Optional[str] = None
-        self._enterprise_id: Optional[str] = None
+        self._app_id: Optional[str] = None
         self._user_id: Optional[str] = None
         self._delegate: Optional[BaseLogger] = None
         self._realtime_logger = get_realtime_token_logger()
@@ -55,7 +55,7 @@ class AG2RuntimeLoggingController:
         self,
         chat_id: str,
         workflow_name: str,
-        enterprise_id: Optional[str] = None,
+        app_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> bool:
         if not self.should_enable():
@@ -72,7 +72,7 @@ class AG2RuntimeLoggingController:
         self._realtime_logger.configure(
             chat_id=chat_id,
             workflow_name=workflow_name,
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             user_id=user_id,
             delegate=delegate,
         )
@@ -89,7 +89,7 @@ class AG2RuntimeLoggingController:
         self._session_id = session_id
         self._chat_id = chat_id
         self._workflow_name = workflow_name
-        self._enterprise_id = enterprise_id
+        self._app_id = app_id
         self._user_id = user_id
         self._delegate = delegate
         self._active = True
@@ -105,7 +105,7 @@ class AG2RuntimeLoggingController:
             extra={
                 "chat_id": chat_id,
                 "workflow_name": workflow_name,
-                "enterprise_id": enterprise_id,
+                "app_id": app_id,
                 "logger_type": logger_type,
                 "session_id": session_id,
             },
@@ -144,10 +144,10 @@ class AG2RuntimeLoggingController:
         self,
         chat_id: str,
         workflow_name: str,
-        enterprise_id: Optional[str] = None,
+        app_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ):
-        started = self.start_session(chat_id, workflow_name, enterprise_id, user_id)
+        started = self.start_session(chat_id, workflow_name, app_id, user_id)
         try:
             yield self
         finally:
@@ -188,7 +188,7 @@ class AG2RuntimeLoggingController:
         self._session_id = None
         self._chat_id = None
         self._workflow_name = None
-        self._enterprise_id = None
+        self._app_id = None
         self._user_id = None
         self._delegate = None
         self._log_file_path = None
@@ -209,10 +209,10 @@ def get_ag2_runtime_logger() -> AG2RuntimeLoggingController:
 def start_ag2_logging(
     chat_id: str,
     workflow_name: str,
-    enterprise_id: Optional[str] = None,
+    app_id: Optional[str] = None,
     user_id: Optional[str] = None,
 ) -> bool:
-    return get_ag2_runtime_logger().start_session(chat_id, workflow_name, enterprise_id, user_id)
+    return get_ag2_runtime_logger().start_session(chat_id, workflow_name, app_id, user_id)
 
 
 def stop_ag2_logging() -> bool:
@@ -223,9 +223,9 @@ def stop_ag2_logging() -> bool:
 def ag2_logging_session(
     chat_id: str,
     workflow_name: str,
-    enterprise_id: Optional[str] = None,
+    app_id: Optional[str] = None,
     user_id: Optional[str] = None,
 ):
-    with get_ag2_runtime_logger().session_context(chat_id, workflow_name, enterprise_id, user_id):
+    with get_ag2_runtime_logger().session_context(chat_id, workflow_name, app_id, user_id):
         yield
 

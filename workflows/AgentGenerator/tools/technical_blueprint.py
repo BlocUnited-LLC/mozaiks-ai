@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, Annotated
 import logging
 
 # Re-use normalization helpers from the Action Plan tool to keep schema alignment consistent.
-from workflows.Generator.tools.action_plan import (
+from workflows.AgentGenerator.tools.action_plan import (
     _normalize_global_context_variables,
     _normalize_ui_components,
     _normalize_blueprint_lifecycle,
@@ -41,10 +41,6 @@ def _build_normalized_blueprint(raw: Dict[str, Any]) -> Dict[str, Any]:
     lifecycle_ops = _normalize_lifecycle_operations(raw.get("lifecycle_operations"))
     if lifecycle_ops:
         normalized["lifecycle_operations"] = lifecycle_ops
-
-    workflow_dependencies = raw.get("workflow_dependencies")
-    if isinstance(workflow_dependencies, dict):
-        normalized["workflow_dependencies"] = workflow_dependencies
 
     return normalized
 

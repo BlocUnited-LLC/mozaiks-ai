@@ -30,6 +30,7 @@ import sqlite3
 from autogen.logger.base_logger import BaseLogger
 from logs.logging_config import get_workflow_logger
 from core.data.persistence.persistence_manager import AG2PersistenceManager
+from core.tokens.manager import TokenManager
 
 import logging
 logger = logging.getLogger("core.observability.realtime_token_logger")
@@ -43,7 +44,7 @@ class RealtimeTokenLogger(BaseLogger):
         self._delegate: Optional[BaseLogger] = None
         self._session_id: Optional[str] = None
         self._chat_id: Optional[str] = None
-        self._enterprise_id: Optional[str] = None
+        self._app_id: Optional[str] = None
         self._workflow_name: Optional[str] = None
         self._user_id: Optional[str] = None
         self._current_agent: Optional[str] = None
@@ -61,14 +62,14 @@ class RealtimeTokenLogger(BaseLogger):
         *,
         chat_id: str,
         workflow_name: str,
-        enterprise_id: Optional[str],
+        app_id: Optional[str],
         user_id: Optional[str],
         delegate: Optional[BaseLogger],
     ) -> None:
         """Set session metadata and optional downstream delegate."""
         self._chat_id = chat_id
         self._workflow_name = workflow_name
-        self._enterprise_id = enterprise_id
+        self._app_id = app_id
         self._user_id = user_id
         self._delegate = delegate
         self._reset_totals()
@@ -77,7 +78,7 @@ class RealtimeTokenLogger(BaseLogger):
             extra={
                 "chat_id": chat_id,
                 "workflow": workflow_name,
-                "enterprise": enterprise_id,
+                "app": app_id,
                 "user": user_id,
                 "delegate": delegate.__class__.__name__ if delegate else None,
             }
@@ -170,6 +171,13 @@ class RealtimeTokenLogger(BaseLogger):
         total_tokens = usage["total_tokens"]
         model_name = self._extract_model_name(request_dict, response_dict)
         cost_value = float(cost or 0.0)
+        cached_flag = bool(is_cached)
+        # Cached responses should not be counted as new usage (measurement only).
+        if cached_flag:
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
+            cost_value = 0.0
 
         self._session_totals["prompt_tokens"] += prompt_tokens
         self._session_totals["completion_tokens"] += completion_tokens
@@ -196,6 +204,7 @@ class RealtimeTokenLogger(BaseLogger):
 
         self._schedule_async_task(
             self._record_agent_metrics(
+                invocation_id=str(invocation_id) if invocation_id else None,
                 agent_name=agent_label,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -203,6 +212,7 @@ class RealtimeTokenLogger(BaseLogger):
                 duration_sec=duration_sec,
                 model_name=model_name,
                 event_ts=event_ts,
+                cached=cached_flag,
             )
         )
 
@@ -340,6 +350,7 @@ class RealtimeTokenLogger(BaseLogger):
     async def _record_agent_metrics(
         self,
         *,
+        invocation_id: Optional[str],
         agent_name: str,
         prompt_tokens: int,
         completion_tokens: int,
@@ -347,12 +358,13 @@ class RealtimeTokenLogger(BaseLogger):
         duration_sec: float,
         model_name: Optional[str],
         event_ts: datetime,
+        cached: bool,
     ) -> None:
 
         try:
             await self._persistence.update_session_metrics(
                 chat_id=self._chat_id or "unknown",
-                enterprise_id=self._enterprise_id or "unknown",
+                app_id=self._app_id or "unknown",
                 user_id=self._user_id or "unknown",
                 workflow_name=self._workflow_name or "unknown",
                 prompt_tokens=prompt_tokens,
@@ -364,6 +376,28 @@ class RealtimeTokenLogger(BaseLogger):
             )
         except Exception as err:  # pragma: no cover
             logger.warning(f"Failed to persist realtime usage delta: {err}")
+            return
+
+        # Emit factual usage delta event (no pricing/gating/enforcement).
+        try:
+            if (prompt_tokens or completion_tokens) and self._chat_id and self._app_id and self._user_id and self._workflow_name:
+                await TokenManager.emit_usage_delta(
+                    chat_id=self._chat_id,
+                    app_id=self._app_id,
+                    user_id=self._user_id,
+                    workflow_name=self._workflow_name,
+                    agent_name=agent_name or None,
+                    model_name=model_name,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=(prompt_tokens + completion_tokens),
+                    cached=cached,
+                    duration_sec=duration_sec,
+                    invocation_id=invocation_id,
+                    event_ts=event_ts,
+                )
+        except Exception:
+            logger.debug("Failed to emit usage delta event", exc_info=True)
 
     def _extract_agent_name_from_source(self, source: Any) -> Optional[str]:
         if isinstance(source, str):
@@ -462,4 +496,3 @@ def get_realtime_token_logger() -> RealtimeTokenLogger:
     if _realtime_logger is None:
         _realtime_logger = RealtimeTokenLogger()
     return _realtime_logger
-

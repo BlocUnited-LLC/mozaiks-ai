@@ -75,14 +75,14 @@ The MozaiksAI platform provides these capabilities automatically. NEVER design w
 - Context variable storage and retrieval
 - NEVER CREATE: Database schemas, persistence logic, or history tracking
 
-**Token Management (MozaiksStream)**
-- Real-time token usage tracking per enterprise_id and user_id
+**Token Management (MozaiksPay)**
+- Real-time token usage tracking per app_id and user_id
 - Wallet balance management and low-balance warnings
 - Cost attribution per workflow and chat session
 - NEVER CREATE: Token trackers, cost analytics, or usage monitors
 
 **Multi-Tenant Isolation**
-- Enterprise and user boundaries enforced at runtime
+- App and user boundaries enforced at runtime
 - Data isolation between tenants, session scoping
 - NEVER CREATE: Tenant validation or scoped query logic
 
@@ -109,7 +109,7 @@ The MozaiksAI platform provides these capabilities automatically. NEVER design w
 **Anti-Patterns to Avoid**:
 ❌ "ChatAgent" or "UserProxyAgent" - Runtime handles user communication
 ❌ "PersistenceAgent" or "DatabaseAgent" - Use context variables; runtime persists
-❌ "TokenTracker" or "UsageMonitor" - MozaiksStream handles automatically
+❌ "TokenTracker" or "UsageMonitor" - MozaiksPay handles automatically
 ❌ "WebSocketHandler" or "MessageRouter" - Transport layer is provided
 ❌ "SessionManager" or "LoggingAgent" - Runtime manages these
 """

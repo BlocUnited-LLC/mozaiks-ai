@@ -39,6 +39,7 @@ param(
     [string]$Mode = 'docker',
     [int]$AppPort = 8000,
     [switch]$KeepDB,
+    [switch]$AllowNonLocalMongo,
     [switch]$NoFrontend
 )
 
@@ -68,6 +69,9 @@ $cleanseParams = @{
 }
 if ($KeepDB) {
     $cleanseParams['KeepDB'] = $true
+}
+if ($AllowNonLocalMongo) {
+    $cleanseParams['AllowNonLocalMongo'] = $true
 }
 $cleanseScript = Join-Path -Path $ScriptRoot -ChildPath "scripts\cleanse.ps1"
 & $cleanseScript @cleanseParams

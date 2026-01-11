@@ -41,8 +41,10 @@ export const ChatUIProvider = ({
   const [previousLayoutMode, setPreviousLayoutMode] = useState('full'); // Remember state before minimizing
   const [isArtifactOpen, setIsArtifactOpen] = useState(false);
   const [isInWidgetMode, setIsInWidgetMode] = useState(false); // Track if chat is in persistent widget mode (non-ChatPage routes)
+  const [isWidgetVisible, setIsWidgetVisible] = useState(true); // Allows specific pages to suppress the widget UI while staying in widget mode
+  const [isChatOverlayOpen, setIsChatOverlayOpen] = useState(false); // Full-screen overlay while remaining in widget mode
 
-  // Conversation mode + general chat state (Ask Mozaiks integration)
+  // Conversation mode + general chat state (non-workflow / ask mode)
   const [conversationMode, setConversationMode] = useState(() => {
     try {
       const stored = localStorage.getItem('mozaiks.conversation_mode');
@@ -164,6 +166,10 @@ export const ChatUIProvider = ({
     setIsArtifactOpen,
     isInWidgetMode,
     setIsInWidgetMode,
+    isWidgetVisible,
+    setIsWidgetVisible,
+    isChatOverlayOpen,
+    setIsChatOverlayOpen,
     conversationMode,
     setConversationMode,
     activeGeneralChatId,

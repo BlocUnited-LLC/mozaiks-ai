@@ -559,22 +559,24 @@ curl http://localhost:8000/api/workflows | jq
 ```bash
 # Verify required files
 workflows/MyWorkflow/
-├── manifest.json      # Required
-├── agents.json        # Required
-├── tools.json         # Optional but recommended
-└── tools/             # Tool implementations
+├── agents.json              # Required
+├── orchestrator.json        # Required
+├── handoffs.json            # Required
+├── structured_outputs.json  # Required
+├── context_variables.json   # Optional but recommended
+├── tools.json               # Optional but recommended
+└── tools/                   # Optional tool implementations
 ```
 
-**Verify manifest.json:**
+**Verify orchestrator.json:**
 ```json
 {
   "workflow_name": "MyWorkflow",
-  "orchestration_pattern": "group_chat",
-  "startup_mode": "manual",
-  "metadata": {
-    "displayName": "My Workflow",
-    "description": "..."
-  }
+  "max_turns": 20,
+  "human_in_the_loop": true,
+  "startup_mode": "UserDriven",
+  "orchestration_pattern": "DefaultPattern",
+  "initial_agent": "<AgentName>"
 }
 ```
 
@@ -598,10 +600,9 @@ ERROR - Workflow execution failed: Agent did not respond
 
 **Increase Agent Turn Timeout:**
 ```json
-// In workflow's manifest.json
+// In workflow's orchestrator.json
 {
-  "max_turns": 20,
-  "agent_timeout_sec": 60  // Increase from 30s default
+  "max_turns": 20
 }
 ```
 
@@ -970,7 +971,7 @@ use mozaiks
 db.chat_sessions.getIndexes()
 
 // Add indexes for common queries
-db.chat_sessions.createIndex({ enterprise_id: 1, user_id: 1 })
+db.chat_sessions.createIndex({ app_id: 1, user_id: 1 })
 db.chat_messages.createIndex({ chat_id: 1, timestamp: 1 })
 db.context_store.createIndex({ chat_id: 1, key: 1 }, { unique: true })
 ```
@@ -1121,7 +1122,7 @@ tail -f logs/logs/workflow_execution.log | jq 'select(.extra.chat_id == "chat_ab
   "extra": {
     "chat_id": "chat_abc123",
     "workflow_name": "Generator",
-    "enterprise_id": "acme_corp"
+    "app_id": "acme_corp"
   }
 }
 ```

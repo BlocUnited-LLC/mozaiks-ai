@@ -19,7 +19,7 @@ MozaiksAI workflows are **declarative, modular, and hot-swappable**. Each workfl
 - **Declarative Configuration**: Workflows define *what* should run via JSON manifests; the runtime handles *how* to execute them
 - **Modular Architecture**: Each workflow is self-contained with its own agents, tools, context variables, and UI components
 - **Hot-Swappable**: Runtime discovers and loads workflows at startup without code changes to the runtime layer
-- **Multi-Tenant Safe**: Workflows execute with enterprise-scoped isolation; state never leaks across tenants
+- **Multi-Tenant Safe**: Workflows execute with app-scoped isolation; state never leaks across tenants
 - **UI-First Design**: Workflows can expose interactive UI tools for agent-to-frontend collaboration
 
 ## Workflow Directory Structure
@@ -299,7 +299,7 @@ Defines all variables available to agents during execution, with sources and tri
           "type": "database",
           "database_name": "autogen_ai_agents",
           "collection": "Concepts",
-          "search_by": "enterprise_id",
+          "search_by": "app_id",
           "field": "ConceptOverview"
         }
       },
@@ -339,7 +339,7 @@ Defines all variables available to agents during execution, with sources and tri
    - `type: "database"`
    - `database_name`: MongoDB database name
    - `collection`: Collection name
-   - `search_by`: Query field (often `enterprise_id` or `user_id`)
+   - `search_by`: Query field (often `app_id` or `user_id`)
    - `field`: Field to extract from matched document
 
 3. **Derived Variables**
@@ -570,7 +570,7 @@ async def example_agent_tool(
 
     Args:
         input_data: Input to process
-        **runtime: AG2-injected context (chat_id, enterprise_id, etc.)
+        **runtime: AG2-injected context (chat_id, app_id, etc.)
 
     Returns:
         {'status': 'success', 'result': {...}}

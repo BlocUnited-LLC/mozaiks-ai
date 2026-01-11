@@ -128,39 +128,28 @@ build_agents:
     objective: Produce pack-level metadata files for multi-workflow packs
     output_structure:
       PackMetadata:  # Model: PackMetadata (wrapped by PackMetadataOutput)
-        manifest:  # PackManifest
+        workflow_graph:  # WorkflowGraph (v2: workflows + journeys + gates)
           pack_name: str
-          pack_description: str
-          version: str
-          entry_point: str
-          workflows:  # list[PackWorkflowEntry]
-            - name: str
-              description: str
-              role: enum(primary, supporting)
-              startup_mode: enum(UserDriven, AgentDriven, BackendOnly)
-          ui_config:  # PackUIConfig
-            show_workflow_transitions: bool
-            transition_style: enum(dropdown, inline, hidden)
-        workflow_graph:  # WorkflowGraph
-          nodes:  # list[WorkflowGraphNode]
+          version: int  # must be 2
+          description: str | null
+          workflows:  # list[PackGraphWorkflow]
             - id: str
-              type: enum(primary, supporting)
-          edges:  # list[WorkflowGraphEdge]
+              type: str | null
+              description: str | null
+          journeys:  # list[PackGraphJourney]
+            - id: str
+              label: str | null
+              scope: enum(user, app)
+              enforce_step_gating: bool
+              auto_attach_on_start: bool
+              auto_advance: bool
+              steps: list[str]
+          gates:  # list[PackGraphGate]
             - from: str
               to: str
-              trigger: enum(context_variable, completion, explicit_call)
-              condition: str | null
-              description: str
-              sync: bool
-        shared_context:  # SharedContext
-          variables:  # list[SharedContextVariable]
-            - name: str
-              type: enum(state, config, data_reference, data_entity, computed, external, content, collection)
-              owner: str
-              consumers: list[str]
-              description: str
-          refresh_strategy: enum(db_watch, polling, explicit)
-          db_collection: str
+              gating: enum(required, optional)
+              scope: enum(user, app)
+              reason: str | null
 
   # LAYER 13: Download Prompt
   - name: DownloadAgent

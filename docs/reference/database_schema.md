@@ -12,7 +12,7 @@ This document provides a comprehensive reference for MozaiksAI's MongoDB databas
 
 MozaiksAI uses MongoDB across two databases:
 - **MozaiksAI**: Runtime collections for workflow execution, chat sessions, and metrics
-- **MozaiksDB**: Platform collections for enterprise management and token wallets
+- **MozaiksDB**: Platform collections for app management and token wallets
 
 ---
 
@@ -23,7 +23,7 @@ MozaiksAI uses MongoDB across two databases:
    - [ChatSessions Collection](#chatsessions-collection)
    - [WorkflowStats Collection](#workflowstats-collection)
 3. [MozaiksDB Database](#mozaiksdb-database)
-   - [Enterprises Collection](#enterprises-collection)
+   - [apps Collection](#apps-collection)
    - [Wallets Collection](#wallets-collection)
 4. [Data Flow Patterns](#data-flow-patterns)
 5. [Index Strategy](#index-strategy)
@@ -45,13 +45,13 @@ graph TB
     end
     
     subgraph "MozaiksDB Database (Platform)"
-        ENT[Enterprises]
+        ENT[apps]
         WAL[Wallets]
     end
     
-    CS -->|enterprise_id| ENT
-    CS -->|user_id + enterprise_id| WAL
-    WS -->|enterprise_id| ENT
+    CS -->|app_id| ENT
+    CS -->|user_id + app_id| WAL
+    WS -->|app_id| ENT
     WS -->|rollup aggregation| CS
     
     style CS fill:#e1f5ff
@@ -61,7 +61,7 @@ graph TB
 ```
 
 **Design Principles:**
-- **Multi-Tenant Isolation:** All runtime collections partition by `enterprise_id` and `user_id`
+- **Multi-Tenant Isolation:** All runtime collections partition by `app_id` and `user_id`
 - **Embedded Documents:** Messages and metrics embedded in parent documents (ChatSessions) for fast reads
 - **Minimal Collections:** Two runtime collections (ChatSessions + WorkflowStats) to reduce join complexity
 - **Real-Time Aggregation:** WorkflowStats maintains live rollup documents for instant analytics
@@ -83,9 +83,9 @@ graph TB
 |-------|------|----------|-------------|
 | `_id` | string | Yes | Unique chat identifier (UUID v4 format) |
 | `chat_id` | string | Yes | Duplicate of `_id` for query convenience |
-| `enterprise_id` | string | Yes | Enterprise identifier (ObjectId as string) |
+| `app_id` | string | Yes | App identifier (ObjectId as string) |
 | `workflow_name` | string | Yes | Workflow name (e.g., `"Generator"`, `"CustomerSupport"`) |
-| `user_id` | string | Yes | User identifier within enterprise |
+| `user_id` | string | Yes | User identifier within app |
 | `status` | int | Yes | Workflow status: `0` (IN_PROGRESS), `1` (COMPLETED) |
 | `created_at` | datetime | Yes | Session creation timestamp (UTC) |
 | `last_updated_at` | datetime | Yes | Last modification timestamp (UTC) |
@@ -137,9 +137,9 @@ The `last_artifact` object stores the latest UI artifact/tool panel state:
 #### Indexes
 
 ```javascript
-// Primary enterprise/workflow query index
+// Primary app/workflow query index
 db.ChatSessions.createIndex(
-  { enterprise_id: 1, workflow_name: 1, created_at: -1 },
+  { app_id: 1, workflow_name: 1, created_at: -1 },
   { name: "cs_ent_wf_created" }
 );
 
@@ -165,7 +165,7 @@ db.ChatSessions.createIndex({ _id: 1 }, { unique: true });
 {
   "_id": "550e8400-e29b-41d4-a716-446655440000",
   "chat_id": "550e8400-e29b-41d4-a716-446655440000",
-  "enterprise_id": "507f1f77bcf86cd799439011",
+  "app_id": "507f1f77bcf86cd799439011",
   "workflow_name": "Generator",
   "user_id": "user_12345",
   "status": 1,
@@ -236,14 +236,14 @@ db.ChatSessions.createIndex({ _id: 1 }, { unique: true });
 
 **Purpose:** Real-time rollup documents aggregating metrics across chat sessions for analytics and monitoring. Uses deterministic `_id` patterns to enable idempotent upserts.
 
-**Document Pattern:** One document per `(enterprise_id, workflow_name)` pair (`_id = mon_{enterprise_id}_{workflow_name}`)
+**Document Pattern:** One document per `(app_id, workflow_name)` pair (`_id = mon_{app_id}_{workflow_name}`)
 
 #### Schema Definition
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `_id` | string | Yes | Deterministic ID: `"mon_{enterprise_id}_{workflow_name}"` |
-| `enterprise_id` | string | Yes | Enterprise identifier |
+| `_id` | string | Yes | Deterministic ID: `"mon_{app_id}_{workflow_name}"` |
+| `app_id` | string | Yes | App identifier |
 | `workflow_name` | string | Yes | Workflow name |
 | `user_id` | string | No | Representative user_id from first session |
 | `last_updated_at` | datetime | Yes | Last rollup update timestamp (UTC) |
@@ -293,9 +293,9 @@ The `avg` object within each agent follows the same schema as `overall_avg`.
 // Deterministic _id provides natural unique constraint
 db.WorkflowStats.createIndex({ _id: 1 }, { unique: true });
 
-// Enterprise lookup
+// App lookup
 db.WorkflowStats.createIndex(
-  { enterprise_id: 1, workflow_name: 1 },
+  { app_id: 1, workflow_name: 1 },
   { name: "ws_ent_wf" }
 );
 
@@ -311,7 +311,7 @@ db.WorkflowStats.createIndex(
 ```json
 {
   "_id": "mon_507f1f77bcf86cd799439011_Generator",
-  "enterprise_id": "507f1f77bcf86cd799439011",
+  "app_id": "507f1f77bcf86cd799439011",
   "workflow_name": "Generator",
   "user_id": "user_12345",
   "last_updated_at": ISODate("2025-01-15T10:35:42.000Z"),
@@ -399,7 +399,7 @@ db.WorkflowStats.createIndex(
 **Recomputation (Manual):**
 ```python
 from core.data.models import refresh_workflow_rollup
-summary = await refresh_workflow_rollup(enterprise_id="507f...", workflow_name="Generator")
+summary = await refresh_workflow_rollup(app_id="507f...", workflow_name="Generator")
 ```
 
 #### Data Size Estimates
@@ -413,20 +413,20 @@ summary = await refresh_workflow_rollup(enterprise_id="507f...", workflow_name="
 
 ## MozaiksDB Database
 
-### Enterprises Collection
+### apps Collection
 
-**Purpose:** Enterprise/organization registry for multi-tenant isolation and validation.
+**Purpose:** App/organization registry for multi-tenant isolation and validation.
 
-**Document Pattern:** One document per enterprise (`_id = ObjectId`)
+**Document Pattern:** One document per app (`_id = ObjectId`)
 
 #### Schema Definition
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `_id` | ObjectId | Yes | Unique enterprise identifier (MongoDB ObjectId) |
-| `name` | string | Yes | Enterprise display name |
+| `_id` | ObjectId | Yes | Unique app identifier (MongoDB ObjectId) |
+| `name` | string | Yes | App display name |
 | `created_at` | datetime | Yes | Registration timestamp (UTC) |
-| `status` | string | No | Enterprise status (e.g., `"active"`, `"suspended"`) |
+| `status` | string | No | App status (e.g., `"active"`, `"suspended"`) |
 
 **Note:** This collection schema is simplified for reference. Production implementations may include additional fields (billing tier, feature flags, admin contacts, etc.). Consult platform-specific documentation for extended schema.
 
@@ -434,10 +434,10 @@ summary = await refresh_workflow_rollup(enterprise_id="507f...", workflow_name="
 
 ```javascript
 // Primary key (automatic)
-db.Enterprises.createIndex({ _id: 1 }, { unique: true });
+db.apps.createIndex({ _id: 1 }, { unique: true });
 
 // Name lookup (if queries by name are common)
-db.Enterprises.createIndex({ name: 1 });
+db.apps.createIndex({ name: 1 });
 ```
 
 #### Example Document
@@ -457,15 +457,15 @@ db.Enterprises.createIndex({ name: 1 });
 
 **Purpose:** Token balance tracking for usage-based billing and monetization.
 
-**Document Pattern:** One document per `(enterprise_id, user_id)` pair
+**Document Pattern:** One document per `(app_id, user_id)` pair
 
 #### Schema Definition
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `_id` | ObjectId | Yes | Unique wallet identifier (auto-generated) |
-| `EnterpriseId` | string | Yes | Enterprise identifier (ObjectId as string) |
-| `UserId` | string | Yes | User identifier within enterprise |
+| `AppId` | string | Yes | App identifier (ObjectId as string) |
+| `UserId` | string | Yes | User identifier within app |
 | `Balance` | int | Yes | Current token balance (≥ 0) |
 | `CreatedAt` | datetime | Yes | Wallet creation timestamp (UTC) |
 | `UpdatedAt` | datetime | Yes | Last balance modification timestamp (UTC) |
@@ -475,14 +475,14 @@ db.Enterprises.createIndex({ name: 1 });
 #### Indexes
 
 ```javascript
-// Compound unique constraint for enterprise + user
+// Compound unique constraint for app + user
 db.Wallets.createIndex(
-  { EnterpriseId: 1, UserId: 1 },
+  { AppId: 1, UserId: 1 },
   { unique: true, name: "wallet_ent_user" }
 );
 
-// Enterprise lookup for admin queries
-db.Wallets.createIndex({ EnterpriseId: 1 });
+// App lookup for admin queries
+db.Wallets.createIndex({ AppId: 1 });
 ```
 
 #### Example Document
@@ -490,7 +490,7 @@ db.Wallets.createIndex({ EnterpriseId: 1 });
 ```json
 {
   "_id": ObjectId("65a1b2c3d4e5f6a7b8c9d0e1"),
-  "EnterpriseId": "507f1f77bcf86cd799439011",
+  "AppId": "507f1f77bcf86cd799439011",
   "UserId": "user_12345",
   "Balance": 50000,
   "CreatedAt": ISODate("2024-12-15T10:00:00.000Z"),
@@ -507,7 +507,7 @@ from core.data.persistence_manager import AG2PersistenceManager
 pm = AG2PersistenceManager()
 new_balance = await pm.debit_tokens(
     user_id="user_12345",
-    enterprise_id="507f1f77bcf86cd799439011",
+    app_id="507f1f77bcf86cd799439011",
     amount=2100,
     reason="realtime_usage",
     strict=True,  # Raise ValueError if insufficient tokens
@@ -520,7 +520,7 @@ new_balance = await pm.debit_tokens(
 ```python
 new_balance = await pm.debit_tokens(
     user_id="user_12345",
-    enterprise_id="507f1f77bcf86cd799439011",
+    app_id="507f1f77bcf86cd799439011",
     amount=2100,
     reason="realtime_usage",
     strict=False,  # Return None if insufficient tokens
@@ -649,12 +649,12 @@ sequenceDiagram
 
 **ChatSessions Queries:**
 ```javascript
-// Pattern 1: Enterprise workflow listing (most common)
+// Pattern 1: App workflow listing (most common)
 db.ChatSessions.find({ 
-  enterprise_id: "507f...", 
+  app_id: "507f...", 
   workflow_name: "Generator" 
 }).sort({ created_at: -1 });
-// Index: cs_ent_wf_created (enterprise_id, workflow_name, created_at)
+// Index: cs_ent_wf_created (app_id, workflow_name, created_at)
 
 // Pattern 2: Active session filtering
 db.ChatSessions.find({ 
@@ -677,9 +677,9 @@ db.ChatSessions.findOne({ _id: "550e..." });
 db.WorkflowStats.findOne({ _id: "mon_507f..._Generator" });
 // Index: _id (automatic unique)
 
-// Pattern 2: Enterprise analytics
-db.WorkflowStats.find({ enterprise_id: "507f..." });
-// Index: ws_ent_wf (enterprise_id, workflow_name)
+// Pattern 2: App analytics
+db.WorkflowStats.find({ app_id: "507f..." });
+// Index: ws_ent_wf (app_id, workflow_name)
 
 // Pattern 3: Cleanup queries (stale rollups)
 db.WorkflowStats.find({ 
@@ -692,14 +692,14 @@ db.WorkflowStats.find({
 ```javascript
 // Pattern 1: Balance lookup and debit (most common)
 db.Wallets.findOneAndUpdate(
-  { EnterpriseId: "507f...", UserId: "user_12345", Balance: { $gte: 2100 } },
+  { AppId: "507f...", UserId: "user_12345", Balance: { $gte: 2100 } },
   { $inc: { Balance: -2100 } }
 );
-// Index: wallet_ent_user (EnterpriseId, UserId) unique
+// Index: wallet_ent_user (AppId, UserId) unique
 
-// Pattern 2: Enterprise wallet listing
-db.Wallets.find({ EnterpriseId: "507f..." });
-// Index: EnterpriseId (single field)
+// Pattern 2: App wallet listing
+db.Wallets.find({ AppId: "507f..." });
+// Index: AppId (single field)
 ```
 
 ### Index Maintenance
@@ -721,7 +721,7 @@ db.ChatSessions.aggregate([
 // Drop and recreate specific index
 db.ChatSessions.dropIndex("cs_ent_wf_created");
 db.ChatSessions.createIndex(
-  { enterprise_id: 1, workflow_name: 1, created_at: -1 },
+  { app_id: 1, workflow_name: 1, created_at: -1 },
   { name: "cs_ent_wf_created" }
 );
 ```
@@ -797,10 +797,10 @@ db.createCollection("ChatSessions", {
   validator: {
     $jsonSchema: {
       bsonType: "object",
-      required: ["_id", "enterprise_id", "workflow_name", "user_id", "status", "created_at"],
+      required: ["_id", "app_id", "workflow_name", "user_id", "status", "created_at"],
       properties: {
         _id: { bsonType: "string" },
-        enterprise_id: { bsonType: "string" },
+        app_id: { bsonType: "string" },
         workflow_name: { bsonType: "string" },
         user_id: { bsonType: "string" },
         status: { bsonType: "int", minimum: 0, maximum: 1 },
@@ -839,7 +839,7 @@ db.createCollection("ChatSessions", {
 | ChatSessions | In-progress sessions | Indefinite | Manual cleanup after abandonment detection (>7 days inactive) |
 | WorkflowStats | Rollup documents | 365 days | Prune old `chat_sessions` map entries, keep aggregates |
 | Wallets | Token balances | Indefinite | Never delete (audit requirement) |
-| Enterprises | Enterprise records | Indefinite | Soft-delete via status field |
+| apps | App records | Indefinite | Soft-delete via status field |
 
 ### Cleanup Scripts
 
@@ -936,7 +936,7 @@ mongosh "mongodb://localhost:27017/MozaiksAI" --eval "
 **Fetch Active Sessions for User:**
 ```javascript
 db.ChatSessions.find({
-  enterprise_id: "507f1f77bcf86cd799439011",
+  app_id: "507f1f77bcf86cd799439011",
   user_id: "user_12345",
   status: 0  // IN_PROGRESS
 }).sort({ last_updated_at: -1 });
@@ -953,7 +953,7 @@ const session = db.ChatSessions.findOne(
 **Fetch Message Diff (Resume):**
 ```javascript
 const session = db.ChatSessions.findOne(
-  { _id: "550e...", enterprise_id: "507f..." },
+  { _id: "550e...", app_id: "507f..." },
   { messages: 1 }
 );
 const diff = session.messages.filter(m => m.sequence > 8);
@@ -976,7 +976,7 @@ const architectStats = stats.agents.ArchitectAgent.avg;
 **Check Wallet Balance:**
 ```javascript
 const wallet = db.Wallets.findOne({
-  EnterpriseId: "507f1f77bcf86cd799439011",
+  AppId: "507f1f77bcf86cd799439011",
   UserId: "user_12345"
 }, { Balance: 1 });
 const balance = wallet ? wallet.Balance : 0;
@@ -985,7 +985,7 @@ const balance = wallet ? wallet.Balance : 0;
 **Find Sessions by Date Range:**
 ```javascript
 db.ChatSessions.find({
-  enterprise_id: "507f...",
+  app_id: "507f...",
   workflow_name: "Generator",
   created_at: {
     $gte: ISODate("2025-01-01T00:00:00Z"),
@@ -996,10 +996,10 @@ db.ChatSessions.find({
 
 ### Aggregation Pipelines
 
-**Enterprise Cost Report:**
+**App Cost Report:**
 ```javascript
 db.ChatSessions.aggregate([
-  { $match: { enterprise_id: "507f...", status: 1 } },
+  { $match: { app_id: "507f...", status: 1 } },
   { $group: {
       _id: "$workflow_name",
       totalSessions: { $sum: 1 },
@@ -1014,7 +1014,7 @@ db.ChatSessions.aggregate([
 **Top Users by Token Usage:**
 ```javascript
 db.ChatSessions.aggregate([
-  { $match: { enterprise_id: "507f...", status: 1 } },
+  { $match: { app_id: "507f...", status: 1 } },
   { $group: {
       _id: "$user_id",
       totalTokens: { $sum: "$usage_total_tokens_final" },
@@ -1028,7 +1028,7 @@ db.ChatSessions.aggregate([
 **Message Count by Agent:**
 ```javascript
 db.ChatSessions.aggregate([
-  { $match: { enterprise_id: "507f..." } },
+  { $match: { app_id: "507f..." } },
   { $unwind: "$messages" },
   { $match: { "messages.role": "assistant" } },
   { $group: {
@@ -1066,7 +1066,7 @@ db.ChatSessions.findOne(
 ```javascript
 // Query only uses indexed fields (no document fetch)
 db.ChatSessions.find(
-  { enterprise_id: "507f...", workflow_name: "Generator" },
+  { app_id: "507f...", workflow_name: "Generator" },
   { _id: 1, created_at: 1, _id: 0 }  // Projection matches index fields
 ).hint("cs_ent_wf_created");
 ```
@@ -1170,9 +1170,9 @@ E11000 duplicate key error collection: MozaiksAI.ChatSessions index: _id_ dup ke
 **Solution:**
 ```python
 # Check if session exists before creating
-existing = await pm.resume_chat(chat_id, enterprise_id)
+existing = await pm.resume_chat(chat_id, app_id)
 if existing is None:
-    await pm.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
+    await pm.create_chat_session(chat_id, app_id, workflow_name, user_id)
 ```
 
 #### Issue: WorkflowStats Rollup Out of Sync
@@ -1186,7 +1186,7 @@ if existing is None:
 // Compare rollup to source data
 const rollup = db.WorkflowStats.findOne({ _id: "mon_507f..._Generator" });
 const sessions = db.ChatSessions.find({
-  enterprise_id: "507f...",
+  app_id: "507f...",
   workflow_name: "Generator",
   status: 1
 }).toArray();
@@ -1201,7 +1201,7 @@ print(`Actual: ${actualAvg}, Rollup: ${rollupAvg}, Diff: ${Math.abs(actualAvg - 
 # Force rollup recomputation
 from core.data.models import refresh_workflow_rollup
 summary = await refresh_workflow_rollup(
-    enterprise_id="507f1f77bcf86cd799439011",
+    app_id="507f1f77bcf86cd799439011",
     workflow_name="Generator"
 )
 ```
@@ -1244,11 +1244,11 @@ ValueError: INSUFFICIENT_TOKENS (but wallet shows balance = 50000, amount = 2100
 **Diagnosis:**
 ```javascript
 // Check for concurrent debit race condition
-db.Wallets.findOne({ EnterpriseId: "507f...", UserId: "user_12345" }, { Balance: 1 });
+db.Wallets.findOne({ AppId: "507f...", UserId: "user_12345" }, { Balance: 1 });
 // Balance = 50000
 
 // Check recent updates
-db.Wallets.find({ EnterpriseId: "507f...", UserId: "user_12345" }).sort({ UpdatedAt: -1 }).limit(1);
+db.Wallets.find({ AppId: "507f...", UserId: "user_12345" }).sort({ UpdatedAt: -1 }).limit(1);
 ```
 
 **Causes:**
@@ -1261,7 +1261,7 @@ db.Wallets.find({ EnterpriseId: "507f...", UserId: "user_12345" }).sort({ Update
 import asyncio
 for attempt in range(3):
     try:
-        balance = await pm.debit_tokens(user_id, enterprise_id, amount, reason="usage")
+        balance = await pm.debit_tokens(user_id, app_id, amount, reason="usage")
         break
     except ValueError as e:
         if "INSUFFICIENT_TOKENS" in str(e) and attempt < 2:
@@ -1318,7 +1318,7 @@ db.ChatSessions.aggregate([
      if (oldMessages.length > 0) {
        db.ChatMessages_Archive.insertOne({
          chat_id: session._id,
-         enterprise_id: session.enterprise_id,
+         app_id: session.app_id,
          messages: oldMessages
        });
        
@@ -1347,7 +1347,7 @@ db.setProfilingLevel(0);
 **Check Index Usage:**
 ```javascript
 db.ChatSessions.explain("executionStats").find({
-  enterprise_id: "507f...",
+  app_id: "507f...",
   workflow_name: "Generator"
 }).sort({ created_at: -1 });
 

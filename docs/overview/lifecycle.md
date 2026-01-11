@@ -28,7 +28,7 @@ This document traces each step with the actual module and function involved.
 
 **Logic:**
 ```python
-async def handle_websocket(self, websocket: WebSocket, chat_id: str, user_id: str, workflow_name: str, enterprise_id: Optional[str] = None) -> None:
+async def handle_websocket(self, websocket: WebSocket, chat_id: str, user_id: str, workflow_name: str, app_id: Optional[str] = None) -> None:
   ...
   if mtype in ("user.input.submit", "user_input_submit"):
     req_id = data.get('input_request_id') or data.get('request_id')
@@ -110,7 +110,7 @@ await coll.update_one(
 
 ### Step 2.1: Workflow Trigger
 
-**Entry Point:** `POST /api/chats/{enterprise}/{workflow}/start` or resume via `/resume`
+**Entry Point:** `POST /api/chats/{app}/{workflow}/start` or resume via `/resume`
 
 **Module:** `shared_app.py` → endpoint handler → `core/workflow/orchestration_patterns.py` → `run_default_pattern()`
 
@@ -125,7 +125,7 @@ await coll.update_one(
 ```python
 async def run_default_pattern(
     chat_id: str,
-    enterprise_id: str,
+    app_id: str,
     workflow_name: str,
     user_id: str,
     initial_message: Optional[str],
@@ -391,7 +391,7 @@ async def track_tokens(self, chat_id: str, agent_name: str, tokens: int, cost: f
 
 **Module:** `core/observability/performance_manager.py` → `_persist_stats()`
 
-**Collection:** `workflow_stats_{enterprise}_{workflow}`
+**Collection:** `workflow_stats_{app}_{workflow}`
 
 **Document Update:**
 ```python

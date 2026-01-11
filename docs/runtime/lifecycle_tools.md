@@ -101,7 +101,7 @@ def my_lifecycle_hook_with_context(context_variables):
     Args:
         context_variables: AG2 ContextVariables instance containing:
             - workflow_name: Current workflow name
-            - enterprise_id: Enterprise/tenant ID
+            - app_id: App/tenant ID
             - chat_id: Chat session ID
             - user_id: User ID
             - concept_overview: Platform concept data (if CONTEXT_AWARE=true)
@@ -149,12 +149,12 @@ def my_hook(context_variables):
 The runtime automatically loads these for ALL workflows:
 
 **`logs/workflow_lifecycle.py`:**
-- `log_workflow_start` (before_chat) - Logs workflow initialization with chat_id, user_id, enterprise_id, timestamp
+- `log_workflow_start` (before_chat) - Logs workflow initialization with chat_id, user_id, app_id, timestamp
 - `log_workflow_completion` (after_chat) - Logs workflow completion with duration metrics
 
 **Example Log Output:**
 ```
-🚀 Workflow Initialized | workflow=Generator | chat=chat_abc123 | user=user_xyz | enterprise=ent_001 | timestamp=2025-10-10T14:32:15.123Z
+🚀 Workflow Initialized | workflow=Generator | chat=chat_abc123 | user=user_xyz | app=ent_001 | timestamp=2025-10-10T14:32:15.123Z
 ✅ Workflow Completed | workflow=Generator | chat=chat_abc123 | duration=42.37s | timestamp=2025-10-10T14:32:57.456Z
 ```
 

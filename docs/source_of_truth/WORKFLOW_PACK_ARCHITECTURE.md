@@ -79,9 +79,7 @@
 │   └── ...
 │
 └── _pack/                  ← Pack-level metadata (ALWAYS present)
-    ├── manifest.json       ← List of workflows + entry point + UI config
-    ├── workflow_graph.json ← How workflows connect (dependencies)
-    └── shared_context.json ← Cross-workflow state contracts
+  └── workflow_graph.json ← How workflows connect (dependencies)
 ```
 
 ### Even Simple Requests Get a Pack
@@ -94,112 +92,50 @@ Output:
 ├── ITSupportBot/
 │   └── ... (single workflow files)
 └── _pack/
-    ├── manifest.json       ← entry_point: "ITSupportBot", workflows: ["ITSupportBot"]
-    ├── workflow_graph.json ← edges: [] (no dependencies)
-    └── shared_context.json ← variables: [] (no shared state)
+  └── workflow_graph.json ← version:2, journeys:[], gates:[] (no prerequisites)
 ```
 
 This ensures:
 - Consistent output format
 - Future extensibility (user can add workflows later)
-- Runtime can always look for `_pack/manifest.json`
+- Runtime can always look for `_pack/workflow_graph.json`
 
 ---
 
 ## 3. Pack Metadata Schemas
 
-### 3.1 manifest.json
+### 3.1 workflow_graph.json
+
+**Important (current runtime behavior)**
+
+The runtime uses two different "pack" concepts:
+
+1) **Global pack routing (v2)**: `workflows/_pack/workflow_graph.json`
+  - Schema: `workflows[]`, `journeys[]`, `gates[]`
+  - Purpose: app-scoped prerequisite gating + journey auto-advance
+
+2) **Nested/multi-workflow spawning (per-workflow)**: `workflows/<workflow_name>/_pack/workflow_graph.json`
+  - Schema: coordinator-specific (e.g. `nested_chats` triggers)
+  - Purpose: a parent workflow spawns child workflows based on structured output
+
+The older `nodes/edges` trigger graph shown below is historical and is **not** the global pack routing contract in the runtime.
+
+`manifest.json` and `shared_context.json` are not part of the runtime contract.
+Packs are defined by their graph (`workflow_graph.json`) plus persisted per-user workflow state (chat_id/status).
+
+### 3.1.1 Example
 
 ```json
 {
-  "pack_name": "IT Support System",
-  "pack_description": "Handles IT support requests with knowledge base and reporting",
-  "version": "1.0.0",
-  "entry_point": "ITSupportBot",
+  "pack_name": "ExamplePack",
+  "version": 2,
   "workflows": [
-    {
-      "name": "ITSupportBot",
-      "description": "Routes IT requests to specialists",
-      "role": "primary",
-      "startup_mode": "UserDriven"
-    },
-    {
-      "name": "KnowledgeBase",
-      "description": "Searches and retrieves KB articles",
-      "role": "supporting",
-      "startup_mode": "BackendOnly"
-    },
-    {
-      "name": "ReportGenerator",
-      "description": "Generates resolution reports",
-      "role": "supporting",
-      "startup_mode": "BackendOnly"
-    }
-  ],
-  "ui_config": {
-    "show_workflow_transitions": true,
-    "transition_style": "dropdown"
-  }
-}
-```
-
-### 3.2 workflow_graph.json
-
-```json
-{
-  "nodes": [
     { "id": "ITSupportBot", "type": "primary" },
     { "id": "KnowledgeBase", "type": "supporting" },
     { "id": "ReportGenerator", "type": "supporting" }
   ],
-  "edges": [
-    {
-      "from": "ITSupportBot",
-      "to": "KnowledgeBase",
-      "trigger": "context_variable",
-      "condition": "needs_kb_search == true",
-      "description": "Specialist needs KB article"
-    },
-    {
-      "from": "ITSupportBot",
-      "to": "ReportGenerator",
-      "trigger": "context_variable",
-      "condition": "question_answered == true",
-      "description": "Resolution complete, generate report"
-    }
-  ]
-}
-```
-
-### 3.3 shared_context.json
-
-```json
-{
-  "variables": [
-    {
-      "name": "ticket_id",
-      "type": "data_entity",
-      "owner": "ITSupportBot",
-      "consumers": ["KnowledgeBase", "ReportGenerator"],
-      "description": "Unique ticket identifier shared across workflows"
-    },
-    {
-      "name": "resolution_summary",
-      "type": "content",
-      "owner": "ITSupportBot",
-      "consumers": ["ReportGenerator"],
-      "description": "Summary text for report generation"
-    },
-    {
-      "name": "kb_articles",
-      "type": "collection",
-      "owner": "KnowledgeBase",
-      "consumers": ["ITSupportBot"],
-      "description": "Retrieved KB articles for specialist reference"
-    }
-  ],
-  "refresh_strategy": "db_watch",
-  "db_collection": "context_variables"
+  "journeys": [],
+  "gates": []
 }
 ```
 
@@ -251,10 +187,10 @@ class SharedContextWatcher:
         self.variables = shared_context_config["variables"]
         self.collection = shared_context_config["db_collection"]
     
-    async def watch_changes(self, enterprise_id, chat_id):
+    async def watch_changes(self, app_id, chat_id):
         # MongoDB change stream on context_variables collection
         async for change in self.db.watch(
-            pipeline=[{"$match": {"enterprise_id": enterprise_id}}]
+            pipeline=[{"$match": {"app_id": app_id}}]
         ):
             variable_name = change["fullDocument"]["name"]
             
@@ -311,7 +247,7 @@ From `manifest.json`:
 │  │  ─────────────────────────────────────────────────────────────────────   │   │
 │  │  • PackStrategyAgent: Define pack structure, entry point, workflow list  │   │
 │  │  • SharedContextAgent: Define cross-workflow state contracts             │   │
-│  │  • WorkflowGraphAgent: Define edges (how workflows trigger each other)   │   │
+│  │  • WorkflowGraphAgent: Define journeys + gates (macro routing)          │   │
 │  └──────┬──────────────────────────────────────────────────────────────────┘   │
 │         │                                                                       │
 │         ▼                                                                       │
@@ -506,7 +442,7 @@ journey:
 
 - [x] **3. Update structured_outputs.json** with pack schemas
   - ✅ `PackManifest` model
-  - ✅ `WorkflowGraph` model (nodes + edges)
+  - ✅ `WorkflowGraph` v2 model (workflows + journeys + gates)
   - ✅ `SharedContext` model
   - ✅ `PackMetadataOutput` combined model
   - ✅ `WorkflowInPack` model for PatternSelection.workflows[]
@@ -634,4 +570,4 @@ Once AgentGenerator outputs correct packs, update runtime to:
    - Need migration strategy for shared_context changes
 
 4. **Async workflows** - Some workflows might be fire-and-forget (e.g., ReportGenerator)
-   - `workflow_graph.json` edges need `sync: true|false` flag?
+   - If auto-advance is enabled, journeys may need an `async: true|false` step flag to support fire-and-forget flows.

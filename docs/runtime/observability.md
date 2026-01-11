@@ -66,7 +66,7 @@ perf_mgr = get_performance_manager()
 @dataclass
 class ChatPerfState:
     chat_id: str
-    enterprise_id: str
+    app_id: str
     workflow_name: str
     user_id: str
     started_at: datetime
@@ -84,7 +84,7 @@ class ChatPerfState:
 1. **Start:** Created when workflow execution begins
 2. **Update:** Incremented as agents turn, tools execute, tokens consumed
 3. **End:** Marked complete when workflow finishes
-4. **Persist:** Flushed to MongoDB `workflow_stats_{enterprise}_{workflow}` collection
+4. **Persist:** Flushed to MongoDB `workflow_stats_{app}_{workflow}` collection
 
 ---
 
@@ -105,7 +105,7 @@ await perf_mgr.initialize()
 ```python
 await perf_mgr.record_workflow_start(
     chat_id="chat_abc123",
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     workflow_name="Generator",
     user_id="user_456"
 )
@@ -195,7 +195,7 @@ snapshot = await perf_mgr.snapshot_chat("chat_abc123")
 # Returns:
 # {
 #     "chat_id": "chat_abc123",
-#     "enterprise_id": "acme_corp",
+#     "app_id": "acme_corp",
 #     "workflow_name": "Generator",
 #     "user_id": "user_456",
 #     "started_at": "2025-10-02T10:00:00Z",
@@ -292,7 +292,7 @@ GET /metrics/perf/chats/{chat_id}
 ```json
 {
   "chat_id": "chat_abc123",
-  "enterprise_id": "acme_corp",
+  "app_id": "acme_corp",
   "workflow_name": "Generator",
   "started_at": "2025-10-02T10:00:00Z",
   "runtime_sec": 900.0,

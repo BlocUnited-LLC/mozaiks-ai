@@ -198,6 +198,24 @@ async def create_agents(
     if "agents" in agent_configs:
         agent_configs = agent_configs["agents"]
 
+    # Support the canonical JSON form used by most workflows:
+    #   {"agents": [{"name": "AgentA", ...}, {"name": "AgentB", ...}]}
+    # Internally we normalize to a mapping of agent_name -> agent_config.
+    if isinstance(agent_configs, list):
+        normalized: Dict[str, Any] = {}
+        for item in agent_configs:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            normalized[name.strip()] = item
+        agent_configs = normalized
+
+    if not isinstance(agent_configs, dict):
+        logger.warning(f"[AGENTS] Invalid agents config shape for '{workflow_name}': {type(agent_configs)}")
+        agent_configs = {}
+
     try:
         from ..validation.llm_config import get_llm_config as _get_base_llm_config
 

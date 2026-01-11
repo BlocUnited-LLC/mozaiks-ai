@@ -50,7 +50,7 @@ const AskHistorySidebar = ({
     <aside className="hidden lg:flex flex-col w-64 xl:w-72 2xl:w-80 shrink-0 rounded-2xl border border-[rgba(var(--color-primary-light-rgb),0.25)] bg-[rgba(2,6,23,0.72)] backdrop-blur-xl shadow-[0_20px_60px_rgba(2,6,23,0.6)] px-4 py-4 text-sm text-slate-100">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <p className="text-[11px] tracking-[0.2em] uppercase text-[rgba(148,163,184,0.9)]">Ask Mozaiks</p>
+          <p className="text-[11px] tracking-[0.2em] uppercase text-[rgba(148,163,184,0.9)]">Ask</p>
           <h2 className="text-lg font-semibold">Recent Conversations</h2>
         </div>
         <button
@@ -136,7 +136,7 @@ const MobileAskHistoryDrawer = ({
       <div className="relative z-10 h-full w-[min(86vw,320px)] max-w-sm bg-[rgba(5,10,24,0.96)] backdrop-blur-2xl border-r border-[rgba(var(--color-primary-light-rgb),0.3)] shadow-[0_20px_60px_rgba(2,6,23,0.85)] flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 border-b border-[rgba(var(--color-primary-light-rgb),0.25)]">
           <div>
-            <p className="text-[10px] tracking-[0.3em] uppercase text-[rgba(148,163,184,0.8)]">Ask Mozaiks</p>
+            <p className="text-[10px] tracking-[0.3em] uppercase text-[rgba(148,163,184,0.8)]">Ask</p>
             <h2 className="text-base font-semibold text-white">Conversations</h2>
           </div>
           <div className="flex items-center gap-2">
@@ -235,25 +235,25 @@ const ChatPage = () => {
   const pendingStartRef = useRef(false);
   const conversationBootstrapRef = useRef(false);
   const pathSegments = location.pathname.split('/').filter(Boolean);
-  let pathEnterpriseId = null;
+  let pathAppId = null;
   let pathWorkflowName = null;
-  const isPrimaryChatRoute = pathSegments.length === 0 || pathSegments[0] === 'chat' || pathSegments[0] === 'enterprise';
+  const isPrimaryChatRoute = pathSegments.length === 0 || pathSegments[0] === 'chat' || pathSegments[0] === 'app';
   const lastPrimaryRouteRef = useRef(isPrimaryChatRoute);
 
   if (pathSegments[0] === 'chat') {
-    pathEnterpriseId = pathSegments[1] || null;
+    pathAppId = pathSegments[1] || null;
     pathWorkflowName = pathSegments[2] || null;
-  } else if (pathSegments[0] === 'enterprise') {
-    pathEnterpriseId = pathSegments[1] || null;
+  } else if (pathSegments[0] === 'app') {
+    pathAppId = pathSegments[1] || null;
     pathWorkflowName = pathSegments[2] || null;
   }
 
   const searchParams = new URLSearchParams(location.search || '');
-  const queryEnterpriseId = searchParams.get('enterpriseId') || searchParams.get('enterprise_id');
+  const queryAppId = searchParams.get('appId') || searchParams.get('app_id');
   const queryWorkflowName = searchParams.get('workflow');
   const queryChatId = searchParams.get('chat_id');
 
-  const enterpriseId = pathEnterpriseId || queryEnterpriseId;
+  const appId = pathAppId || queryAppId;
   const urlWorkflowName = pathWorkflowName || queryWorkflowName;
   const { 
     user, 
@@ -314,7 +314,19 @@ const ChatPage = () => {
   }, [messages, conversationMode]);
   
   // Note: Artifact panel restoration is handled directly in ensureWorkflowMode with setTimeout
-  const currentEnterpriseId = enterpriseId || config?.chat?.defaultEnterpriseId || process.env.REACT_APP_DEFAULT_ENTERPRISE_ID;
+  const implicitDevAppId =
+    process.env.NODE_ENV !== 'production' &&
+    (process.env.REACT_APP_ALLOW_IMPLICIT_APP_ID === 'true' || config?.auth?.mode === 'mock')
+      ? 'local-dev'
+      : null;
+
+  const currentAppId =
+    appId ||
+    config?.chat?.defaultAppId ||
+    process.env.REACT_APP_DEFAULT_APP_ID ||
+    process.env.REACT_APP_DEFAULT_app_id ||
+    implicitDevAppId ||
+    null;
   const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
   const [generalSessionsLoading, setGeneralSessionsLoading] = useState(false);
   // Workflow completion state
@@ -322,8 +334,14 @@ const ChatPage = () => {
   const [completionData, setCompletionData] = useState(null);
   // Helper function to get default workflow from registry
   const getDefaultWorkflowFromRegistry = () => {
+    const cfgDefault = typeof workflowConfig?.getDefaultWorkflow === 'function'
+      ? workflowConfig.getDefaultWorkflow()
+      : null;
+    if (cfgDefault) return cfgDefault;
+
     const workflows = getLoadedWorkflows();
-    return workflows.length > 0 ? workflows[0].name : null;
+    if (!Array.isArray(workflows) || workflows.length === 0) return null;
+    return workflows[0].name || null;
   };
 
   const defaultWorkflow = (urlWorkflowName || config?.chat?.defaultWorkflow || getDefaultWorkflowFromRegistry() || '');
@@ -335,7 +353,6 @@ const ChatPage = () => {
       setCurrentWorkflowName(urlWorkflowName);
     }
   }, [urlWorkflowName, currentWorkflowName]);
-  const [tokensExhausted, setTokensExhausted] = useState(false);
   // One-time initial spinner: show after websocket connects, hide after first agent chat.text message
   const [showInitSpinner, setShowInitSpinner] = useState(false);
   // Refs for race-free spinner control
@@ -378,12 +395,12 @@ const ChatPage = () => {
   }, []);
 
   const refreshGeneralSessions = useCallback(async () => {
-    if (!api || !currentEnterpriseId || !currentUserId) {
+    if (!api || !currentAppId || !currentUserId) {
       return [];
     }
     setGeneralSessionsLoading(true);
     try {
-      const result = await api.listGeneralChats(currentEnterpriseId, currentUserId, 50);
+      const result = await api.listGeneralChats(currentAppId, currentUserId, 50);
       const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
       setGeneralChatSessions(sessions);
       return sessions;
@@ -393,7 +410,7 @@ const ChatPage = () => {
     } finally {
       setGeneralSessionsLoading(false);
     }
-  }, [api, currentEnterpriseId, currentUserId, setGeneralChatSessions]);
+  }, [api, currentAppId, currentUserId, setGeneralChatSessions]);
 
   const mapGeneralMessage = useCallback((message) => {
     if (!message) {
@@ -410,7 +427,7 @@ const ChatPage = () => {
     return {
       id: message.event_id || `general-${message.sequence || Date.now()}`,
       sender: message.role === 'assistant' ? 'agent' : 'user',
-      agentName: message.role === 'assistant' ? 'Ask Mozaiks' : 'You',
+      agentName: message.role === 'assistant' ? 'Assistant' : 'You',
       content: message.content,
       isStreaming: false,
       timestamp,
@@ -423,7 +440,7 @@ const ChatPage = () => {
       return;
     }
     try {
-      const transcript = await api.fetchGeneralChatTranscript(currentEnterpriseId, chatId, options);
+      const transcript = await api.fetchGeneralChatTranscript(currentAppId, chatId, options);
       if (!transcript) {
         return;
       }
@@ -462,14 +479,14 @@ const ChatPage = () => {
     } catch (err) {
       console.error('Failed to hydrate general chat transcript:', err);
     }
-  }, [api, conversationMode, currentEnterpriseId, mapGeneralMessage, setActiveGeneralChatId, setGeneralChatSummary, setGeneralChatSessions, setMessagesWithLogging]);
+  }, [api, conversationMode, currentAppId, mapGeneralMessage, setActiveGeneralChatId, setGeneralChatSummary, setGeneralChatSessions, setMessagesWithLogging]);
 
   useEffect(() => {
-    if (!api || !currentEnterpriseId || !currentUserId) {
+    if (!api || !currentAppId || !currentUserId) {
       return;
     }
     refreshGeneralSessions();
-  }, [api, currentEnterpriseId, currentUserId, refreshGeneralSessions]);
+  }, [api, currentAppId, currentUserId, refreshGeneralSessions]);
 
   useEffect(() => {
     if (conversationBootstrapRef.current) {
@@ -818,7 +835,7 @@ const ChatPage = () => {
             setActiveGeneralChatId(generalId);
             setGeneralChatSummary({
               chatId: generalId,
-              label: payload.general_chat_label || payload.label || 'Ask Mozaiks',
+              label: payload.general_chat_label || payload.label || 'Ask',
               lastUpdatedAt: payload.last_updated_at || payload.timestamp || null,
               lastSequence: payload.general_chat_sequence,
             });
@@ -855,7 +872,7 @@ const ChatPage = () => {
           setActiveGeneralChatId(generalId);
           setGeneralChatSummary({
             chatId: generalId,
-            label: payload.general_chat_label || payload.label || 'Ask Mozaiks',
+            label: payload.general_chat_label || payload.label || 'Ask',
             lastUpdatedAt: payload.last_updated_at || payload.timestamp || null,
             lastSequence: payload.general_chat_sequence,
           });
@@ -1059,7 +1076,7 @@ const ChatPage = () => {
         if (metadataSource?.general_chat_id) {
           setGeneralChatSummary((prev) => ({
             chatId: metadataSource.general_chat_id,
-            label: metadataSource.general_chat_label || prev?.label || 'Ask Mozaiks',
+            label: metadataSource.general_chat_label || prev?.label || 'Ask',
             lastUpdatedAt: Date.now(),
             lastSequence: metadataSource.general_chat_sequence || metadataSource.sequence || prev?.lastSequence,
           }));
@@ -1326,17 +1343,76 @@ const ChatPage = () => {
         });
         return;
       }
+      case 'deployment_started': {
+        const payload = data.data || {};
+        const message = payload.message || 'Starting deployment to GitHub...';
+        setMessagesWithLogging(prev => [...prev, {
+          id: `deploy-start-${Date.now()}`,
+          sender: 'system',
+          agentName: 'System',
+          content: `🚀 ${message}`,
+          isStreaming: false,
+          metadata: { event_type: 'deployment', status: 'started', job_id: payload.job_id || payload.jobId || null }
+        }]);
+        return;
+      }
+      case 'deployment_progress': {
+        const payload = data.data || {};
+        const jobId = payload.job_id || payload.jobId || null;
+        const statusText = payload.status || payload.message || 'Deployment in progress...';
+        setMessagesWithLogging(prev => {
+          const updated = [...prev];
+          if (jobId) {
+            for (let i = updated.length - 1; i >= 0; i--) {
+              const m = updated[i];
+              if (m.metadata && m.metadata.event_type === 'deployment' && m.metadata.job_id === jobId) {
+                m.content = `⏳ ${statusText}`;
+                m.metadata.status = 'progress';
+                return updated;
+              }
+            }
+          }
+          updated.push({
+            id: `deploy-progress-${Date.now()}`,
+            sender: 'system',
+            agentName: 'System',
+            content: `⏳ ${statusText}`,
+            isStreaming: false,
+            metadata: { event_type: 'deployment', status: 'progress', job_id: jobId }
+          });
+          return updated;
+        });
+        return;
+      }
+      case 'deployment_completed': {
+        const payload = data.data || {};
+        const repoUrl = payload.repo_url || payload.repoUrl;
+        const message = payload.message || 'Deployment completed.';
+        setMessagesWithLogging(prev => [...prev, {
+          id: `deploy-done-${Date.now()}`,
+          sender: 'system',
+          agentName: 'System',
+          content: repoUrl ? `✅ ${message} Repo: ${repoUrl}` : `✅ ${message}`,
+          isStreaming: false,
+          metadata: { event_type: 'deployment', status: 'completed', job_id: payload.job_id || payload.jobId || null, repo_url: repoUrl || null }
+        }]);
+        return;
+      }
+      case 'deployment_failed': {
+        const payload = data.data || {};
+        const message = payload.message || payload.error || 'Deployment failed.';
+        setMessagesWithLogging(prev => [...prev, {
+          id: `deploy-fail-${Date.now()}`,
+          sender: 'system',
+          agentName: 'System',
+          content: `❌ ${message}`,
+          isStreaming: false,
+          metadata: { event_type: 'deployment', status: 'failed', job_id: payload.job_id || payload.jobId || null }
+        }]);
+        return;
+      }
       case 'input_timeout': {
         setMessagesWithLogging(prev => [...prev, { id:`timeout-${Date.now()}`, sender:'system', agentName:'System', content:`⏱️ Input request timed out.`, isStreaming:false }]);
-        return;
-      }
-      case 'token_warning': {
-        setMessagesWithLogging(prev => [...prev, { id:`warn-${Date.now()}`, sender:'system', agentName:'System', content:`⚠️ Approaching token limit`, isStreaming:false }]);
-        return;
-      }
-      case 'token_exhausted': {
-        setTokensExhausted(true);
-        setMessagesWithLogging(prev => [...prev, { id:`exhaust-${Date.now()}`, sender:'system', agentName:'System', content:`⛽ Token limit reached. Upgrade or start a new session.`, isStreaming:false }]);
         return;
       }
       case 'run_complete': {
@@ -1404,6 +1480,19 @@ const ChatPage = () => {
   // Workflow configuration & resume bootstrap (no direct startChat here; handled by preflight existence effect)
   useEffect(() => {
     if (!api) return;
+
+    // Hard requirement: app_id must be set via route/query/env (no implicit fallback)
+    if (!currentAppId) {
+      console.error(
+        "Missing app_id. Provide it via URL (/chat/<app_id>), query (?appId=...), or REACT_APP_DEFAULT_APP_ID."
+      );
+      setConnectionStatus('error');
+      setLoading(false);
+      // Allow retry once the user fixes config (don’t lock the flags)
+      setConnectionInitialized(false);
+      connectionInProgressRef.current = false;
+      return;
+    }
     setWorkflowConfigLoaded(true);
     if (!currentChatId) {
       let stored = null;
@@ -1419,7 +1508,7 @@ const ChatPage = () => {
         } catch {}
       }
     }
-  }, [api, currentChatId]);
+  }, [api, currentChatId, currentAppId]);
 
   // NEW: Preflight chat existence + cache clearing logic
 useEffect(() => {
@@ -1439,7 +1528,7 @@ useEffect(() => {
         console.log('[EXISTS] Checking existence of chat', reuseChatId);
         try {
           const wfName = currentWorkflowName;
-          const resp = await fetch(`http://localhost:8000/api/chats/exists/${currentEnterpriseId}/${wfName}/${reuseChatId}`);
+          const resp = await fetch(`http://localhost:8000/api/chats/exists/${currentAppId}/${wfName}/${reuseChatId}`);
           if (resp.ok) {
             const data = await resp.json();
             if (data.exists) {
@@ -1468,7 +1557,7 @@ useEffect(() => {
       }
 
       console.log('[INIT] Creating new chat via startChat');
-      const result = await api.startChat(currentEnterpriseId, currentWorkflowName, currentUserId);
+      const result = await api.startChat(currentAppId, currentWorkflowName, currentUserId);
       if (result && (result.chat_id || result.id)) {
         const newId = result.chat_id || result.id;
         const reused = !!result.reused;
@@ -1495,7 +1584,7 @@ useEffect(() => {
     }
   })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [api, workflowConfigLoaded, currentChatId, currentWorkflowName, currentEnterpriseId, currentUserId]);
+}, [api, workflowConfigLoaded, currentChatId, currentWorkflowName, currentAppId, currentUserId]);
 
   // Expose a helper to force-reset the current chat client-side (can be wired to a debug button later)
   const forceResetChat = useCallback(() => {
@@ -1596,7 +1685,7 @@ useEffect(() => {
       }
       
   const connection = api.createWebSocketConnection(
-        currentEnterpriseId,
+        currentAppId,
         currentUserId,
         {
           onOpen: () => {
@@ -1700,7 +1789,7 @@ useEffect(() => {
       // Reset the in-progress flag when component unmounts
       connectionInProgressRef.current = false;
     };
-  }, [api, currentEnterpriseId, currentUserId, handleIncoming, workflowConfigLoaded, currentChatId, connectionInitialized, urlWorkflowName, ws]);
+  }, [api, currentAppId, currentUserId, handleIncoming, workflowConfigLoaded, currentChatId, connectionInitialized, urlWorkflowName, ws]);
 
   // Retry connection function
   const retryConnection = useCallback(() => {
@@ -1844,7 +1933,7 @@ useEffect(() => {
     console.log('🚀 [SEND] Current chat ID:', currentChatId);
     console.log('🚀 [SEND] Pending input request ID:', pendingInputRequestId);
     console.log('🚀 [SEND] Transport type:', transportType);
-    console.log('🚀 [SEND] Enterprise ID:', currentEnterpriseId);
+    console.log('🚀 [SEND] App ID:', currentAppId);
     console.log('🚀 [SEND] User ID:', currentUserId);
     console.log('🚀 [SEND] Workflow name:', currentWorkflowName);
     
@@ -1901,7 +1990,7 @@ useEffect(() => {
     if (conversationMode === 'ask') {
       const targetChatId = activeGeneralChatId || currentChatId;
       if (!targetChatId) {
-        console.error('❌ [SEND] No chat available for Ask Mozaiks message');
+        console.error('❌ [SEND] No chat available for ask-mode message');
         return;
       }
 
@@ -1916,7 +2005,7 @@ useEffect(() => {
         },
       });
       if (!didSend) {
-        console.error('❌ [SEND] Failed to send Ask Mozaiks message (socket unavailable)');
+        console.error('❌ [SEND] Failed to send ask-mode message (socket unavailable)');
       } else {
         setLoading(true);
       }
@@ -1933,7 +2022,7 @@ useEffect(() => {
       console.log('📤 [SEND] Sending via WebSocket to workflow...');
       const success = await api.sendMessageToWorkflow(
         messageContent.content, 
-        currentEnterpriseId, 
+        currentAppId, 
         currentUserId, 
         currentWorkflowName,
         currentChatId // Pass the chat ID
@@ -1991,12 +2080,12 @@ useEffect(() => {
     if (conversationMode === 'ask') {
       return true;
     }
-    console.log('🧠 [MODE_TOGGLE] Switching to Ask Mozaiks mode (sending chat.enter_general_mode)');
+    console.log('🧠 [MODE_TOGGLE] Switching to ask mode (sending chat.enter_general_mode)');
     const sent = sendWsMessage({ type: 'chat.enter_general_mode' });
     if (sent) {
       setConversationMode('ask');
       // Cache workflow messages and snapshot artifact panel state
-      console.log('🧹 [MODE_TOGGLE] Caching workflow messages + artifact state, closing artifact panel, restoring Ask Mozaiks messages');
+      console.log('🧹 [MODE_TOGGLE] Caching workflow messages + artifact state, closing artifact panel, restoring ask-mode messages');
       workflowMessagesCacheRef.current = messagesRef.current;
       workflowArtifactSnapshotRef.current = {
         isOpen: isSidePanelOpen,
@@ -2011,10 +2100,10 @@ useEffect(() => {
       
       // Restore cached general messages if available
       if (generalMessagesCacheRef.current && generalMessagesCacheRef.current.length > 0) {
-        console.log(`📦 [MODE_TOGGLE] Restoring ${generalMessagesCacheRef.current.length} cached Ask Mozaiks messages`);
+        console.log(`📦 [MODE_TOGGLE] Restoring ${generalMessagesCacheRef.current.length} cached ask-mode messages`);
         setMessagesWithLogging(generalMessagesCacheRef.current);
       } else {
-        console.log('📭 [MODE_TOGGLE] No cached Ask Mozaiks messages, starting fresh');
+        console.log('📭 [MODE_TOGGLE] No cached ask-mode messages, starting fresh');
         setMessagesWithLogging([]);
       }
       
@@ -2073,7 +2162,7 @@ useEffect(() => {
     if (sent) {
       setConversationMode('workflow');
       // Cache general messages and restore workflow messages + artifact panel state
-      console.log('🧹 [MODE_TOGGLE] Caching Ask Mozaiks messages, restoring workflow messages + artifact panel state');
+      console.log('🧹 [MODE_TOGGLE] Caching ask-mode messages, restoring workflow messages + artifact panel state');
       generalMessagesCacheRef.current = messagesRef.current;
       
       // Restore cached workflow messages
@@ -2182,7 +2271,7 @@ useEffect(() => {
       console.log('🤖 [MODE_CHANGE] Switching to workflow mode, fetching oldest IN_PROGRESS workflow');
       console.log('🤖 [MODE_CHANGE] isInWidgetMode:', isInWidgetMode);
       console.log('🤖 [MODE_CHANGE] API available?', !!api);
-      console.log('🤖 [MODE_CHANGE] Enterprise ID:', currentEnterpriseId);
+      console.log('🤖 [MODE_CHANGE] App ID:', currentAppId);
       console.log('🤖 [MODE_CHANGE] User ID:', currentUserId);
 
       // If in widget mode, navigate to /chat first
@@ -2194,7 +2283,7 @@ useEffect(() => {
       }
       
       try {
-        const endpoint = `/api/sessions/oldest/${currentEnterpriseId}/${currentUserId}`;
+        const endpoint = `/api/sessions/oldest/${currentAppId}/${currentUserId}`;
         console.log('🌐 [MODE_CHANGE] Calling endpoint:', endpoint);
         const response = await api.get(endpoint);
         console.log('✅ [MODE_CHANGE] API response:', JSON.stringify(response, null, 2));
@@ -2241,7 +2330,7 @@ useEffect(() => {
       }
     }
     console.log('✅ [MODE_CHANGE] handleConversationModeChange completed');
-  }, [ensureGeneralMode, ensureWorkflowMode, setLayoutMode, api, currentEnterpriseId, currentUserId, sendWsMessage, setConversationMode, setCurrentChatId, setActiveChatId, setActiveWorkflowName, conversationMode, activeChatId, activeWorkflowName, isInWidgetMode, navigate, setIsInWidgetMode, currentChatId, isMobileView, setMobileDrawerState]);
+  }, [ensureGeneralMode, ensureWorkflowMode, setLayoutMode, api, currentAppId, currentUserId, sendWsMessage, setConversationMode, setCurrentChatId, setActiveChatId, setActiveWorkflowName, conversationMode, activeChatId, activeWorkflowName, isInWidgetMode, navigate, setIsInWidgetMode, currentChatId, isMobileView, setMobileDrawerState]);
 
   useEffect(() => {
     if (!queryChatId) {
@@ -2345,8 +2434,8 @@ useEffect(() => {
     }
   };
 
-  const handleCommunityClick = () => {
-  // console.debug('Navigate to community');
+  const handleAppClick = () => {
+  // console.debug('Navigate to App');
   };
 
   const handleNotificationClick = () => {
@@ -2594,7 +2683,6 @@ useEffect(() => {
       startupMode={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.startup_mode}
       initialMessageToUser={workflowConfig?.getWorkflowConfig(currentWorkflowName)?.initial_message_to_user}
       onRetry={retryConnection}
-      tokensExhausted={tokensExhausted}
       submitInputRequest={submitInputRequest}
       onBrandClick={undefined}
       conversationMode={conversationMode}
@@ -2677,7 +2765,7 @@ useEffect(() => {
       <Header 
         user={user}
         workflowName={currentWorkflowName}
-        onCommunityClick={handleCommunityClick}
+        onAppClick={handleAppClick}
         onNotificationClick={handleNotificationClick}
         onDiscoverClick={handleDiscoverClick}
       />

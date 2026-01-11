@@ -65,12 +65,12 @@ logger.info(f"Backend artifact_id: {artifact_id}")
 // They must match exactly!
 ```
 
-4. **Check enterprise_id isolation**:
+4. **Check app_id isolation**:
 ```python
-# Backend - make sure enterprise_id is correct
+# Backend - make sure app_id is correct
 artifact = await session_manager.get_artifact_instance(
     artifact_id=artifact_id,
-    enterprise_id=enterprise_id  # ← Wrong enterprise_id returns None
+    app_id=app_id  # ← Wrong app_id returns None
 )
 ```
 
@@ -92,7 +92,7 @@ client = MongoClient("mongodb://localhost:27017")
 db = client["mozaiks"]
 
 sessions = db["ChatSessions"].find({
-    "enterprise_id": "ent_001",
+    "app_id": "ent_001",
     "user_id": "user_456",
     "workflow_name": "Generator"
 }).sort("created_at", -1).limit(5)
@@ -106,16 +106,16 @@ for session in sessions:
 1. **Verify workflow was marked COMPLETED**:
 ```python
 # Check if complete_workflow_session() was called
-session = await get_workflow_session(chat_id, enterprise_id)
+session = await get_workflow_session(chat_id, app_id)
 if session["status"] != "COMPLETED":
     # Workflow never completed - call it now
-    await session_manager.complete_workflow_session(chat_id, enterprise_id)
+    await session_manager.complete_workflow_session(chat_id, app_id)
 ```
 
 2. **Check dependency definition**:
 ```python
 # Query WorkflowDependencies
-deps = db["WorkflowDependencies"].find_one({"enterprise_id": "ent_001"})
+deps = db["WorkflowDependencies"].find_one({"app_id": "ent_001"})
 marketing_deps = deps["workflows"]["MarketingAutomation"]["dependencies"]
 print(marketing_deps)
 # Should show: required_workflows: [{"workflow": "Generator", "status": "COMPLETED"}]
@@ -123,26 +123,26 @@ print(marketing_deps)
 
 3. **Test validation manually**:
 ```python
-from core.workflow.dependencies import dependency_manager
+from core.workflow.pack.gating import validate_pack_prereqs
 
-is_valid, error = await dependency_manager.validate_workflow_dependencies(
+is_valid, error = await validate_pack_prereqs(
+    app_id="ent_001",
+    user_id="user_456",
     workflow_name="MarketingAutomation",
-    enterprise_id="ent_001",
-    user_id="user_456"
 )
 print(f"Valid: {is_valid}, Error: {error}")
 ```
 
 4. **Check for multiple sessions**:
 ```python
-# User might have multiple Generator sessions, only newest counts
+# User might have multiple Generator sessions; gating checks for any COMPLETED one.
 sessions = db["ChatSessions"].find({
-    "enterprise_id": "ent_001",
+    "app_id": "ent_001",
     "user_id": "user_456",
     "workflow_name": "Generator"
 }).sort("created_at", -1)
 
-# Dependency validation uses most recent session
+# Gating is satisfied by any completed session in scope (not necessarily newest).
 latest = sessions[0]
 print(f"Latest Generator session status: {latest['status']}")
 ```
@@ -400,16 +400,16 @@ export function AppBuilderArtifact({ state }) {
 mongosh "mongodb://localhost:27017/mozaiks"
 
 # Check WorkflowSessions
-db.WorkflowSessions.find({ enterprise_id: "ent_001" }).pretty()
+db.WorkflowSessions.find({ app_id: "ent_001" }).pretty()
 
 # Check specific session
 db.WorkflowSessions.findOne({ _id: "chat_abc123" })
 
 # Check ArtifactInstances
-db.ArtifactInstances.find({ enterprise_id: "ent_001" }).pretty()
+db.ArtifactInstances.find({ app_id: "ent_001" }).pretty()
 
 # Check WorkflowDependencies
-db.WorkflowDependencies.findOne({ enterprise_id: "ent_001" })
+db.WorkflowDependencies.findOne({ app_id: "ent_001" })
 
 # Count IN_PROGRESS sessions by workflow
 db.WorkflowSessions.aggregate([
@@ -427,9 +427,9 @@ db.WorkflowSessions.aggregate([
 import logging
 logger = logging.getLogger(__name__)
 
-async def update_artifact_state(artifact_id, enterprise_id, state_updates):
+async def update_artifact_state(artifact_id, app_id, state_updates):
     logger.info(f"📝 Updating artifact {artifact_id}")
-    logger.info(f"   Enterprise: {enterprise_id}")
+    logger.info(f"   App: {app_id}")
     logger.info(f"   Updates: {state_updates}")
     
     # (Call session_manager.update_artifact_state with parameters)
@@ -503,12 +503,12 @@ When user returns:
 **A:** Add custom validation before creating session:
 
 ```python
-async def prevent_duplicate_session(enterprise_id, user_id, workflow_name):
+async def prevent_duplicate_session(app_id, user_id, workflow_name):
     pm = AG2PersistenceManager()
     coll = await pm._coll("WorkflowSessions")
     
     existing = await coll.find_one({
-        "enterprise_id": enterprise_id,
+        "app_id": app_id,
         "user_id": user_id,
         "workflow_name": workflow_name,
         "status": "IN_PROGRESS"
@@ -528,7 +528,7 @@ async def prevent_duplicate_session(enterprise_id, user_id, workflow_name):
 
 ### Q4: Can artifacts be shared between users?
 
-**A: Not by default.** Artifacts are scoped to `enterprise_id`.
+**A: Not by default.** Artifacts are scoped to `app_id`.
 
 To enable sharing:
 1. **Read-only sharing**: Return same artifact_id to multiple users
@@ -587,21 +587,12 @@ print(f"Deleted {result.deleted_count} orphaned artifacts")
 **A:** Cache validation results:
 
 ```python
-from functools import lru_cache
-import time
+from core.workflow.pack.gating import validate_pack_prereqs
 
-# Cache validation for 60 seconds
-@lru_cache(maxsize=1000)
-def validate_cached(workflow_name, enterprise_id, user_id, cache_key):
-    # cache_key changes every 60 seconds to invalidate cache
-    return dependency_manager.validate_workflow_dependencies(
-        workflow_name, enterprise_id, user_id
-    )
-
-# Usage
-cache_key = int(time.time() / 60)  # Changes every 60 seconds
-is_valid, error = await validate_cached(
-    "MarketingAutomation", "ent_001", "user_456", cache_key
+is_valid, error = await validate_pack_prereqs(
+    app_id="ent_001",
+    user_id="user_456",
+    workflow_name="MarketingAutomation",
 )
 ```
 
@@ -614,7 +605,7 @@ is_valid, error = await validate_cached(
 # In simple_transport.py, add handler for custom action
 if action == "deploy_app":
     environment = payload.get("environment", "staging")
-    await deploy_app(chat_id, artifact_id, enterprise_id, environment)
+    await deploy_app(chat_id, artifact_id, app_id, environment)
     
     await websocket.send_json({
         "type": "deployment.started",
@@ -644,13 +635,13 @@ You can use them in any Python backend:
 @app.post("/api/create-app")
 async def create_app(request: CreateAppRequest):
     session = await session_manager.create_workflow_session(
-        enterprise_id=request.enterprise_id,
+        app_id=request.app_id,
         user_id=request.user_id,
         workflow_name="AppBuilder"
     )
     
     artifact = await session_manager.create_artifact_instance(
-        enterprise_id=request.enterprise_id,
+        app_id=request.app_id,
         workflow_name="AppBuilder",
         artifact_type="AppBuilderArtifact",
         initial_state={"app_name": request.app_name}
@@ -744,15 +735,15 @@ test('navigate from AppBuilder to Revenue', async ({ page }) => {
 1. **Index MongoDB collections**:
 ```javascript
 // In MongoDB shell
-db.WorkflowSessions.createIndex({ enterprise_id: 1, user_id: 1, status: 1 })
-db.ArtifactInstances.createIndex({ enterprise_id: 1, workflow_name: 1 })
-db.WorkflowDependencies.createIndex({ enterprise_id: 1 })
+db.WorkflowSessions.createIndex({ app_id: 1, user_id: 1, status: 1 })
+db.ArtifactInstances.createIndex({ app_id: 1, workflow_name: 1 })
+db.WorkflowDependencies.createIndex({ app_id: 1 })
 ```
 
 2. **Use partial state updates** (already implemented):
 ```python
 # Only send changed fields
-await update_artifact_state(artifact_id, enterprise_id, {"progress": 75})
+await update_artifact_state(artifact_id, app_id, {"progress": 75})
 ```
 
 3. **Debounce frontend updates**:

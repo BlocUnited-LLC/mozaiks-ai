@@ -27,7 +27,7 @@ Wallets Collection (Balance updated)
 
 | **Collection** | **Purpose** | **Key Fields** |
 |----------------|-------------|----------------|
-| **Wallets** | User token balances | `EnterpriseId`, `UserId`, `Balance`, `Transactions` |
+| **Wallets** | User token balances | `AppId`, `UserId`, `Balance`, `Transactions` |
 | **ChatSessions** | Conversation transcripts + cumulative usage | `messages[]`, `usage_*_final` fields, `status` |
 | **WorkflowStats** | Real-time metrics + rollup aggregates | Per-chat metrics, per-agent breakdown, rollup docs |
 
@@ -119,7 +119,7 @@ await performance_manager.record_agent_turn(
    # core/data/persistence_manager.py
    async def debit_tokens(
        user_id: str,
-       enterprise_id: str,
+       app_id: str,
        amount: int,  # total_tokens (1500)
        reason: str,
        strict: bool = True
@@ -127,7 +127,7 @@ await performance_manager.record_agent_turn(
        # Atomic debit with balance check
        res = await wallets_collection.find_one_and_update(
            {
-               "EnterpriseId": enterprise_id,
+               "AppId": app_id,
                "UserId": user_id,
                "Balance": {"$gte": amount}  # ⭐ Ensure sufficient balance
            },
@@ -249,7 +249,7 @@ except Exception:
 ```json
 {
   "_id": ObjectId("..."),
-  "EnterpriseId": "app_456",
+  "AppId": "app_456",
   "UserId": "user_123",
   "Balance": 50000,  // Current token balance (integer)
   "Transactions": [
@@ -275,7 +275,7 @@ except Exception:
 ```python
 balance = await persistence_manager.get_wallet_balance(
     user_id="user_123",
-    enterprise_id="app_456"
+    app_id="app_456"
 )
 # Returns: 50000 (integer token count)
 ```
@@ -286,7 +286,7 @@ balance = await persistence_manager.get_wallet_balance(
 try:
     new_balance = await persistence_manager.debit_tokens(
         user_id="user_123",
-        enterprise_id="app_456",
+        app_id="app_456",
         amount=1500,
         reason="agent_turn_usage",
         strict=True,  # Raise error if insufficient
@@ -304,7 +304,7 @@ except ValueError as e:
 ```python
 new_balance = await persistence_manager.debit_tokens(
     user_id="user_123",
-    enterprise_id="app_456",
+    app_id="app_456",
     amount=1500,
     reason="optional_feature",
     strict=False  # Return None if insufficient (no error)
@@ -321,11 +321,11 @@ else:
 ```python
 result = await persistence_manager.topup_tokens(
     user_id="user_123",
-    enterprise_id="app_456",
+    app_id="app_456",
     amount=10000,
     reason="subscription_renewal"
 )
-# Returns: {"enterprise_id": "app_456", "user_id": "user_123", "balance": 60000}
+# Returns: {"app_id": "app_456", "user_id": "user_123", "balance": 60000}
 ```
 
 ### Atomic Transaction Guarantees
@@ -338,7 +338,7 @@ The `debit_tokens` operation uses `find_one_and_update` with a **conditional bal
 # This operation is atomic - no race conditions
 res = await wallets_collection.find_one_and_update(
     {
-        "EnterpriseId": eid,
+        "AppId": eid,
         "UserId": user_id,
         "Balance": {"$gte": amount}  # ⭐ Filter ensures sufficient balance
     },
@@ -369,7 +369,7 @@ Even with concurrent requests, MongoDB's atomic update ensures:
 
 **Three Logical Document Types:**
 
-1. **Real-time Rollup Docs** (`mon_{enterprise}_{workflow}`):
+1. **Real-time Rollup Docs** (`mon_{app}_{workflow}`):
    - Single aggregated document per workflow
    - Updated live as agents respond
    - Used for dashboards and analytics
@@ -384,14 +384,14 @@ Even with concurrent requests, MongoDB's atomic update ensures:
 
 ### Rollup Document Structure
 
-**Document ID:** `mon_{enterprise_id}_{workflow_name}`
+**Document ID:** `mon_{app_id}_{workflow_name}`
 
 **Example:** `mon_app456_support_triad`
 
 ```json
 {
   "_id": "mon_app456_support_triad",
-  "enterprise_id": "app_456",
+  "app_id": "app_456",
   "workflow_name": "support_triad",
   "last_updated_at": "2025-10-02T14:30:00Z",
   
@@ -515,7 +515,7 @@ if current_usage > warning_threshold:
 
 ```python
 # Before expensive operation, check balance
-balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
+balance = await persistence_manager.get_wallet_balance(user_id, app_id)
 estimated_cost_tokens = 5000  # Estimate based on workflow
 
 if balance < estimated_cost_tokens:
@@ -667,13 +667,13 @@ total_cost_usd = final_summary.get("total_cost", 0.0)
 GET /api/v1/tokens/balance
 
 Headers:
-  enterprise_id: app_456
+  app_id: app_456
   user_id: user_123
 
 Response:
 {
   "balance": 50000,
-  "enterprise_id": "app_456",
+  "app_id": "app_456",
   "user_id": "user_123"
 }
 ```
@@ -688,7 +688,7 @@ Response:
 POST /api/v1/tokens/consume
 
 Headers:
-  enterprise_id: app_456
+  app_id: app_456
   user_id: user_123
 
 Body:
@@ -726,12 +726,12 @@ Error (Insufficient Balance):
 GET /api/v1/workflows/{workflow_name}/analytics
 
 Headers:
-  enterprise_id: app_456
+  app_id: app_456
 
 Response:
 {
   "workflow_name": "support_triad",
-  "enterprise_id": "app_456",
+  "app_id": "app_456",
   "overall_avg": {
     "avg_duration_sec": 45.2,
     "avg_prompt_tokens": 2800,
@@ -807,7 +807,7 @@ async def test_free_trial_no_debit(monkeypatch):
     # Record usage (should NOT debit wallet)
     await persistence.update_session_metrics(
         chat_id="chat_1",
-        enterprise_id="app_1",
+        app_id="app_1",
         user_id="user_1",
         workflow_name="test_workflow",
         prompt_tokens=1000,
@@ -829,7 +829,7 @@ async def test_dynamic_agent_discovery():
     # Create chat session
     await persistence.create_chat_session(
         chat_id="chat_1",
-        enterprise_id="app_1",
+        app_id="app_1",
         workflow_name="test_workflow",
         user_id="user_1"
     )
@@ -837,7 +837,7 @@ async def test_dynamic_agent_discovery():
     # Record usage for "agent_A" (first time - should auto-create)
     await persistence.update_session_metrics(
         chat_id="chat_1",
-        enterprise_id="app_1",
+        app_id="app_1",
         user_id="user_1",
         workflow_name="test_workflow",
         prompt_tokens=1000,
@@ -921,11 +921,11 @@ if len(usage_buffer) >= 10 or time_since_last_flush > 30:
 
 ```javascript
 // MongoDB indexes for fast wallet operations
-db.Wallets.createIndex({ "EnterpriseId": 1, "UserId": 1 }, { unique: true })
+db.Wallets.createIndex({ "AppId": 1, "UserId": 1 }, { unique: true })
 
 // MongoDB indexes for fast rollup queries
 db.WorkflowStats.createIndex({ "_id": 1 })  // Rollup doc retrieval
-db.ChatSessions.createIndex({ "enterprise_id": 1, "workflow_name": 1 })
+db.ChatSessions.createIndex({ "app_id": 1, "workflow_name": 1 })
 ```
 
 **3. Rollup Computation:**
@@ -958,7 +958,7 @@ await stats_coll.update_one({"_id": rollup_id}, {"$set": {"total_tokens": total_
 
 **Scaling Considerations:**
 
-- **Sharding:** Shard `Wallets` by `EnterpriseId` for multi-tenant scaling
+- **Sharding:** Shard `Wallets` by `AppId` for multi-tenant scaling
 - **Caching:** Cache wallet balances (invalidate on debit/top-up)
 - **Read Replicas:** Route analytics queries to read replicas
 - **Archival:** Move completed ChatSessions to cold storage after 90 days
@@ -987,7 +987,7 @@ await stats_coll.update_one({"_id": rollup_id}, {"$set": {"total_tokens": total_
 **Fix:**
 ```python
 # Add balance check before starting expensive workflows
-balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
+balance = await persistence_manager.get_wallet_balance(user_id, app_id)
 estimated_cost = 5000  # tokens
 
 if balance < estimated_cost:
@@ -1017,7 +1017,7 @@ FREE_TRIAL_ENABLED=false
 ```python
 # Check if rollup document exists
 stats_coll = await persistence._workflow_stats_coll()
-rollup = await stats_coll.find_one({"_id": f"mon_{enterprise_id}_{workflow_name}"})
+rollup = await stats_coll.find_one({"_id": f"mon_{app_id}_{workflow_name}"})
 
 if rollup is None:
     print("Rollup document missing - run create_chat_session to initialize")
@@ -1039,12 +1039,12 @@ print(f"Session usage: {session.get('usage_total_tokens_final', 0)} tokens")
 ```python
 # ✅ Atomic (safe)
 res = await wallets_collection.find_one_and_update(
-    {"EnterpriseId": eid, "UserId": uid, "Balance": {"$gte": amount}},
+    {"AppId": eid, "UserId": uid, "Balance": {"$gte": amount}},
     {"$inc": {"Balance": -amount}}
 )
 
 # ❌ Non-atomic (race condition possible)
-doc = await wallets_collection.find_one({"EnterpriseId": eid, "UserId": uid})
+doc = await wallets_collection.find_one({"AppId": eid, "UserId": uid})
 if doc["Balance"] >= amount:
     await wallets_collection.update_one({"_id": doc["_id"]}, {"$inc": {"Balance": -amount}})
 ```

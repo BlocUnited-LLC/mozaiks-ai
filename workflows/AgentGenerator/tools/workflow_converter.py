@@ -6,22 +6,23 @@
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 import json
+import yaml
 import re
 import textwrap
 
 
 from logs.logging_config import get_workflow_logger
 
-# Standard JSON file mappings for workflows
+# Standard YAML file mappings for workflows
 WORKFLOW_FILE_MAPPINGS = {
-    'orchestrator': 'orchestrator.json',
-    'agents': 'agents.json',
-    'handoffs': 'handoffs.json',
-    'context_variables': 'context_variables.json',
-    'structured_outputs': 'structured_outputs.json',
-    'hooks': 'hooks.json', 
-    'tools': 'tools.json',
-    'ui_config': 'ui_config.json'
+    'orchestrator': 'orchestrator.yaml',
+    'agents': 'agents.yaml',
+    'handoffs': 'handoffs.yaml',
+    'context_variables': 'context_variables.yaml',
+    'structured_outputs': 'structured_outputs.yaml',
+    'hooks': 'hooks.yaml', 
+    'tools': 'tools.yaml',
+    'ui_config': 'ui_config.yaml'
 }
 
 
@@ -75,10 +76,17 @@ def clean_agent_content(content: str, agent_name: str = None) -> Optional[str]:
         return None
 
 
-def _save_json_file(file_path: Path, data: Dict[str, Any]) -> None:
-    """Save data to a JSON file"""
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+def _save_yaml_file(file_path: Path, data: Dict[str, Any]) -> None:
+    """Save data to a YAML file with clean formatting"""
+    with open(file_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            data,
+            f,
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+            indent=2,
+        )
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -167,7 +175,11 @@ def _split_config_into_sections(config: Dict[str, Any]) -> Dict[str, Dict[str, A
     # Orchestrator section (top-level workflow settings)
     orchestrator_keys = [
         'workflow_name', 'max_turns', 'human_in_the_loop', 'startup_mode',
-        'orchestration_pattern', 'initial_message_to_user', 'initial_message', 'recipient'
+        'orchestration_pattern', 'initial_message_to_user', 'initial_message',
+        # current schema
+        'initial_agent', 'runtime_extensions',
+        # backward-compat (older examples/tools)
+        'recipient'
     ]
     sections['orchestrator'] = {k: v for k, v in config.items() if k in orchestrator_keys}
 
@@ -306,7 +318,7 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
                     section_data.setdefault("models", {})
                     section_data.setdefault("registry", {})
                     file_path = workflow_dir / filename
-                    _save_json_file(file_path, section_data)
+                    _save_yaml_file(file_path, section_data)
                     saved_files.append(filename)
                     wf_logger.info(f"📄 [SAVE] structured_outputs saved → {filename}")
                 continue
@@ -320,7 +332,7 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
                     has_new = any(k in plan for k in ("database_variables", "environment_variables", "derived_variables"))
                     if has_legacy or has_new:
                         file_path = workflow_dir / filename
-                        _save_json_file(file_path, plan)
+                        _save_yaml_file(file_path, plan)
                         saved_files.append(filename)
                         if has_new:
                             wf_logger.info(
@@ -336,7 +348,7 @@ def _save_modular_workflow(workflow_name: str, config: Dict[str, Any]) -> bool:
 
             if section_data:
                 file_path = workflow_dir / filename
-                _save_json_file(file_path, section_data)
+                _save_yaml_file(file_path, section_data)
                 saved_files.append(filename)
                 wf_logger.info(f"📄 [SAVE] {section_name} saved → {filename}")
 
@@ -519,13 +531,13 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
             
             # Transform list to dict: [{"name": "Agent1", ...}] -> {"Agent1": {...}}
             # Exclude fields that don't belong in agents.json runtime config
-            excluded_fields = {'name', 'display_name', 'agent_type'}
+            excluded_fields = {'name', 'display_name'}
             agents_dict = {}
             
             for agent in agents_list:
                 if isinstance(agent, dict) and 'name' in agent:
                     agent_name = agent['name']
-                    # Remove excluded fields (name is the key, display_name/agent_type are metadata)
+                    # Remove excluded fields (name is the key, display_name is metadata)
                     agent_config = {k: v for k, v in agent.items() if k not in excluded_fields}
                     agents_dict[agent_name] = agent_config
                 else:
@@ -600,6 +612,37 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
         static_structured = data.get('structured_outputs', {}) or {}
         dynamic_structured = data.get('structured_outputs_agent_output', {}) or {}
 
+        # Normalize dynamic structured outputs: agent may return JSON as string or
+        # wrapped under alternative keys. Accept raw dicts or JSON strings.
+        def _normalize_dynamic_structured(obj):
+            if isinstance(obj, str):
+                try:
+                    parsed = json.loads(obj)
+                    obj = parsed
+                except Exception as e:
+                    wf_logger.error(f"❌ [STRUCTURED_OUTPUTS] Could not parse structured_outputs_agent_output JSON: {e}")
+                    return {}
+            if not isinstance(obj, dict):
+                return {}
+
+            # If it's wrapped under a top-level key, try to find inner dict containing models/registry
+            if 'models' in obj or 'registry' in obj:
+                return obj
+
+            # Common wrapper keys used in examples: StructuredOutputsRegistry, StructuredModelsOutput, StructuredOutputs
+            for key in ('StructuredOutputsRegistry', 'StructuredModelsOutput', 'StructuredOutputs', 'StructuredOutputsAgent'):
+                if key in obj and isinstance(obj[key], dict):
+                    return obj[key]
+
+            # Fallback: search nested dict values for models/registry keys
+            for v in obj.values():
+                if isinstance(v, dict) and ('models' in v or 'registry' in v):
+                    return v
+
+            return {}
+
+        dynamic_structured = _normalize_dynamic_structured(dynamic_structured)
+
         merged_structured = _merge_structured_outputs(static_structured, dynamic_structured, agent_names, wf_logger)
 
         # Guarantee presence of top-level keys even if empty
@@ -659,6 +702,54 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
 
         # Add extra files to config so they can be saved
         extra_files = data.get('extra_files')
+
+        # ------------------------------------------------------------------
+        # Database schema bundle (schema.json + seed.json) for backend deploy
+        # ------------------------------------------------------------------
+        database_schema_output = data.get("database_schema_output")
+        schema_content: Dict[str, Any] = {"tables": []}
+        seed_content: Dict[str, Any] = {}
+
+        try:
+            if isinstance(database_schema_output, dict) and database_schema_output:
+                payload = database_schema_output.get("DatabaseSchema")
+                if not isinstance(payload, dict):
+                    payload = database_schema_output
+
+                candidate_schema = payload.get("schema")
+                candidate_seed = payload.get("seed")
+
+                if isinstance(candidate_schema, dict):
+                    schema_content = candidate_schema
+                if isinstance(candidate_seed, dict):
+                    seed_content = candidate_seed
+        except Exception as schema_extract_err:
+            wf_logger.debug(f"Failed to extract database schema output: {schema_extract_err}")
+
+        # Ensure schema.tables exists and is a list (backend expects tables array)
+        if not isinstance(schema_content.get("tables"), list):
+            schema_content["tables"] = []
+
+        if not isinstance(extra_files, list):
+            extra_files = []
+
+        def _extra_has(target_name: str) -> bool:
+            for item in extra_files:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("filename") == target_name or item.get("path") == target_name:
+                    return True
+            return False
+
+        if not _extra_has("schema.json"):
+            extra_files.append(
+                {"filename": "schema.json", "filecontent": schema_content, "agent": "DatabaseSchemaAgent"}
+            )
+        if not _extra_has("seed.json"):
+            extra_files.append(
+                {"filename": "seed.json", "filecontent": seed_content, "agent": "DatabaseSchemaAgent"}
+            )
+        wf_logger.info("🧩 [CREATE_WORKFLOW_FILES] Added schema.json and seed.json to extra_files")
 
         # Inject runtime-generated attachments (e.g., API key env snapshot) from context variables
         if context_variables and hasattr(context_variables, 'get'):
@@ -780,6 +871,10 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
             cfg.setdefault('human_in_the_loop', False)
             cfg.setdefault('orchestration_pattern', 'DefaultPattern')
             cfg.setdefault('startup_mode', 'BackendOnly')
+            # Backward-compat: migrate older 'recipient' to 'initial_agent'
+            if 'initial_agent' not in cfg and isinstance(cfg.get('recipient'), str):
+                cfg['initial_agent'] = cfg.get('recipient')
+            cfg.pop('recipient', None)
             # Message logic
             mode = cfg.get('startup_mode')
             if mode == 'UserDriven':
@@ -790,6 +885,8 @@ async def create_workflow_files(data: Dict[str, Any], context_variables: Optiona
                 if 'initial_message' not in cfg or cfg.get('initial_message') is None:
                     cfg['initial_message'] = 'Initialize workflow sequence.'
                 cfg['initial_message_to_user'] = None
+            # Extensions default
+            cfg.setdefault('runtime_extensions', [])
             # Ensure arrays
             cfg.setdefault('visual_agents', [])
             return cfg

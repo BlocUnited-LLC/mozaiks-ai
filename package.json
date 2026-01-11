@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "validate:pattern-examples": "\".venv\\Scripts\\python.exe\" scripts\\validate_pattern_examples.py"
+  },
   "dependencies": {
     "@radix-ui/react-tabs": "^1.1.13",
     "clsx": "^2.1.1",

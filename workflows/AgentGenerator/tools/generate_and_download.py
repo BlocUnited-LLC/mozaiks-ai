@@ -5,6 +5,7 @@
 # ==============================================================================
 
 from typing import Any, Dict, List, Optional, Union, Annotated
+import os
 import json
 import uuid
 from pathlib import Path
@@ -13,74 +14,18 @@ import time
 import zipfile
 from logs.logging_config import get_workflow_logger
 from core.data.persistence.persistence_manager import AG2PersistenceManager
+from core.artifacts.attachments import inject_bundle_attachments_into_payload
+from workflows._shared.agent_endpoints import resolve_agent_api_url, resolve_agent_websocket_url
+from workflows._shared.workflow_exports import record_workflow_export
 from core.workflow.outputs.ui_tools import use_ui_tool, UIToolError
-from workflows.Generator.tools.workflow_converter import create_workflow_files
-from core.workflow.dependencies import dependency_manager
+from workflows.AgentGenerator.tools.workflow_converter import create_workflow_files
+from workflows.AgentGenerator.tools.export_agent_workflow import export_agent_workflow_to_github
 
 try:
     from logs.tools_logs import get_tool_logger as _get_tool_logger, log_tool_event as _log_tool_event  # type: ignore
 except Exception:
     _get_tool_logger = None  # type: ignore
     _log_tool_event = None  # type: ignore
-
-async def _update_workflow_dependency_graph(
-    collected: Dict[str, Any],
-    workflow_name_pascal: str,
-    enterprise_id: str,
-    wf_logger,
-) -> None:
-    """
-    Extract workflow_dependencies from TechnicalBlueprint 
-    and update the WorkflowDependencies collection.
-    
-    Args:
-        collected: Dictionary of agent outputs (includes WorkflowArchitectAgent)
-        workflow_name_pascal: PascalCase workflow name
-        enterprise_id: Enterprise ID
-        wf_logger: Workflow logger instance
-    """
-    try:
-        # Extract TechnicalBlueprint from WorkflowArchitectAgent output
-        architect_output = collected.get("WorkflowArchitectAgent")
-        if not architect_output or not isinstance(architect_output, dict):
-            wf_logger.debug("No WorkflowArchitectAgent output found, skipping dependency graph update")
-            return
-        
-        technical_blueprint = architect_output.get("TechnicalBlueprint")
-        if not technical_blueprint or not isinstance(technical_blueprint, dict):
-            wf_logger.debug("No TechnicalBlueprint found in WorkflowArchitectAgent output")
-            return
-        
-        # Extract workflow_dependencies
-        workflow_dependencies = technical_blueprint.get("workflow_dependencies")
-        
-        # Convert to proper format (null becomes None for Python)
-        dependencies = None
-        
-        if workflow_dependencies and isinstance(workflow_dependencies, dict):
-            dependencies = {
-                "required_workflows": workflow_dependencies.get("required_workflows", []),
-                "required_context_vars": workflow_dependencies.get("required_context_vars", []),
-                "required_artifacts": workflow_dependencies.get("required_artifacts", [])
-            }
-            wf_logger.info(f"📊 Extracted workflow_dependencies: {len(dependencies.get('required_workflows', []))} workflows, "
-                          f"{len(dependencies.get('required_context_vars', []))} context vars, "
-                          f"{len(dependencies.get('required_artifacts', []))} artifacts")
-        
-        # Update dependency graph in database
-        if dependencies:
-            await dependency_manager.update_workflow_graph(
-                enterprise_id=enterprise_id,
-                workflow_name=workflow_name_pascal,
-                dependencies=dependencies
-            )
-            wf_logger.info(f"✅ Updated WorkflowDependencies collection for workflow '{workflow_name_pascal}'")
-        else:
-            wf_logger.debug(f"No dependencies found for workflow '{workflow_name_pascal}', skipping graph update")
-            
-    except Exception as dep_err:
-        # Non-critical error - log but don't fail workflow generation
-        wf_logger.warning(f"⚠️ Failed to update workflow dependency graph: {dep_err}", exc_info=True)
 
 async def generate_and_download(
     DownloadRequest: Annotated[Dict[str, Any], "Download configuration with confirmation_only and storage_backend"],
@@ -103,7 +48,7 @@ async def generate_and_download(
             - storage_backend (str): Storage target ('none', 's3', 'local').
             - description (str|None): Optional description (reserved for future use).
         agent_message: Message shown to user in UI (e.g., "Ready to download your workflow bundle?").
-        context_variables: Runtime context dict (chat_id, workflow_name, user_id, enterprise_id).
+        context_variables: Runtime context dict (chat_id, workflow_name, user_id, app_id).
 
     Returns:
         Dict with status, ui_response, files, and any storage metadata.
@@ -115,19 +60,21 @@ async def generate_and_download(
     
     # Extract parameters from AG2 ContextVariables
     chat_id: Optional[str] = None
-    enterprise_id: Optional[str] = None
+    app_id: Optional[str] = None
     workflow_name: Optional[str] = None
+    user_id: Optional[str] = None
     
     if context_variables and hasattr(context_variables, 'get'):
         chat_id = context_variables.get('chat_id')
-        enterprise_id = context_variables.get('enterprise_id')
+        app_id = context_variables.get('app_id')
         workflow_name = context_variables.get('workflow_name')
+        user_id = context_variables.get('user_id')
 
-    wf_logger = get_workflow_logger(workflow_name=(workflow_name or "missing"), chat_id=chat_id, enterprise_id=enterprise_id)
+    wf_logger = get_workflow_logger(workflow_name=(workflow_name or "missing"), chat_id=chat_id, app_id=app_id)
     tlog = None
     if _get_tool_logger:
         try:
-            tlog = _get_tool_logger(tool_name="GenerateAndDownload", chat_id=chat_id, enterprise_id=enterprise_id, workflow_name=(workflow_name or "missing"))
+            tlog = _get_tool_logger(tool_name="GenerateAndDownload", chat_id=chat_id, app_id=app_id, workflow_name=(workflow_name or "missing"))
             if _log_tool_event:
                 _log_tool_event(tlog, action="start", status="ok")
         except Exception:
@@ -142,14 +89,18 @@ async def generate_and_download(
     agent_message_id = f"msg_{uuid.uuid4().hex[:10]}"
     print(agent_message_text)
 
-    if not chat_id or not enterprise_id:
-        return {"status": "error", "message": "chat_id and enterprise_id are required"}
+    if not chat_id or not app_id:
+        return {"status": "error", "message": "chat_id and app_id are required"}
 
     # PHASE 1: Gather latest agent JSON outputs (always needed for metadata or file creation)
     pm = AG2PersistenceManager()
-    wf_logger.info(f"🔍 [GATHER] Calling gather_latest_agent_jsons for chat_id={chat_id} enterprise_id={enterprise_id}")
-    collected = await pm.gather_latest_agent_jsons(chat_id=chat_id, enterprise_id=enterprise_id)
+    wf_logger.info(f"🔍 [GATHER] Calling gather_latest_agent_jsons for chat_id={chat_id} app_id={app_id}")
+    collected = await pm.gather_latest_agent_jsons(chat_id=chat_id, app_id=app_id)
     wf_logger.info(f"🔍 [GATHER] Collected {len(collected)} agent outputs: {list(collected.keys())}")
+
+    # ------------------------------------------------------------------
+    # (Attachments injection is handled via core.artifacts.attachments helpers)
+    # ------------------------------------------------------------------
     
     if not collected:
         wf_logger.error(f"❌ [GATHER] No agent outputs collected from persistence! This means either:")
@@ -169,7 +120,7 @@ async def generate_and_download(
         
         debug_data = {
             "chat_id": chat_id,
-            "enterprise_id": enterprise_id,
+            "app_id": app_id,
             "workflow_name": workflow_name,
             "timestamp": timestamp,
             "collected_agents": list(collected.keys()),
@@ -279,7 +230,7 @@ async def generate_and_download(
     
     # Use PascalCase name for all file operations
     wf_name = wf_name_pascal
-    wf_logger = get_workflow_logger(workflow_name=wf_name, chat_id=chat_id, enterprise_id=enterprise_id)
+    wf_logger = get_workflow_logger(workflow_name=wf_name, chat_id=chat_id, app_id=app_id)
 
     if context_variables and hasattr(context_variables, "set"):
         try:
@@ -313,6 +264,11 @@ async def generate_and_download(
     context_vars_data = collected.get("ContextVariablesAgent") or collected.get("context_variables_output", {})
     if isinstance(context_vars_data, dict):
         payload["context_variables_output"] = context_vars_data
+
+    # DatabaseSchemaAgent -> DatabaseSchemaOutput (schema.json + seed.json)
+    database_schema_data = collected.get("DatabaseSchemaAgent") or collected.get("database_schema_output", {})
+    if isinstance(database_schema_data, dict):
+        payload["database_schema_output"] = database_schema_data
     
     # ToolsManagerAgent -> ToolsManifest (tools + lifecycle_tools manifest)
     tools_manager_data = collected.get("ToolsManagerAgent") or collected.get("tools_manager_output", {})
@@ -392,6 +348,31 @@ async def generate_and_download(
         if existing:
             payload["extra_files"] = existing
 
+    # Include any user-uploaded files explicitly tagged for bundling
+    # Hybrid model: uploads are context-only unless the workflow flag is enabled.
+    allow_bundling = False
+    try:
+        if context_variables and hasattr(context_variables, "get"):
+            allow_bundling = bool(context_variables.get("attachments_allow_bundling", False))
+    except Exception:
+        allow_bundling = False
+
+    if allow_bundling:
+        try:
+            coll = await pm._coll()
+            injected = await inject_bundle_attachments_into_payload(
+                chat_coll=coll,
+                payload=payload,
+                chat_id=chat_id,
+                app_id=app_id,
+            )
+            if injected:
+                wf_logger.info(f"🧩 Injected {injected} uploaded bundle attachment(s) into extra_files")
+        except Exception as attach_err:
+            wf_logger.warning(f"⚠️ Failed to inject uploaded attachments: {attach_err}")
+    else:
+        wf_logger.info("📎 Attachment bundling disabled (attachments_allow_bundling=false)")
+
     # Simplified logic: confirmation_only determines when files are created
     create_res: Dict[str, Any] = {}
     ui_files: List[Dict[str, Any]] = []
@@ -410,6 +391,121 @@ async def generate_and_download(
             return f"{num} bytes"
         return f"{num} bytes"
 
+    def _build_zip_ui_files(*, workflow_dir: Path, created_files: List[str]) -> List[Dict[str, Any]]:
+        """Create a single ZIP bundle for this workflow and return ui_files entries."""
+
+        zip_path = workflow_dir.parent / f"{wf_name}.zip"
+        wf_logger.info(f"📦 Creating zip archive: {zip_path}")
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Add all workflow root files
+            for file_name in created_files:
+                file_path = workflow_dir / file_name
+                if file_path.exists():
+                    arcname = f"{wf_name}/{file_name}"
+                    zipf.write(file_path, arcname=arcname)
+
+            # Add tools directory if it exists
+            tools_dir = workflow_dir / "tools"
+            if tools_dir.exists() and tools_dir.is_dir():
+                for tool_file in tools_dir.rglob("*"):
+                    if tool_file.is_file():
+                        arcname = f"{wf_name}/tools/{tool_file.relative_to(tools_dir)}"
+                        zipf.write(tool_file, arcname=arcname)
+
+        zip_size = zip_path.stat().st_size
+        wf_logger.info(f"✅ Created zip archive: {_format_bytes(zip_size)}")
+
+        return [
+            {
+                "name": f"{wf_name}.zip",
+                "size": _format_bytes(zip_size),
+                "size_bytes": zip_size,
+                "path": str(zip_path.resolve()),
+                "id": "file-zip-bundle",
+                "type": "zip",
+            }
+        ]
+
+    def _safe_load_json(path: Path) -> Optional[Any]:
+        try:
+            if not path.exists() or not path.is_file():
+                return None
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def _extract_names(raw: Any, *, list_key: str) -> List[str]:
+        items: Any = None
+        if isinstance(raw, dict):
+            items = raw.get(list_key)
+        elif isinstance(raw, list):
+            items = raw
+        if not isinstance(items, list):
+            return []
+
+        names: List[str] = []
+        for item in items:
+            name = None
+            if isinstance(item, dict):
+                name = item.get("name")
+            elif isinstance(item, str):
+                name = item
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+        return names
+
+    async def _record_agent_generator_context(*, workflow_dir: Path) -> None:
+        try:
+            if not app_id:
+                return
+
+            agents_json = _safe_load_json(workflow_dir / "agents.json")
+            tools_json = _safe_load_json(workflow_dir / "tools.json")
+
+            agent_names = _extract_names(agents_json, list_key="agents")
+            tool_names = _extract_names(tools_json, list_key="tools")
+
+            websocket_url = resolve_agent_websocket_url(str(app_id))
+            api_url = resolve_agent_api_url(str(app_id))
+
+            await record_workflow_export(
+                app_id=str(app_id),
+                user_id=user_id,
+                workflow_type="agent-generator",
+                repo_url=None,
+                job_id=None,
+                meta={
+                    "bundle_workflow_name": wf_name,
+                    "agent_names": agent_names,
+                    "tool_names": tool_names,
+                    "available_agents": agent_names,
+                    "available_tools": tool_names,
+                },
+                extra_fields={
+                    "bundle_workflow_name": wf_name,
+                    "agent_names": agent_names,
+                    "tool_names": tool_names,
+                    "available_agents": agent_names,
+                    "available_tools": tool_names,
+                    "agent_websocket_url": websocket_url,
+                    "agent_api_url": api_url,
+                },
+            )
+
+            if context_variables and hasattr(context_variables, "set"):
+                try:
+                    context_variables.set("agent_websocket_url", websocket_url)
+                    context_variables.set("agent_api_url", api_url)
+                    context_variables.set("agent_names", agent_names)
+                    context_variables.set("tool_names", tool_names)
+                    context_variables.set("available_agents", agent_names)
+                    context_variables.set("available_tools", tool_names)
+                except Exception:
+                    pass
+        except Exception as exc:
+            wf_logger.debug(f"Failed to record workflow export context for chaining: {exc}")
+
     if not confirmation_only:
         # Immediate mode: Create files NOW, then show download UI
         wf_logger.info("📦 Creating workflow files immediately (confirmation_only=False)...")
@@ -419,44 +515,11 @@ async def generate_and_download(
         created_files = create_res.get("files", [])
         workflow_dir = Path(create_res.get("workflow_dir", "")) if create_res.get("workflow_dir") else None
         
-        # Update workflow dependency graph after successful creation
-        if wf_name_pascal and enterprise_id:
-            await _update_workflow_dependency_graph(collected, wf_name_pascal, enterprise_id, wf_logger)
-        
         # Create zip file containing all workflow files
         if workflow_dir and workflow_dir.exists():
             try:
-                zip_path = workflow_dir.parent / f"{wf_name}.zip"
-                wf_logger.info(f"📦 Creating zip archive: {zip_path}")
-                
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    # Add all workflow files
-                    for file_name in created_files:
-                        file_path = workflow_dir / file_name
-                        if file_path.exists():
-                            arcname = f"{wf_name}/{file_name}"
-                            zipf.write(file_path, arcname=arcname)
-                    
-                    # Add tools directory if it exists
-                    tools_dir = workflow_dir / "tools"
-                    if tools_dir.exists() and tools_dir.is_dir():
-                        for tool_file in tools_dir.rglob("*"):
-                            if tool_file.is_file():
-                                arcname = f"{wf_name}/tools/{tool_file.relative_to(tools_dir)}"
-                                zipf.write(tool_file, arcname=arcname)
-                
-                zip_size = zip_path.stat().st_size
-                wf_logger.info(f"✅ Created zip archive: {_format_bytes(zip_size)}")
-                
-                # Only add the zip file to ui_files
-                ui_files.append({
-                    "name": f"{wf_name}.zip",
-                    "size": _format_bytes(zip_size),
-                    "size_bytes": zip_size,
-                    "path": str(zip_path.resolve()),
-                    "id": "file-zip-bundle",
-                    "type": "zip"
-                })
+                ui_files = _build_zip_ui_files(workflow_dir=workflow_dir, created_files=created_files)
+                await _record_agent_generator_context(workflow_dir=workflow_dir)
                 wf_logger.info(f"✅ Prepared zip bundle for download")
             except Exception as zip_err:
                 wf_logger.error(f"Failed to create zip file: {zip_err}")
@@ -520,44 +583,11 @@ async def generate_and_download(
         workflow_dir = Path(create_res.get("workflow_dir", "")) if create_res.get("workflow_dir") else None
         ui_files = []
         
-        # Update workflow dependency graph after successful creation
-        if wf_name_pascal and enterprise_id:
-            await _update_workflow_dependency_graph(collected, wf_name_pascal, enterprise_id, wf_logger)
-        
         # Create zip file containing all workflow files
         if workflow_dir and workflow_dir.exists():
             try:
-                zip_path = workflow_dir.parent / f"{wf_name}.zip"
-                wf_logger.info(f"📦 Creating zip archive: {zip_path}")
-                
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    # Add all workflow files
-                    for file_name in created_files:
-                        file_path = workflow_dir / file_name
-                        if file_path.exists():
-                            arcname = f"{wf_name}/{file_name}"
-                            zipf.write(file_path, arcname=arcname)
-                    
-                    # Add tools directory if it exists
-                    tools_dir = workflow_dir / "tools"
-                    if tools_dir.exists() and tools_dir.is_dir():
-                        for tool_file in tools_dir.rglob("*"):
-                            if tool_file.is_file():
-                                arcname = f"{wf_name}/tools/{tool_file.relative_to(tools_dir)}"
-                                zipf.write(tool_file, arcname=arcname)
-                
-                zip_size = zip_path.stat().st_size
-                wf_logger.info(f"✅ Created zip archive: {_format_bytes(zip_size)}")
-                
-                # Only add the zip file to ui_files
-                ui_files.append({
-                    "name": f"{wf_name}.zip",
-                    "size": _format_bytes(zip_size),
-                    "size_bytes": zip_size,
-                    "path": str(zip_path.resolve()),
-                    "id": "file-zip-bundle",
-                    "type": "zip"
-                })
+                ui_files = _build_zip_ui_files(workflow_dir=workflow_dir, created_files=created_files)
+                await _record_agent_generator_context(workflow_dir=workflow_dir)
                 wf_logger.info(f"✅ Prepared zip bundle for download")
             except Exception as zip_err:
                 wf_logger.error(f"Failed to create zip file: {zip_err}")
@@ -608,12 +638,63 @@ async def generate_and_download(
             wf_logger.info("✅ Set download_complete=True (user accepted download)")
         except Exception as ctx_err:
             wf_logger.warning(f"⚠️ Failed to set download_complete context variable: {ctx_err}")
+
+    # Optional GitHub export (triggered by FileDownloadCenter action)
+    deployment_result: Optional[Dict[str, Any]] = None
+    try:
+        action = None
+        if isinstance(response, dict):
+            action = response.get("action")
+            if not action and isinstance(response.get("data"), dict):
+                action = response["data"].get("action")
+
+        if action == "export_to_github":
+            zip_bundle_path = None
+            for f in ui_files:
+                if isinstance(f, dict) and f.get("type") == "zip" and f.get("path"):
+                    zip_bundle_path = f.get("path")
+                    break
+
+            repo_name = None
+            commit_message = "Initial code generation from Mozaiks AI"
+            if isinstance(response, dict) and isinstance(response.get("data"), dict):
+                repo_name = response["data"].get("repo_name") or response["data"].get("repoName")
+                commit_message = (
+                    response["data"].get("commit_message")
+                    or response["data"].get("commitMessage")
+                    or commit_message
+                )
+
+            if not zip_bundle_path:
+                deployment_result = {"success": False, "error": "ZIP bundle path not available for export."}
+            else:
+                wf_logger.info("🚀 Export to GitHub requested", extra={"repo_name": repo_name})
+                deployment_result = await export_agent_workflow_to_github(
+                    bundle_path=str(zip_bundle_path),
+                    app_id=app_id,
+                    repo_name=repo_name,
+                    commit_message=commit_message,
+                    user_id=user_id,
+                    context_variables=context_variables,
+                )
+
+                if context_variables and isinstance(deployment_result, dict) and deployment_result.get("success"):
+                    try:
+                        if deployment_result.get("repo_url"):
+                            context_variables.set("github_repo_url", deployment_result.get("repo_url"))
+                        if deployment_result.get("job_id"):
+                            context_variables.set("github_deploy_job_id", deployment_result.get("job_id"))
+                    except Exception as ctx_err:
+                        wf_logger.warning(f"⚠️ Failed to persist deployment info in context: {ctx_err}")
+    except Exception as deploy_err:
+        wf_logger.warning(f"⚠️ GitHub export flow failed: {deploy_err}")
     
     return {
         "status": final_status,
         "ui_response": response,
         "agent_message_id": agent_message_id,
         "ui_files": ui_files,
+        **({"deployment": deployment_result} if deployment_result is not None else {}),
         **({k: v for k, v in create_res.items() if k not in {"status"}} if create_res else {}),
     }
 
@@ -657,7 +738,7 @@ async def _store_files_local(
         return {"status": "skipped", "message": "No files to copy"}
 
     # Use workflow-specific storage logger
-    wf_logger = get_workflow_logger(workflow_name=(workflow_name or "generator"), chat_id=None, enterprise_id=None)
+    wf_logger = get_workflow_logger(workflow_name=(workflow_name or "generator"), chat_id=None, app_id=None)
     try:
         dest = Path(selected_path)
         dest.mkdir(parents=True, exist_ok=True)

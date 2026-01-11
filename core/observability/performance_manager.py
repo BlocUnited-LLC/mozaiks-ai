@@ -25,7 +25,7 @@ class PerformanceConfig:
 @dataclass
 class ChatPerfState:
     chat_id: str
-    enterprise_id: str
+    app_id: str
     workflow_name: str
     user_id: str
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -67,7 +67,7 @@ class PerformanceManager:
             runtime_sec = (ended_at - st.started_at).total_seconds()
             return {
                 "chat_id": st.chat_id,
-                "enterprise_id": st.enterprise_id,
+                "app_id": st.app_id,
                 "workflow_name": st.workflow_name,
                 "user_id": st.user_id,
                 "started_at": st.started_at.isoformat(),
@@ -151,27 +151,27 @@ class PerformanceManager:
             for cid in ids:
                 await self.flush(cid)
 
-    async def record_workflow_start(self, chat_id: str, enterprise_id: str, workflow_name: str, user_id: str):
+    async def record_workflow_start(self, chat_id: str, app_id: str, workflow_name: str, user_id: str):
         async with self._lock:
             if chat_id not in self._states:
                 self._states[chat_id] = ChatPerfState(
                     chat_id=chat_id,
-                    enterprise_id=enterprise_id,
+                    app_id=app_id,
                     workflow_name=workflow_name,
                     user_id=user_id,
                 )
         # Delegate creation to AG2PersistenceManager (single source of truth)
         try:
-            await self._persistence.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
+            await self._persistence.create_chat_session(chat_id, app_id, workflow_name, user_id)
         except Exception:
             # Fallback: direct minimal upsert if persistence manager path changes
             coll = await self._get_coll()
             now = datetime.now(timezone.utc)
             await coll.update_one(
-                {"_id": chat_id, "enterprise_id": enterprise_id},
+                {"_id": chat_id, "app_id": app_id},
                 {"$setOnInsert": {
                     "_id": chat_id,
-                    "enterprise_id": enterprise_id,
+                    "app_id": app_id,
                     "workflow_name": workflow_name,
                     "user_id": user_id,
                     "status": 0,
@@ -204,7 +204,7 @@ class PerformanceManager:
             "agent_turn",
             chat_id=chat_id,
             workflow=(st_ref.workflow_name if st_ref else None),
-            enterprise_id=(st_ref.enterprise_id if st_ref else None),
+            app_id=(st_ref.app_id if st_ref else None),
             agent=agent_name,
             model=(model or "unknown"),
             prompt_tokens=int(prompt_tokens),
@@ -323,7 +323,7 @@ class PerformanceManager:
         if status_enum == WorkflowStatus.COMPLETED:
             try:  # pragma: no cover
                 from core.data.models import refresh_workflow_rollup_by_id
-                summary_id = f"mon_{st.enterprise_id}_{st.workflow_name}"
+                summary_id = f"mon_{st.app_id}_{st.workflow_name}"
                 asyncio.create_task(refresh_workflow_rollup_by_id(summary_id))
             except Exception:
                 pass

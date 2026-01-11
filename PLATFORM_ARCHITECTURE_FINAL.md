@@ -13,9 +13,9 @@ With one prompt, a user's idea becomes a real, monetizable product—equipped wi
 
 **MozaiksAI**: The Core runtime and ChatUI for workflows to run on, powering agentic features for every app. This is the layer that executes workflows and provides the real-time agentic experience.
 
-**MozaiksStream**: The token engine layer, managing tokens for each user and each app (enterprise). This enables subscription logic, usage-based billing, and analytics for both users and apps. App creators never have to worry about token management—it's all handled by MozaiksStream.
+**MozaiksPay**: The token engine layer, managing tokens for each user and each app (app). This enables subscription logic, usage-based billing, and analytics for both users and apps. App creators never have to worry about token management—it's all handled by MozaiksPay.
 
-**Multi-App, Multi-Tenant**: In Mozaiks, each user can create multiple apps (called "enterprises"). Each app gets a unique `enterprise_id`, and each user has a unique `user_id`. Token tracking and billing are managed by both `user_id` and `enterprise_id`, so users can see usage/costs per app and per user.
+**Multi-App, Multi-Tenant**: In Mozaiks, each user can create multiple apps (called "apps"). Each app gets a unique `app_id`, and each user has a unique `user_id`. Token tracking and billing are managed by both `user_id` and `app_id`, so users can see usage/costs per app and per user.
 
 
 ### The Mozaiks System: Multi-App, Multi-Tenant Startup Foundry
@@ -27,14 +27,14 @@ graph TB
         GW[Generator Workflow]
         MC[MozaiksCore]
         MAI[MozaiksAI Runtime]
-        MS[MozaiksStream (Token Engine)]
+        MS[MozaiksPay (Token Engine)]
         WF[Workflow Files]
     end
     
-    subgraph "🎨 User Apps (Enterprises)"
-        APP1[User App 1 (enterprise_id_1)]
-        APP2[User App 2 (enterprise_id_2)]
-        APP3[User App 3 (enterprise_id_3)]
+    subgraph "🎨 User Apps (apps)"
+        APP1[User App 1 (app_id_1)]
+        APP2[User App 2 (app_id_2)]
+        APP3[User App 3 (app_id_3)]
         CUI1[ChatUI]
         CUI2[ChatUI]
         CUI3[ChatUI]
@@ -42,10 +42,10 @@ graph TB
     
     subgraph "🏢 Platform Infrastructure (shared_app.py, token_engine.py)"
         WE[WebSocket Engine]
-        TE[MozaiksStream Token Engine]
+        TE[MozaiksPay Token Engine]
         PE[Persistence Engine]
-        EP1["/ws/generator/{enterprise_id}/{chat_id}/{user_id}"]
-        EP2["/ws/{workflow}/{enterprise_id}/{chat_id}/{user_id}"]
+        EP1["/ws/generator/{app_id}/{chat_id}/{user_id}"]
+        EP2["/ws/{workflow}/{app_id}/{chat_id}/{user_id}"]
     end
     
     MZ --> GW
@@ -67,10 +67,10 @@ graph TB
 
 ## Business Model: "Startup Foundry-as-a-Service"
 
-**Mozaiks enables users to create multiple apps (enterprises), each with its own agentic features and monetization.**
+**Mozaiks enables users to create multiple apps (apps), each with its own agentic features and monetization.**
 
-- **Subscription + Usage-Based Billing**: Users pay for the ability to create apps (enterprises) and for the tokens their apps consume. MozaiksStream abstracts all token management, so app creators never have to worry about it.
-- **Token Tracking by App and User**: All token usage is tracked by both `enterprise_id` (app) and `user_id` (user), enabling analytics and billing at both levels.
+- **Subscription + Usage-Based Billing**: Users pay for the ability to create apps (apps) and for the tokens their apps consume. MozaiksPay abstracts all token management, so app creators never have to worry about it.
+- **Token Tracking by App and User**: All token usage is tracked by both `app_id` (app) and `user_id` (user), enabling analytics and billing at both levels.
 - **Generator Workflow as Build Process**: The generator workflow is part of the build process, filling the workflows folder and building out app functionality on top of MozaiksCore.
 - **MozaiksCore as Foundation**: Every app is built on MozaiksCore, which includes user management, subscription management, and the agentic backbone (MozaiksAI runtime and ChatUI).
 
@@ -83,11 +83,11 @@ graph TB
 - **MozaiksCore provides**: ChatUI source code + core logic + infrastructure
 - **Revenue**: Subscription for app creation + usage fees
 
-### 🎨 **User Apps (Enterprises)**
+### 🎨 **User Apps (apps)**
 - **Get complete app foundation**: MozaiksCore + agentic workflow files included
 - **Generator builds**: Agentic functions for their specific app requirements
 - **Customize and deploy**: Complete apps with built-in agentic functionality
-- **Pay usage fees** based on token consumption through MozaiksStream
+- **Pay usage fees** based on token consumption through MozaiksPay
 
 ## Platform Components
 
@@ -113,6 +113,14 @@ To ensure high cohesion between generated agents without introducing stateful de
 - **Mechanism**: The runtime hooks (`update_agent_state`) inspect the `context_variables` for structured outputs from upstream agents (e.g., `WorkflowStrategy`, `TechnicalBlueprint`).
 - **Injection**: A concise summary of these upstream decisions (Phases, UI Components, Tools) is dynamically generated and injected into the system prompt of the current agent.
 - **Result**: Agents "remember" and align with the specific architectural decisions made earlier in the session, ensuring the final generated code is internally consistent and follows the user's unique requirements, all while remaining purely stateless.
+
+### **Nested Chats (Macro Packs + Micro Generator Subruns)**
+
+MozaiksAI supports **nested chats** (child workflow runs spawned from inside a parent workflow) via declarative pack configuration and agent-produced structured outputs.
+
+- **Macro pack execution**: A parent workflow can spawn *other existing workflows on disk* (e.g., `workflows/<name>/...`) as independent child GroupChats, then resume the parent.
+- **Micro generator subruns**: During workflow generation (e.g., AgentGenerator), a trigger agent can spawn **AgentGenerator child runs** whose purpose is to *generate new workflows that do not exist on disk yet*. This enables “mid-run” decomposition without requiring workflows to pre-exist.
+- **Persistence + correlation**: Child runs persist `parent_chat_id` and related metadata in the chat session record; the runtime injects that metadata into ContextVariables at startup and derives `is_child_workflow` when `parent_chat_id` is present.
 
 ## Developer Journey
 

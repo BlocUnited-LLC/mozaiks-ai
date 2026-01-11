@@ -6,7 +6,7 @@
 
 ## Introduction
 
-MozaiksAI is a production-grade orchestration runtime built on Microsoft's Autogen (AG2) framework. It adds event-driven persistence, real-time WebSocket streaming, multi-tenant isolation, dynamic UI component invocation, and enterprise-scale observability to the AG2 agent collaboration model.
+MozaiksAI is a production-grade orchestration runtime built on Microsoft's Autogen (AG2) framework. It adds event-driven persistence, real-time WebSocket streaming, multi-tenant isolation, dynamic UI component invocation, and app-scale observability to the AG2 agent collaboration model.
 
 The platform is designed around a **strategically lean** philosophy: every component serves a clear, non-overlapping purpose, and the overall architecture minimizes coupling while maximizing flexibility for workflow composition.
 
@@ -46,8 +46,8 @@ The platform is designed around a **strategically lean** philosophy: every compo
 │              MongoDB Atlas / Local Instance             │
 │  Collections:                                           │
 │  - chat_sessions (lean session + message log)           │
-│  - workflow_stats_{enterprise}_{workflow}               │
-│  - enterprise_themes                                    │
+│  - workflow_stats_{app}_{workflow}               │
+│  - app_themes                                    │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -118,7 +118,7 @@ The platform is designed around a **strategically lean** philosophy: every compo
 - **Auto-Tool Execution:** Agents with `auto_tool_mode: true` automatically invoke their registered UI tool when emitting structured output.
 
 **Special Logic:**
-- **Cache Seed Propagation:** Each chat session gets a deterministic 32-bit cache seed derived from `enterprise_id:chat_id` SHA-256 hash. This seed is stored in the `ChatSessions` document, emitted to the frontend via `chat_meta` event, and used to key UI component caches and LLM reproducibility layers.
+- **Cache Seed Propagation:** Each chat session gets a deterministic 32-bit cache seed derived from `app_id:chat_id` SHA-256 hash. This seed is stored in the `ChatSessions` document, emitted to the frontend via `chat_meta` event, and used to key UI component caches and LLM reproducibility layers.
 - **Input Request Correlation:** When an agent emits `InputRequestEvent`, the orchestration layer registers a callback in the transport's `_input_request_registries`. Frontend submissions via `/api/input/submit` invoke the callback to resume the agent.
 
 **Module Reference:** `core/workflow/orchestration_patterns.py` (function `run_default_pattern()`)
@@ -136,7 +136,7 @@ The platform is designed around a **strategically lean** philosophy: every compo
 ```json
 {
   "_id": "chat_abc123",
-  "enterprise_id": "ent_001",
+  "app_id": "ent_001",
   "workflow_name": "Generator",
   "user_id": "user_xyz",
   "created_at": "2025-10-02T14:30:00Z",
@@ -168,7 +168,7 @@ The platform is designed around a **strategically lean** philosophy: every compo
 }
 ```
 
-**Collection:** `workflow_stats_{enterprise}_{workflow}` (runtime metrics rollup)
+**Collection:** `workflow_stats_{app}_{workflow}` (runtime metrics rollup)
 
 ```json
 {
@@ -182,14 +182,14 @@ The platform is designed around a **strategically lean** philosophy: every compo
 }
 ```
 
-**Collection:** `enterprise_themes` (UI theming config)
+**Collection:** `app_themes` (UI theming config)
 
 ```json
 {
   "_id": "ent_001",
   "colors": {"primary": {"main": "#6366f1"}},
   "typography": {"fontFamily": "Inter"},
-  "metadata": {"name": "Enterprise Theme"}
+  "metadata": {"name": "App Theme"}
 }
 ```
 
@@ -254,12 +254,12 @@ workflows/Generator/
 
 ## Multi-Tenancy & Isolation
 
-**Enterprise ID:** Top-level tenant identifier. All MongoDB queries include `enterprise_id` filter. Chat IDs are scoped per enterprise.
+**App ID:** Top-level tenant identifier. All MongoDB queries include `app_id` filter. Chat IDs are scoped per app.
 
-**Workspace Separation:** Each enterprise can have isolated:
-- Theme configurations (`enterprise_themes` collection)
-- Workflow stat rollups (`workflow_stats_{enterprise}_{workflow}`)
-- Context variable namespaces (enterprise-specific database queries)
+**Workspace Separation:** Each app can have isolated:
+- Theme configurations (`app_themes` collection)
+- Workflow stat rollups (`workflow_stats_{app}_{workflow}`)
+- Context variable namespaces (app-specific database queries)
 
 **Cache Seed:** Deterministic per-chat seed ensures:
 - Reproducible LLM responses on resume (same seed → same pseudo-random behavior)

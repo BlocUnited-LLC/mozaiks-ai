@@ -13,6 +13,8 @@ import { useWidgetMode } from '../hooks/useWidgetMode';
 ```javascript
 function MyNewPage() {
   useWidgetMode(); // ← Add this line
+  // Optional: hide the floating widget UI on this page
+  // useWidgetMode({ showWidget: false });
 
   return (
     <div>
@@ -87,7 +89,7 @@ After creating the page, test:
 2. Click 🧠 to enter Ask mode (or navigate to your new page)
 3. Navigate to your new page
 4. Verify chat widget appears as a persistent floating widget
-5. Click 🧠 → should fetch oldest IN_PROGRESS workflow and return to ChatPage
+5. Click 🧠 → should fetch most recent IN_PROGRESS workflow and return to ChatPage
 
 ## Troubleshooting
 
@@ -98,8 +100,8 @@ If chat widget doesn't appear:
 - Verify PersistentChatWidget is rendering
 
 If 🧠 doesn't work:
-- Ensure a workflow is IN_PROGRESS (check `/api/sessions/oldest` endpoint)
-- Check network tab for API call to fetch oldest workflow
+- Ensure a workflow is IN_PROGRESS (check `/api/sessions/recent` endpoint)
+- Check network tab for API call to fetch most recent workflow
 - Verify user has an active workflow to return to
 - Check console logs for widget mode state transitions
 
@@ -109,7 +111,7 @@ If 🧠 doesn't work:
 - When you navigate to a page with `useWidgetMode()`, it sets `isInWidgetMode = true`
 - This flag persists during navigation (not cleared on unmount)
 - When clicking 🧠 from widget mode:
-  1. Fetches oldest IN_PROGRESS workflow
+  1. Fetches most recent IN_PROGRESS workflow
   2. Navigates to `/chat`
   3. ChatPage detects `isInWidgetMode = true`
   4. Switches to workflow mode and resumes the workflow
@@ -133,7 +135,7 @@ When you ask a stateless PageGenerator (or any plugin agent) to build widget-rea
   ```
 - **Declare AI tools instead of hardcoding sockets.** Client-side code should call `fetch('/api/tools/<tool>')` or `window.Mozaiks.callTool('<tool>', payload)`; the runtime maps those to WebSocket/tool adapters.
 - **Emit a manifest** for every generated page that lists `page_name`, `route`, `isWidgetMode`, `files`, and a `tools` array describing HTTP/WS bindings (method, path, input/output schema). This lets MozaiksCore auto-register the page and keep tenancy boundaries intact.
-- **Describe any WebSocket needs declaratively.** Generators should list required topics (e.g., `enterprise.{enterprise_id}.workflow.{workflow_id}.update`) in the manifest so the runtime wires them to the persistent chat widget without leaking raw URLs.
+- **Describe any WebSocket needs declaratively.** Generators should list required topics (e.g., `app.{app_id}.workflow.{workflow_id}.update` - legacy: `app.{app_id}...`) in the manifest so the runtime wires them to the persistent chat widget without leaking raw URLs.
 - **Reference this doc** inside your generator prompt (e.g., "include the widget-mode instructions from `WIDGET_MODE.md`") so downstream agents never forget to add the hook or tool metadata.
 
 ## Migration from Discovery Mode

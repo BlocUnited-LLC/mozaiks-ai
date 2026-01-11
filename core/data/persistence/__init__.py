@@ -1,16 +1,14 @@
 """
 Data persistence module.
 
-Handles MongoDB operations, session management, and wallet tracking.
+Handles MongoDB operations and session management.
 """
 
-from .persistence_manager import PersistenceManager, AG2PersistenceManager, InvalidEnterpriseIdError
+from .persistence_manager import PersistenceManager, AG2PersistenceManager
 from .db_manager import get_db_manager
 
 __all__ = [
     'PersistenceManager',
     'AG2PersistenceManager',
-    'InvalidEnterpriseIdError',
     'get_db_manager',
 ]
-

@@ -9,14 +9,14 @@
 **Module:** `core/data/persistence_manager.py`
 
 **Key Classes:**
-1. **PersistenceManager** - Enterprise validation, wallet token accounting
+1. **PersistenceManager** - App validation, wallet token accounting
 2. **AG2PersistenceManager** - Chat session storage, message persistence, workflow stats
 
 **MongoDB Collections:**
-- `MozaiksDB.Enterprises` - Enterprise registry
+- `MozaiksDB.apps` - App registry
 - `MozaiksDB.Wallets` - User token balances
 - `MozaiksAI.chat_sessions` - Chat sessions with embedded messages (canonical transcript)
-- `MozaiksAI.workflow_stats_{enterprise}_{workflow}` - Real-time metrics rollup per workflow
+- `MozaiksAI.workflow_stats_{app}_{workflow}` - Real-time metrics rollup per workflow
 
 ---
 
@@ -28,7 +28,7 @@
 ```javascript
 {
   "_id": "chat_abc123def456",  // chat_id
-  "enterprise_id": "6507f1b2e4b0c8a9d2f3e4a5",  // ObjectId or string
+  "app_id": "6507f1b2e4b0c8a9d2f3e4a5",  // ObjectId or string
   "workflow_name": "Generator",
   "user_id": "user_alice_456",
   "cache_seed": 2847561923,  // Deterministic 32-bit seed
@@ -86,7 +86,7 @@ persistence = AG2PersistenceManager()
 
 await persistence.create_chat_session(
     chat_id="chat_abc123",
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     workflow_name="Generator",
     user_id="user_456",
     cache_seed=2847561923
@@ -95,7 +95,7 @@ await persistence.create_chat_session(
 
 **Side Effects:**
 1. Inserts document into `chat_sessions` collection
-2. Creates rollup document in `workflow_stats_{enterprise}_{workflow}` collection
+2. Creates rollup document in `workflow_stats_{app}_{workflow}` collection
 3. Initializes empty `messages` array and `context_snapshot`
 
 ---
@@ -139,7 +139,7 @@ db.chat_sessions.update_one(
 ```python
 messages = await persistence.load_chat_history(
     chat_id="chat_abc123",
-    enterprise_id="acme_corp"
+    app_id="acme_corp"
 )
 
 # Returns:
@@ -158,7 +158,7 @@ messages = await persistence.load_chat_history(
 **Resume Flow:**
 ```python
 # Load persisted messages
-persisted_messages = await persistence.load_chat_history(chat_id, enterprise_id)
+persisted_messages = await persistence.load_chat_history(chat_id, app_id)
 
 # Normalize to strict AG2 format
 normalized = _normalize_to_strict_ag2(
@@ -188,7 +188,7 @@ await run_workflow_orchestration(
 ```python
 await persistence.persist_initial_messages(
     chat_id="chat_abc123",
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     messages=[
         {"role": "user", "name": "user", "content": "Create a todo app"}
     ]
@@ -204,7 +204,7 @@ await persistence.persist_initial_messages(
 ```python
 await persistence.mark_chat_completed(
     chat_id="chat_abc123",
-    enterprise_id="acme_corp"
+    app_id="acme_corp"
 )
 ```
 
@@ -212,7 +212,7 @@ await persistence.mark_chat_completed(
 1. `status` → `WorkflowStatus.COMPLETED` (3)
 2. `completed_at` → Current timestamp
 3. `duration_sec` → `(completed_at - created_at).total_seconds()`
-4. Triggers async rollup refresh for `workflow_stats_{enterprise}_{workflow}`
+4. Triggers async rollup refresh for `workflow_stats_{app}_{workflow}`
 
 ---
 
@@ -223,7 +223,7 @@ await persistence.mark_chat_completed(
 ```python
 await persistence.update_last_artifact(
     chat_id="chat_abc123",
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     artifact={
         "ui_tool_id": "code_editor",
         "event_id": "evt_xyz789",
@@ -239,7 +239,7 @@ await persistence.update_last_artifact(
 
 **Storage:** Overwrites `last_artifact` field (only most recent artifact kept).
 
-**Resume:** Frontend fetches `last_artifact` via `/api/chats/{enterprise_id}/{chat_id}/meta` and restores artifact panel.
+**Resume:** Frontend fetches `last_artifact` via `/api/chats/{app_id}/{chat_id}/meta` and restores artifact panel.
 
 ---
 
@@ -255,7 +255,7 @@ await persistence.update_last_artifact(
 ```python
 await persistence.update_context_snapshot(
     chat_id="chat_abc123",
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     context_data={
         "interview_complete": True,
         "user_requirements": "Todo app with priority tags",
@@ -277,7 +277,7 @@ db.chat_sessions.update_one(
 # Load context snapshot
 snapshot = await persistence.load_context_snapshot(
     chat_id="chat_abc123",
-    enterprise_id="acme_corp"
+    app_id="acme_corp"
 )
 
 # Restore ConversableContext
@@ -344,7 +344,7 @@ def _normalize_to_strict_ag2(
 
 ## WorkflowStats Rollup
 
-**Collection:** `workflow_stats_{enterprise}_{workflow}`
+**Collection:** `workflow_stats_{app}_{workflow}`
 
 **Example:** `workflow_stats_acme_corp_Generator`
 
@@ -352,7 +352,7 @@ def _normalize_to_strict_ag2(
 ```javascript
 {
   "_id": "mon_acme_corp_Generator",
-  "enterprise_id": "acme_corp",
+  "app_id": "acme_corp",
   "workflow_name": "Generator",
   "last_updated_at": ISODate("2025-10-02T10:30:00.000Z"),
   "overall_avg": {
@@ -415,7 +415,7 @@ def _normalize_to_strict_ag2(
 **Code:**
 ```python
 # Check if chat exists
-existing = await persistence.load_chat_history(chat_id, enterprise_id)
+existing = await persistence.load_chat_history(chat_id, app_id)
 
 if existing:
     # Resume mode
@@ -423,7 +423,7 @@ if existing:
     group_chat.messages = normalized
     
     # Restore context
-    context_data = await persistence.load_context_snapshot(chat_id, enterprise_id)
+    context_data = await persistence.load_context_snapshot(chat_id, app_id)
     for key, value in context_data.items():
         context.set(key, value)
     
@@ -436,7 +436,7 @@ if existing:
     )
 else:
     # New chat mode
-    await persistence.create_chat_session(chat_id, enterprise_id, ...)
+    await persistence.create_chat_session(chat_id, app_id, ...)
     await run_workflow_orchestration(
         chat_id=chat_id,
         initial_message="User's first message",
@@ -505,8 +505,8 @@ await persistence.append_message(
 3. Last artifact (e.g., code editor) stored via `update_last_artifact()`
 
 **User B Joins:**
-1. Opens chat URL: `/chat/{enterprise_id}/{chat_id}`
-2. Frontend fetches metadata: `GET /api/chats/{enterprise_id}/{chat_id}/meta`
+1. Opens chat URL: `/chat/{app_id}/{chat_id}`
+2. Frontend fetches metadata: `GET /api/chats/{app_id}/{chat_id}/meta`
    ```json
    {
      "chat_id": "chat_abc123",
@@ -518,7 +518,7 @@ await persistence.append_message(
      }
    }
    ```
-3. Frontend loads chat history: `GET /api/chats/{enterprise_id}/{chat_id}/history`
+3. Frontend loads chat history: `GET /api/chats/{app_id}/{chat_id}/history`
 4. Frontend restores artifact panel using `last_artifact`
 5. WebSocket connects, receives new events in real-time
 
@@ -532,9 +532,9 @@ await persistence.append_message(
 
 **ChatSessions Indexes:**
 ```javascript
-// Composite index for enterprise queries
+// Composite index for app queries
 db.chat_sessions.createIndex(
-  {"enterprise_id": 1, "workflow_name": 1, "created_at": -1},
+  {"app_id": 1, "workflow_name": 1, "created_at": -1},
   {"name": "cs_ent_wf_created"}
 )
 
@@ -549,7 +549,7 @@ db.chat_sessions.createIndex(
 ```javascript
 // Fast: Uses cs_ent_wf_created index
 db.chat_sessions.find({
-  "enterprise_id": "acme_corp",
+  "app_id": "acme_corp",
   "workflow_name": "Generator"
 }).sort({"created_at": -1}).limit(20)
 
@@ -561,7 +561,7 @@ db.chat_sessions.find({"user_id": "user_456"})
 ```
 
 **Optimization Tips:**
-1. Always include `enterprise_id` in queries (indexed)
+1. Always include `app_id` in queries (indexed)
 2. Use `_id` (chat_id) for single-document lookups
 3. Limit returned fields: `{"messages": {"$slice": -50}}`
 4. Archive completed chats older than 90 days (future enhancement)
@@ -570,19 +570,19 @@ db.chat_sessions.find({"user_id": "user_456"})
 
 ## Error Handling
 
-### Invalid Enterprise ID
+### Invalid App ID
 
 ```python
-from core.data.persistence_manager import InvalidEnterpriseIdError
+from core.data.persistence_manager import InvalidAppIdError
 
 try:
     await persistence.create_chat_session(
         chat_id="chat_abc123",
-        enterprise_id="invalid_id",  # Not 24-char ObjectId
+        app_id="invalid_id",  # Not 24-char ObjectId
         ...
     )
-except InvalidEnterpriseIdError as e:
-    logger.error(f"Invalid enterprise: {e}")
+except InvalidAppIdError as e:
+    logger.error(f"Invalid app: {e}")
     # Return 400 Bad Request to client
 ```
 
@@ -640,12 +640,12 @@ await persistence.create_chat_session(chat_id, ...)
 
 ```python
 # ✅ Correct
-raw_msgs = await persistence.load_chat_history(chat_id, enterprise_id)
+raw_msgs = await persistence.load_chat_history(chat_id, app_id)
 normalized = _normalize_to_strict_ag2(raw_msgs)
 group_chat.messages = normalized
 
 # ❌ Incorrect (AG2 resume fails with malformed messages)
-raw_msgs = await persistence.load_chat_history(chat_id, enterprise_id)
+raw_msgs = await persistence.load_chat_history(chat_id, app_id)
 group_chat.messages = raw_msgs  # May contain invalid formats
 ```
 
@@ -662,11 +662,11 @@ finally:
         chat_id=chat_id,
         context_data=context.to_dict()
     )
-    await persistence.mark_chat_completed(chat_id, enterprise_id)
+    await persistence.mark_chat_completed(chat_id, app_id)
 
 # ❌ Incorrect (context lost on resume)
 result = await run_workflow_orchestration(...)
-await persistence.mark_chat_completed(chat_id, enterprise_id)
+await persistence.mark_chat_completed(chat_id, app_id)
 # Context snapshot not saved
 ```
 
@@ -677,7 +677,7 @@ await persistence.mark_chat_completed(chat_id, enterprise_id)
 ### Issue: Chat resume loads incorrect messages
 
 **Check:**
-1. Verify `enterprise_id` matches (cross-enterprise queries blocked by filter)
+1. Verify `app_id` matches (cross-app queries blocked by filter)
 2. Inspect `messages` array ordering: Should be sorted by `sequence` field
 3. Check for duplicate messages: Look for identical `event_id` values
 
@@ -698,7 +698,7 @@ logger.info(f"Normalized {len(raw_msgs)} → {len(normalized)} messages")
 
 **Check:**
 1. Verify `update_last_artifact()` called after artifact event emission
-2. Inspect `/api/chats/{enterprise_id}/{chat_id}/meta` response
+2. Inspect `/api/chats/{app_id}/{chat_id}/meta` response
 3. Frontend: Check `last_artifact` field parsing and component mounting
 
 ---

@@ -6,12 +6,12 @@ _Last updated: 2025-11-22_
 
 | Persona | Needs | Token Responsibilities |
 | --- | --- | --- |
-| **Mozaiks Platform Operator** | Keep generator workflow usage in-budget, enforce subscription plans, surface balances in MozaiksStream | Provision wallets, enforce runtime gates (start + per-turn), send UI nudges, expose analytics |
+| **Mozaiks Platform Operator** | Keep generator workflow usage in-budget, enforce subscription plans, surface balances in MozaiksPay | Provision wallets, enforce runtime gates (start + per-turn), send UI nudges, expose analytics |
 | **Generated App Owner** | Ship automations that can meter their own customers and optionally monetize | Opt-in token context vars, configure free-trial or max-turn rules per workflow, wire token exhaustion into handoffs |
 | **End Users of Generated Apps** | Predictable limits, clear upgrade upsells, no silent failures | Receive inline warnings, see balance/usage, resume chats after top-up |
 
 Success criteria:
-1. Token accounting remains centralized (MozaiksStream + PersistenceManager) with no per-workflow duplication.
+1. Token accounting remains centralized (MozaiksPay + PersistenceManager) with no per-workflow duplication.
 2. Chats pause safely when wallet balance is insufficient, with resumable state and UI prompts.
 3. Generator workflows gain declarative hooks (`free_trial_enabled`, `max_consecutive_auto_reply`, token handoffs) without custom coding.
 
@@ -22,7 +22,7 @@ Success criteria:
 ### 2.1 TokenManager Component
 
 Create `core/tokens/manager.py` responsible for:
-- `ensure_can_start_chat(user_id, enterprise_id, workflow_name, estimate_tokens=None)`
+- `ensure_can_start_chat(user_id, app_id, workflow_name, estimate_tokens=None)`
    - Checks `MONETIZATION_ENABLED`, `FREE_TRIAL_ENABLED`, wallet balance, plan concurrency.
   - Returns approval, warning payload, or raises `InsufficientTokensError`.
 - `handle_turn_usage(chat_id, usage_snapshot)`
@@ -54,7 +54,7 @@ Create `core/tokens/manager.py` responsible for:
   - `runtime.token.resumed`
    - `runtime.token.auto_reply_limit`
 - `SimpleTransport` listens and forwards as WebSocket payloads with `type: token_warning|token_exhausted|token_resume|auto_reply_limit`.
-- Chat UI already disables composer on `token_exhausted`; extend to show CTA button wired to MozaiksStream link (payload from event).
+- Chat UI already disables composer on `token_exhausted`; extend to show CTA button wired to MozaiksPay link (payload from event).
 
 ### 2.4 Persistence & Analytics
 
@@ -66,7 +66,7 @@ Create `core/tokens/manager.py` responsible for:
 
 | Env Var | Purpose | Default |
 | --- | --- | --- |
-| `MONETIZATION_ENABLED` | Enables TokenManager gating + MozaiksStream debits | `true` |
+| `MONETIZATION_ENABLED` | Enables TokenManager gating + MozaiksPay debits | `true` |
 | `FREE_TRIAL_ENABLED` | Platform-level flag surfaced to generators | `true` |
 | `TOKEN_WARNING_THRESHOLD` | Percentage balance or absolute tokens to warn | `0.2` (20%) |
 | `TOKENS_API_URL` | Upgrade/top-up endpoint that Chat UI links to | env-specific |
@@ -80,7 +80,7 @@ Runtime token counts stay entirely server-side. Generators only need to know whe
 ### 3.1 Context Variables & Structured Outputs
 
 - Always inject `free_trial_enabled` value into `ContextVariablesPlan` (state/config, sourced from `FREE_TRIAL_ENABLED`). Even when monetization is disabled we keep the variable for consistency; its value simply evaluates to `false`.
-- Keep the existing platform flags (`MONETIZATION_ENABLED`, `enterprise_id`, `user_id`) available the same way other permanent context variables are threaded into `orchestration_patterns.py`.
+- Keep the existing platform flags (`MONETIZATION_ENABLED`, `app_id`, `user_id`) available the same way other permanent context variables are threaded into `orchestration_patterns.py`.
 - No `token_balance`, `token_warning_threshold`, or `turns_consumed` variables should be surfaced to agents. Those remain runtime-only signals.
 - Structured outputs that previously referenced token metrics should instead gate logic on `free_trial_enabled` or `monetization_enabled` booleans.
 
@@ -123,10 +123,10 @@ Runtime token counts stay entirely server-side. Generators only need to know whe
 2. **Runtime wiring**
    - `shared_app.start_chat` calls `ensure_can_start_chat` when `MONETIZATION_ENABLED=true`.
    - `AG2PersistenceManager.update_session_metrics` invokes `handle_turn_usage` and forwards AG2 usage snapshots.
-   - Add `/api/chats/{chat_id}/resume` route that clears pauses once MozaiksStream confirms payment.
+   - Add `/api/chats/{chat_id}/resume` route that clears pauses once MozaiksPay confirms payment.
 3. **Transport + analytics**
    - Extend `SimpleTransport` to fan out `token_warning`, `token_exhausted`, `token_resume`, and `auto_reply_limit` payloads.
-   - Update `WorkflowStats` + dashboards with `auto_reply_limit`/`auto_reply_hits` counters and MozaiksStream metadata.
+   - Update `WorkflowStats` + dashboards with `auto_reply_limit`/`auto_reply_hits` counters and MozaiksPay metadata.
 4. **Chat UI (ChatPage + ActionPlan)**
    - Chat composer listens for the new transport events and links to `TOKENS_API_URL` for upsells.
    - `ChatUI/src/workflows/Generator/components/ActionPlan.js` renders free-trial vs paid badges using `phase.monetization_scope` and highlights the split when `free_trial_entry=true`.
@@ -142,7 +142,7 @@ Runtime token counts stay entirely server-side. Generators only need to know whe
 ## 5. Decisions & Clarifications
 
 1. **max_consecutive_auto_reply Mapping** – The generator (preferably the WorkflowImplementationAgent while defining the free-trial split) will assign a declarative `max_consecutive_auto_reply` value. Runtime simply forwards that value into AG2 `GroupChat`/agent configs so the limit is enforced without inventing new counters.
-2. **Token Provider** – All runtime debits flow through MozaiksStream; we will not expose an abstract provider hook until a concrete need arrives. This keeps enforcement centralized and prevents partially implemented billing paths.
+2. **Token Provider** – All runtime debits flow through MozaiksPay; we will not expose an abstract provider hook until a concrete need arrives. This keeps enforcement centralized and prevents partially implemented billing paths.
 3. **Ask Mozaiks Availability** – Even when workflow chats are paused for token reasons, the Ask Mozaiks widget must stay active across every page (outside `ChatPage.js`). Transport guards will therefore block only workflow chat sessions while leaving Ask Mozaiks untouched.
 
 ---

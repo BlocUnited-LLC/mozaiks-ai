@@ -90,7 +90,7 @@ Get performance snapshots for all active chats.
   "chats": [
     {
       "chat_id": "550e8400-e29b-41d4-a716-446655440000",
-      "enterprise_id": "507f1f77bcf86cd799439011",
+      "app_id": "507f1f77bcf86cd799439011",
       "workflow_name": "Generator",
       "agent_turns": 12,
       "tool_calls": 5,
@@ -157,12 +157,12 @@ scrape_configs:
 
 ## Chat Session Management
 
-### POST /api/chats/{enterprise_id}/{workflow_name}/start
+### POST /api/chats/{app_id}/{workflow_name}/start
 
 Start a new chat session or reuse recent in-progress session (idempotent).
 
 **Path Parameters:**
-- `enterprise_id` (string): Enterprise identifier (ObjectId or string)
+- `app_id` (string): App identifier (ObjectId or string)
 - `workflow_name` (string): Workflow to execute (e.g., `"Generator"`)
 
 **Request Body:**
@@ -187,7 +187,7 @@ Start a new chat session or reuse recent in-progress session (idempotent).
   "success": true,
   "chat_id": "550e8400-e29b-41d4-a716-446655440000",
   "workflow_name": "Generator",
-  "enterprise_id": "507f1f77bcf86cd799439011",
+  "app_id": "507f1f77bcf86cd799439011",
   "user_id": "user_12345",
   "remaining_balance": 50000,
   "websocket_url": "/ws/Generator/507f1f77bcf86cd799439011/550e8400-e29b-41d4-a716-446655440000/user_12345",
@@ -198,7 +198,7 @@ Start a new chat session or reuse recent in-progress session (idempotent).
 ```
 
 **Idempotency Behavior:**
-- If in-progress session for `(enterprise_id, user_id, workflow_name)` created within last 15 seconds (configurable via `CHAT_START_IDEMPOTENCY_SEC`), returns existing `chat_id`
+- If in-progress session for `(app_id, user_id, workflow_name)` created within last 15 seconds (configurable via `CHAT_START_IDEMPOTENCY_SEC`), returns existing `chat_id`
 - Set `force_new=true` to always create new session
 
 **Status Codes:**
@@ -216,12 +216,12 @@ curl -X POST http://localhost:8000/api/chats/507f1f77bcf86cd799439011/Generator/
 
 ---
 
-### GET /api/chats/{enterprise_id}/{workflow_name}
+### GET /api/chats/{app_id}/{workflow_name}
 
-List recent chat sessions for enterprise and workflow.
+List recent chat sessions for app and workflow.
 
 **Path Parameters:**
-- `enterprise_id` (string): Enterprise identifier
+- `app_id` (string): App identifier
 - `workflow_name` (string): Workflow name
 
 **Response:**
@@ -239,12 +239,12 @@ List recent chat sessions for enterprise and workflow.
 
 ---
 
-### GET /api/chats/exists/{enterprise_id}/{workflow_name}/{chat_id}
+### GET /api/chats/exists/{app_id}/{workflow_name}/{chat_id}
 
 Check if chat session exists (lightweight existence check).
 
 **Path Parameters:**
-- `enterprise_id` (string): Enterprise identifier
+- `app_id` (string): App identifier
 - `workflow_name` (string): Workflow name
 - `chat_id` (string): Chat session identifier
 
@@ -259,12 +259,12 @@ Check if chat session exists (lightweight existence check).
 
 ---
 
-### GET /api/chats/meta/{enterprise_id}/{workflow_name}/{chat_id}
+### GET /api/chats/meta/{app_id}/{workflow_name}/{chat_id}
 
 Get chat metadata including cache_seed and last_artifact (no transcript).
 
 **Path Parameters:**
-- `enterprise_id` (string): Enterprise identifier
+- `app_id` (string): App identifier
 - `workflow_name` (string): Workflow name
 - `chat_id` (string): Chat session identifier
 
@@ -297,13 +297,13 @@ Get chat metadata including cache_seed and last_artifact (no transcript).
 
 ## WebSocket Communication
 
-### WS /ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}
+### WS /ws/{workflow_name}/{app_id}/{chat_id}/{user_id}
 
 Bidirectional WebSocket for chat communication.
 
 **Path Parameters:**
 - `workflow_name` (string): Workflow name (e.g., `"Generator"`)
-- `enterprise_id` (string): Enterprise identifier
+- `app_id` (string): App identifier
 - `chat_id` (string): Chat session identifier
 - `user_id` (string): User identifier
 
@@ -487,8 +487,8 @@ Get transport information for specific workflow.
   "workflow_name": "Generator",
   "transport": "websocket",
   "endpoints": {
-    "websocket": "/ws/Generator/{enterprise_id}/{chat_id}/{user_id}",
-    "input": "/chat/{enterprise_id}/{chat_id}/{user_id}/input"
+    "websocket": "/ws/Generator/{app_id}/{chat_id}/{user_id}",
+    "input": "/chat/{app_id}/{chat_id}/{user_id}/input"
   }
 }
 ```
@@ -558,7 +558,7 @@ Get user token balance.
 - `user_id` (string): User identifier
 
 **Query Parameters:**
-- `enterprise_id` (string, required): Enterprise identifier
+- `app_id` (string, required): App identifier
 
 **Response:**
 ```json
@@ -566,13 +566,13 @@ Get user token balance.
   "balance": 50000,
   "remaining": 50000,
   "user_id": "user_12345",
-  "enterprise_id": "507f1f77bcf86cd799439011"
+  "app_id": "507f1f77bcf86cd799439011"
 }
 ```
 
 **Example:**
 ```bash
-curl "http://localhost:8000/api/tokens/user_12345/balance?enterprise_id=507f1f77bcf86cd799439011"
+curl "http://localhost:8000/api/tokens/user_12345/balance?app_id=507f1f77bcf86cd799439011"
 ```
 
 ---
@@ -588,14 +588,14 @@ Consume (debit) user tokens.
 ```json
 {
   "amount": 2100,
-  "enterprise_id": "507f1f77bcf86cd799439011",
+  "app_id": "507f1f77bcf86cd799439011",
   "reason": "manual_consume"
 }
 ```
 
 **Request Fields:**
 - `amount` (int, required): Tokens to debit
-- `enterprise_id` (string, required): Enterprise identifier
+- `app_id` (string, required): App identifier
 - `reason` (string, optional): Debit reason (default: `"manual_consume"`)
 
 **Response:**
@@ -608,7 +608,7 @@ Consume (debit) user tokens.
 
 **Status Codes:**
 - `200`: Tokens consumed successfully
-- `400`: Missing `enterprise_id`
+- `400`: Missing `app_id`
 - `402`: Insufficient tokens
 - `500`: Server error
 
@@ -616,7 +616,7 @@ Consume (debit) user tokens.
 ```bash
 curl -X POST http://localhost:8000/api/tokens/user_12345/consume \
   -H "Content-Type: application/json" \
-  -d '{"amount": 2100, "enterprise_id": "507f1f77bcf86cd799439011", "reason": "api_usage"}'
+  -d '{"amount": 2100, "app_id": "507f1f77bcf86cd799439011", "reason": "api_usage"}'
 ```
 
 ---
@@ -692,12 +692,12 @@ Submit user input response (for AG2 human_input_mode).
 
 ---
 
-### POST /chat/{enterprise_id}/{chat_id}/component_action
+### POST /chat/{app_id}/{chat_id}/component_action
 
 Handle component actions (WebSocket-compatible context variables).
 
 **Path Parameters:**
-- `enterprise_id` (string): Enterprise identifier
+- `app_id` (string): App identifier
 - `chat_id` (string): Chat session identifier
 
 **Request Body:**
@@ -732,17 +732,17 @@ Handle component actions (WebSocket-compatible context variables).
 
 ## Theme Management
 
-### GET /api/themes/{enterprise_id}
+### GET /api/themes/{app_id}
 
-Get theme configuration for enterprise.
+Get theme configuration for app.
 
 **Path Parameters:**
-- `enterprise_id` (string): Enterprise identifier
+- `app_id` (string): App identifier
 
 **Response:**
 ```json
 {
-  "enterprise_id": "507f1f77bcf86cd799439011",
+  "app_id": "507f1f77bcf86cd799439011",
   "theme": {
     "primary_color": "#1976d2",
     "secondary_color": "#dc004e",
@@ -753,12 +753,12 @@ Get theme configuration for enterprise.
 
 ---
 
-### PUT /api/themes/{enterprise_id}
+### PUT /api/themes/{app_id}
 
-Update theme configuration for enterprise.
+Update theme configuration for app.
 
 **Path Parameters:**
-- `enterprise_id` (string): Enterprise identifier
+- `app_id` (string): App identifier
 
 **Request Body:**
 ```json
@@ -774,7 +774,7 @@ Update theme configuration for enterprise.
 **Response:**
 ```json
 {
-  "enterprise_id": "507f1f77bcf86cd799439011",
+  "app_id": "507f1f77bcf86cd799439011",
   "theme": {
     "primary_color": "#1976d2",
     "secondary_color": "#dc004e",

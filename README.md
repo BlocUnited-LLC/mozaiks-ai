@@ -4,7 +4,7 @@
 
 ![MozaiksAI Logo](ChatUI/public/mozaik_logo.svg)
 
-**Enterprise-Grade AG2 Orchestration Engine**  
+**app-Grade AG2 Orchestration Engine**  
 *Event-Driven • Declarative • Multi-Tenant • Production-Ready*
 
 [![AG2 Framework](https://img.shields.io/badge/AG2-Autogen-green?style=flat&logo=microsoft)](https://microsoft.github.io/autogen/)
@@ -22,12 +22,12 @@
 
 ## 🎯 What is MozaiksAI?
 
-**MozaiksAI Runtime** is a production-ready orchestration engine that transforms AG2 (Microsoft Autogen) into an enterprise-grade platform with:
+**MozaiksAI Runtime** is a production-ready orchestration engine that transforms AG2 (Microsoft Autogen) into an app-grade platform with:
 
 - ✅ **Event-Driven Architecture** → Every action flows through unified event pipeline
 - ✅ **Real-Time WebSocket Transport** → Live streaming to React frontends
 - ✅ **Persistent State Management** → Resume conversations exactly where they left off
-- ✅ **Multi-Tenant Isolation** → Enterprise-scoped data and execution contexts
+- ✅ **Multi-Tenant Isolation** → app-scoped data and execution contexts
 - ✅ **Dynamic UI Integration** → Agents can invoke React components during workflows
 - ✅ **Declarative Workflows** → JSON manifests, no code changes needed
 - ✅ **Comprehensive Observability** → Built-in metrics, logging, and token tracking
@@ -63,6 +63,99 @@ Define complete multi-agent workflows in JSON—drop a new folder in `workflows/
 }
 ```
 
+### 🧭 Workflow Packs (Registry + Journeys)
+
+MozaiksAI supports a **workflow pack** contract in `workflows/_pack/workflow_graph.json`:
+
+- `workflows[]`: a registry of workflow IDs and optional `dependencies` (prereqs)
+- `journeys[]`: ordered sequences of workflows to run as a product flow
+- **Parallel journey steps**: a journey step can be either a string (single workflow) or an array of strings (run in parallel)
+
+Example:
+
+```json
+{
+  "pack_name": "DefaultPack",
+  "version": 2,
+  "workflows": [
+    { "id": "ValueEngine" },
+    { "id": "DesignDocs" },
+    { "id": "AgentGenerator" },
+    { "id": "AppGenerator" }
+  ],
+  "journeys": [
+    {
+      "id": "build",
+      "steps": [
+        "ValueEngine",
+        ["AgentGenerator", "DesignDocs"],
+        "AppGenerator"
+      ]
+    }
+  ]
+}
+```
+
+Notes:
+
+- Dependencies are defined per workflow via `dependencies` and are enforced as prerequisites.
+- Journeys always enforce order; parallel groups advance only when **all** workflows in the group complete.
+
+### 🧩 Nested Packs (Child Workflows)
+
+Workflows can spawn child workflows based on **structured outputs** (e.g., `chat.structured_output_ready`) and per-workflow nested config under:
+
+- `workflows/<WorkflowName>/_pack/workflow_graph.json`
+
+This is how “groupchat-level logic” can dynamically decompose work into multiple workflow sessions while keeping the runtime **workflow-agnostic**.
+
+Concrete example (nested GroupChat sessions):
+
+1) Add a nested-chat trigger to the *parent* workflow’s pack graph:
+
+```json
+{
+  "pack_name": "AgentGeneratorNested",
+  "version": 1,
+  "nested_chats": [
+    {
+      "trigger_agent": "PatternAgent",
+      "resume_agent": "PatternAgent"
+    }
+  ]
+}
+```
+
+2) Ensure the trigger agent emits a structured output containing `PatternSelection` with `is_multi_workflow=true`.
+This is the shape the runtime consumes (via `WorkflowPackCoordinator._extract_pack_plan()`):
+
+```json
+{
+  "PatternSelection": {
+    "is_multi_workflow": true,
+    "resume_agent": "PatternAgent",
+    "workflows": [
+      {
+        "name": "DesignDocs",
+        "initial_agent": "DesignDocsAgent",
+        "initial_message": "Generate frontend/backend/database design docs from concept_overview."
+      },
+      {
+        "name": "AppGenerator",
+        "initial_message": "Generate the app codebase using the approved concept + design docs."
+      }
+    ]
+  }
+}
+```
+
+What happens at “groupchat level”:
+
+- The parent chat is paused.
+- Each child workflow is started as a new, independent AG2 GroupChat with its own `chat_id`.
+- The parent UI channel receives `chat.workflow_batch_started` containing the spawned child chat IDs.
+- When all children complete, the parent is resumed (optionally at `resume_agent`).
+
 ### ⚡ Real-Time Event Streaming
 Every agent message, tool call, and state change flows through WebSocket to your frontend.
 
@@ -80,14 +173,14 @@ Never lose context—every workflow execution is fully persisted and resumable.
 - **Token Tracking** → Real-time cost metrics per chat/agent/workflow
 
 ### 🔐 Multi-Tenant by Design
-Enterprise-grade isolation and security built from the ground up.
+app-grade isolation and security built from the ground up.
 
-- **Enterprise Isolation** → Separate MongoDB collections per `enterprise_id`
+- **App Isolation** → Separate MongoDB collections per `app_id`
 - **Cache Seed Propagation** → Deterministic per-chat seeds prevent state bleed
 - **Secret Management** → Secure credential collection and storage
 - **Context Boundaries** → No data leakage across tenants
 
-### 📊 Enterprise Observability
+### 📊 App Observability
 Comprehensive monitoring, metrics, and analytics out of the box.
 
 - **Performance Metrics** → `/metrics/perf/*` endpoints for monitoring
@@ -101,7 +194,7 @@ Agents can invoke React components dynamically during workflow execution.
 - **UI Tools** → Agents call `display_action_plan()` → frontend renders artifact
 - **Auto-Tool Mode** → Execute tools without asking permission
 - **Context Sync** → Shared state between agents and UI components
-- **Theme System** → Per-enterprise design system customization
+- **Theme System** → Per-app design system customization
 
 ---
 
@@ -148,8 +241,8 @@ MozaiksAI follows a **clean, modular architecture** where every component has a 
 ┌──────────────────▼──────────────────────────────────────┐
 │              MongoDB (Atlas / Local)                    │
 │  • chat_sessions                                        │
-│  • workflow_stats_{enterprise}_{workflow}               │
-│  • enterprise_themes                                    │
+│  • workflow_stats_{app}_{workflow}               │
+│  • app_themes                                    │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -317,11 +410,17 @@ CLEAR_TOOL_CACHE_ON_START=true
 python run_server.py
 ```
 
+**Local dev auth note**
+
+- Auth is enabled by default. For local dev without JWT/OIDC, set `AUTH_ENABLED=false`.
+- If you use `start-dev.ps1 -Mode local`, the script will default `AUTH_ENABLED=false` for you.
+- If you use Docker compose via `start-dev.ps1 -Mode docker`, auth is disabled by default in `infra/compose/docker-compose.yml`.
+
 The runtime will:
 - 🔍 Discover workflows in `workflows/` directory
 - 🔧 Load tool manifests and register callables
 - 🚀 Start FastAPI server on `http://localhost:8000`
-- 📡 Enable WebSocket at `ws://localhost:8000/ws/{workflow}/{enterprise}/{chat}/{user}`
+- 📡 Enable WebSocket at `ws://localhost:8000/ws/{workflow}/{app}/{chat}/{user}`
 
 ### Run with ChatUI (Optional)
 
@@ -333,6 +432,30 @@ npm start
 ```
 
 Visit `http://localhost:3000` to interact with workflows through the React interface.
+
+### Artifacts (Code/Preview)
+
+This repo includes a minimal Artifacts editor + preview screen at:
+
+- `http://localhost:3000/artifacts/<artifactId>` (try `http://localhost:3000/artifacts/demo`)
+
+Backend `.env` (required for Preview):
+
+```env
+E2B_API_KEY=e2b_...
+SANDBOX_TEMPLATE=react_base
+SANDBOX_TTL_MINUTES=30
+
+# Dev CORS (optional)
+REACT_DEV_ORIGIN=http://localhost:3000
+```
+
+ChatUI env (optional overrides):
+
+```env
+REACT_APP_API_BASE_URL=http://localhost:8000
+REACT_APP_WS_URL=ws://localhost:8000
+```
 
 ### Docker Deployment
 
@@ -359,11 +482,36 @@ docker compose -f infra/compose/docker-compose.yml up --build
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/chats/{enterprise}/{workflow}/start` | POST | Start new chat session |
-| `/api/chats/{enterprise}/{workflow}` | GET | List recent chats |
-| `/api/chats/exists/{enterprise}/{workflow}/{chat}` | GET | Check if chat exists |
-| `/api/chats/meta/{enterprise}/{workflow}/{chat}` | GET | Get chat metadata |
-| `/ws/{workflow}/{enterprise}/{chat}/{user}` | WebSocket | Real-time connection |
+| `/api/chats/{app}/{workflow}/start` | POST | Start new chat session |
+| `/api/chats/{app}/{workflow}` | GET | List recent chats |
+| `/api/chats/exists/{app}/{workflow}/{chat}` | GET | Check if chat exists |
+| `/api/chats/meta/{app}/{workflow}/{chat}` | GET | Get chat metadata |
+| `/ws/{workflow}/{app}/{chat}/{user}` | WebSocket | Real-time connection |
+
+### Realtime Webhooks (Internal)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/realtime/oauth/completed` | POST | OAuth completion webhook → emits `oauth_completed` event to the target chat session |
+
+**Config**
+- `REALTIME_GATEWAY_SHARED_SECRET` (optional): if set, requests must include `X-Internal-Auth: <shared_secret>` or the runtime returns `401`.
+
+**Expected POST body**
+```json
+{
+  "chatSessionId": "uuid-chat-id",
+  "correlationId": "oauth-state",
+  "appId": "ent-123",
+  "userId": "user-456",
+  "platform": "Reddit",
+  "success": true,
+  "accountId": "optional",
+  "accountName": "optional",
+  "error": null,
+  "timestampUtc": "2025-12-14T00:00:00Z"
+}
+```
 
 ### Workflow Information
 
@@ -437,7 +585,7 @@ mkdir -p workflows/MyWorkflow/tools
 async def execute(
     chat_id: str,
     user_id: str,
-    enterprise_id: str,
+    app_id: str,
     **kwargs
 ):
     """Tool implementation."""
@@ -531,7 +679,7 @@ We welcome contributions! Whether you're interested in:
 1. **Modular Design** → Keep subsystems decoupled
 2. **Declarative First** → Prefer JSON manifests over code
 3. **Event-Driven** → All interactions through `UnifiedEventDispatcher`
-4. **Multi-Tenant Safe** → Ensure enterprise isolation
+4. **Multi-Tenant Safe** → Ensure app isolation
 5. **AG2-Native** → Extend AG2 without forking
 
 ---

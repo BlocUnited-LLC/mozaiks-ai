@@ -342,7 +342,7 @@ node scripts/tailwind_to_tokens.mjs --dry-run src/workflows/Generator/components
 node scripts/tailwind_to_tokens.mjs src/workflows/Generator/components/ActionPlan.js src/components/chat
 ```
 
-The script rewrites supported color classes (e.g., `bg-cyan-500`, `from-violet-500/10`, `shadow-amber-500/40`) to their CSS-variable-backed equivalents, ensuring enterprise themes flow through without manual edits.
+The script rewrites supported color classes (e.g., `bg-cyan-500`, `from-violet-500/10`, `shadow-amber-500/40`) to their CSS-variable-backed equivalents, ensuring app themes flow through without manual edits.
 
 ### 🔧 Key Development Files
 

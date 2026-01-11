@@ -88,7 +88,7 @@
   backdrop-filter: blur(10px);
 }
 
-.community_card {
+.app_card {
   color: var(--black, #000000);
   text-align: center;
   font: var(--little-text, 400 15px "Techfont", sans-serif);
@@ -96,7 +96,7 @@
   width: 90px;
 }
 
-.community_card_svg {
+.app_card_svg {
   flex-shrink: 0;
   position: relative;
   overflow: visible;
@@ -460,7 +460,7 @@ button[style*="clipPath"]:hover {
     padding: 6px;
   }
   
-  .community_card {
+  .app_card {
     font-size: 13px;
     width: 70px;
   }

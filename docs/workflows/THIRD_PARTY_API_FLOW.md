@@ -63,7 +63,7 @@ This document explains how third-party vendor integrations (OpenAI, Slack, Strip
           vendors.update(agent.third_party_apis)
   ```
 - **Output:** APIKeyRequest for each vendor (slack, openai, stripe, etc.)
-- **Storage:** Credentials stored in environment/database per enterprise
+- **Storage:** Credentials stored in environment/database per app
 
 ### 3. Context Variables Stage
 **Agent:** `ContextVariablesAgent`
@@ -126,9 +126,9 @@ This document explains how third-party vendor integrations (OpenAI, Slack, Strip
 - Example: If `third_party_apis: ["Stripe"]`, the tool stub includes Stripe SDK patterns
 
 ### For Runtime
-- Context variables load vendor credentials per enterprise
+- Context variables load vendor credentials per app
 - Tools access credentials via environment or context injection
-- Multi-tenant: each enterprise has isolated vendor configs
+- Multi-tenant: each app has isolated vendor configs
 
 ## Example End-to-End Flow
 
@@ -163,7 +163,7 @@ This document explains how third-party vendor integrations (OpenAI, Slack, Strip
 ### Credential Collection
 - APIKeyAgent requests: `openai` key, `blotato` key
 - User provides both
-- Stored in DB per enterprise
+- Stored in DB per app
 
 ### Tool Generation
 - `generate_content.py` → includes OpenAI SDK usage
@@ -174,7 +174,7 @@ This document explains how third-party vendor integrations (OpenAI, Slack, Strip
 - User triggers workflow
 - ContentGenerator calls `generate_content` → uses OpenAI key
 - SocialPublisher calls `post_to_social` → uses Blotato key
-- All isolated per enterprise/user
+- All isolated per app/user
 
 ## Schema Change Summary
 

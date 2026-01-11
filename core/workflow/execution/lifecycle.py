@@ -83,7 +83,7 @@ class LifecycleToolManager:
         self._loaded = False
 
     def load_lifecycle_tools(self) -> None:
-        """Load lifecycle tools from workflows/<workflow>/tools.json + platform defaults."""
+        """Load lifecycle tools from workflows/<workflow>/tools.yaml + platform defaults."""
         if self._loaded:
             return
 
@@ -93,17 +93,18 @@ class LifecycleToolManager:
         # Then load workflow-specific lifecycle tools
 
         base_dir = Path('workflows') / self.workflow_name
-        tools_json_path = base_dir / 'tools.json'
+        tools_yaml_path = base_dir / 'tools.yaml'
 
-        if not tools_json_path.exists():
-            logger.debug(f"[LIFECYCLE] No tools.json for workflow '{self.workflow_name}'")
+        if not tools_yaml_path.exists():
+            logger.debug(f"[LIFECYCLE] No tools.yaml for workflow '{self.workflow_name}'")
             self._loaded = True
             return
 
         try:
-            data = json.loads(tools_json_path.read_text(encoding='utf-8'))
+            import yaml
+            data = yaml.safe_load(tools_yaml_path.read_text(encoding='utf-8')) or {}
         except Exception as err:
-            logger.warning(f"[LIFECYCLE] Failed to parse tools.json for '{self.workflow_name}': {err}")
+            logger.warning(f"[LIFECYCLE] Failed to parse tools.yaml for '{self.workflow_name}': {err}")
             self._loaded = True
             return
 
@@ -356,7 +357,7 @@ class LifecycleToolManager:
                 tool_logger = get_tool_logger(
                     tool_name="lifecycle_tool",
                     chat_id=getattr(context_variables, 'data', {}).get('chat_id') if context_variables else None,
-                    enterprise_id=getattr(context_variables, 'data', {}).get('enterprise_id') if context_variables else None,
+                    app_id=getattr(context_variables, 'data', {}).get('app_id') if context_variables else None,
                     workflow_name=self.workflow_name,
                 )
                 log_tool_event(

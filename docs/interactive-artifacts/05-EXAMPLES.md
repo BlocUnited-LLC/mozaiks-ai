@@ -14,11 +14,11 @@ Complete end-to-end examples showing Interactive Artifacts in action on the Moza
 # workflows/appbuilder/appbuilder_workflow.py
 
 from core.workflow import session_manager
-from core.workflow.dependencies import dependency_manager
+from core.workflow.pack.gating import validate_pack_prereqs
 import time
 
 async def initialize_appbuilder(
-    enterprise_id: str,
+    app_id: str,
     user_id: str,
     app_name: str,
     description: str
@@ -28,7 +28,7 @@ async def initialize_appbuilder(
     """
     # Step 1: Create workflow session
     session = await session_manager.create_workflow_session(
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         user_id=user_id,
         workflow_name="AppBuilder"
     )
@@ -36,7 +36,7 @@ async def initialize_appbuilder(
     
     # Step 2: Create artifact with initial state
     artifact = await session_manager.create_artifact_instance(
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         workflow_name="AppBuilder",
         artifact_type="AppBuilderArtifact",
         initial_state={
@@ -69,7 +69,7 @@ async def initialize_appbuilder(
     await session_manager.attach_artifact_to_session(
         chat_id=chat_id,
         artifact_id=artifact["_id"],
-        enterprise_id=enterprise_id
+        app_id=app_id
     )
     
     return {
@@ -81,7 +81,7 @@ async def initialize_appbuilder(
 
 async def update_app_architecture(
     artifact_id: str,
-    enterprise_id: str,
+    app_id: str,
     architecture: str,
     features: list
 ):
@@ -90,7 +90,7 @@ async def update_app_architecture(
     """
     await session_manager.update_artifact_state(
         artifact_id=artifact_id,
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         state_updates={
             "architecture": architecture,
             "features": features,
@@ -102,7 +102,7 @@ async def update_app_architecture(
 
 async def generate_app_code(
     artifact_id: str,
-    enterprise_id: str,
+    app_id: str,
     repository_url: str
 ):
     """
@@ -110,7 +110,7 @@ async def generate_app_code(
     """
     await session_manager.update_artifact_state(
         artifact_id=artifact_id,
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         state_updates={
             "repository_url": repository_url,
             "build_progress": 75,
@@ -140,7 +140,7 @@ async def generate_app_code(
 async def deploy_app(
     chat_id: str,
     artifact_id: str,
-    enterprise_id: str,
+    app_id: str,
     environment: str
 ):
     """
@@ -151,7 +151,7 @@ async def deploy_app(
     
     await session_manager.update_artifact_state(
         artifact_id=artifact_id,
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         state_updates={
             "deployment_status": environment,
             "deployment_url": deployment_url,
@@ -183,7 +183,7 @@ async def deploy_app(
     if environment == "production":
         await session_manager.complete_workflow_session(
             chat_id=chat_id,
-            enterprise_id=enterprise_id
+            app_id=app_id
         )
 ```
 
@@ -399,23 +399,23 @@ export function AppBuilderArtifact({ artifactId, chatId, state, ws }) {
 from core.workflow import session_manager
 
 async def create_investment_marketplace(
-    enterprise_id: str,
+    app_id: str,
     user_id: str
 ):
     """
     Launch Investment Marketplace (no dependencies required).
     """
     # Fetch available apps
-    available_apps = await fetch_investable_apps(enterprise_id, user_id)
+    available_apps = await fetch_investable_apps(app_id, user_id)
     
     session = await session_manager.create_workflow_session(
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         user_id=user_id,
         workflow_name="InvestmentMarketplace"
     )
     
     artifact = await session_manager.create_artifact_instance(
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         workflow_name="InvestmentMarketplace",
         artifact_type="InvestmentMarketplace",
         initial_state={
@@ -433,7 +433,7 @@ async def create_investment_marketplace(
     await session_manager.attach_artifact_to_session(
         chat_id=session["_id"],
         artifact_id=artifact["_id"],
-        enterprise_id=enterprise_id
+        app_id=app_id
     )
     
     return {
@@ -442,7 +442,7 @@ async def create_investment_marketplace(
     }
 
 
-async def fetch_investable_apps(enterprise_id: str, user_id: str) -> list:
+async def fetch_investable_apps(app_id: str, user_id: str) -> list:
     """
     Fetch apps available for investment (excluding user's own apps).
     """
@@ -478,7 +478,7 @@ async def fetch_investable_apps(enterprise_id: str, user_id: str) -> list:
 
 async def invest_in_app(
     artifact_id: str,
-    enterprise_id: str,
+    app_id: str,
     user_id: str,
     app_id: str,
     amount: float
@@ -490,7 +490,7 @@ async def invest_in_app(
     investment_id = await process_investment(user_id, app_id, amount)
     
     # Update artifact to reflect new investment
-    artifact = await session_manager.get_artifact_instance(artifact_id, enterprise_id)
+    artifact = await session_manager.get_artifact_instance(artifact_id, app_id)
     user_investments = artifact["state"].get("user_investments", [])
     user_investments.append({
         "investment_id": investment_id,
@@ -501,7 +501,7 @@ async def invest_in_app(
     
     await session_manager.update_artifact_state(
         artifact_id=artifact_id,
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         state_updates={
             "user_investments": user_investments,
             "selected_app": app_id
@@ -716,7 +716,7 @@ export function InvestmentMarketplace({ artifactId, chatId, state, ws }) {
 
 # WorkflowDependencies collection already has this:
 # {
-#   "enterprise_id": "ent_001",
+#   "app_id": "ent_001",
 #   "workflows": {
 #     "MarketingAutomation": {
 #       "dependencies": {
@@ -733,7 +733,7 @@ export function InvestmentMarketplace({ artifactId, chatId, state, ws }) {
 # }
 
 async def create_marketing_automation(
-    enterprise_id: str,
+    app_id: str,
     user_id: str,
     app_id: str
 ):
@@ -743,16 +743,16 @@ async def create_marketing_automation(
     NOTE: Dependency validation already happened in simple_transport.py
     This function only runs if Generator workflow is COMPLETED.
     """
-    app_info = await get_app_info(enterprise_id, app_id)
+    app_info = await get_app_info(app_id, app_id)
     
     session = await session_manager.create_workflow_session(
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         user_id=user_id,
         workflow_name="MarketingAutomation"
     )
     
     artifact = await session_manager.create_artifact_instance(
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         workflow_name="MarketingAutomation",
         artifact_type="MarketingDashboard",
         initial_state={
@@ -777,7 +777,7 @@ async def create_marketing_automation(
     await session_manager.attach_artifact_to_session(
         chat_id=session["_id"],
         artifact_id=artifact["_id"],
-        enterprise_id=enterprise_id
+        app_id=app_id
     )
     
     return {
@@ -834,7 +834,7 @@ export function ChatWithArtifacts() {
 2. User clicks "Launch Marketing"
    → Frontend: sendArtifactAction({ action: 'launch_workflow', workflow: 'MarketingAutomation' })
    → Backend: simple_transport.py receives action
-   → Backend: dependency_manager.validate_workflow_dependencies('MarketingAutomation')
+   → Backend: validate_pack_prereqs(app_id=..., user_id=..., workflow_name='MarketingAutomation')
    → Backend: Queries WorkflowDependencies → requires Generator COMPLETED
    → Backend: Queries ChatSessions → finds Generator with status=IN_PROGRESS ❌
    → Backend: Returns (False, "The Generator workflow must be completed before starting MarketingAutomation")
@@ -845,11 +845,11 @@ export function ChatWithArtifacts() {
    → NO navigation happens, NO session created
 
 4. User completes Generator workflow
-   → Backend: complete_workflow_session(chat_id, enterprise_id)
+   → Backend: complete_workflow_session(chat_id, app_id)
    → Generator status → COMPLETED
 
 5. User clicks "Launch Marketing" again
-   → Backend: dependency_manager.validate_workflow_dependencies('MarketingAutomation')
+   → Backend: validate_pack_prereqs(app_id=..., user_id=..., workflow_name='MarketingAutomation')
    → Backend: Queries ChatSessions → finds Generator with status=COMPLETED ✓
    → Backend: create_marketing_automation() runs
    → Frontend: Receives chat.navigate, opens Marketing tab
@@ -867,7 +867,7 @@ export function ChatWithArtifacts() {
 # workflows/challenge/challenge_workflow.py
 
 async def join_challenge(
-    enterprise_id: str,
+    app_id: str,
     user_id: str,
     challenge_id: str
 ):
@@ -877,13 +877,13 @@ async def join_challenge(
     challenge_info = await get_challenge_info(challenge_id)
     
     session = await session_manager.create_workflow_session(
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         user_id=user_id,
         workflow_name="ChallengeTracker"
     )
     
     artifact = await session_manager.create_artifact_instance(
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         workflow_name="ChallengeTracker",
         artifact_type="ChallengeTracker",
         initial_state={
@@ -903,7 +903,7 @@ async def join_challenge(
     await session_manager.attach_artifact_to_session(
         chat_id=session["_id"],
         artifact_id=artifact["_id"],
-        enterprise_id=enterprise_id
+        app_id=app_id
     )
     
     return {
@@ -914,7 +914,7 @@ async def join_challenge(
 
 async def complete_challenge_step(
     artifact_id: str,
-    enterprise_id: str,
+    app_id: str,
     step_number: int,
     submission_data: dict
 ):
@@ -923,7 +923,7 @@ async def complete_challenge_step(
     
     This will broadcast to ALL connected clients viewing this artifact.
     """
-    artifact = await session_manager.get_artifact_instance(artifact_id, enterprise_id)
+    artifact = await session_manager.get_artifact_instance(artifact_id, app_id)
     completed = artifact["state"]["completed_steps"] + 1
     total = artifact["state"]["total_steps"]
     progress = (completed / total) * 100
@@ -936,7 +936,7 @@ async def complete_challenge_step(
     
     await session_manager.update_artifact_state(
         artifact_id=artifact_id,
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         state_updates={
             "completed_steps": completed,
             "progress": progress,
@@ -949,7 +949,7 @@ async def complete_challenge_step(
     if completed >= total:
         await session_manager.update_artifact_state(
             artifact_id=artifact_id,
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             state_updates={
                 "status": "completed",
                 "completed_at": time.time()

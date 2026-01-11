@@ -221,7 +221,7 @@ async def tool_name(
 **Key Elements:**
 
 1. **Type Annotations with `Annotated`**: Provides descriptions for LLM function calling
-2. **`context_variables` parameter**: AG2 injects runtime context (chat_id, workflow_name, enterprise_id, etc.)
+2. **`context_variables` parameter**: AG2 injects runtime context (chat_id, workflow_name, app_id, etc.)
 3. **`agent_message` parameter**: Optional message displayed alongside UI component
 4. **Payload Contract docstring**: Documents fields sent to frontend (critical for UI component development)
 5. **`use_ui_tool` import**: `from core.workflow.ui_tools import use_ui_tool`
@@ -341,7 +341,7 @@ async def tool_name(
     Args:
         param_one: Description of parameter
         param_two: Optional parameter description
-        **runtime: AG2-injected context (chat_id, enterprise_id, workflow_name, context_variables)
+        **runtime: AG2-injected context (chat_id, app_id, workflow_name, context_variables)
 
     Returns:
         {'status': 'success', 'result': {...}}
@@ -787,7 +787,7 @@ async def post_to_social(
 ) -> Dict[str, Any]:
     """Post content to social media platform."""
     chat_id = runtime.get('chat_id')
-    enterprise_id = runtime.get('enterprise_id')
+    app_id = runtime.get('app_id')
     context_vars = runtime.get('context_variables', {})
 
     # Retrieve API key from context variables (injected by runtime_context_manager)

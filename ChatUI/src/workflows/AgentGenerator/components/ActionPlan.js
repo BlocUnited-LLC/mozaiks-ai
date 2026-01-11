@@ -160,7 +160,7 @@ const ComponentCard = ({ component, idx }) => {
   const toolName = String(component?.tool || '').trim();
   const componentName = String(component?.component || '').trim();
   const display = String(component?.display || 'inline').trim();
-  const interactionPattern = String(component?.ui_pattern || 'single_step').trim();
+  const interactionPattern = String(component?.interaction_pattern || component?.interactionPattern || '').trim();
   const summary = component?.summary ? String(component.summary) : '';
 
   // Color code by display type
@@ -181,7 +181,7 @@ const ComponentCard = ({ component, idx }) => {
           <span className="font-bold text-white text-sm break-words">{label}</span>
         </div>
         <span className="rounded-full bg-slate-700 px-2 md:px-3 py-0.5 md:py-1 text-[10px] md:text-xs font-semibold uppercase tracking-wide text-slate-200 shrink-0">
-          {interactionPattern.replace(/_/g, ' ')}
+          {toTitle(String(interactionPattern || display).replace(/_/g, ' '))}
         </span>
       </div>
       <div className="mt-2 md:mt-3 space-y-1 text-xs text-slate-300">
@@ -1214,9 +1214,9 @@ const DataView = ({ workflow, contextVariableDefinitions }) => {
             <p className="text-base font-bold text-blue-200">{collection?.name || `Collection ${idx + 1}`}</p>
             <div className="mt-1 flex flex-wrap gap-2 text-[0.65rem] uppercase tracking-widest text-slate-400">
               <span>{fields.length} Fields</span>
-              {collection?.is_enterprise && (
-                <span className="rounded-full bg-purple-500/20 px-2 py-0.5 text-purple-200">
-                  Enterprise
+                {collection?.is_app && (
+                  <span className="rounded-full bg-purple-500/20 px-2 py-0.5 text-purple-200">
+                  App
                 </span>
               )}
               {collection?.has_sample_data && (
@@ -1520,6 +1520,49 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
   const [pending, setPending] = useState(false);
   const [openModules, setOpenModules] = useState({ 0: true });
   const [activeTab, setActiveTab] = useState('workflow'); // Tab state: 'workflow' | 'data' | 'interactions' | 'diagram'
+  const [activeWorkflowIndex, setActiveWorkflowIndex] = useState(0); // Pack mode: active child workflow tab
+
+  const packWorkflows = Array.isArray(payload?.workflows)
+    ? payload.workflows.filter((entry) => entry && typeof entry === 'object')
+    : [];
+  const hasChildWorkflows = packWorkflows.length > 1;
+
+  useEffect(() => {
+    try {
+      const workflows = Array.isArray(payload?.workflows) ? payload.workflows : null;
+      if (!workflows || workflows.length < 2) {
+        setActiveWorkflowIndex(0);
+        return;
+      }
+
+      const desiredRaw = payload?.active_workflow_name || payload?.activeWorkflowName;
+      const desired = typeof desiredRaw === 'string' ? desiredRaw.trim() : '';
+      if (!desired) return;
+
+      const idx = workflows.findIndex((entry) => {
+        if (!entry || typeof entry !== 'object') return false;
+        const entryNameRaw =
+          typeof entry.workflow_name === 'string'
+            ? entry.workflow_name
+            : (entry.workflow && typeof entry.workflow === 'object' && typeof entry.workflow.name === 'string'
+                ? entry.workflow.name
+                : '');
+        return String(entryNameRaw || '').trim() === desired;
+      });
+      if (idx >= 0) {
+        setActiveWorkflowIndex(idx);
+        setActiveTab('workflow');
+        setOpenModules({ 0: true });
+      }
+    } catch (e) {
+      // Best-effort only; never block render for tab sync
+    }
+  }, [payload]);
+
+  const clampedWorkflowIndex = hasChildWorkflows
+    ? Math.max(0, Math.min(activeWorkflowIndex, packWorkflows.length - 1))
+    : 0;
+  const workflowPayload = hasChildWorkflows ? (packWorkflows[clampedWorkflowIndex] || payload) : payload;
   
   // CRITICAL: Early validation to prevent null reference errors on revision (AFTER hooks)
   const isValidPayload = payload && typeof payload === 'object';
@@ -1547,9 +1590,9 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
   // Resolve root according to the current UI payload contract:
   // Preferred shape from tool: { workflow, agent_message, agent_message_id, ... }
   // Legacy shapes still supported: { ActionPlan: { workflow }, agent_message } OR { action_plan: { workflow }, agent_message }
-  const preferredWorkflow = payload?.workflow && typeof payload.workflow === 'object' && !Array.isArray(payload.workflow) ? payload.workflow : null;
-  const nestedActionPlan = payload?.ActionPlan && typeof payload.ActionPlan === 'object' && !Array.isArray(payload.ActionPlan) ? payload.ActionPlan : null;
-  const nestedActionPlanLC = payload?.action_plan && typeof payload.action_plan === 'object' && !Array.isArray(payload.action_plan) ? payload.action_plan : null;
+  const preferredWorkflow = workflowPayload?.workflow && typeof workflowPayload.workflow === 'object' && !Array.isArray(workflowPayload.workflow) ? workflowPayload.workflow : null;
+  const nestedActionPlan = workflowPayload?.ActionPlan && typeof workflowPayload.ActionPlan === 'object' && !Array.isArray(workflowPayload.ActionPlan) ? workflowPayload.ActionPlan : null;
+  const nestedActionPlanLC = workflowPayload?.action_plan && typeof workflowPayload.action_plan === 'object' && !Array.isArray(workflowPayload.action_plan) ? workflowPayload.action_plan : null;
 
   const workflow =
     preferredWorkflow ||
@@ -1578,14 +1621,14 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
 
   const technicalBlueprintCandidates = [
     safeWorkflow?.technical_blueprint,
-    payload?.technical_blueprint,
-    payload?.TechnicalBlueprint,
-    payload?.ActionPlan?.technical_blueprint,
-    payload?.ActionPlan?.TechnicalBlueprint,
-    payload?.action_plan?.technical_blueprint,
-    payload?.action_plan?.TechnicalBlueprint,
-    payload?.ActionPlan?.workflow?.technical_blueprint,
-    payload?.action_plan?.workflow?.technical_blueprint,
+    workflowPayload?.technical_blueprint,
+    workflowPayload?.TechnicalBlueprint,
+    workflowPayload?.ActionPlan?.technical_blueprint,
+    workflowPayload?.ActionPlan?.TechnicalBlueprint,
+    workflowPayload?.action_plan?.technical_blueprint,
+    workflowPayload?.action_plan?.TechnicalBlueprint,
+    workflowPayload?.ActionPlan?.workflow?.technical_blueprint,
+    workflowPayload?.action_plan?.workflow?.technical_blueprint,
   ];
   const technicalBlueprint = technicalBlueprintCandidates.find(
     (candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate),
@@ -1701,7 +1744,7 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
   });
   const toolCount = uniqueToolNames.size || uniqueIntegrations.size;
   const normalizeDiagram = (value) => (typeof value === 'string' ? value.trim() : '');
-  const legacyDiagram = normalizeDiagram(payload?.legacy_mermaid_flow);
+  const legacyDiagram = normalizeDiagram(workflowPayload?.legacy_mermaid_flow);
   const workflowDiagram = normalizeDiagram(safeWorkflow?.mermaid_flow);
   const mermaidChart = legacyDiagram || workflowDiagram;
   const mermaidMessage = legacyDiagram
@@ -1718,7 +1761,7 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
   const UIComponentCount = UIComponentItems.length;
 
   // Logging / action integration
-  const agentMessageId = payload?.agent_message_id || payload?.agentMessageId || null;
+  const agentMessageId = payload?.agent_message_id || payload?.agentMessageId || workflowPayload?.agent_message_id || workflowPayload?.agentMessageId || null;
   const tlog = createToolsLogger({ tool: ui_tool_id || componentId, eventId, workflowName, agentMessageId });
   const toggleModule = (idx) => setOpenModules(prev => ({ ...prev, [idx]: !prev[idx] }));
 
@@ -1812,6 +1855,45 @@ const ActionPlan = ({ payload = {}, onResponse, ui_tool_id, eventId, workflowNam
             </h1>
           </div>
         </header>
+
+      {/* Pack Workflow Tabs (1 tab per child workflow) */}
+      {hasChildWorkflows && (
+        <div className="flex items-center gap-2 rounded-xl border-2 border-slate-700 bg-slate-900 p-2 overflow-x-auto">
+          {packWorkflows.map((entry, idx) => {
+            const isActive = idx === clampedWorkflowIndex;
+            const rawName =
+              typeof entry?.workflow_name === 'string'
+                ? entry.workflow_name
+                : (entry?.workflow && typeof entry.workflow === 'object' && typeof entry.workflow.name === 'string'
+                    ? entry.workflow.name
+                    : `Workflow ${idx + 1}`);
+            const role = typeof entry?.role === 'string' && entry.role.trim() ? entry.role.trim() : null;
+            return (
+              <button
+                key={`${String(rawName)}-${idx}`}
+                onClick={() => {
+                  setActiveWorkflowIndex(idx);
+                  setActiveTab('workflow');
+                  setOpenModules({ 0: true });
+                }}
+                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold transition-all whitespace-nowrap ${
+                  isActive
+                    ? 'bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-secondary)] text-white shadow-lg'
+                    : 'text-slate-300 hover:bg-slate-800'
+                }`}
+                title={String(rawName)}
+              >
+                <span className="max-w-[240px] truncate">{String(rawName)}</span>
+                {role && (
+                  <span className="rounded-full bg-slate-700/70 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-slate-200">
+                    {role}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Tab Navigation */}
       <div className="flex items-center gap-2 rounded-xl border-2 border-slate-700 bg-slate-900 p-2">

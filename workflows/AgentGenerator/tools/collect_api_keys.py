@@ -115,7 +115,7 @@ async def collect_api_keys_from_action_plan(context_variables: Any = None) -> Di
     Args:
         context_variables: AG2 ContextVariables instance with:
             - action_plan: Action Plan from context variable (set after user approval)
-            - chat_id, workflow_name, enterprise_id, user_id
+            - chat_id, workflow_name, app_id, user_id
     
     Returns:
         Status dict with collected service list
@@ -152,7 +152,7 @@ async def collect_api_keys_from_action_plan(context_variables: Any = None) -> Di
     
     # Import consolidated API key bundle helper
     try:
-        from workflows.Generator.tools.request_api_key import request_api_keys_bundle
+        from workflows.AgentGenerator.tools.request_api_key import request_api_keys_bundle
     except ImportError:
         wf_logger.error("Failed to import request_api_keys_bundle - cannot collect API keys")
         return {"status": "import_error", "services_collected": []}
@@ -340,7 +340,7 @@ async def collect_api_keys_from_action_plan(context_variables: Any = None) -> Di
                 user_id=data.get('user_id'),
                 workflow_name=workflow_name,
                 message=None,
-                enterprise_id=data.get('enterprise_id'),
+                app_id=data.get('app_id'),
             )
             wf_logger.info("[API_KEYS] Resumed workflow after API key collection")
     except Exception as resume_err:

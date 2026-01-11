@@ -14,6 +14,27 @@ from .schema import load_context_variables_config
 
 logger = get_workflow_logger("derived_context")
 
+
+def _resolve_nested_key(payload: Any, key: Optional[str]) -> Any:
+    if key is None:
+        return payload
+    if not isinstance(key, str) or not key.strip():
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if key in payload:
+        return payload.get(key)
+    # Support dotted lookup for nested response objects.
+    parts = [p for p in key.split(".") if p]
+    current: Any = payload
+    for part in parts:
+        if not isinstance(current, dict):
+            return None
+        if part not in current:
+            return None
+        current = current.get(part)
+    return current
+
 def _resolve_sender_name(event: TextEvent) -> Optional[str]:
     """Extract logical agent name for matching triggers."""
 
@@ -81,6 +102,7 @@ class AgentTextTrigger:
     regex: Optional[str] = None
     value: Any = True
     from_state: Optional[str] = None
+    ui_hidden: bool = True
     _compiled: Optional[re.Pattern[str]] = None
 
     def __post_init__(self) -> None:
@@ -203,14 +225,27 @@ class DerivedContextManager:
         )
 
         self.variables = self._load_variables()
+        self.ui_response_bindings = self._load_ui_response_bindings()
+
         if self.variables:
             self.seed_defaults()
             logger.info(
-                f"[DERIVED_CONTEXT] Loaded {len(self.variables)} state variables: {[v.name for v in self.variables]}"
+                f"[DERIVED_CONTEXT] Loaded {len(self.variables)} agent_text state variables: {[v.name for v in self.variables]}"
             )
             self._register_agent_hooks(agents)
-        else:
-            logger.debug("[DERIVED_CONTEXT] No state variables configured")
+        if self.ui_response_bindings:
+            logger.info(
+                f"[DERIVED_CONTEXT] Loaded ui_response bindings: {len(self.ui_response_bindings)}"
+            )
+        if not self.variables and not self.ui_response_bindings:
+            logger.debug("[DERIVED_CONTEXT] No triggers configured")
+
+
+    @dataclass
+    class UIResponseBinding:
+        variable: str
+        tool: str
+        response_key: Optional[str] = None
 
     def _load_variables(self) -> List[DerivedVariableSpec]:
         definitions = getattr(self.base_context, "_mozaiks_context_definitions", None)
@@ -238,10 +273,9 @@ class DerivedContextManager:
 
             triggers: List[AgentTextTrigger] = []
 
-            # State transitions
-            if source_type == "state" and getattr(source, "transitions", None):
-                for transition in getattr(source, "transitions", []) or []:
-                    trig_spec = getattr(transition, "trigger", None)
+            # Direct triggers from source.triggers
+            if source_type == "state" and getattr(source, "triggers", None):
+                for trig_spec in getattr(source, "triggers", []) or []:
                     if not trig_spec or getattr(trig_spec, "type", None) != "agent_text":
                         continue
                     if not getattr(trig_spec, "agent", None):
@@ -253,12 +287,13 @@ class DerivedContextManager:
                                 equals=trig_spec.match.equals if trig_spec.match else None,
                                 contains=trig_spec.match.contains if trig_spec.match else None,
                                 regex=trig_spec.match.regex if trig_spec.match else None,
-                                value=getattr(transition, "to_state", True),
-                                from_state=getattr(transition, "from_state", None),
+                                value=True,
+                                from_state=None,
+                                ui_hidden=(getattr(trig_spec, "ui_hidden", None) is True),
                             )
                         )
                     except Exception as err:  # pragma: no cover
-                        logger.debug(f"Skipping invalid state transition trigger for {name}: {err}")
+                        logger.debug(f"Skipping invalid direct trigger for {name}: {err}")
 
             if not triggers:
                 continue
@@ -272,8 +307,87 @@ class DerivedContextManager:
             )
         return results
 
+    def _load_ui_response_bindings(self) -> List["DerivedContextManager.UIResponseBinding"]:
+        definitions = getattr(self.base_context, "_mozaiks_context_definitions", None)
+        if isinstance(definitions, dict) and definitions:
+            return self._ui_bindings_from_definitions(definitions)
+        try:
+            config = workflow_manager.get_config(self.workflow_name) or {}
+            ctx_section = config.get("context_variables") or {}
+            plan = load_context_variables_config(ctx_section)
+            return self._ui_bindings_from_definitions(plan.definitions)
+        except Exception as err:  # pragma: no cover
+            logger.debug(f"UI response bindings fallback load failed: {err}")
+            return []
+
+    def _ui_bindings_from_definitions(self, definitions: Dict[str, Any]) -> List["DerivedContextManager.UIResponseBinding"]:
+        bindings: List[DerivedContextManager.UIResponseBinding] = []
+        for name, definition in definitions.items():
+            source = getattr(definition, "source", None)
+            if not source:
+                continue
+            if getattr(source, "type", None) != "state":
+                continue
+
+            # Direct triggers from source.triggers
+            for trig_spec in getattr(source, "triggers", []) or []:
+                if not trig_spec or getattr(trig_spec, "type", None) != "ui_response":
+                    continue
+                tool = getattr(trig_spec, "tool", None)
+                if not isinstance(tool, str) or not tool.strip():
+                    continue
+                response_key = getattr(trig_spec, "response_key", None)
+                bindings.append(
+                    DerivedContextManager.UIResponseBinding(
+                        variable=name,
+                        tool=tool.strip(),
+                        response_key=response_key if isinstance(response_key, str) else None,
+                    )
+                )
+
+        return bindings
+
     def has_variables(self) -> bool:
-        return bool(self.variables)
+        # Back-compat method name: treat any trigger binding as active.
+        return bool(self.variables or self.ui_response_bindings)
+
+    def apply_ui_tool_response(self, *, tool_name: str, response_data: Dict[str, Any]) -> List[str]:
+        """Apply declarative ui_response triggers based on a completed UI tool response.
+
+        This updates AG2 ContextVariables providers (group manager, pattern context, etc.)
+        so context-based handoffs can proceed immediately after the user interacts.
+        """
+        normalized_tool = (tool_name or "").strip()
+        if not normalized_tool or not isinstance(response_data, dict):
+            return []
+
+        updated_vars: List[str] = []
+        for binding in self.ui_response_bindings or []:
+            if binding.tool != normalized_tool:
+                continue
+            value = _resolve_nested_key(response_data, binding.response_key)
+            if value is None:
+                continue
+            updated = False
+            for provider in self.providers:
+                if hasattr(provider, "set"):
+                    try:
+                        provider.set(binding.variable, value)  # type: ignore[attr-defined]
+                        updated = True
+                    except Exception as err:  # pragma: no cover
+                        logger.debug(f"[DERIVED_CONTEXT] ui_response update failed: {err}")
+            if updated:
+                updated_vars.append(binding.variable)
+                logger.info(
+                    f"[DERIVED_CONTEXT] {self.workflow_name}: {binding.variable} -> {value!r} (ui_response, tool={normalized_tool})"
+                )
+                for cb in list(self._listeners):
+                    try:
+                        cb({"variable": binding.variable, "value": value, "tool": normalized_tool})
+                    except Exception:  # pragma: no cover
+                        pass
+
+        return updated_vars
 
     def _register_agent_hooks(self, agents: Dict[str, Any]) -> None:
         trigger_map: Dict[str, List[Tuple[DerivedVariableSpec, AgentTextTrigger]]] = {}
@@ -345,7 +459,8 @@ class DerivedContextManager:
                         logger.info(
                             f"[DERIVED_CONTEXT] {self.workflow_name}: {var.name} -> {value_to_set!r} (pre-send, agent={agent_name})"
                         )
-                    should_hide = True
+                    if trigger.ui_hidden:
+                        should_hide = True
             if should_hide:
                 if isinstance(message, dict):
                     updated_message = dict(message)

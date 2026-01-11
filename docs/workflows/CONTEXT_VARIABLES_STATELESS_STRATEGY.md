@@ -168,14 +168,14 @@ STEP 5: IF collection missing:
 **Runtime Behavior** (from `variables.py`):
 
 ```python
-async def _load_data_reference_value(name, definition, *, default_database_name, enterprise_id, context):
+async def _load_data_reference_value(name, definition, *, default_database_name, app_id, context):
     source = definition.source
     collection = source.collection
     db_name = source.database_name or default_database_name
     
     # Query existing collection
     client = get_mongo_client()
-    query = _materialize_query_template(source.query_template, context, enterprise_id)
+    query = _materialize_query_template(source.query_template, context, app_id)
     projection = {field: 1 for field in (source.fields or [])} or None
     doc = await client[db_name][collection].find_one(query, projection)
     
@@ -842,20 +842,30 @@ Step 2: For EACH tools[] entry:
 
 ### 5. PatternSelection (PatternAgent Output)
 
-**Wrapper Key**: `PatternSelection.pattern_name`
+**Wrapper Key**: `PatternSelection`
 
 **Schema Contract**:
 ```json
 {
   "PatternSelection": {
-    "selected_pattern": 1,
-    "pattern_name": "Context-Aware Routing"
+    "is_multi_workflow": false,
+    "decomposition_reason": null,
+    "pack_name": "Customer Support Router",
+    "workflows": [
+      {
+        "name": "CustomerSupportRouter",
+        "role": "primary",
+        "description": "Routes support requests to the right specialists",
+        "pattern_id": 1,
+        "pattern_name": "Context-Aware Routing"
+      }
+    ]
   }
 }
 ```
 
 **What Context Variable Agents Extract**:
-- `pattern_name` → Determines pattern-specific coordination variables:
+- `workflows[current_workflow_index].pattern_name` (or `.pattern_id`) → Determines pattern-specific coordination variables:
   - **Pipeline**: stage trackers (current_stage, stage_X_completed)
   - **Context-Aware Routing**: routing metadata (current_domain, routing_confidence, routed_specialist)
   - **Escalation**: tier tracking (active_tier, escalation_count, recovery_confidence)
@@ -865,8 +875,9 @@ Step 2: For EACH tools[] entry:
 **Extraction Pattern**:
 ```
 Step 1: Scan conversation history for 'PatternSelection' key
-Step 2: Extract pattern_name
-Step 3: Apply pattern-specific variable templates from CONTEXT_VARIABLES_COMPLETE.md
+Step 2: Select workflow = workflows[current_workflow_index] (default 0 / primary fallback)
+Step 3: Extract workflow.pattern_name (or workflow.pattern_id)
+Step 4: Apply pattern-specific variable templates from CONTEXT_VARIABLES_COMPLETE.md
 ```
 
 ---
@@ -1479,59 +1490,3 @@ STEP 4: IF human_in_loop=true but no approval variable → Create it
 - [ ] Confirm alignment with CONTEXT_VARIABLES_COMPLETE.md
 
 ---
-
-## Success Criteria
-
-✅ **Stateless Determinism**: Given same conversation history, agent generates identical output  
-✅ **No Implicit State**: All decisions traceable to conversation history or system message  
-✅ **Wrapper Contract Compliance**: All agents reference semantic wrappers, not agent names  
-✅ **Complete Extraction**: Agents extract ALL required fields from upstream outputs  
-✅ **Type Safety**: Six-type taxonomy consistently applied across all agents  
-✅ **Agent Roster Completeness**: ContextVariablesPlan.agents contains ALL PhaseAgents  
-✅ **Trigger Validity**: State variables have correct trigger types with required fields  
-✅ **Field Completeness**: Each source.type has all required type-specific fields  
-
----
-
-## Appendix: Conversation History Navigation
-
-### Finding Semantic Wrappers
-
-**Pattern**:
-```
-1. Scan conversation history messages (chronological order)
-2. For EACH message:
-   - Check if message.content is a dict/object
-   - Look for PascalCase keys (ActionPlan, TechnicalBlueprint, PhaseAgents, etc.)
-   - Extract wrapper content
-3. Navigate to specific fields using dot notation
-```
-
-**Python Example**:
-```python
-def extract_semantic_wrapper(conversation_history, wrapper_key):
-    """Extract semantic wrapper from conversation history."""
-    for message in conversation_history:
-        if isinstance(message.get("content"), dict):
-            if wrapper_key in message["content"]:
-                return message["content"][wrapper_key]
-    return None
-
-# Usage
-blueprint = extract_semantic_wrapper(history, "TechnicalBlueprint")
-if blueprint:
-    variables = blueprint.get("global_context_variables", [])
-```
-
-**LLM Prompt Pattern**:
-```
-Step 1: Scan conversation history for message containing 'TechnicalBlueprint' semantic wrapper
-Step 2: Navigate to: message.content['TechnicalBlueprint']['global_context_variables']
-Step 3: Extract fields: name, type, trigger_hint, purpose
-```
-
----
-
-**End of Document**
-
-This strategy ensures **deterministic, stateless context variable generation** across the entire AgentGenerator workflow. Every agent receives exactly the context it needs from conversation history, with zero implicit state or hardcoded assumptions.

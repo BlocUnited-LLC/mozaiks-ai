@@ -4,48 +4,48 @@
 
 ## Multi-Tenancy Model
 
-### Enterprise ID Scoping
+### App ID Scoping
 
-**Definition:** `enterprise_id` is the top-level tenant identifier. Every API call, MongoDB query, and workflow execution is scoped to a single enterprise.
+**Definition:** `app_id` is the top-level tenant identifier. Every API call, MongoDB query, and workflow execution is scoped to a single app.
 
 **Enforcement Points:**
 
 1. **HTTP Endpoints:**
    ```python
-   @app.post("/api/chats/{enterprise_id}/{workflow_name}/start")
-   async def start_chat(enterprise_id: str, workflow_name: str, ...):
-       # All downstream operations inherit enterprise_id
+   @app.post("/api/chats/{app_id}/{workflow_name}/start")
+   async def start_chat(app_id: str, workflow_name: str, ...):
+       # All downstream operations inherit app_id
        await orchestration.run_default_pattern(
-           enterprise_id=enterprise_id, ...
+           app_id=app_id, ...
        )
    ```
 
 2. **MongoDB Queries:**
    ```python
-   # Always include enterprise_id filter
+   # Always include app_id filter
    await coll.find_one({
        "_id": chat_id,
-       "enterprise_id": enterprise_id
+       "app_id": app_id
    })
    ```
 
 3. **Workflow Stats Collections:**
-   - Collection name: `workflow_stats_{enterprise}_{workflow}`
+   - Collection name: `workflow_stats_{app}_{workflow}`
    - Example: `workflow_stats_acme_corp_Generator`
-   - Isolation: Each enterprise gets a separate collection per workflow
+   - Isolation: Each app gets a separate collection per workflow
 
 4. **Theme Configuration:**
-   - Collection: `enterprise_themes`
-   - Document `_id`: `enterprise_id`
-    - API: `GET /api/themes/{enterprise_id}`
+   - Collection: `app_themes`
+   - Document `_id`: `app_id`
+    - API: `GET /api/themes/{app_id}`
 
 **Validation:**
 ```python
-from core.data.persistence_manager import InvalidEnterpriseIdError
+from core.data.persistence_manager import InvalidAppIdError
 
-def validate_enterprise_id(enterprise_id: str):
-    if not enterprise_id or not re.match(r'^[a-zA-Z0-9_-]+$', enterprise_id):
-        raise InvalidEnterpriseIdError(f"Invalid enterprise_id: {enterprise_id}")
+def validate_app_id(app_id: str):
+    if not app_id or not re.match(r'^[a-zA-Z0-9_-]+$', app_id):
+        raise InvalidAppIdError(f"Invalid app_id: {app_id}")
 ```
 
 ---
@@ -59,9 +59,9 @@ def validate_enterprise_id(enterprise_id: str):
 chat_id = f"chat_{uuid.uuid4().hex[:16]}"
 ```
 
-**Scoping:** Chat IDs are globally unique BUT always paired with `enterprise_id` in queries to prevent cross-enterprise leakage.
+**Scoping:** Chat IDs are globally unique BUT always paired with `app_id` in queries to prevent cross-app leakage.
 
-**Security Invariant:** Even if an attacker guesses a valid `chat_id`, they cannot access it without the correct `enterprise_id`.
+**Security Invariant:** Even if an attacker guesses a valid `chat_id`, they cannot access it without the correct `app_id`.
 
 ---
 
@@ -69,7 +69,7 @@ chat_id = f"chat_{uuid.uuid4().hex[:16]}"
 
 ### Purpose
 
-The `cache_seed` is a 32-bit unsigned integer derived from `enterprise_id:chat_id` that ensures:
+The `cache_seed` is a 32-bit unsigned integer derived from `app_id:chat_id` that ensures:
 1. **Reproducible LLM responses** on chat resume (same seed → same pseudo-random sampling)
 2. **UI component cache isolation** (prevents cross-chat state bleed)
 3. **Audit trail consistency** (same seed produces same deterministic outcomes for compliance replay)
@@ -80,8 +80,8 @@ The `cache_seed` is a 32-bit unsigned integer derived from `enterprise_id:chat_i
 ```python
 import hashlib
 
-def derive_cache_seed(enterprise_id: str, chat_id: str) -> int:
-    combined = f"{enterprise_id}:{chat_id}"
+def derive_cache_seed(app_id: str, chat_id: str) -> int:
+    combined = f"{app_id}:{chat_id}"
     hash_bytes = hashlib.sha256(combined.encode('utf-8')).digest()
     # Take first 4 bytes as unsigned 32-bit int
     return int.from_bytes(hash_bytes[:4], byteorder='big')
@@ -89,10 +89,10 @@ def derive_cache_seed(enterprise_id: str, chat_id: str) -> int:
 
 **Example:**
 ```python
-enterprise_id = "acme_corp"
+app_id = "acme_corp"
 chat_id = "chat_abc123def456"
-seed = derive_cache_seed(enterprise_id, chat_id)
-# seed = 2847561923 (deterministic for this enterprise + chat pair)
+seed = derive_cache_seed(app_id, chat_id)
+# seed = 2847561923 (deterministic for this app + chat pair)
 ```
 
 ### Storage
@@ -101,7 +101,7 @@ seed = derive_cache_seed(enterprise_id, chat_id)
 ```json
 {
   "_id": "chat_abc123def456",
-  "enterprise_id": "acme_corp",
+  "app_id": "acme_corp",
   "cache_seed": 2847561923,
   ...
 }
@@ -263,7 +263,7 @@ class ThemeUpdateRequest(BaseModel):
 
 ### Context Variable Scoping
 
-**Problem:** Multiple chats in the same enterprise should not share mutable context variables.
+**Problem:** Multiple chats in the same app should not share mutable context variables.
 
 **Solution:** Context variables are scoped per-chat. Each `ConversableContext` instance is tied to a single `chat_id`.
 
@@ -273,7 +273,7 @@ class ThemeUpdateRequest(BaseModel):
 context_a = ConversableContext()
 context_a.set("interview_complete", True)
 
-# Chat B (same enterprise, different chat_id)
+# Chat B (same app, different chat_id)
 context_b = ConversableContext()
 # context_b.get("interview_complete") returns None
 ```
@@ -284,19 +284,19 @@ context_b = ConversableContext()
 
 ### Workflow Stats Rollup Isolation
 
-**Collection Naming:** `workflow_stats_{enterprise}_{workflow}`
+**Collection Naming:** `workflow_stats_{app}_{workflow}`
 
 **Example Scenario:**
-- Enterprise "acme_corp" runs "Generator" workflow → `workflow_stats_acme_corp_Generator`
-- Enterprise "xyz_inc" runs "Generator" workflow → `workflow_stats_xyz_inc_Generator`
+- App "acme_corp" runs "Generator" workflow → `workflow_stats_acme_corp_Generator`
+- App "xyz_inc" runs "Generator" workflow → `workflow_stats_xyz_inc_Generator`
 
-**No cross-enterprise visibility:** Aggregation queries are scoped to collection name, which includes `enterprise_id`.
+**No cross-app visibility:** Aggregation queries are scoped to collection name, which includes `app_id`.
 
 ---
 
 ## Access Control (Future)
 
-**Current State:** No RBAC implemented; all API calls authenticated via enterprise_id in request path.
+**Current State:** No RBAC implemented; all API calls authenticated via app_id in request path.
 
 **Planned:**
 - User-level authentication (JWT tokens)
@@ -347,10 +347,10 @@ await coll.update_one(
 
 | Risk | Mitigation | Status |
 |------|-----------|--------|
-| Cross-enterprise data leak | MongoDB queries always include `enterprise_id` filter | ✅ Implemented |
+| Cross-app data leak | MongoDB queries always include `app_id` filter | ✅ Implemented |
 | API key exposure | Never log plaintext; mask in UI by default | ✅ Implemented |
 | XSS via theme injection | Sanitize metadata; apply colors via style objects | ✅ Implemented |
-| Unauthorized chat access | Require `enterprise_id` + `chat_id` for all operations | ✅ Implemented |
+| Unauthorized chat access | Require `app_id` + `chat_id` for all operations | ✅ Implemented |
 | Replay attack | No session token implemented yet | ⚠️ Planned |
 | Secret leakage in logs | Runtime sanitizer strips secrets from log context | ✅ Implemented |
 | Cross-chat state bleed | Cache seed scopes UI component caches | ✅ Implemented |

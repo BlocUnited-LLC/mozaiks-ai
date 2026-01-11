@@ -44,18 +44,17 @@ class AG2TerminationHandler:
     Integration Points:
     - AG2 GroupChat termination callbacks
     - PersistenceManager status updates
-    - TokenManager session finalization
     - Workflow completion notifications
     """
     
     def __init__(self,
                  chat_id: str,
-                 enterprise_id: str,
+                 app_id: str,
                  workflow_name: str = "default",
                  persistence_manager: Optional[AG2PersistenceManager] = None,
                  transport: Optional['SimpleTransport'] = None):
         self.chat_id = chat_id
-        self.enterprise_id = enterprise_id
+        self.app_id = app_id
         self.workflow_name = workflow_name
         self.persistence_manager = persistence_manager or AG2PersistenceManager()
         self.transport = transport
@@ -83,7 +82,7 @@ class AG2TerminationHandler:
         # Create the chat session document in the database
         await self.persistence_manager.create_chat_session(
             chat_id=self.chat_id,
-            enterprise_id=self.enterprise_id,
+            app_id=self.app_id,
             workflow_name=self.workflow_name,
             user_id=user_id
         )
@@ -96,7 +95,7 @@ class AG2TerminationHandler:
                 description=f"AG2 conversation started for {self.workflow_name}",
                 context={
                     "chat_id": self.chat_id,
-                    "enterprise_id": self.enterprise_id,
+                    "app_id": self.app_id,
                     "workflow_name": self.workflow_name,
                 },
             )
@@ -137,7 +136,7 @@ class AG2TerminationHandler:
             try:
                     # Mark the chat as completed in the database (reason removed)
                     status_updated = await self.persistence_manager.mark_chat_completed(
-                        self.chat_id, self.enterprise_id
+                        self.chat_id, self.app_id
                     )
 
                     if not status_updated:
@@ -169,7 +168,7 @@ class AG2TerminationHandler:
                             description="AG2 conversation terminated",
                             context={
                                 "chat_id": self.chat_id,
-                                "enterprise_id": self.enterprise_id,
+                                "app_id": self.app_id,
                                 "workflow_name": self.workflow_name,
                                 "status": result.status,
                                 "duration_ms": conversation_duration * 1000,
@@ -239,12 +238,12 @@ class AG2TerminationHandler:
 
         Uses the lean persistence manager's internal collection accessor
         A session is considered complete when status == 'completed'.
-        We query by the canonical _id (chat_id) + enterprise_id to match create / completion writes.
+        We query by the canonical _id (chat_id) + app_id to match create / completion writes.
         """
         try:
             coll = await self.persistence_manager._coll()
             # New schema stores the session id as _id; chat_id maintained for compatibility.
-            session = await coll.find_one({"_id": self.chat_id, "enterprise_id": self.enterprise_id})
+            session = await coll.find_one({"_id": self.chat_id, "app_id": self.app_id})
 
             if not session:
                 return {
@@ -271,7 +270,7 @@ class AG2TerminationHandler:
             }
 
 def create_termination_handler(chat_id: str, 
-                             enterprise_id: str, 
+                             app_id: str, 
                              workflow_name: str = "default",
                              transport: Optional['SimpleTransport'] = None) -> AG2TerminationHandler:
     """
@@ -280,7 +279,7 @@ def create_termination_handler(chat_id: str,
     """
     return AG2TerminationHandler(
         chat_id=chat_id,
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         workflow_name=workflow_name,
         transport=transport
     )

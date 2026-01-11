@@ -1,142 +1,137 @@
+from __future__ import annotations
+
+# IMPORTANT: This module is a neutral usage-only collector (measurement + emission).
+# It must NEVER contain enforcement logic (no pricing, gating, entitlements, balance checks, or billing decisions).
+
 import os
-from typing import Optional, Dict, Any
-from datetime import datetime, UTC
-from core.core_config import MONETIZATION_ENABLED, FREE_TRIAL_ENABLED, TOKEN_WARNING_THRESHOLD
+import uuid
+from datetime import UTC, datetime
+from typing import Any, Dict, Optional
+
 from core.events.unified_event_dispatcher import get_event_dispatcher
 from logs.logging_config import get_workflow_logger
 
 logger = get_workflow_logger("token_manager")
 
-class InsufficientTokensError(Exception):
-    pass
+USAGE_DELTA_EVENT_TYPE = "chat.usage_delta"
+USAGE_SUMMARY_EVENT_TYPE = "chat.usage_summary"
+
+
+def _usage_events_enabled() -> bool:
+    value = os.getenv("USAGE_EVENTS_ENABLED", "true").strip().lower()
+    return value not in {"0", "false", "off", "no", "disabled"}
+
 
 class TokenManager:
-    @staticmethod
-    async def ensure_can_start_chat(
-        user_id: str, 
-        enterprise_id: str, 
-        workflow_name: str, 
-        persistence_manager: Any
-    ) -> Dict[str, Any]:
-        if not MONETIZATION_ENABLED:
-            return {"allowed": True}
-            
-        if FREE_TRIAL_ENABLED:
-            return {"allowed": True, "free_trial": True}
-            
-        balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
-        if balance <= 0:
-            raise InsufficientTokensError("Insufficient tokens to start chat")
-            
-        return {"allowed": True, "balance": balance}
+    """Neutral token usage collector (measurement + emission only).
+
+    This module MUST NOT implement pricing, entitlements, balance checks, or gating.
+    It only emits factual, server-derived usage events that upstream control planes
+    may consume for metering/billing decisions elsewhere.
+    """
 
     @staticmethod
-    async def handle_turn_usage(
-        chat_id: str,
+    async def ensure_can_start_chat(  # noqa: D401
+        user_id: str,
         enterprise_id: str,
+        workflow_name: str,
+        persistence_manager: Any,
+    ) -> Dict[str, Any]:
+        """Legacy compatibility shim: runtime never gates chat start."""
+        return {"allowed": True}
+
+    @staticmethod
+    async def emit_usage_delta(
+        *,
+        chat_id: str,
+        app_id: str,
         user_id: str,
         workflow_name: str,
-        usage_snapshot: Dict[str, int], # prompt_tokens, completion_tokens, total_tokens
-        persistence_manager: Any
+        agent_name: Optional[str] = None,
+        model_name: Optional[str] = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: Optional[int] = None,
+        cached: bool = False,
+        duration_sec: float = 0.0,
+        invocation_id: Optional[str] = None,
+        event_ts: Optional[datetime] = None,
     ) -> None:
-        if not MONETIZATION_ENABLED:
+        if not _usage_events_enabled():
             return
 
-        if FREE_TRIAL_ENABLED:
-            return
-
-        total_tokens = usage_snapshot.get("total_tokens", 0)
-        if total_tokens <= 0:
-            return
-
-        # Debit tokens
-        new_balance = await persistence_manager.debit_tokens(
-            user_id, 
-            enterprise_id, 
-            total_tokens, 
-            reason="realtime_usage", 
-            strict=False,
-            meta={"chat_id": chat_id, "workflow": workflow_name}
-        )
-
-        dispatcher = get_event_dispatcher()
-
-        if new_balance is None:
-            # Exhausted
-            logger.warning(f"Tokens exhausted for chat {chat_id}")
-            # Pause chat
-            await TokenManager._pause_chat(chat_id, enterprise_id, "insufficient_tokens", persistence_manager)
-            
-            await dispatcher.emit("runtime.token.exhausted", {
-                "chat_id": chat_id,
-                "enterprise_id": enterprise_id,
-                "user_id": user_id,
-                "workflow_name": workflow_name
-            })
-        else:
-            # Check warning threshold if needed
-            pass
-
-    @staticmethod
-    async def handle_auto_reply_limit(
-        chat_id: str,
-        enterprise_id: str,
-        workflow_name: str,
-        limit: int,
-        persistence_manager: Any
-    ) -> None:
-        logger.info(f"Auto-reply limit {limit} reached for chat {chat_id}")
-        
-        # Update WorkflowStats
-        try:
-            stats_coll = await persistence_manager._workflow_stats_coll()
-            summary_id = f"mon_{enterprise_id}_{workflow_name}"
-            await stats_coll.update_one(
-                {"_id": summary_id},
-                {"$inc": {"auto_reply_hits": 1}, "$set": {"auto_reply_limit": limit}},
-                upsert=True
+        if not chat_id or not app_id or not user_id or not workflow_name:
+            logger.debug(
+                "usage_delta_missing_context",
+                extra={
+                    "chat_id": chat_id,
+                    "app_id": app_id,
+                    "user_id": user_id,
+                    "workflow_name": workflow_name,
+                },
             )
-        except Exception as e:
-            logger.warning(f"Failed to update WorkflowStats for auto_reply_limit: {e}")
+            return
 
-        # Emit event
-        dispatcher = get_event_dispatcher()
-        await dispatcher.emit("runtime.token.auto_reply_limit", {
+        prompt = max(0, int(prompt_tokens or 0))
+        completion = max(0, int(completion_tokens or 0))
+        total = max(0, int(total_tokens if total_tokens is not None else (prompt + completion)))
+
+        payload: Dict[str, Any] = {
+            "event_id": uuid.uuid4().hex[:12],
+            "event_ts": (event_ts or datetime.now(UTC)).isoformat(),
             "chat_id": chat_id,
-            "enterprise_id": enterprise_id,
+            "app_id": app_id,
+            "user_id": user_id,
             "workflow_name": workflow_name,
-            "limit": limit
-        })
-        
-        await TokenManager._pause_chat(chat_id, enterprise_id, "auto_reply_limit", persistence_manager)
+            "agent_name": agent_name or None,
+            "model_name": model_name or None,
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+            "cached": bool(cached),
+            "duration_sec": float(duration_sec or 0.0),
+            "invocation_id": invocation_id or None,
+        }
+
+        try:
+            dispatcher = get_event_dispatcher()
+            await dispatcher.emit(USAGE_DELTA_EVENT_TYPE, payload)
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.debug("usage_delta_emit_failed", extra={"error": str(exc)})
 
     @staticmethod
-    async def resume_after_topup(
+    async def emit_usage_summary(
+        *,
         chat_id: str,
-        enterprise_id: str,
-        persistence_manager: Any
+        app_id: str,
+        user_id: str,
+        workflow_name: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: Optional[int] = None,
+        event_ts: Optional[datetime] = None,
     ) -> None:
-        # Clear pause
-        coll = await persistence_manager._coll()
-        await coll.update_one(
-            {"_id": chat_id, "enterprise_id": enterprise_id},
-            {"$set": {"paused": False, "pause_reason": None, "paused_at": None}}
-        )
-        
-        dispatcher = get_event_dispatcher()
-        await dispatcher.emit("runtime.token.resumed", {
-            "chat_id": chat_id,
-            "enterprise_id": enterprise_id
-        })
+        if not _usage_events_enabled():
+            return
 
-    @staticmethod
-    async def _pause_chat(chat_id: str, enterprise_id: str, reason: str, persistence_manager: Any):
-        coll = await persistence_manager._coll()
-        await coll.update_one(
-            {"_id": chat_id, "enterprise_id": enterprise_id},
-            {"$set": {
-                "paused": True, 
-                "pause_reason": reason, 
-                "paused_at": datetime.now(UTC)
-            }}
-        )
+        prompt = max(0, int(prompt_tokens or 0))
+        completion = max(0, int(completion_tokens or 0))
+        total = max(0, int(total_tokens if total_tokens is not None else (prompt + completion)))
+
+        payload: Dict[str, Any] = {
+            "event_id": uuid.uuid4().hex[:12],
+            "event_ts": (event_ts or datetime.now(UTC)).isoformat(),
+            "chat_id": chat_id,
+            "app_id": app_id,
+            "user_id": user_id,
+            "workflow_name": workflow_name,
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+        }
+
+        try:
+            dispatcher = get_event_dispatcher()
+            await dispatcher.emit(USAGE_SUMMARY_EVENT_TYPE, payload)
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.debug("usage_summary_emit_failed", extra={"error": str(exc)})

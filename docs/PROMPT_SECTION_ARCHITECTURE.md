@@ -153,7 +153,7 @@ The `[MOZAIKS RUNTIME CONTEXT]` section (in `hook_universal_prompts.py`) injects
 |------------|------------|-------------------------|
 | Chat Transport | `core/transport/websocket.py` + ChatUI | UserProxy agents, message transport |
 | Persistence | `AG2PersistenceManager` | Database schemas, history tracking |
-| Token Tracking | `MozaiksStream` (core/tokens) | Usage analytics, cost attribution |
+| Token Tracking | `MozaiksPay` (core/tokens) | Usage analytics, cost attribution |
 | Multi-Tenant Isolation | Runtime enforcement | Tenant validation, scoped queries |
 | Observability | `core/observability` | Logging infrastructure, metrics |
 | UI Component Delivery | ChatUI artifacts | React components, form state |

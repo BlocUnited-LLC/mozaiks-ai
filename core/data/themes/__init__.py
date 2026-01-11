@@ -1,7 +1,7 @@
 """
 Theme management module.
 
-Handles enterprise theme customization and validation.
+Handles app theme customization and validation.
 """
 
 from .theme_manager import ThemeManager, ThemeResponse, ThemeUpdateRequest

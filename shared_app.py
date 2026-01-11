@@ -5,33 +5,76 @@
 import logging
 import os
 import sys
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict, Tuple
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 # Ensure project root is on Python path for workflow imports
 sys.path.insert(0, str(Path(__file__).parent))
 import json
 import asyncio
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+import importlib
+from fastapi import FastAPI, HTTPException, Request, WebSocket, UploadFile, File, Form, Depends
+from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from bson.objectid import ObjectId
 from uuid import uuid4
 import autogen
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from core.core_config import get_mongo_client
 from core.transport.simple_transport import SimpleTransport
 from core.workflow.workflow_manager import workflow_status_summary, get_workflow_transport, get_workflow_tools
-from core.data.persistence.persistence_manager import AG2PersistenceManager, InvalidEnterpriseIdError
+from core.data.persistence.persistence_manager import AG2PersistenceManager
 from core.data.themes.theme_manager import ThemeManager, ThemeResponse
-from core.workflow.dependencies import dependency_manager
+from core.multitenant import build_app_scope_filter, coalesce_app_id
+from core.artifacts.attachments import handle_chat_upload
+from core.runtime.extensions import mount_declared_routers, start_declared_services, stop_services
+
+# JWT Authentication dependencies
+from core.auth import (
+    UserPrincipal,
+    ServicePrincipal,
+    require_user_scope,
+    require_any_auth,
+    require_internal,
+    optional_user,
+    authenticate_websocket_with_path_user,
+    verify_user_owns_resource,
+    get_auth_config,
+    WS_CLOSE_POLICY_VIOLATION,
+)
 
 # Initialize persistence manager (handles lean chat session storage internally)
 persistence_manager = AG2PersistenceManager()
 theme_manager = ThemeManager(persistence_manager.persistence)
+_runtime_services = []
 
 async def _chat_coll():
     """Return the new lean chat_sessions collection (lowercase)."""
     # Delegate to the persistence manager's internal helper (ensures client)
     return await persistence_manager._coll()
+
+
+class OAuthCompletedWebhookPayload(BaseModel):
+    """Payload sent by external services when OAuth completes for a platform integration."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    chat_session_id: str = Field(..., alias="chatSessionId", min_length=1)
+    correlation_id: Optional[str] = Field(None, alias="correlationId")
+    app_id: str = Field(
+        ...,
+        validation_alias=AliasChoices("appId", "appId"),
+        serialization_alias="appId",
+        min_length=1,
+    )
+    user_id: str = Field(..., alias="userId", min_length=1)
+    platform: str = Field(..., min_length=1)
+    success: bool
+
+    account_id: Optional[str] = Field(None, alias="accountId")
+    account_name: Optional[str] = Field(None, alias="accountName")
+    error: Optional[str] = None
+    timestamp_utc: Optional[datetime] = Field(None, alias="timestampUtc")
 
 # Import our custom logging setup
 from logs.logging_config import (
@@ -153,32 +196,52 @@ app = FastAPI(
 )
 
 # Allow CORS for all origins (e.g., test_client.html local file)
-app.add_middleware(
-    CORSMiddleware,
-    # Allow all origins, including file:// (null); using regex for full coverage
-    allow_origin_regex=r".*",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+_react_dev_origin = os.getenv("REACT_DEV_ORIGIN")
+if _react_dev_origin and _react_dev_origin.strip():
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[_react_dev_origin.strip()],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        # Allow all origins, including file:// (null); using regex for full coverage
+        allow_origin_regex=r".*",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+# Mount workflow-declared routers (plugins)
+try:
+    mount_declared_routers(app)
+except Exception as _ext_err:  # pragma: no cover
+    wf_logger.debug(f"RUNTIME_EXTENSIONS_MOUNT_FAILED: {_ext_err}")
+
 
 mongo_client = None  # delay until startup so logging is definitely initialized
 simple_transport: Optional[SimpleTransport] = None
 
 
-@app.get("/api/themes/{enterprise_id}", response_model=ThemeResponse)
-async def get_enterprise_theme(enterprise_id: str):
+@app.get("/api/themes/{app_id}", response_model=ThemeResponse)
+async def get_app_theme(
+    app_id: str,
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     try:
-        return await theme_manager.get_theme(enterprise_id)
-    except InvalidEnterpriseIdError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return await theme_manager.get_theme(app_id)
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception("THEME_FETCH_FAILED")
         raise HTTPException(status_code=500, detail="Failed to load theme") from exc
 
 
 @app.get("/health/active-runs")
-async def health_active_runs():
+async def health_active_runs(
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     """Return summary of active runs (in-memory registry)."""
     try:
         return get_run_registry_summary()
@@ -186,7 +249,9 @@ async def health_active_runs():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/metrics/perf/aggregate")
-async def metrics_perf_aggregate():
+async def metrics_perf_aggregate(
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     """Return aggregate in-memory performance counters (no DB hits)."""
     try:
         perf_mgr = await get_performance_manager()
@@ -195,7 +260,9 @@ async def metrics_perf_aggregate():
         raise HTTPException(status_code=500, detail=f"Failed to collect aggregate metrics: {e}")
 
 @app.get("/metrics/perf/chats")
-async def metrics_perf_chats():
+async def metrics_perf_chats(
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     """Return per-chat in-memory performance snapshots."""
     try:
         perf_mgr = await get_performance_manager()
@@ -204,7 +271,10 @@ async def metrics_perf_chats():
         raise HTTPException(status_code=500, detail=f"Failed to collect chat metrics: {e}")
 
 @app.get("/metrics/perf/chats/{chat_id}")
-async def metrics_perf_chat(chat_id: str):
+async def metrics_perf_chat(
+    chat_id: str,
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     try:
         perf_mgr = await get_performance_manager()
         snap = await perf_mgr.snapshot_chat(chat_id)
@@ -215,6 +285,146 @@ async def metrics_perf_chat(chat_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to collect chat metric: {e}")
+
+
+@app.post("/api/chat/upload")
+async def upload_chat_file(
+    request: Request,
+    file: UploadFile = File(...),
+    appId: Optional[str] = Form(None),
+    userId: str = Form(...),
+    chatId: str = Form(...),
+    intent: str = Form("context"),
+    bundle_path: Optional[str] = Form(None),
+    principal: UserPrincipal = Depends(require_user_scope),
+):
+    """Upload a file associated with a specific chat session.
+
+    The uploaded file is stored on disk and a metadata record is appended to the
+    ChatSessions document under the `attachments` array.
+
+    Clients may set `intent` to `context` (default) or `bundle`/`deliverable` to
+    include the file in AgentGenerator's generated download bundle.
+    """
+    resolved_app_id = (appId or "").strip()
+    if not resolved_app_id:
+        raise HTTPException(status_code=400, detail="appId is required")
+    
+    # Validate body user_id matches JWT
+    user_id = _validate_user_id_against_principal(principal, body_user_id=userId)
+    
+    return await _handle_chat_upload(
+        file=file,
+        app_id=resolved_app_id,
+        user_id=user_id,
+        chat_id=chatId,
+        intent=intent,
+        bundle_path=bundle_path,
+    )
+
+
+@app.post("/api/chat/upload/{app_id}/{user_id}")
+async def upload_chat_file_scoped(
+    app_id: str,
+    user_id: str,
+    file: UploadFile = File(...),
+    chatId: str = Form(...),
+    intent: str = Form("context"),
+    bundle_path: Optional[str] = Form(None),
+    principal: UserPrincipal = Depends(require_user_scope),
+):
+    """Back-compat upload endpoint used by older ChatUI adapters."""
+    # Validate path user_id matches JWT
+    user_id = _validate_user_id_against_principal(principal, path_user_id=user_id)
+    
+    return await _handle_chat_upload(
+        file=file,
+        app_id=app_id,
+        user_id=user_id,
+        chat_id=chatId,
+        intent=intent,
+        bundle_path=bundle_path,
+    )
+
+
+async def _handle_chat_upload(
+    *,
+    file: UploadFile,
+    app_id: str,
+    user_id: str,
+    chat_id: str,
+    intent: str,
+    bundle_path: Optional[str],
+) -> Dict[str, Any]:
+    if not app_id or not user_id or not chat_id:
+        raise HTTPException(status_code=400, detail="app_id, user_id, and chat_id are required")
+
+    allowed_raw = os.getenv("CHAT_ATTACHMENTS_ALLOWED_WORKFLOWS", "").strip()
+    try:
+        coll = await _chat_coll()
+        res = await handle_chat_upload(
+            chat_coll=coll,
+            file_obj=file,
+            app_id=app_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            intent=intent,
+            bundle_path=bundle_path,
+            allowed_workflows_env=allowed_raw,
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    except ValueError as ve:
+        msg = str(ve)
+        if msg.startswith("File too large"):
+            raise HTTPException(status_code=413, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    except Exception as exc:
+        logger.exception("UPLOAD_FAILED")
+        raise HTTPException(status_code=500, detail="Upload failed") from exc
+
+    # Emit a first-class websocket event so the UI can render an attachment indicator
+    # without injecting synthetic chat text.
+    try:
+        if simple_transport:
+            workflow_name = None
+            try:
+                doc = await coll.find_one(
+                    {"_id": chat_id, "user_id": user_id, **build_app_scope_filter(app_id)},
+                    {"workflow_name": 1},
+                )
+                if doc:
+                    workflow_name = doc.get("workflow_name")
+            except Exception:
+                workflow_name = None
+
+            await simple_transport.send_event_to_ui(
+                {
+                    "kind": "attachment_uploaded",
+                    "chat_id": chat_id,
+                    "app_id": app_id,
+                    "app_id": app_id,
+                    "user_id": user_id,
+                    "workflow_name": workflow_name,
+                    "attachment": res.attachment,
+                },
+                chat_id,
+            )
+    except Exception as e:
+        logger.debug(f"attachment_uploaded WS emit failed for chat {chat_id}: {e}")
+
+    # NOTE: We intentionally do NOT inject a synthetic chat message or an internal
+    # input_request "nudge" into the workflow. Uploads are represented via persisted
+    # ChatSessions.attachments and surfaced to agents via ContextVariables (workflow config).
+
+    return {
+        "success": True,
+        "chat_id": chat_id,
+        "app_id": app_id,
+        "app_id": app_id,
+        "user_id": user_id,
+        "attachment": res.attachment,
+    }
 
 
 # # ------------------------------------------------------------------------------
@@ -345,6 +555,13 @@ async def startup():
         # Log workflow and tool summary
         status = workflow_status_summary()
 
+        # Start declared startup services (workflow plugins)
+        global _runtime_services
+        try:
+            _runtime_services = await start_declared_services()
+        except Exception as _svc_err:
+            wf_logger.debug(f"RUNTIME_EXTENSIONS_SERVICES_NOT_STARTED: {_svc_err}")
+
         # Total startup time
         total_startup_time = (datetime.now(UTC) - startup_start).total_seconds() * 1000
         performance_logger.info(
@@ -388,6 +605,16 @@ async def shutdown():
     wf_logger.info("🛑 Shutting down server...")
     
     try:
+        global _runtime_services
+        if _runtime_services:
+            try:
+                await stop_services(_runtime_services)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        _runtime_services = []
+
         if simple_transport:
             # No explicit disconnect needed for websockets with this transport design
             pass
@@ -454,66 +681,80 @@ async def _import_workflow_modules():
 # ============================================================================
 # API ENDPOINTS (WebSocket and workflow handling)
 # ============================================================================
-# # ============================================================================
-# # Artifact Proxy: Backend-agnostic proxy for artifact modules
-# # ============================================================================
-
-# @app.post("/api/proxy")
-# async def artifact_proxy(request: Request):
-#     """
-#     Backend-agnostic PROXY for the artifact host/modules.
-#     Modules call POST /api/proxy with JSON: { service, path, init? }
-#       - service: logical name from SERVICE_REGISTRY (e.g., "dotnet", "fastapi")
-#       - path:    the path on that service (e.g., "/users/current")
-#       - init:    { method, headers, body } similar to fetch()
-#     We forward to the real backend and stream the response back.
-
-#     IMPORTANT: If `service == "dotnet"`, this is where we call your .NET backend.
-#     """
-#     body = await request.json()
-#     service = body.get("service")
-#     path = body.get("path", "/")
-#     init = body.get("init") or {}
-
-#     if not service or service not in SERVICE_REGISTRY:
-#         raise HTTPException(status_code=400, detail=f"Unknown or missing service: {service}")
-
-#     target_base = SERVICE_REGISTRY[service]
-#     target_url = f"{target_base}{path}"
-
-#     method  = (init.get("method") or "GET").upper()
-#     headers = init.get("headers") or {}
-#     data    = init.get("body")
-
-#     # Optionally forward the Authorization header from the original request
-#     # so your downstream services can do auth consistently.
-#     auth = request.headers.get("Authorization")
-#     if auth and "authorization" not in {k.lower(): v for k, v in headers.items()}:
-#         headers["Authorization"] = auth
-
-#     # ---------------------------- .NET ROUTING HAPPENS HERE --------------------
-#     # If service == "dotnet", target_url points at your .NET API (see SERVICE_REGISTRY).
-#     # --------------------------------------------------------------------------
-#     try:
-#         async with httpx.AsyncClient(timeout=30.0) as client:
-#             resp = await client.request(method, target_url, headers=headers, content=data)
-#         return Response(
-#             content=resp.content,
-#             status_code=resp.status_code,
-#             media_type=resp.headers.get("content-type", "application/json"),
-#         )
-#     except httpx.RequestError as e:
-#         # Central place to log/observe failed downstream calls
-#         logger.error(f"Proxy error -> {service} {target_url}: {e}")
-#         raise HTTPException(status_code=502, detail=f"Proxy to {service} failed")
-
-
 # ============================================================================
-# Metrics and Health Check
+# Realtime Webhooks (internal)
 # ============================================================================
+
+@app.post("/api/realtime/oauth/completed")
+async def oauth_completed_webhook(
+    payload: OAuthCompletedWebhookPayload,
+    service: ServicePrincipal = Depends(require_internal),
+):
+    """Receive OAuth completion notifications and forward them to a live chat session.
+
+    Mozaiks Microservices (external) owns the OAuth flow; MozaiksAI only emits a realtime event
+    to the connected WebSocket chat so the UI can react (e.g., refresh integration status).
+    """
+
+    chat_id = payload.chat_session_id
+    wf_logger.info(
+        "OAUTH_COMPLETED_WEBHOOK_RECEIVED",
+        chat_id=chat_id,
+        app_id=payload.app_id,
+        user_id=payload.user_id,
+        platform=payload.platform,
+        success=payload.success,
+        correlation_id=payload.correlation_id,
+    )
+
+    if not simple_transport:
+        return JSONResponse(status_code=202, content={"accepted": True, "delivered": False})
+
+    conn = simple_transport.connections.get(chat_id)
+    connected = bool(conn and conn.get("websocket"))
+
+    delivered = False
+    if connected:
+        conn_app_id = conn.get("app_id")
+        conn_user_id = conn.get("user_id")
+        if (conn_app_id and str(conn_app_id) != str(payload.app_id)) or (
+            conn_user_id and str(conn_user_id) != str(payload.user_id)
+        ):
+            wf_logger.warning(
+                "OAUTH_COMPLETED_WEBHOOK_TENANT_MISMATCH",
+                chat_id=chat_id,
+                app_id=payload.app_id,
+                user_id=payload.user_id,
+                connected_app_id=conn_app_id,
+                connected_user_id=conn_user_id,
+            )
+        else:
+            delivered = True
+
+    event = {
+        "kind": "oauth_completed",
+        "chat_id": chat_id,
+        "app_id": payload.app_id,
+        "app_id": payload.app_id,
+        "user_id": payload.user_id,
+        "platform": payload.platform,
+        "success": payload.success,
+        "account_id": payload.account_id,
+        "account_name": payload.account_name,
+        "error": payload.error,
+        "correlation_id": payload.correlation_id,
+    }
+
+    # Always attempt to emit: connected sessions receive immediately; disconnected sessions may be buffered.
+    await simple_transport.send_event_to_ui(event, chat_id)
+
+    status_code = 200 if delivered else 202
+    return JSONResponse(status_code=status_code, content={"accepted": True, "delivered": delivered})
 
 @app.get("/api/events/metrics")
-async def get_event_metrics():
+async def get_event_metrics(
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     """Get unified event dispatcher metrics"""
     try:
         metrics = event_dispatcher.get_metrics()
@@ -529,7 +770,9 @@ async def get_event_metrics():
         raise HTTPException(status_code=500, detail="Failed to retrieve event metrics")
 
 @app.get("/api/health")
-async def health_check():
+async def health_check(
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     """Health check endpoint."""
     health_start = datetime.now(UTC)
     try:
@@ -539,6 +782,19 @@ async def health_check():
         await mongo_client.admin.command("ping")
         mongo_ping_time = (datetime.now(UTC) - mongo_ping_start).total_seconds() * 1000
         status = workflow_status_summary()
+        registered_workflows = status.get("registered_workflows") or []
+        if not isinstance(registered_workflows, list):
+            registered_workflows = []
+
+        total_tools = 0
+        for wf_name in registered_workflows:
+            try:
+                wf_tools = get_workflow_tools(wf_name)
+                if isinstance(wf_tools, list):
+                    total_tools += len(wf_tools)
+            except Exception:
+                # Best-effort: tool introspection should never break health.
+                continue
         connection_info = {
             "websocket_connections": len(simple_transport.connections) if simple_transport else 0,
             "total_connections": len(simple_transport.connections) if simple_transport else 0
@@ -552,7 +808,7 @@ async def health_check():
                 "unit": "ms",
                 "mongodb_ping_ms": float(mongo_ping_time),
                 "active_connections": connection_info["total_connections"],
-                "workflows_count": len(status["registered_workflows"]),
+                "workflows_count": len(registered_workflows),
             },
         )
         health_data = {
@@ -561,10 +817,10 @@ async def health_check():
             "mongodb_ping_ms": round(mongo_ping_time, 2),
             "simple_transport": "initialized" if simple_transport else "not_initialized",
             "active_connections": connection_info,
-            "workflows": status["registered_workflows"],
+            "workflows": registered_workflows,
             "transport_groups": status.get("transport_groups", {}),
-            "tools_available": status["total_tools"] > 0,
-            "total_tools": status["total_tools"],
+            "tools_available": total_tools > 0,
+            "total_tools": total_tools,
             "health_check_time_ms": round(health_time, 2)
         }
         wf_logger.debug(f"✅ Health check passed - Response time: {health_time:.1f}ms")
@@ -577,12 +833,107 @@ async def health_check():
 # Chat Management Endpoints
 # ============================================================================
 
-@app.post("/api/chats/{enterprise_id}/{workflow_name}/start")
-async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
+async def _validate_pack_prereqs(*, app_id: str, user_id: str, workflow_name: str) -> Tuple[bool, Optional[str]]:
+    from core.workflow.pack.gating import validate_pack_prereqs
+
+    ok, reason = await validate_pack_prereqs(
+        app_id=app_id,
+        user_id=user_id,
+        workflow_name=workflow_name,
+        persistence=persistence_manager,
+    )
+    return ok, reason
+
+
+def _maybe_enforce_principal_headers(*, app_id: str, user_id: Optional[str], headers: Any) -> None:
+    """Defense-in-depth: if a gateway supplies principal headers, enforce they match path/body values.
+
+    This keeps the runtime compatible with local/dev usage (headers absent) while allowing
+    MozaiksCore to pass trusted IDs derived from auth context and have the runtime verify them.
+    """
+    try:
+        expected_app_id = coalesce_app_id(app_id=app_id)
+        if not expected_app_id:
+            return
+
+        hdr_app = None
+        hdr_user = None
+        try:
+            hdr_app = headers.get("x-app-id") or headers.get("x-mozaiks-app-id")
+            hdr_user = headers.get("x-user-id") or headers.get("x-mozaiks-user-id")
+        except Exception:
+            hdr_app = None
+            hdr_user = None
+
+        if hdr_app:
+            resolved_hdr_app = coalesce_app_id(app_id=hdr_app)
+            if resolved_hdr_app and resolved_hdr_app != expected_app_id:
+                raise HTTPException(status_code=403, detail="app_id mismatch")
+
+        if hdr_user and user_id:
+            resolved_hdr_user = str(hdr_user).strip()
+            if resolved_hdr_user and resolved_hdr_user != str(user_id).strip():
+                raise HTTPException(status_code=403, detail="user_id mismatch")
+    except HTTPException:
+        raise
+    except Exception:
+        # Never hard-fail on header parsing; this is an optional check.
+        return
+
+
+def _validate_user_id_against_principal(
+    principal: UserPrincipal,
+    path_user_id: Optional[str] = None,
+    body_user_id: Optional[str] = None,
+) -> str:
+    """
+    Validate that path/body user_id matches the authenticated principal.
+    
+    When auth is enabled:
+    - If path_user_id is provided, it MUST match principal.user_id
+    - If body_user_id is provided, it MUST match principal.user_id
+    - Returns the canonical user_id from the principal
+    
+    When auth is disabled (anonymous):
+    - Falls back to path_user_id or body_user_id
+    - Raises 400 if neither is provided
+    """
+    jwt_user_id = principal.user_id
+    
+    # Auth disabled case - use provided user_id
+    if jwt_user_id == "anonymous":
+        user_id = path_user_id or body_user_id
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id is required")
+        return user_id
+    
+    # Auth enabled - validate matches
+    if path_user_id and str(path_user_id).strip() != str(jwt_user_id).strip():
+        raise HTTPException(
+            status_code=403,
+            detail="user_id in path does not match authenticated user"
+        )
+    
+    if body_user_id and str(body_user_id).strip() != str(jwt_user_id).strip():
+        raise HTTPException(
+            status_code=403,
+            detail="user_id in request body does not match authenticated user"
+        )
+    
+    return jwt_user_id
+
+
+@app.post("/api/chats/{app_id}/{workflow_name}/start")
+async def start_chat(
+    app_id: str,
+    workflow_name: str,
+    request: Request,
+    principal: UserPrincipal = Depends(require_user_scope),
+):
     """Start a new chat session for a workflow.
 
     Idempotency / duplicate suppression strategy:
-      - If an in-progress chat for (enterprise_id, user_id, workflow_name) was created within the last N seconds
+      - If an in-progress chat for (app_id, user_id, workflow_name) was created within the last N seconds
         (default 15) AND client did not set force_new=true, we *reuse* that chat_id instead of creating a new one.
       - Optional client-supplied "client_request_id" can further collapse rapid replays (e.g. browser double-submit).
     This prevents multiple empty ChatSessions docs when the frontend issues parallel start attempts during
@@ -593,24 +944,21 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
     reuse_cutoff = now - timedelta(seconds=IDEMPOTENCY_WINDOW_SEC)
     try:
             data = await request.json()
-            user_id = data.get("user_id")
-            required_min_tokens = int(data.get("required_min_tokens", 0))
+            body_user_id = data.get("user_id")
             client_request_id = data.get("client_request_id")
             force_new = str(data.get("force_new", "false")).lower() in ("1", "true", "yes")
-            if not user_id:
-                raise HTTPException(status_code=400, detail="user_id is required")
+            
+            # Validate and get canonical user_id from JWT
+            user_id = _validate_user_id_against_principal(principal, body_user_id=body_user_id)
 
-            # Ensure wallet exists
-            await persistence_manager.ensure_wallet(user_id, enterprise_id, initial_balance=0)
-            
-            # TokenManager check
-            from core.tokens.manager import TokenManager, InsufficientTokensError
-            try:
-                await TokenManager.ensure_can_start_chat(user_id, enterprise_id, workflow_name, persistence_manager)
-            except InsufficientTokensError:
-                raise HTTPException(status_code=402, detail="Insufficient tokens to start workflow")
-            
-            balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
+            # Enforce pack prerequisites (gates + journey step order) if pack config exists.
+            ok, prereq_error = await _validate_pack_prereqs(
+                app_id=app_id,
+                user_id=user_id,
+                workflow_name=workflow_name,
+            )
+            if not ok:
+                raise HTTPException(status_code=409, detail=prereq_error)
 
             # Obtain underlying lean chat sessions collection
             coll = await _chat_coll()
@@ -618,23 +966,28 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
             # Reuse recent in-progress session if present (idempotent start)
             reused_doc = None
             if not force_new:
-                query = {
-                    "enterprise_id": enterprise_id,
+                base_query = {
                     "user_id": user_id,
                     "workflow_name": workflow_name,
                     "status": 0,
                     "created_at": {"$gte": reuse_cutoff},
+                    **build_app_scope_filter(app_id),
                 }
+                # Prefer matching client_request_id (if the client intentionally reuses it),
+                # but do not require it — frontend may generate a new UUID per attempt.
                 if client_request_id:
-                    # If client_request_id stored, include it
-                    query["client_request_id"] = client_request_id
-                reused_doc = await coll.find_one(query, projection={"chat_id": 1, "created_at": 1})
+                    reused_doc = await coll.find_one(
+                        {**base_query, "client_request_id": client_request_id},
+                        projection={"chat_id": 1, "created_at": 1},
+                    )
+                if not reused_doc:
+                    reused_doc = await coll.find_one(base_query, projection={"chat_id": 1, "created_at": 1})
 
             if reused_doc:
                 chat_id = reused_doc["chat_id"]
                 get_workflow_logger("shared_app").info(
                     "CHAT_SESSION_REUSED: Existing recent chat reused",
-                    enterprise_id=enterprise_id,
+                    app_id=app_id,
                     workflow_name=workflow_name,
                     user_id=user_id,
                     chat_id=chat_id,
@@ -642,7 +995,7 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
                 )
                 # Ensure a cache_seed exists for this chat (persist if newly assigned)
                 try:
-                    cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, enterprise_id)
+                    cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, app_id)
                 except Exception as se:
                     cache_seed = None
                     logger.debug(f"cache_seed assignment failed (reused chat {chat_id}): {se}")
@@ -651,10 +1004,9 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
                     "success": True,
                     "chat_id": chat_id,
                     "workflow_name": workflow_name,
-                    "enterprise_id": enterprise_id,
+                    "app_id": app_id,
                     "user_id": user_id,
-                    "remaining_balance": balance,
-                    "websocket_url": f"/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}",
+                    "websocket_url": f"/ws/{workflow_name}/{app_id}/{chat_id}/{user_id}",
                     "message": "Existing recent chat reused.",
                     "reused": True,
                     "cache_seed": cache_seed,
@@ -665,33 +1017,58 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
 
             # Create session doc immediately (idempotent); attach client_request_id for future reuse
             try:
-                base_fields = {"client_request_id": client_request_id} if client_request_id else {}
-                await persistence_manager.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
-                if base_fields:
-                    await coll.update_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"$set": base_fields})
+                extra_fields: Dict[str, Any] = {}
+                if client_request_id:
+                    extra_fields["client_request_id"] = client_request_id
+
+                # Auto-attach a journey instance when starting the first step of a journey.
+                try:
+                    from core.workflow.pack.config import load_pack_config, infer_auto_journey_for_start
+
+                    pack = load_pack_config()
+                    journey = infer_auto_journey_for_start(pack, workflow_name) if pack else None
+                    if journey:
+                        steps = journey.get("steps") if isinstance(journey.get("steps"), list) else []
+                        extra_fields.update(
+                            {
+                                "journey_id": str(uuid4()),
+                                "journey_key": str(journey.get("id") or "").strip(),
+                                "journey_step_index": 0,
+                                "journey_total_steps": len(steps) if isinstance(steps, list) else None,
+                            }
+                        )
+                except Exception:
+                    pass
+
+                await persistence_manager.create_chat_session(
+                    chat_id=chat_id,
+                    app_id=app_id,
+                    workflow_name=workflow_name,
+                    user_id=user_id,
+                    extra_fields=extra_fields or None,
+                )
             except Exception as ce:
                 logger.debug(f"chat_session pre-create skipped {chat_id}: {ce}")
 
             # Initialize performance tracking early
             try:
                 perf_mgr = await get_performance_manager()
-                await perf_mgr.record_workflow_start(chat_id, enterprise_id, workflow_name, user_id)
+                await perf_mgr.record_workflow_start(chat_id, app_id, workflow_name, user_id)
             except Exception as perf_e:
                 logger.debug(f"perf_start skipped {chat_id}: {perf_e}")
 
             get_workflow_logger("shared_app").info(
                 "CHAT_SESSION_STARTED: New chat session initiated",
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 workflow_name=workflow_name,
                 user_id=user_id,
                 chat_id=chat_id,
-                starting_balance=balance,
                 idempotency_window_sec=IDEMPOTENCY_WINDOW_SEC,
             )
 
             # Assign per-chat cache seed (deterministic) and include in response
             try:
-                cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, enterprise_id)
+                cache_seed = await persistence_manager.get_or_assign_cache_seed(chat_id, app_id)
             except Exception as se:
                 cache_seed = None
                 logger.debug(f"cache_seed assignment failed (new chat {chat_id}): {se}")
@@ -700,10 +1077,9 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
                 "success": True,
                 "chat_id": chat_id,
                 "workflow_name": workflow_name,
-                "enterprise_id": enterprise_id,
+                "app_id": app_id,
                 "user_id": user_id,
-                "remaining_balance": balance,
-                "websocket_url": f"/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}",
+                "websocket_url": f"/ws/{workflow_name}/{app_id}/{chat_id}/{user_id}",
                 "message": "Chat session initialized; connect to websocket to start.",
                 "reused": False,
                 "cache_seed": cache_seed,
@@ -714,27 +1090,33 @@ async def start_chat(enterprise_id: str, workflow_name: str, request: Request):
         logger.error(f"❌ Failed to start chat session: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to start chat: {e}")
 
-@app.get("/api/chats/{enterprise_id}/{workflow_name}")
-async def list_chats(enterprise_id: str, workflow_name: str):
-    """List recent chat IDs for a given enterprise and workflow"""
+@app.get("/api/chats/{app_id}/{workflow_name}")
+async def list_chats(
+    app_id: str,
+    workflow_name: str,
+    principal: UserPrincipal = Depends(require_user_scope),
+):
+    """List recent chat IDs for a given app and workflow."""
     try:
-        # Convert to ObjectId if possible
-        try:
-            eid = ObjectId(enterprise_id)
-        except Exception:
-            eid = enterprise_id
-        # Query chat sessions collection with the refactored schema (lowercase)
         coll = await _chat_coll()
-        cursor = coll.find({"enterprise_id": eid, "workflow_name": workflow_name}).sort("created_at", -1)
+        query: Dict[str, Any] = {"workflow_name": workflow_name, **build_app_scope_filter(app_id)}
+        if principal.user_id != "anonymous":
+            query["user_id"] = principal.user_id
+        cursor = coll.find(query).sort("created_at", -1)
         docs = await cursor.to_list(length=20)
         chat_ids = [doc.get("_id") for doc in docs]
         return {"chat_ids": chat_ids}
     except Exception as e:
-        logger.error(f"❌ Failed to list chats for enterprise {enterprise_id}, workflow {workflow_name}: {e}")
+        logger.error(f"❌ Failed to list chats for app {app_id}, workflow {workflow_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list chats")
 
-@app.get("/api/chats/exists/{enterprise_id}/{workflow_name}/{chat_id}")
-async def chat_exists(enterprise_id: str, workflow_name: str, chat_id: str):
+@app.get("/api/chats/exists/{app_id}/{workflow_name}/{chat_id}")
+async def chat_exists(
+    app_id: str,
+    workflow_name: str,
+    chat_id: str,
+    principal: UserPrincipal = Depends(require_user_scope),
+):
     """Lightweight existence check for a chat session.
 
     Frontend uses this to decide whether to clear any cached artifact UI state
@@ -742,35 +1124,46 @@ async def chat_exists(enterprise_id: str, workflow_name: str, chat_id: str):
     projection on _id to keep this fast.
     """
     try:
-        # Accept either raw string or 24-char hex as enterprise id (we store as provided)
-        try:
-            eid = ObjectId(enterprise_id)
-        except Exception:
-            eid = enterprise_id
-
         coll = await _chat_coll()
-        doc = await coll.find_one({"_id": chat_id, "enterprise_id": eid, "workflow_name": workflow_name}, {"_id": 1})
+        query: Dict[str, Any] = {
+            "_id": chat_id,
+            "workflow_name": workflow_name,
+            **build_app_scope_filter(app_id),
+        }
+        if principal.user_id != "anonymous":
+            query["user_id"] = principal.user_id
+        doc = await coll.find_one(
+            query,
+            {"_id": 1},
+        )
         return {"exists": doc is not None}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to check chat existence: {e}")
 
-@app.get("/api/sessions/list/{enterprise_id}/{user_id}")
-async def list_user_sessions(enterprise_id: str, user_id: str):
+@app.get("/api/sessions/list/{app_id}/{user_id}")
+async def list_user_sessions(
+    app_id: str,
+    user_id: str,
+    principal: UserPrincipal = Depends(require_user_scope),
+):
     """
     List all active/paused workflow sessions for a user.
     
     Used by frontend to render session tabs (like browser tabs).
     Returns sessions across all workflows so UI can show which ones are IN_PROGRESS.
     """
+    # Validate path user_id matches JWT
+    user_id = _validate_user_id_against_principal(principal, path_user_id=user_id)
+    
     try:
         from core.data.models import WorkflowStatus
         coll = await _chat_coll()
         
         # Find all IN_PROGRESS sessions for this user
         sessions = await coll.find({
-            "enterprise_id": enterprise_id,
             "user_id": user_id,
-            "status": int(WorkflowStatus.IN_PROGRESS)
+            "status": int(WorkflowStatus.IN_PROGRESS),
+            **build_app_scope_filter(app_id),
         }).sort("last_updated_at", -1).to_list(length=100)
         
         result = []
@@ -794,55 +1187,64 @@ async def list_user_sessions(enterprise_id: str, user_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to list sessions: {e}")
 
 
-@app.get("/api/sessions/oldest/{enterprise_id}/{user_id}")
-async def get_oldest_workflow_session(enterprise_id: str, user_id: str):
+@app.get("/api/sessions/recent/{app_id}/{user_id}")
+async def get_most_recent_workflow_session(
+    app_id: str,
+    user_id: str,
+    principal: UserPrincipal = Depends(require_user_scope),
+):
     """
-    Return the oldest IN_PROGRESS workflow session for a user.
-    
-    Used when toggling from Ask Mozaiks back to workflow mode—routes user
-    to the earliest active workflow (chronologically first). If multiple
-    workflows are running, this ensures predictable navigation order.
-    
-    Future: can filter by dependency prerequisites once dependency graph is wired.
+    Return the most recently updated IN_PROGRESS workflow session for a user.
+
+    Used when toggling from general mode back to workflow mode to resume where the
+    user most recently left off (least-surprising default).
     """
+    # Validate path user_id matches JWT
+    user_id = _validate_user_id_against_principal(principal, path_user_id=user_id)
+    
     try:
         from core.data.models import WorkflowStatus
         coll = await _chat_coll()
-        
-        # Find all IN_PROGRESS sessions, sorted by created_at ascending (oldest first)
-        sessions = await coll.find({
-            "enterprise_id": enterprise_id,
-            "user_id": user_id,
-            "status": int(WorkflowStatus.IN_PROGRESS)
-        }).sort("created_at", 1).to_list(length=100)
-        
+
+        # Find all IN_PROGRESS sessions, sorted by last_updated_at descending (most recent first)
+        sessions = (
+            await coll.find(
+                {
+                    "user_id": user_id,
+                    "status": int(WorkflowStatus.IN_PROGRESS),
+                    **build_app_scope_filter(app_id),
+                }
+            )
+            .sort("last_updated_at", -1)
+            .to_list(length=100)
+        )
+
         if not sessions:
-            wf_logger.debug(f"[OLDEST_SESSION] No IN_PROGRESS workflows for user {user_id}")
+            wf_logger.debug(f"[RECENT_SESSION] No IN_PROGRESS workflows for user {user_id}")
             return {
                 "found": False,
                 "chat_id": None,
-                "workflow_name": None
+                "workflow_name": None,
             }
-        
-        # TODO: Apply dependency filtering here once workflow registry exposes prerequisite graph
-        # For now, return the chronologically oldest session
-        oldest = sessions[0]
-        
+
+        recent = sessions[0]
+
         wf_logger.debug(
-            f"[OLDEST_SESSION] Returning oldest workflow {oldest.get('workflow_name')} "
-            f"chat_id={oldest['_id']} for user {user_id}"
+            f"[RECENT_SESSION] Returning most recent workflow {recent.get('workflow_name')} "
+            f"chat_id={recent['_id']} for user {user_id}"
         )
-        
+
         return {
             "found": True,
-            "chat_id": oldest["_id"],
-            "workflow_name": oldest.get("workflow_name"),
-            "created_at": oldest.get("created_at").isoformat() if oldest.get("created_at") else None,
-            "last_artifact": oldest.get("last_artifact")
+            "chat_id": recent["_id"],
+            "workflow_name": recent.get("workflow_name"),
+            "created_at": recent.get("created_at").isoformat() if recent.get("created_at") else None,
+            "last_updated_at": recent.get("last_updated_at").isoformat() if recent.get("last_updated_at") else None,
+            "last_artifact": recent.get("last_artifact"),
         }
     except Exception as e:
-        wf_logger.error(f"[OLDEST_SESSION] Failed to fetch oldest session: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch oldest session: {e}")
+        wf_logger.error(f"[RECENT_SESSION] Failed to fetch most recent session: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch most recent session: {e}")
 
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
@@ -854,14 +1256,21 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt  # type: ignore[return-value]
 
 
-@app.get("/api/general_chats/list/{enterprise_id}/{user_id}")
-async def list_general_chats(enterprise_id: str, user_id: str, limit: int = 50):
-    """Return Ask Mozaiks general chat sessions for a user."""
+@app.get("/api/general_chats/list/{app_id}/{user_id}")
+async def list_general_chats(
+    app_id: str,
+    user_id: str,
+    limit: int = 50,
+    principal: UserPrincipal = Depends(require_user_scope),
+):
+    """Return general (non-AG2) chat sessions for a user."""
+    # Validate path user_id matches JWT
+    user_id = _validate_user_id_against_principal(principal, path_user_id=user_id)
 
     try:
         sanitized_limit = max(1, min(int(limit or 1), 200))
         sessions = await persistence_manager.list_general_chats(
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             user_id=user_id,
             limit=sanitized_limit,
         )
@@ -884,24 +1293,30 @@ async def list_general_chats(enterprise_id: str, user_id: str, limit: int = 50):
         raise HTTPException(status_code=500, detail=f"Failed to list general chats: {e}")
 
 
-@app.get("/api/general_chats/transcript/{enterprise_id}/{general_chat_id}")
+@app.get("/api/general_chats/transcript/{app_id}/{general_chat_id}")
 async def general_chat_transcript(
-    enterprise_id: str,
+    app_id: str,
     general_chat_id: str,
     after_sequence: int = -1,
     limit: int = 200,
+    principal: UserPrincipal = Depends(require_user_scope),
 ):
-    """Return a general chat transcript slice for Ask Mozaiks tabs."""
+    """Return a general (non-AG2) chat transcript slice for the UI."""
 
     try:
         transcript = await persistence_manager.fetch_general_chat_transcript(
             general_chat_id=general_chat_id,
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             after_sequence=after_sequence,
             limit=limit,
         )
         if not transcript:
             raise HTTPException(status_code=404, detail="General chat not found")
+
+        if principal.user_id != "anonymous":
+            owner = transcript.get("user_id")
+            if owner and str(owner).strip() != str(principal.user_id).strip():
+                raise HTTPException(status_code=404, detail="General chat not found")
 
         def _serialize_message(msg: Dict[str, Any]) -> Dict[str, Any]:
             m = dict(msg)
@@ -915,7 +1330,8 @@ async def general_chat_transcript(
             "label": transcript.get("label"),
             "sequence": transcript.get("sequence"),
             "status": transcript.get("status"),
-            "enterprise_id": transcript.get("enterprise_id"),
+            "app_id": transcript.get("app_id") or app_id,
+            "app_id": transcript.get("app_id") or transcript.get("app_id") or app_id,
             "user_id": transcript.get("user_id"),
             "created_at": _iso(transcript.get("created_at")),
             "last_updated_at": _iso(transcript.get("last_updated_at")),
@@ -930,8 +1346,13 @@ async def general_chat_transcript(
         raise HTTPException(status_code=500, detail=f"Failed to load general chat transcript: {e}")
 
 
-@app.get("/api/chats/meta/{enterprise_id}/{workflow_name}/{chat_id}")
-async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
+@app.get("/api/chats/meta/{app_id}/{workflow_name}/{chat_id}")
+async def chat_meta(
+    app_id: str,
+    workflow_name: str,
+    chat_id: str,
+    principal: UserPrincipal = Depends(require_user_scope),
+):
     """Return lightweight chat metadata including cache_seed, last_artifact, and artifact_instance.
 
     This allows a second user/browser to restore artifact UI state even if local
@@ -941,13 +1362,23 @@ async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
     Does not return full transcript.
     """
     try:
+        has_children = False
         try:
-            eid = ObjectId(enterprise_id)
+            from core.workflow.pack.graph import workflow_has_nested_chats
+
+            has_children = workflow_has_nested_chats(workflow_name)
         except Exception:
-            eid = enterprise_id
+            has_children = False
+
         coll = await _chat_coll()
-        projection = {"cache_seed": 1, "last_artifact": 1, "_id": 1, "workflow_name": 1}
-        doc = await coll.find_one({"_id": chat_id, "enterprise_id": eid, "workflow_name": workflow_name}, projection)
+        projection = {"cache_seed": 1, "last_artifact": 1, "status": 1, "last_sequence": 1, "_id": 1, "workflow_name": 1}
+        query: Dict[str, Any] = {"_id": chat_id, "workflow_name": workflow_name, **build_app_scope_filter(app_id)}
+        if principal.user_id != "anonymous":
+            query["user_id"] = principal.user_id
+        doc = await coll.find_one(
+            query,
+            projection,
+        )
         if not doc:
             return {"exists": False}
         
@@ -956,11 +1387,11 @@ async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
         artifact_state = None
         try:
             from core.workflow import session_manager
-            workflow_session = await session_manager.get_workflow_session(chat_id, str(eid))
+            workflow_session = await session_manager.get_workflow_session(chat_id, app_id)
             if workflow_session and workflow_session.get("artifact_instance_id"):
                 artifact_instance_id = workflow_session["artifact_instance_id"]
                 # Fetch full artifact state for restoration
-                artifact_doc = await session_manager.get_artifact_instance(artifact_instance_id, str(eid))
+                artifact_doc = await session_manager.get_artifact_instance(artifact_instance_id, app_id)
                 if artifact_doc:
                     artifact_state = artifact_doc.get("state")
                     wf_logger.debug(
@@ -973,20 +1404,25 @@ async def chat_meta(enterprise_id: str, workflow_name: str, chat_id: str):
             "exists": True,
             "chat_id": chat_id,
             "workflow_name": workflow_name,
+            "has_children": has_children,
             "cache_seed": doc.get("cache_seed"),
+            "status": doc.get("status"),
+            "last_sequence": doc.get("last_sequence"),
             "last_artifact": doc.get("last_artifact"),  # UI tool artifacts (legacy/quick restore)
             "artifact_instance_id": artifact_instance_id,  # WorkflowSession artifact ID
             "artifact_state": artifact_state,  # Full artifact state for multi-workflow navigation
+            "app_id": app_id,
+            "app_id": app_id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load chat meta: {e}")
     
 
-@app.websocket("/ws/{workflow_name}/{enterprise_id}/{chat_id}/{user_id}")
+@app.websocket("/ws/{workflow_name}/{app_id}/{chat_id}/{user_id}")
 async def websocket_endpoint(
     websocket: WebSocket,
     workflow_name: str,
-    enterprise_id: str,
+    app_id: str,
     chat_id: str,
     user_id: str,
 ):
@@ -995,9 +1431,95 @@ async def websocket_endpoint(
         await websocket.close(code=1000, reason="Transport service not available")
         return
 
+    # Authenticate WebSocket connection and validate path user_id matches JWT
+    ws_user = await authenticate_websocket_with_path_user(websocket, user_id)
+    if ws_user is None:
+        return  # Connection already closed with 1008
+    
+    # Use canonical user_id from JWT (or path if auth disabled)
+    user_id = ws_user.user_id
+
+    # If chat_id already exists, ensure it belongs to this principal to prevent cross-user access.
+    try:
+        coll = await _chat_coll()
+        existing = await coll.find_one(
+            {"_id": chat_id, **build_app_scope_filter(app_id)},
+            {"_id": 1, "user_id": 1, "workflow_name": 1},
+        )
+        if existing:
+            owner = existing.get("user_id")
+            wf = existing.get("workflow_name")
+            if not owner or str(owner).strip() != str(user_id).strip():
+                await websocket.close(code=WS_CLOSE_POLICY_VIOLATION, reason="Chat not found")
+                return
+            if wf and str(wf).strip() != str(workflow_name).strip():
+                await websocket.close(code=WS_CLOSE_POLICY_VIOLATION, reason="Chat not found")
+                return
+    except Exception as ownership_err:
+        wf_logger.debug(f"WS_CHAT_OWNERSHIP_CHECK_SKIPPED: {ownership_err}")
+
     # Register this WebSocket connection in session registry
     from core.transport.session_registry import session_registry
     ws_id = id(websocket)
+
+    # Validate workflow prerequisites early (fail-closed) so we don't create/buffer state
+    # for workflows the user is not allowed to start/resume.
+    try:
+        is_valid, error_msg = await _validate_pack_prereqs(
+            app_id=app_id,
+            user_id=user_id,
+            workflow_name=workflow_name,
+        )
+
+        if not is_valid:
+            wf_logger.warning(
+                "WS_PREREQS_NOT_MET",
+                extra={
+                    "workflow_name": workflow_name,
+                    "app_id": app_id,
+                    "user_id": user_id,
+                    "error": error_msg,
+                    "chat_id": chat_id,
+                },
+            )
+            try:
+                await websocket.accept()
+                await websocket.send_json(
+                    {
+                        "type": "chat.error",
+                        "data": {
+                            "message": error_msg,
+                            "error_code": "WORKFLOW_PREREQS_NOT_MET",
+                            "workflow_name": workflow_name,
+                            "chat_id": chat_id,
+                        },
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    }
+                )
+            except Exception:
+                pass
+            await websocket.close(code=1008, reason="Prerequisites not met")
+            return
+    except Exception as dep_err:
+        wf_logger.error(f"WS_PREREQ_VALIDATION_FAILED: {dep_err}", exc_info=True)
+        try:
+            await websocket.accept()
+            await websocket.send_json(
+                {
+                    "type": "chat.error",
+                    "data": {
+                        "message": "Failed to validate workflow prerequisites. Please try again.",
+                        "error_code": "PREREQ_VALIDATION_ERROR",
+                        "workflow_name": workflow_name,
+                        "chat_id": chat_id,
+                    },
+                    "timestamp": datetime.now(UTC).isoformat(),
+                }
+            )
+        except Exception:
+            pass
+        await websocket.close(code=1011, reason="Prerequisite validation failed")
+        return
 
     wf_logger.info(f"🔌 New WebSocket connection for workflow '{workflow_name}' (incoming chat_id={chat_id}, ws_id={ws_id})")
 
@@ -1006,9 +1528,9 @@ async def websocket_endpoint(
     try:
         coll = await _chat_coll()
         latest = await coll.find({
-            "enterprise_id": enterprise_id,
             "workflow_name": workflow_name,
-            "user_id": user_id
+            "user_id": user_id,
+            **build_app_scope_filter(app_id),
         }).sort("created_at", -1).limit(1).to_list(length=1)
         if latest:
             latest_doc = latest[0]
@@ -1019,12 +1541,12 @@ async def websocket_endpoint(
                 wf_logger.info("WS_AUTO_RESUME", extra={"chat_id": active_chat_id, "incoming_chat_id": chat_id})
             else:
                 # Ensure provided chat id exists (create minimal doc if missing)
-                if not await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}):
-                    await persistence_manager.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
+                if not await coll.find_one({"_id": chat_id, "user_id": user_id, **build_app_scope_filter(app_id)}):
+                    await persistence_manager.create_chat_session(chat_id, app_id, workflow_name, user_id)
                     wf_logger.info("WS_NEW_SESSION_CREATED", extra={"chat_id": chat_id})
         else:
-            if not await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}):
-                await persistence_manager.create_chat_session(chat_id, enterprise_id, workflow_name, user_id)
+            if not await coll.find_one({"_id": chat_id, "user_id": user_id, **build_app_scope_filter(app_id)}):
+                await persistence_manager.create_chat_session(chat_id, app_id, workflow_name, user_id)
                 wf_logger.info("WS_FIRST_SESSION_CREATED", extra={"chat_id": chat_id})
     except Exception as pre_err:
         wf_logger.error(f"WS_SESSION_DETERMINATION_FAILED: {pre_err}")
@@ -1054,7 +1576,7 @@ async def websocket_endpoint(
                     user_id=user_id,
                     workflow_name=workflow_name,
                     message=None,
-                    enterprise_id=enterprise_id,
+                    app_id=app_id,
                 )
         except Exception as e:
             logger.error(f"Auto-start failed for {workflow_name}/{active_chat_id}: {e}")
@@ -1063,11 +1585,22 @@ async def websocket_endpoint(
 
     # Emit an initial metadata event (chat_meta) with cache_seed for frontend cache alignment
     try:
+        has_children = False
+        try:
+            from core.workflow.pack.graph import workflow_has_nested_chats
+
+            has_children = workflow_has_nested_chats(workflow_name)
+        except Exception:
+            has_children = False
+
         chat_exists = False
         coll = None
         try:
             coll = await _chat_coll()
-            existing_doc = await coll.find_one({"_id": active_chat_id, "enterprise_id": enterprise_id}, {"_id": 1})
+            existing_doc = await coll.find_one(
+                {"_id": active_chat_id, "user_id": user_id, **build_app_scope_filter(app_id)},
+                {"_id": 1},
+            )
             chat_exists = existing_doc is not None
         except Exception as ce:
             wf_logger.debug(f"chat existence check failed for {active_chat_id}: {ce}")
@@ -1075,14 +1608,14 @@ async def websocket_endpoint(
         # If chat does not exist, create a minimal session doc BEFORE assigning seed
         if not chat_exists:
             try:
-                await persistence_manager.create_chat_session(active_chat_id, enterprise_id, workflow_name, user_id)
+                await persistence_manager.create_chat_session(active_chat_id, app_id, workflow_name, user_id)
                 chat_exists = True
                 wf_logger.info("WS_BACKFILL_SESSION_CREATED", extra={"chat_id": active_chat_id})
             except Exception as ce:
                 wf_logger.debug(f"Failed to backfill chat session for {active_chat_id}: {ce}")
 
         try:
-            cache_seed = await persistence_manager.get_or_assign_cache_seed(active_chat_id, enterprise_id)
+            cache_seed = await persistence_manager.get_or_assign_cache_seed(active_chat_id, app_id)
         except Exception as ce:
             cache_seed = None
             wf_logger.debug(f"cache_seed retrieval failed for WS {active_chat_id}: {ce}")
@@ -1091,11 +1624,12 @@ async def websocket_endpoint(
             # Attempt to include last_artifact for immediate restore (avoid separate HTTP roundtrip)
             last_artifact = None
             created_at_iso = None
+            doc = None
             try:
                 if coll is not None:
                     doc = await coll.find_one(
-                        {"_id": active_chat_id, "enterprise_id": enterprise_id},
-                        {"last_artifact": 1, "created_at": 1}
+                        {"_id": active_chat_id, "user_id": user_id, **build_app_scope_filter(app_id)},
+                        {"last_artifact": 1, "created_at": 1, "status": 1, "last_sequence": 1}
                     )
                     if doc:
                         last_artifact = doc.get("last_artifact")
@@ -1112,11 +1646,15 @@ async def websocket_endpoint(
                 'kind': 'chat_meta',
                 'chat_id': active_chat_id,
                 'workflow_name': workflow_name,
-                'enterprise_id': enterprise_id,
+                'app_id': app_id,
+                'app_id': app_id,
                 'user_id': user_id,
+                'has_children': has_children,
                 'cache_seed': cache_seed,
                 'chat_exists': chat_exists,
                 'last_artifact': last_artifact,
+                'status': doc.get("status") if doc else None,
+                'last_sequence': doc.get("last_sequence") if doc else None,
                 'created_at': created_at_iso,
             }, active_chat_id)
             wf_logger.info(
@@ -1124,7 +1662,8 @@ async def websocket_endpoint(
                 extra={
                     "chat_id": active_chat_id,
                     "workflow_name": workflow_name,
-                    "enterprise_id": enterprise_id,
+                    "app_id": app_id,
+                    "app_id": app_id,
                     "cache_seed": cache_seed,
                     "chat_exists": chat_exists,
                     "has_last_artifact": bool(last_artifact),
@@ -1134,61 +1673,12 @@ async def websocket_endpoint(
     except Exception as meta_e:
         wf_logger.debug(f"Failed to emit chat_meta for {active_chat_id}: {meta_e}")
     
-    # Validate workflow dependencies before accepting connection
-    try:
-        is_valid, error_msg = await dependency_manager.validate_workflow_dependencies(
-            workflow_name=workflow_name,
-            enterprise_id=enterprise_id,
-            user_id=user_id
-        )
-        
-        if not is_valid:
-            wf_logger.warning(
-                "WS_DEPENDENCIES_NOT_MET",
-                extra={
-                    "workflow_name": workflow_name,
-                    "enterprise_id": enterprise_id,
-                    "user_id": user_id,
-                    "error": error_msg,
-                    "chat_id": active_chat_id
-                }
-            )
-            # Send error event to client before closing
-            if simple_transport:
-                await simple_transport.send_event_to_ui({
-                    'kind': 'error',
-                    'error_message': error_msg,
-                    'error_code': 'WORKFLOW_DEPENDENCIES_NOT_MET',
-                    'chat_id': active_chat_id,
-                    'workflow_name': workflow_name
-                }, active_chat_id)
-            
-            # Close WebSocket with policy violation code
-            await websocket.close(code=1008, reason="Dependencies not met")
-            return
-    except Exception as dep_err:
-        wf_logger.error(f"WS_DEPENDENCY_VALIDATION_FAILED: {dep_err}", exc_info=True)
-        # On validation error, fail closed to prevent bypassing prerequisites
-        try:
-            await websocket.send_json({
-                "type": "chat.error",
-                "data": {
-                    "message": "Failed to validate workflow dependencies. Please try again.",
-                    "error_code": "DEPENDENCY_VALIDATION_ERROR"
-                }
-            })
-        except Exception as send_err:
-            wf_logger.error(f"Failed to send validation error to client: {send_err}")
-        
-        await websocket.close(code=1011, reason="Dependency validation failed")
-        return
-    
     # Register initial workflow in session registry
     session_registry.add_workflow(
         ws_id=ws_id,
         chat_id=active_chat_id,
         workflow_name=workflow_name,
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         user_id=user_id,
         auto_activate=True
     )
@@ -1199,7 +1689,7 @@ async def websocket_endpoint(
             chat_id=active_chat_id,
             user_id=user_id,
             workflow_name=workflow_name,
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             ws_id=ws_id  # Pass ws_id for session switching
         )
     finally:
@@ -1207,25 +1697,43 @@ async def websocket_endpoint(
         session_registry.remove_session(ws_id)
         wf_logger.info(f"🔌 Cleaned up session registry for ws_id={ws_id}")
 
-@app.post("/chat/{enterprise_id}/{chat_id}/{user_id}/input")
+@app.post("/chat/{app_id}/{chat_id}/{user_id}/input")
 async def handle_user_input(
     request: Request,
-    enterprise_id: str,
+    app_id: str,
     chat_id: str,
     user_id: str,
+    principal: UserPrincipal = Depends(require_user_scope),
 ):
     """Endpoint to receive user input and trigger the workflow."""
+    # Validate path user_id matches JWT
+    user_id = _validate_user_id_against_principal(principal, path_user_id=user_id)
+    
     if not simple_transport:
         raise HTTPException(status_code=503, detail="Transport service is not available.")
 
     try:
+        # Ensure the chat exists and is owned by the authenticated principal.
+        try:
+            coll = await _chat_coll()
+            owned = await coll.find_one(
+                {"_id": chat_id, "user_id": user_id, **build_app_scope_filter(app_id)},
+                {"_id": 1},
+            )
+            if not owned:
+                raise HTTPException(status_code=404, detail="Chat not found")
+        except HTTPException:
+            raise
+        except Exception as owner_err:
+            raise HTTPException(status_code=500, detail=f"Failed to validate chat ownership: {owner_err}")
+
         data = await request.json()
         message = data.get("message")
         workflow_name = data.get("workflow_name")  # No default, must be provided
         
         get_workflow_logger("shared_app").info(
             "USER_INPUT_ENDPOINT_CALLED: User input endpoint called",
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             chat_id=chat_id,
             user_id=user_id,
             workflow_name=workflow_name,
@@ -1240,7 +1748,7 @@ async def handle_user_input(
             user_id=user_id,
             workflow_name=workflow_name,
             message=message,
-            enterprise_id=enterprise_id
+            app_id=app_id
         )
 
         
@@ -1259,7 +1767,10 @@ async def handle_user_input(
         raise HTTPException(status_code=500, detail=f"Failed to process input: {e}")
 
 @app.post("/api/user-input/submit")
-async def submit_user_input_response(request: Request):
+async def submit_user_input_response(
+    request: Request,
+    principal: UserPrincipal = Depends(require_user_scope),
+):
     """
     API endpoint for submitting user input responses.
     
@@ -1299,7 +1810,10 @@ async def submit_user_input_response(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to submit user input: {e}")
 
 @app.get("/api/workflows/{workflow_name}/transport")
-async def get_workflow_transport_info(workflow_name: str):
+async def get_workflow_transport_info(
+    workflow_name: str,
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     """Get transport information for a specific workflow."""
     transport = get_workflow_transport(workflow_name)
     
@@ -1307,13 +1821,16 @@ async def get_workflow_transport_info(workflow_name: str):
         "workflow_name": workflow_name,
         "transport": transport,
         "endpoints": {
-            "websocket": f"/ws/{workflow_name}/{{enterprise_id}}/{{chat_id}}/{{user_id}}",
-            "input": "/chat/{{enterprise_id}}/{{chat_id}}/{{user_id}}/input"
+            "websocket": f"/ws/{workflow_name}/{{app_id}}/{{chat_id}}/{{user_id}}",
+            "input": "/chat/{{app_id}}/{{chat_id}}/{{user_id}}/input"
         }
     }
 
 @app.get("/api/workflows/{workflow_name}/tools")
-async def get_workflow_tools_info(workflow_name: str):
+async def get_workflow_tools_info(
+    workflow_name: str,
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     """Get UI tools manifest for a specific workflow."""
     tools = get_workflow_tools(workflow_name)
     
@@ -1323,7 +1840,10 @@ async def get_workflow_tools_info(workflow_name: str):
     }
 
 @app.get("/api/workflows/{workflow_name}/ui-tools")
-async def get_workflow_ui_tools_manifest(workflow_name: str):
+async def get_workflow_ui_tools_manifest(
+    workflow_name: str,
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     """Get UI tools manifest with schemas for frontend development."""
     try:
         from core.workflow.workflow_manager import workflow_manager
@@ -1352,52 +1872,49 @@ async def get_workflow_ui_tools_manifest(workflow_name: str):
 # TOKEN API ENDPOINTS
 # ==============================================================================
 
-@app.get("/api/tokens/{user_id}/balance")
-async def get_user_token_balance(user_id: str, enterprise_id: Optional[str] = None):
-    """Get user token balance from wallets collection"""
-    try:
-        if not enterprise_id:
-            raise HTTPException(status_code=400, detail="enterprise_id is required")
-        balance = await persistence_manager.get_wallet_balance(user_id, enterprise_id)
-        wf_logger.info(f"Token balance retrieved for user {user_id}: {balance} tokens")
-        return {"balance": balance, "remaining": balance, "user_id": user_id, "enterprise_id": enterprise_id}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting token balance for user {user_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/tokens/{user_id}/consume")
-async def consume_user_tokens(user_id: str, request: Request):
-    """Consume user tokens from wallets collection (atomic debit)."""
-    try:
-        body = await request.json()
-        amount = int(body.get("amount", 0))
-        enterprise_id = body.get("enterprise_id")
-        reason = body.get("reason", "manual_consume")
-        if not enterprise_id:
-            raise HTTPException(status_code=400, detail="enterprise_id is required")
-        new_bal = await persistence_manager.debit_tokens(user_id, enterprise_id, amount, reason=reason, strict=True)
-        wf_logger.info(f"Consumed {amount} tokens for user {user_id}. Remaining: {new_bal}")
-        return {"success": True, "remaining": new_bal}
-    except ValueError as ve:
-        if str(ve) == "INSUFFICIENT_TOKENS":
-            raise HTTPException(status_code=402, detail="Insufficient tokens")
-        raise
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error consuming tokens for user {user_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/workflows")
-async def get_workflows():
+async def get_workflows(
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     """Get all workflows for frontend (alias for /api/workflows/config)"""
     try:
         from core.workflow.workflow_manager import workflow_manager
-        
-        configs = {}
-        for workflow_name in workflow_manager.get_all_workflow_names():
+
+        workflow_names = list(workflow_manager.get_all_workflow_names())
+
+        # Prefer pack journey step ordering when present so the frontend's
+        # default workflow aligns with prerequisites (e.g., ValueEngine first).
+        ordered_names: list[str] = []
+        try:
+            from core.workflow.pack.config import load_pack_config
+
+            pack = load_pack_config()
+            journeys = pack.get("journeys") if isinstance(pack, dict) else None
+            if isinstance(journeys, list) and journeys:
+                steps = journeys[0].get("steps") if isinstance(journeys[0], dict) else None
+                if isinstance(steps, list):
+                    flattened: list[str] = []
+                    for step in steps:
+                        if isinstance(step, str):
+                            flattened.append(step)
+                        elif isinstance(step, list):
+                            for item in step:
+                                if isinstance(item, str):
+                                    flattened.append(item)
+                    for wf in flattened:
+                        if wf in workflow_names and wf not in ordered_names:
+                            ordered_names.append(wf)
+        except Exception:
+            ordered_names = []
+
+        # Append remaining workflows in a stable order.
+        for wf in sorted(workflow_names):
+            if wf not in ordered_names:
+                ordered_names.append(wf)
+
+        configs: dict = {}
+        for workflow_name in ordered_names:
             configs[workflow_name] = workflow_manager.get_config(workflow_name)
         
         get_workflow_logger("shared_app").info(
@@ -1412,13 +1929,44 @@ async def get_workflows():
         raise HTTPException(status_code=500, detail="Failed to retrieve workflows")
 
 @app.get("/api/workflows/config")
-async def get_workflow_configs():
+async def get_workflow_configs(
+    principal: UserPrincipal = Depends(require_any_auth),
+):
     """Get all workflow configurations for frontend"""
     try:
         from core.workflow.workflow_manager import workflow_manager
-        
-        configs = {}
-        for workflow_name in workflow_manager.get_all_workflow_names():
+
+        workflow_names = list(workflow_manager.get_all_workflow_names())
+
+        ordered_names: list[str] = []
+        try:
+            from core.workflow.pack.config import load_pack_config
+
+            pack = load_pack_config()
+            journeys = pack.get("journeys") if isinstance(pack, dict) else None
+            if isinstance(journeys, list) and journeys:
+                steps = journeys[0].get("steps") if isinstance(journeys[0], dict) else None
+                if isinstance(steps, list):
+                    flattened: list[str] = []
+                    for step in steps:
+                        if isinstance(step, str):
+                            flattened.append(step)
+                        elif isinstance(step, list):
+                            for item in step:
+                                if isinstance(item, str):
+                                    flattened.append(item)
+                    for wf in flattened:
+                        if wf in workflow_names and wf not in ordered_names:
+                            ordered_names.append(wf)
+        except Exception:
+            ordered_names = []
+
+        for wf in sorted(workflow_names):
+            if wf not in ordered_names:
+                ordered_names.append(wf)
+
+        configs: dict = {}
+        for workflow_name in ordered_names:
             configs[workflow_name] = workflow_manager.get_config(workflow_name)
         
         get_workflow_logger("shared_app").info(
@@ -1432,10 +1980,11 @@ async def get_workflow_configs():
         logger.error(f"? Failed to get workflow configs: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve workflow configurations")
 
-@app.get("/api/workflows/{enterprise_id}/available")
+@app.get("/api/workflows/{app_id}/available")
 async def get_available_workflows(
-    enterprise_id: str,
-    user_id: str,
+    app_id: str,
+    user_id: Optional[str] = None,
+    principal: UserPrincipal = Depends(require_user_scope),
 ):
     """
     Get workflows with availability status based on dependencies.
@@ -1444,23 +1993,35 @@ async def get_available_workflows(
     based on their dependency prerequisites.
     
     Args:
-        enterprise_id: Enterprise identifier
+        app_id: App identifier (legacy: app_id)
         user_id: User identifier
         
     Returns:
         Dict with 'workflows' array containing workflow metadata and availability status
     """
     try:
-        workflows = await dependency_manager.list_available_workflows(
-            enterprise_id=enterprise_id,
-            user_id=user_id
+        from core.workflow.pack.gating import list_workflow_availability
+
+        if principal.user_id == "anonymous":
+            resolved_user_id = str(user_id or "").strip()
+            if not resolved_user_id:
+                raise HTTPException(status_code=400, detail="user_id is required")
+        else:
+            resolved_user_id = principal.user_id
+            if user_id and str(user_id).strip() != str(resolved_user_id).strip():
+                raise HTTPException(status_code=403, detail="user_id mismatch")
+
+        workflows = await list_workflow_availability(
+            app_id=app_id,
+            user_id=resolved_user_id,
+            persistence=persistence_manager,
         )
         
         get_workflow_logger("shared_app").info(
             "AVAILABLE_WORKFLOWS_REQUESTED",
             extra={
-                "enterprise_id": enterprise_id,
-                "user_id": user_id,
+                "app_id": app_id,
+                "user_id": resolved_user_id,
                 "workflow_count": len(workflows)
             }
         )
@@ -1468,20 +2029,36 @@ async def get_available_workflows(
         return {"workflows": workflows}
         
     except Exception as e:
-        logger.error(f"Failed to get available workflows for enterprise {enterprise_id}: {e}", exc_info=True)
+        logger.error(f"Failed to get available workflows for app {app_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to retrieve available workflows: {str(e)}")
 
-@app.post("/chat/{enterprise_id}/{chat_id}/component_action")
+@app.post("/chat/{app_id}/{chat_id}/component_action")
 async def handle_component_action(
     request: Request,
-    enterprise_id: str,
+    app_id: str,
     chat_id: str,
+    principal: UserPrincipal = Depends(require_user_scope),
 ):
     """Endpoint to receive component actions for AG2 ContextVariables (WebSocket support)."""
     if not simple_transport:
         raise HTTPException(status_code=503, detail="Transport service is not available.")
 
     try:
+        # Ensure the chat exists and is owned by the authenticated principal.
+        if principal.user_id != "anonymous":
+            try:
+                coll = await _chat_coll()
+                owned = await coll.find_one(
+                    {"_id": chat_id, "user_id": principal.user_id, **build_app_scope_filter(app_id)},
+                    {"_id": 1},
+                )
+                if not owned:
+                    raise HTTPException(status_code=404, detail="Chat not found")
+            except HTTPException:
+                raise
+            except Exception as owner_err:
+                raise HTTPException(status_code=500, detail=f"Failed to validate chat ownership: {owner_err}")
+
         data = await request.json()
         component_id = data.get("component_id")
         action_type = data.get("action_type")
@@ -1489,7 +2066,7 @@ async def handle_component_action(
         
         get_workflow_logger("shared_app").info(
             "COMPONENT_ACTION_ENDPOINT_CALLED: Component action endpoint called",
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             chat_id=chat_id,
             component_id=component_id,
             action_type=action_type
@@ -1503,7 +2080,7 @@ async def handle_component_action(
         try:
             result = await simple_transport.process_component_action(
                 chat_id=chat_id,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 component_id=component_id,
                 action_type=action_type,
                 action_data=action_data or {}
@@ -1532,7 +2109,10 @@ async def handle_component_action(
         raise HTTPException(status_code=500, detail=f"Failed to process component action: {e}")
 
 @app.post("/api/ui-tool/submit")
-async def submit_ui_tool_response(request: Request):
+async def submit_ui_tool_response(
+    request: Request,
+    principal: UserPrincipal = Depends(require_user_scope),
+):
     """
     API endpoint for submitting UI tool responses.
     
@@ -1573,7 +2153,10 @@ async def submit_ui_tool_response(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to submit UI tool response: {e}")
 
 @app.get("/api/download/workflow-file")
-async def download_workflow_file(file_path: str):
+async def download_workflow_file(
+    file_path: str,
+    service: ServicePrincipal = Depends(require_internal),
+):
     """
     Download a single workflow file.
     
@@ -1643,14 +2226,91 @@ async def download_workflow_file(file_path: str):
         logger.error(f"❌ File download failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to download file: {e}")
 
-@app.post("/api/chats/{chat_id}/resume")
-async def resume_chat_after_topup(chat_id: str, request: Request):
-    """Resume a chat that was paused due to token exhaustion or limits."""
-    data = await request.json()
-    enterprise_id = data.get("enterprise_id")
-    if not enterprise_id:
-        raise HTTPException(status_code=400, detail="enterprise_id is required")
-        
-    from core.tokens.manager import TokenManager
-    await TokenManager.resume_after_topup(chat_id, enterprise_id, persistence_manager)
-    return {"success": True}
+
+@app.get("/api/apps/{app_id}/builds/{build_id}/export")
+async def download_build_export(
+    app_id: str,
+    build_id: str,
+    service: ServicePrincipal = Depends(require_internal),
+):
+    """Download the build export bundle (zip) for an app build.
+
+    This is the runtime-side artifact endpoint used by MozaiksCore after a build completes.
+    It is intentionally app-scoped and path-hardened (no arbitrary file downloads).
+    """
+    from fastapi.responses import FileResponse
+
+    try:
+        resolved_app_id = coalesce_app_id(app_id=app_id)
+        if not resolved_app_id:
+            raise HTTPException(status_code=400, detail="app_id is required")
+        resolved_build_id = str(build_id or "").strip()
+        if not resolved_build_id:
+            raise HTTPException(status_code=400, detail="build_id is required")
+
+        base_dir = Path(os.getenv("MOZAIKS_GENERATED_APPS_DIR", "generated_apps")).resolve()
+        build_dir = (base_dir / str(resolved_app_id) / resolved_build_id).resolve()
+        if not str(build_dir).startswith(str(base_dir)):
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        zip_path: Optional[Path] = None
+        zip_name: Optional[str] = None
+
+        # Prefer the persisted UI artifact payload, since it contains the exact bundle path/name.
+        try:
+            coll = await _chat_coll()
+            doc = await coll.find_one({"_id": resolved_build_id, **build_app_scope_filter(str(resolved_app_id))}, {"last_artifact": 1})
+            last_artifact = doc.get("last_artifact") if isinstance(doc, dict) else None
+            payload = last_artifact.get("payload") if isinstance(last_artifact, dict) else None
+            if isinstance(payload, dict):
+                files = payload.get("files") or payload.get("ui_files")
+                if isinstance(files, list):
+                    for f in files:
+                        if not isinstance(f, dict):
+                            continue
+                        raw_path = f.get("path")
+                        if not isinstance(raw_path, str) or not raw_path.strip():
+                            continue
+                        candidate = Path(raw_path).resolve()
+                        if candidate.suffix.lower() != ".zip":
+                            continue
+                        # Ensure zip is under our generated_apps base.
+                        if str(candidate).startswith(str(base_dir)):
+                            zip_path = candidate
+                            raw_name = f.get("name")
+                            zip_name = str(raw_name).strip() if isinstance(raw_name, str) and raw_name.strip() else candidate.name
+                            break
+        except Exception as lookup_err:
+            wf_logger.debug(f"build export lookup via last_artifact failed: {lookup_err}")
+
+        # Fallback: scan the build directory for a zip bundle.
+        if zip_path is None:
+            if not build_dir.exists() or not build_dir.is_dir():
+                raise HTTPException(status_code=404, detail="Build export not found")
+            try:
+                candidates = sorted(build_dir.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+            except Exception:
+                candidates = []
+            if candidates:
+                zip_path = candidates[0].resolve()
+                zip_name = zip_path.name
+
+        if zip_path is None or not zip_path.exists() or not zip_path.is_file():
+            raise HTTPException(status_code=404, detail="Build export not found")
+
+        return FileResponse(
+            path=str(zip_path),
+            filename=zip_name or zip_path.name,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{(zip_name or zip_path.name)}"',
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Build export download failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to download build export")
+

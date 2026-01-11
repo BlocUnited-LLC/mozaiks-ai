@@ -1,12 +1,5 @@
 # ==============================================================================
-# FILE: core_config.py
-# DESCRIPTION: 
-# ==============================================================================
-
-# === MOZAIKS-CORE-HEADER ===
-
-# ==============================================================================
-# FILE: config.py
+# FILE: core\core_config.py
 # DESCRIPTION: Configuration for Azure Key Vault, MongoDB, LLMs, and Tokens API
 # NOTES: Avoid module-level cloud calls; build credentials lazily and prefer
 #        environment variables to keep local/dev robust.
@@ -104,91 +97,52 @@ def get_mongo_client() -> AsyncIOMotorClient:
 
 # MongoDB Collections are obtained via PersistenceManager to avoid early initialization
 
-# ==============================================================================
-# FREE TRIAL CONFIGURATION
-# ==============================================================================
-# NOTE: Subscription/token gating hook points (no-op for now):
-# - Start gate (cheap, before allocating resources):
-#   Implement checks in shared_app.start_chat to enforce plan/limits before
-#   generating chat_id. Examples:
-#     * Verify MozaiksDB.Wallets (VE schema: EnterpriseId, UserId, Balance)
-#       has sufficient Balance or trial status allows start
-#     * Enforce per-plan concurrency and daily session caps
-# - Run-time gate (accurate usage control):
-#   Implement hard/soft enforcement in AG2PersistenceManager.debit_tokens.
-#   When Balance < required delta:
-#     * Hard stop: raise INSUFFICIENT_TOKENS to end the session
-#     * Soft degrade: switch to cheaper model or reduce max_turns
-# - Warnings/UX nudges:
-#   Use get_free_trial_config().get("warning_threshold") to emit low-balance
-#   warnings via logs or tool-driven UI events without blocking execution.
-# - Suggested feature flags (env):
-#     ENFORCE_TOKENS=true|false
-#     ENFORCE_RATE_LIMITS=true|false
-#     ALLOW_FREE_TRIAL=true|false
-#     DEGRADE_ON_INSUFFICIENT=true|false
-#   These can toggle checks in the two hook points above without redesign.
-# - Data model reminder:
-#   Wallets collection uses VE uppercase schema by default:
-#     { EnterpriseId, UserId, Balance, Transactions, CreatedAt, UpdatedAt }
-#   ChatSessions should not mirror balances; only track usage aggregates.
-def get_free_trial_config() -> Dict[str, Any]:
-    """Get free trial configuration from environment variables"""
-    return {
-        "enabled": os.getenv("FREE_TRIAL_ENABLED", "true").lower() == "true"
-    }
-
-# -----------------------------------------------------------------------------
-# Low balance (token) prompt helper (emits standardized UI tool event)
-# -----------------------------------------------------------------------------
-async def prompt_low_balance(chat_id: str, workflow_name: str, needed_tokens: int, current_balance: int) -> dict:
-    from core.workflow.outputs.ui_tools import use_ui_tool
-    """Display a low-balance UI prompt and return user response (single-call helper)."""
-    return await use_ui_tool(
-        tool_id="token_top_up_prompt",
-        payload={
-            "needed_tokens": int(needed_tokens),
-            "current_balance": int(current_balance),
-            "message": "Insufficient balance. Please add funds to continue.",
-            "interaction_type": "top_up",
-        },
-        chat_id=chat_id,
-        workflow_name=workflow_name,
-        display="inline",
-    )
-
 # -----------------------------
-# Enterprise ID resolution (for UI tools and persistence)
+# App/App ID resolution (for UI tools and persistence)
 # -----------------------------
-def get_enterprise_id_from_chat_or_context(chat_id: Optional[str] = None) -> Optional[str]:
-    """Get enterprise_id from chat context via SimpleTransport connections.
-    
-    This is a helper for UI tools and persistence operations that need enterprise_id
-    but only have chat_id available in their scope.
-    
-    Note: Currently returns None as a placeholder. UI tool persistence is non-critical
-    and will gracefully skip if enterprise_id is unavailable.
+def get_app_id_from_chat_or_context(chat_id: Optional[str] = None) -> Optional[str]:
+    """Best-effort app_id lookup for a chat_id.
+
+    Used by UI-tool persistence helpers that do not have direct access to the
+    active WebSocket connection metadata.
     """
+
     if not chat_id:
         return None
-    
-    # TODO: Implement proper enterprise_id lookup via transport connections
-    # For now, return None and let callers handle gracefully
-    return None
+
+    try:
+        from core.transport.simple_transport import SimpleTransport
+
+        transport = getattr(SimpleTransport, "_instance", None)
+        if not transport or not hasattr(transport, "connections"):
+            return None
+
+        conn = transport.connections.get(chat_id)
+        if not isinstance(conn, dict):
+            return None
+
+        raw_app_id = conn.get("app_id")
+        if raw_app_id is None:
+            return None
+        if isinstance(raw_app_id, str):
+            trimmed = raw_app_id.strip()
+            return trimmed or None
+        return str(raw_app_id) or None
+    except Exception:
+        return None
 
 
 # -----------------------------
-# Token & Monetization Config
+# Mozaiks Backend integration (GitHub deploy pipeline)
 # -----------------------------
-MONETIZATION_ENABLED = os.getenv("MONETIZATION_ENABLED", "true").lower() == "true"
-FREE_TRIAL_ENABLED = os.getenv("FREE_TRIAL_ENABLED", "true").lower() == "true"
-TOKEN_WARNING_THRESHOLD = float(os.getenv("TOKEN_WARNING_THRESHOLD", "0.2"))
-TOKENS_API_URL = os.getenv("TOKENS_API_URL", "")
+MOZAIKS_BACKEND_URL = os.getenv("MOZAIKS_BACKEND_URL", "https://api.mozaiks.ai").strip().rstrip("/")
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "").strip()
 
 __all__ = [
-    "prompt_low_balance",
     "get_secret",
     "get_mongo_client",
-    "get_enterprise_id_from_chat_or_context",
+    "get_app_id_from_chat_or_context",
+    "MOZAIKS_BACKEND_URL",
+    "INTERNAL_API_KEY",
 ]
 

@@ -56,8 +56,18 @@ These agents produce the **design-time Action Plan** that users approve before f
 ```json
 {
   "PatternSelection": {
-    "selected_pattern": 1,       // int (1-9)
-    "pattern_name": "Context-Aware Routing"  // human-readable
+    "is_multi_workflow": false,
+    "decomposition_reason": null,
+    "pack_name": "Customer Support Router",
+    "workflows": [
+      {
+        "name": "CustomerSupportRouter",
+        "role": "primary",
+        "description": "Routes support requests to the right specialists",
+        "pattern_id": 1,
+        "pattern_name": "Context-Aware Routing"
+      }
+    ]
   }
 }
 ```
@@ -143,7 +153,6 @@ These agents produce the **design-time Action Plan** that users approve before f
         "label": "Need more information",
         "component": "ClarificationRequest",
         "display": "inline",
-        "ui_pattern": "single_step",
         "summary": "Asks user for clarification when query is ambiguous"
       }
     ],
@@ -178,7 +187,6 @@ These agents produce the **design-time Action Plan** that users approve before f
 | `label` | str | User-facing CTA text |
 | `component` | str | React component name (PascalCase) |
 | `display` | str | inline \| artifact |
-| `ui_pattern` | str | single_step \| two_step_confirmation \| multi_step |
 | `summary` | str | ≤200 char narrative |
 
 ---
@@ -412,7 +420,7 @@ The following documents have been marked with deprecation notices (updated 2025-
 | `docs/workflows/THIRD_PARTY_API_FLOW.md` | ⚠️ Outdated | References old ActionPlan schema |
 | `docs/workflows/DISPLAY_MODE_AUTO_RESOLUTION.md` | ⚠️ Partially Outdated | Examples use legacy agent names |
 | `docs/workflows/CONTEXT_VARIABLES_STATELESS_STRATEGY.md` | ⚠️ Partially Outdated | Examples use legacy schemas |
-| `TASK_DECOMPOSITION_ARCHITECTURE.md` | ⚠️ Outdated | Contains tasks referencing old schema |
+| `TASK_DECOMPOSITION_ARCHITECTURE.md` | ❌ Removed | Consolidated into `docs/source_of_truth/ORCHESTRATION_AND_DECOMPOSITION.md` |
 
 All marked documents now include notices pointing to this source of truth document.
 
@@ -542,7 +550,7 @@ This section provides complete traceability from Action Plan variables → each 
 |-----|--------|-------------|
 | `ActionPlan.workflow` | WorkflowStrategyOutput | modules[].agents_needed |
 | `ModuleAgents` | ModuleAgentsOutput | agents[].agent_tools[], agents[].lifecycle_tools[] |
-| `TechnicalBlueprint.ui_components` | TechnicalBlueprintOutput | component, display, ui_pattern |
+| `TechnicalBlueprint.ui_components` | TechnicalBlueprintOutput | component, display|
 | `ContextVariablesPlan` | ContextVariablesPlanOutput | definitions[] (for state variable triggers) |
 
 **Output Schema**:
@@ -770,8 +778,12 @@ This section provides complete traceability from Action Plan variables → each 
   "orchestration_pattern": "DefaultPattern",
   "initial_message_to_user": "string | null",
   "initial_message": "string | null",
-  "recipient": "FirstAgentName",
-  "visual_agents": ["Agent1", "Agent2"]
+  "initial_agent": "FirstAgentName",
+  "visual_agents": ["Agent1", "Agent2"],
+  "runtime_extensions": [
+    {"kind": "api_router", "entrypoint": "workflows.CustomerSupportRouter.tools.api:get_router"},
+    {"kind": "startup_service", "entrypoint": "workflows.CustomerSupportRouter.tools.services:OutboxProcessor"}
+  ]
 }
 ```
 
@@ -780,10 +792,14 @@ This section provides complete traceability from Action Plan variables → each 
   - `chat` + `initiated_by=user` → UserDriven
   - `chat` + `initiated_by=system` → AgentDriven
   - Others (schedule, webhook, etc.) → BackendOnly
-- Derives recipient from first agent in module[0]
+- Derives initial_agent from first agent in module[0]
 - Sets visual_agents to all user-facing agents (human_interaction != none)
+- Defaults runtime_extensions to []
+- Adds runtime_extensions only when the workflow requires runtime-hosted capabilities:
+  - `api_router`: inbound HTTP/WebSocket endpoints (webhooks, callbacks, OAuth redirects)
+  - `startup_service`: background services started/stopped with the runtime lifecycle
 
-**Runtime File Written**: `orchestrator.json`
+**Runtime File Written**: `orchestrator.yaml`
 
 ---
 
@@ -843,7 +859,7 @@ This section provides complete traceability from Action Plan variables → each 
 | Key | Source | Fields Used |
 |-----|--------|-------------|
 | `Tools` | ToolsManifestOutput | tools[] where tool_type="UI_Tool" |
-| `TechnicalBlueprint.ui_components` | TechnicalBlueprintOutput | display, ui_pattern, summary |
+| `TechnicalBlueprint.ui_components` | TechnicalBlueprintOutput | display, summary |
 | `ActionPlan/ModuleAgents` | Advisory | Module naming, agent attribution |
 | `ContextVariablesPlan` | ContextVariablesPlanOutput | state variables with ui_response triggers |
 
@@ -1069,7 +1085,7 @@ Each workflow execution is isolated by:
 
 | Dimension | Mechanism |
 |-----------|-----------|
-| `enterprise_id` | Tenant isolation (database, token accounting) |
+| `app_id` | Tenant isolation (database, token accounting) |
 | `user_id` | User-specific context and permissions |
 | `chat_id` | Session state isolation |
 | `cache_seed` | AG2 conversation cache separation |
@@ -1080,14 +1096,14 @@ The runtime tracks token usage at execution time:
 
 ```python
 # Token flow per turn
-User Message → Agent Processing → LLM Call → Token Counter → MozaiksStream
+User Message → Agent Processing → LLM Call → Token Counter → MozaiksPay
                                                     ↓
-                              { enterprise_id, user_id, workflow, tokens_used }
+                              { app_id, user_id, workflow, tokens_used }
 ```
 
 This enables:
 - Per-workflow cost analytics
-- Enterprise billing rollups
+- App billing rollups
 - Usage-based throttling
 
 ### 16.4 Trigger Types → Runtime Behavior
@@ -1145,7 +1161,7 @@ The runtime provides:
 | Agent turn counts | orchestrator.json max_turns |
 | Tool invocation latency | Runtime instrumentation |
 | Handoff frequency | Handoff rule hit tracking |
-| Token usage per agent | MozaiksStream integration |
+| Token usage per agent | MozaiksPay integration |
 | Error rates by tool | Exception tracking |
 
 ---

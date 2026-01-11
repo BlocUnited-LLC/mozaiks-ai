@@ -146,7 +146,7 @@ Tracks each context the user is working in (building an app, checking revenue, b
 ```json
 {
   "_id": "chat_appbuilder_001",
-  "enterprise_id": "ent-001",  // User's account
+  "app_id": "ent-001",  // User's account
   "user_id": "user-456",
   "workflow_name": "AppBuilder",  // AppBuilder | RevenueDashboard | InvestmentMarketplace | ChallengeTracker
   "status": "IN_PROGRESS",  // IN_PROGRESS | COMPLETED
@@ -164,7 +164,7 @@ The persistent apps themselves — each maintains its own state
 ```json
 {
   "_id": "artifact_taskapp_123",
-  "enterprise_id": "ent-001",
+  "app_id": "ent-001",
   "workflow_name": "AppBuilder",
   "artifact_type": "AppBuilderArtifact",
   "state": {
@@ -192,7 +192,7 @@ The persistent apps themselves — each maintains its own state
 ```json
 {
   "_id": "ent-001",
-  "enterprise_id": "ent-001",
+  "app_id": "ent-001",
   "workflows": {
     "Generator": {
       "dependencies": null,
@@ -243,7 +243,7 @@ The persistent apps themselves — each maintains its own state
 
 - **Questions?** → Check [`06-TROUBLESHOOTING.md`](./06-TROUBLESHOOTING.md)
 - **Contributing?** → See backend integration guide for adding new artifact types
-- **Issues?** → Check logs in `logs/` directory with filter `WS_DEPENDENCIES_NOT_MET`, `SESSION_CREATED`, `ARTIFACT_STATE_UPDATED`
+- **Issues?** → Check logs in `logs/` directory with filter `WS_PREREQS_NOT_MET`, `SESSION_CREATED`, `ARTIFACT_STATE_UPDATED`
 
 ---
 

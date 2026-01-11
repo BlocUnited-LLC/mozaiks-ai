@@ -1,0 +1,127 @@
+Folder PATH listing for volume Windows
+Volume serial number is 78C5-FE7D
+C:\USERS\MBARI\ONEDRIVE\DESKTOP\BLOCUNITED\BLOCUNITED CODE\MOZAIKSAI\WORKFLOWS
+¦   __init__.py
+¦   
++---AgentGenerator
+¦   ¦   agents.yaml
+¦   ¦   context_variables.yaml
+¦   ¦   handoffs.yaml
+¦   ¦   hooks.yaml
+¦   ¦   InterviewAgentPrompt.json
+¦   ¦   orchestrator.yaml
+¦   ¦   structured_outputs.yaml
+¦   ¦   tools.yaml
+¦   ¦   ui_config.yaml
+¦   ¦   __init__.py
+¦   ¦   
+¦   +---tools
+¦   ¦   ¦   action_plan.py
+¦   ¦   ¦   attachments_tools.py
+¦   ¦   ¦   collect_api_keys.py
+¦   ¦   ¦   export_agent_workflow.py
+¦   ¦   ¦   export_to_github.py
+¦   ¦   ¦   generate_and_download.py
+¦   ¦   ¦   hook_file_generation.py
+¦   ¦   ¦   hook_gaurdrail.py
+¦   ¦   ¦   hook_tokengate.py
+¦   ¦   ¦   hook_universal_prompts.py
+¦   ¦   ¦   mermaid_sequence_diagram.py
+¦   ¦   ¦   module_agents_plan.py
+¦   ¦   ¦   pattern_selection.py
+¦   ¦   ¦   request_api_key.py
+¦   ¦   ¦   technical_blueprint.py
+¦   ¦   ¦   update_agent_state_pattern.py
+¦   ¦   ¦   workflow_converter.py
+¦   ¦   ¦   workflow_strategy.py
+¦   ¦   ¦   __init__.py
+¦   ¦   ¦   
+¦   ¦   +---code_context
+¦   ¦           extractor.py
+¦   ¦           formatter.py
+¦   ¦           intents.json
+¦   ¦           persistence.py
+¦   ¦           tools.py
+¦   ¦           __init__.py
+¦   ¦           
+¦   +---_pack
+¦           workflow_graph.json
+¦           
++---AppGenerator
+¦   ¦   agents.yaml
+¦   ¦   context_variables.yaml
+¦   ¦   handoffs.yaml
+¦   ¦   hooks.yaml
+¦   ¦   orchestrator.yaml
+¦   ¦   structured_outputs.yaml
+¦   ¦   tools.yaml
+¦   ¦   ui_config.yaml
+¦   ¦   __init__.py
+¦   ¦   
+¦   +---infra
+¦   ¦   +---e2b_templates
+¦   ¦       +---react_base
+¦   ¦               e2b.Dockerfile
+¦   ¦               
+¦   +---tools
+¦       ¦   ask_mozaiks.py
+¦       ¦   backend_client.py
+¦       ¦   backend_tools.py
+¦       ¦   e2b_sandbox.py
+¦       ¦   export_app_code.py
+¦       ¦   generate_and_download.py
+¦       ¦   hook_code_context.py
+¦       ¦   integration_tests.py
+¦       ¦   sandbox_manager.py
+¦       ¦   __init__.py
+¦       ¦   
+¦       +---code_context
+¦       ¦       extractor.py
+¦       ¦       formatter.py
+¦       ¦       intents.json
+¦       ¦       persistence.py
+¦       ¦       tools.py
+¦       ¦       __init__.py
+¦       ¦       
+¦       +---platform
+¦               build_events_client.py
+¦               build_events_outbox.py
+¦               build_events_processor.py
+¦               build_lifecycle.py
+¦               __init__.py
+¦               
++---DesignDocs
+¦   ¦   agents.yaml
+¦   ¦   context_variables.yaml
+¦   ¦   orchestrator.yaml
+¦   ¦   tools.yaml
+¦   ¦   
+¦   +---tools
+¦           save_design_doc.py
+¦           
++---ValueEngine
+¦   ¦   agents.yaml
+¦   ¦   context_variables.yaml
+¦   ¦   handoffs.yaml
+¦   ¦   hooks.yaml
+¦   ¦   orchestrator.yaml
+¦   ¦   structured_outputs.yaml
+¦   ¦   tools.yaml
+¦   ¦   ui_config.yaml
+¦   ¦   __init__.py
+¦   ¦   
+¦   +---tools
+¦           concept_blueprint.py
+¦           __init__.py
+¦           
++---_pack
+¦       workflow_graph.json
+¦       
++---_shared
+        agent_endpoints.py
+        app_code_versions.py
+        backend_client.py
+        pattern_context_schema.yaml
+        workflow_exports.py
+        __init__.py
+        

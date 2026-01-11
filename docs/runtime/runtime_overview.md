@@ -84,7 +84,7 @@ transport = get_workflow_transport("Generator")
 **Entry Point:**
 ```python
 async def run_workflow_orchestration(
-    enterprise_id: str,
+    app_id: str,
     chat_id: str,
     workflow_name: str,
     user_id: str,
@@ -164,7 +164,7 @@ await dispatcher.emit_ui_tool_event(
 **Transport API:**
 ```python
 transport = SimpleTransport(
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     chat_id="chat_abc123",
     workflow_name="Generator"
 )
@@ -193,9 +193,9 @@ response = await transport.wait_for_response(
 **Responsibilities:**
 - Store chat sessions in MongoDB `chat_sessions` collection
 - Append messages in real-time (no batching)
-- Track workflow stats in `workflow_stats_{enterprise}_{workflow}` collections
+- Track workflow stats in `workflow_stats_{app}_{workflow}` collections
 - Provide resume capability by loading persisted messages
-- Enforce enterprise isolation in all queries
+- Enforce app isolation in all queries
 
 **Key Operations:**
 ```python
@@ -203,7 +203,7 @@ persistence = AG2PersistenceManager()
 
 # Create new chat session
 session = await persistence.create_chat_session(
-    enterprise_id="acme_corp",
+    app_id="acme_corp",
     chat_id="chat_abc123",
     workflow_name="Generator",
     user_id="user_456",
@@ -223,7 +223,7 @@ await persistence.append_message(
 # Resume chat (load persisted messages)
 messages = await persistence.load_chat_history(
     chat_id="chat_abc123",
-    enterprise_id="acme_corp"
+    app_id="acme_corp"
 )
 ```
 
@@ -270,8 +270,8 @@ curl http://localhost:8000/metrics/prometheus
 
 **High-Level Flow:**
 
-1. **HTTP Request:** `POST /api/chats/{enterprise_id}/{workflow_name}/start`
-2. **Validation:** Check enterprise exists, create/resume session
+1. **HTTP Request:** `POST /api/chats/{app_id}/{workflow_name}/start`
+2. **Validation:** Check app exists, create/resume session
 3. **WebSocket Connect:** Frontend establishes transport connection
 4. **Orchestration:** Run AG2 pattern with event streaming
 5. **Event Streaming:** UnifiedEventDispatcher routes events to transport
@@ -285,11 +285,11 @@ curl http://localhost:8000/metrics/prometheus
 
 ## Multi-Tenancy Enforcement
 
-**Every runtime operation is scoped by `enterprise_id`:**
+**Every runtime operation is scoped by `app_id`:**
 
-- **HTTP Endpoints:** Enterprise ID in path (`/api/chats/{enterprise_id}/...`)
-- **MongoDB Queries:** Always include `{"enterprise_id": ...}` filter
-- **Workflow Stats:** Per-enterprise collections (`workflow_stats_{enterprise}_{workflow}`)
+- **HTTP Endpoints:** App ID in path (`/api/chats/{app_id}/...`)
+- **MongoDB Queries:** Always include `{"app_id": ...}` filter
+- **Workflow Stats:** Per-app collections (`workflow_stats_{app}_{workflow}`)
 - **Transport Instances:** One SimpleTransport per chat (isolated state)
 - **Cache Seed:** Deterministic per-chat seed prevents cross-chat bleed
 
@@ -394,7 +394,7 @@ curl http://localhost:8000/metrics/prometheus
 ```javascript
 // MongoDB shell
 use MozaiksAI
-db.chat_sessions.find({"enterprise_id": "acme_corp"})
+db.chat_sessions.find({"app_id": "acme_corp"})
 db.workflow_stats_acme_corp_Generator.find()
 ```
 
@@ -408,7 +408,7 @@ db.workflow_stats_acme_corp_Generator.find()
 2. Add manifests: `workflow.json`, `agents.json`, `tools.json`
 3. (Optional) Add tool stubs: `workflows/MyWorkflow/tools/my_tool.py`
 4. Restart server (or wait for hot-reload)
-5. Workflow auto-discovered at `/api/chats/{enterprise_id}/MyWorkflow/start`
+5. Workflow auto-discovered at `/api/chats/{app_id}/MyWorkflow/start`
 
 ### Adding a Tool to Existing Workflow
 

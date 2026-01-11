@@ -51,7 +51,7 @@ This document explains how all the pieces fit together and how data flows throug
 │  │  WorkflowSessions│  │ ArtifactInstances│  │  Workflow     │ │
 │  │                  │  │                  │  │  Dependencies │ │
 │  │  chat_id         │  │  artifact_id     │  │               │ │
-│  │  workflow_name   │  │  artifact_type   │  │  enterprise   │ │
+│  │  workflow_name   │  │  artifact_type   │  │  app   │ │
 │  │  status          │  │  state: {...}    │  │  graph        │ │
 │  │  artifact_id ────┼──► _id              │  │               │ │
 │  └──────────────────┘  └──────────────────┘  └───────────────┘ │
@@ -155,11 +155,11 @@ This document explains how all the pieces fit together and how data flows throug
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Enterprise: "ent-001"                                       │
+│  App: "ent-001"                                       │
 ├─────────────────────────────────────────────────────────────┤
 │                                                               │
 │  ┌─────────────────────────────────────────────────┐        │
-│  │  WorkflowDependencies (1 per enterprise)        │        │
+│  │  WorkflowDependencies (1 per app)        │        │
 │  │  _id: "ent-001"                                  │        │
 │  │  workflows: {                                    │        │
 │  │    Generator: { dependencies: null, ... },      │        │
@@ -195,7 +195,7 @@ This document explains how all the pieces fit together and how data flows throug
 ```
 
 **Key Points**:
-- One `WorkflowDependencies` document per enterprise (contains graph for all workflows)
+- One `WorkflowDependencies` document per app (contains graph for all workflows)
 - Many `WorkflowSessions` per user (one per active/paused workflow chat)
 - Many `ArtifactInstances` per user (one per artifact, can outlive sessions)
 - Sessions and artifacts are linked bidirectionally via IDs
@@ -325,7 +325,7 @@ User A                  Backend                 User B
 
 ```
 ┌────────────────────────────────────────────────┐
-│  Enterprise: "ent-001"                         │
+│  App: "ent-001"                         │
 │  ┌──────────────────────────────────────────┐ │
 │  │  User: "user-456"                         │ │
 │  │  ├─ WorkflowSessions (filtered)           │ │
@@ -340,15 +340,15 @@ User A                  Backend                 User B
 └────────────────────────────────────────────────┘
 
 ┌────────────────────────────────────────────────┐
-│  Enterprise: "ent-002" (completely isolated)   │
+│  App: "ent-002" (completely isolated)   │
 │  ...                                            │
 └────────────────────────────────────────────────┘
 ```
 
 **Enforcement**:
-- All queries include `enterprise_id` filter
-- WebSocket connections validate `enterprise_id` at accept time
-- Dependency validation scoped to `enterprise_id` + `user_id`
+- All queries include `app_id` filter
+- WebSocket connections validate `app_id` at accept time
+- Dependency validation scoped to `app_id` + `user_id`
 - Artifact state updates validate ownership before applying
 
 ---
@@ -462,7 +462,7 @@ User: [Clicks "Launch Marketing Automation"]
 
 ### Optimization 2: Connection Pooling
 - Session manager reuses MongoDB client across operations
-- WebSocket handler maintains connection pool per enterprise
+- WebSocket handler maintains connection pool per app
 
 ### Optimization 3: Selective Broadcasting
 - `artifact.state.updated` only sent to clients viewing that artifact
@@ -471,13 +471,13 @@ User: [Clicks "Launch Marketing Automation"]
 ### Optimization 4: Incremental State Updates
 ```python
 # Bad: Replace entire state
-await update_artifact_state(artifact_id, enterprise_id, {
+await update_artifact_state(artifact_id, app_id, {
     "steps": [...],  # 1000 items
     "currentStep": 3
 })
 
 # Good: Update only what changed
-await update_artifact_state(artifact_id, enterprise_id, {
+await update_artifact_state(artifact_id, app_id, {
     "currentStep": 3
 })
 ```
@@ -521,7 +521,7 @@ await update_artifact_state(artifact_id, enterprise_id, {
 
 ### Scaling Strategies
 - **Horizontal scaling**: Multiple FastAPI instances behind load balancer
-- **Database sharding**: Shard by `enterprise_id`
+- **Database sharding**: Shard by `app_id`
 - **Caching**: Redis cache for hot artifact states
 - **CDN**: Serve static artifact UI components via CDN
 

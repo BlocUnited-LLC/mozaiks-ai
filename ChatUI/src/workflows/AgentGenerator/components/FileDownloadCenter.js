@@ -26,6 +26,7 @@ const FileDownloadCenter = ({
   const totalFiles = files.length;
   const agentMessageId = payload.agent_message_id;
   const resolvedWorkflowName = generatedWorkflowName || sourceWorkflowName || payload.generatedWorkflowName || payload.sourceWorkflowName || null;
+  const defaultCommitMessage = payload.commit_message || payload.commitMessage || 'Initial code generation from Mozaiks AI';
   const config = {
     files,
     title: payload.title || 'Workflow Bundle Ready',
@@ -37,6 +38,8 @@ const FileDownloadCenter = ({
   const [downloadErrors, setDownloadErrors] = useState([]);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [showCompletion, setShowCompletion] = useState(false);
+  const [repoName, setRepoName] = useState(payload.repo_name || payload.repoName || '');
+  const [commitMessage, setCommitMessage] = useState(defaultCommitMessage);
 
   const backendOrigin = useMemo(() => {
     if (typeof window === 'undefined') return '';
@@ -65,6 +68,32 @@ const FileDownloadCenter = ({
   const containerClasses = [designComponents.panel.inline, 'file-download-center inline-file-download w-full max-w-lg mx-auto'].join(' ');
   const downloadButtonClasses = designComponents.button.primary;
   const closeButtonClasses = designComponents.button.secondary;
+
+  const handleExportToGitHub = async () => {
+    const response = {
+      status: 'success',
+      action: 'export_to_github',
+      data: {
+        ui_tool_id,
+        eventId,
+        workflowName: resolvedWorkflowName,
+        repo_name: repoName || null,
+        commit_message: commitMessage || null,
+        files,
+        fileCount: totalFiles,
+      },
+      agentContext: {
+        export_to_github: true,
+      },
+    };
+
+    try {
+      tlog.event('deploy', 'export_requested', { repoName: repoName || null });
+      if (onResponse) await onResponse(response);
+    } catch (e) {
+      tlog.error('deploy export response failed', { error: e?.message });
+    }
+  };
 
   const handleDownloadAll = async () => {
     if (isDownloading || totalFiles === 0) return;
@@ -286,6 +315,31 @@ const FileDownloadCenter = ({
                   </div>
                 </div>
               </div>
+              <div className="mb-3 p-3 bg-gray-800 rounded">
+                <div className={`${designTypography.label.sm} ${designColors.text.primary} mb-2`}>Export to GitHub (optional)</div>
+                <div className="space-y-2">
+                  <div>
+                    <label className={`${designTypography.body.sm} ${designColors.text.muted}`}>Repo name</label>
+                    <input
+                      value={repoName}
+                      onChange={(e) => setRepoName(e.target.value)}
+                      placeholder="Leave blank to use app name"
+                      className="mt-1 w-full rounded bg-black/30 border border-white/10 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-white/20"
+                      type="text"
+                    />
+                  </div>
+                  <div>
+                    <label className={`${designTypography.body.sm} ${designColors.text.muted}`}>Commit message</label>
+                    <input
+                      value={commitMessage}
+                      onChange={(e) => setCommitMessage(e.target.value)}
+                      placeholder={defaultCommitMessage}
+                      className="mt-1 w-full rounded bg-black/30 border border-white/10 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-white/20"
+                      type="text"
+                    />
+                  </div>
+                </div>
+              </div>
               <div className="flex gap-3">
                 <button 
                   onClick={handleDownloadAll} 
@@ -293,6 +347,13 @@ const FileDownloadCenter = ({
                   className={[downloadButtonClasses, 'flex flex-1 items-center justify-center'].filter(Boolean).join(' ')}
                 >
                   {buttonLabel}
+                </button>
+                <button
+                  onClick={handleExportToGitHub}
+                  disabled={totalFiles === 0}
+                  className={[closeButtonClasses, 'flex flex-1 items-center justify-center'].filter(Boolean).join(' ')}
+                >
+                  Export to GitHub
                 </button>
                 <button 
                   onClick={() => onResponse && onResponse({ status: 'complete', action: 'close' })} 

@@ -10,7 +10,7 @@ Enables users to:
 - Start multiple workflows in a single WebSocket connection
 - Pause current workflow and switch to another (manual via UI buttons)
 - Resume paused workflows without losing state
-- Enter "Ask Mozaiks" mode (general Q&A, no workflow active)
+- Enter general mode (non-AG2 capability, no workflow active)
 
 Key Concepts:
 - One WebSocket connection can host multiple workflow sessions
@@ -21,7 +21,7 @@ Key Concepts:
 Example Flow:
 1. User starts Generator workflow → active
 2. User clicks "Investor Portal" → Generator paused, Investor active
-3. User clicks "Ask Mozaiks" → All workflows paused, general mode active
+3. User enters general mode → All workflows paused, general mode active
 4. User clicks "Generator" tab → Generator resumes from paused state
 """
 
@@ -38,7 +38,7 @@ class WorkflowContext:
     """Runtime state for a workflow within a WebSocket session."""
     chat_id: str
     workflow_name: str
-    enterprise_id: str
+    app_id: str
     user_id: str
     artifact_id: Optional[str] = None
     status: str = "active"  # "active", "paused", "completed"
@@ -50,7 +50,7 @@ class WorkflowContext:
         return {
             "chat_id": self.chat_id,
             "workflow_name": self.workflow_name,
-            "enterprise_id": self.enterprise_id,
+            "app_id": self.app_id,
             "user_id": self.user_id,
             "artifact_id": self.artifact_id,
             "status": self.status,
@@ -67,7 +67,7 @@ class SessionRegistry:
     - Track active/paused workflows per connection
     - Enforce "one active workflow per connection" rule
     - Provide context switching (pause current, activate target)
-    - Support "Ask Mozaiks" mode (all workflows paused)
+    - Support general mode (all workflows paused)
     
     NOT Responsible For:
     - Persisting workflow state (MongoDB handles that)
@@ -89,7 +89,7 @@ class SessionRegistry:
         ws_id: str, 
         chat_id: str, 
         workflow_name: str,
-        enterprise_id: str,
+        app_id: str,
         user_id: str,
         artifact_id: Optional[str] = None,
         auto_activate: bool = True
@@ -101,7 +101,7 @@ class SessionRegistry:
             ws_id: WebSocket connection ID
             chat_id: Unique chat/session ID for this workflow
             workflow_name: Workflow name (e.g., "Generator", "Investor")
-            enterprise_id: Enterprise identifier
+            app_id: App identifier
             user_id: User identifier
             artifact_id: Optional artifact ID to display
             auto_activate: If True, pause all other workflows and activate this one
@@ -128,7 +128,7 @@ class SessionRegistry:
         context = WorkflowContext(
             chat_id=chat_id,
             workflow_name=workflow_name,
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             user_id=user_id,
             artifact_id=artifact_id,
             status="paused"  # Start paused, then activate if requested
@@ -180,7 +180,7 @@ class SessionRegistry:
     
     def enter_general_mode(self, ws_id: str):
         """
-        Pause all workflows and enter "Ask Mozaiks" mode (general Q&A).
+        Pause all workflows and enter general (non-AG2) mode.
         
         Args:
             ws_id: WebSocket connection ID

@@ -7,12 +7,15 @@
  * Workflow configuration manager for frontend
  * Fetches workflow configurations from backend
  */
+import config from './index';
+
 class WorkflowConfig {
   constructor() {
     this.configs = new Map();
     this.defaultWorkflow = null; // Dynamic discovery from backend
     this.fetchInProgress = false;
     this.warnedNoWorkflow = false;
+    this.autoFetchAttempted = false;
   }
 
   /**
@@ -23,10 +26,13 @@ class WorkflowConfig {
       return; // prevent concurrent duplicate fetches (StrictMode double invoke)
     }
     this.fetchInProgress = true;
+    const baseUrlRaw = typeof config?.get === 'function' ? config.get('api.baseUrl') : undefined;
+    const baseUrl = typeof baseUrlRaw === 'string' && baseUrlRaw.endsWith('/') ? baseUrlRaw.slice(0, -1) : baseUrlRaw;
     const hosts = [
+      baseUrl,
       'http://localhost:8000',
       'http://127.0.0.1:8000'
-    ];
+    ].filter(Boolean);
     const path = '/api/workflows';
     let lastError = null;
     for (const host of hosts) {
@@ -98,6 +104,18 @@ class WorkflowConfig {
     const available = this.getAvailableWorkflows();
     if (available.length > 0) {
       return available[0]; // Use first available workflow
+    }
+
+    // If called before async discovery completes (common in React StrictMode),
+    // trigger a single background fetch and avoid noisy warnings.
+    if (!this.fetchInProgress && !this.autoFetchAttempted) {
+      this.autoFetchAttempted = true;
+      try {
+        this.fetchWorkflowConfigs().catch(() => {});
+      } catch (_e) {
+        // ignore
+      }
+      return null;
     }
 
     if (this.fetchInProgress) {

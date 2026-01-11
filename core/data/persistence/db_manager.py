@@ -27,18 +27,18 @@ async def save_to_database(
 
     Primary Objective:
         Provide agents an easy way to save data to MongoDB using workflow configuration
-        or explicit parameters. Handles enterprise_id context automatically.
+        or explicit parameters. Handles app_id context automatically.
 
     EXECUTION STEPS:
         1. Resolve database/collection from workflow config or parameters
-        2. Add metadata (enterprise_id, created_at, updated_at) automatically
+        2. Add metadata (app_id, created_at, updated_at) automatically
         3. Insert document and return confirmation with MongoDB _id
 
     Args:
         data: Dictionary of data to save
         database_name: Override database name (optional)
         collection_name: Override collection name (optional)
-        **runtime: Contains chat_id, enterprise_id, workflow_name, context_variables
+        **runtime: Contains chat_id, app_id, workflow_name, context_variables
 
     Returns:
         Dict containing status, inserted_id, and metadata
@@ -51,11 +51,11 @@ async def save_to_database(
         }, collection_name="api_keys")
     """
     chat_id = runtime.get("chat_id")
-    enterprise_id = runtime.get("enterprise_id")
+    app_id = runtime.get("app_id")
     workflow_name = runtime.get("workflow_name") or runtime.get("workflow")
     context_variables = runtime.get("context_variables")
 
-    logger = get_workflow_logger(workflow_name=(workflow_name or "unknown"), chat_id=chat_id, enterprise_id=enterprise_id)
+    logger = get_workflow_logger(workflow_name=(workflow_name or "unknown"), chat_id=chat_id, app_id=app_id)
     
     # Resolve configuration
     try:
@@ -69,12 +69,12 @@ async def save_to_database(
     document = dict(data)  # Copy to avoid mutation
     now = datetime.now(timezone.utc)
     
-    # Add enterprise context
-    if enterprise_id:
+    # Add app context
+    if app_id:
         try:
-            document["enterprise_id"] = ObjectId(enterprise_id)
+            document["app_id"] = ObjectId(app_id)
         except:
-            document["enterprise_id"] = enterprise_id
+            document["app_id"] = app_id
     
     # Add timestamps
     document["created_at"] = now
@@ -137,10 +137,10 @@ async def load_from_database(
 
     Primary Objective:
         Provide agents an easy way to query MongoDB using workflow configuration.
-        Automatically scopes to enterprise_id for security.
+        Automatically scopes to app_id for security.
 
     Args:
-        query: MongoDB query dict (enterprise_id will be added automatically)
+        query: MongoDB query dict (app_id will be added automatically)
         database_name: Override database name (optional)
         collection_name: Override collection name (optional)
         limit: Maximum documents to return (default 10)
@@ -155,10 +155,10 @@ async def load_from_database(
         }, collection_name="api_keys")
     """
     chat_id = runtime.get("chat_id")
-    enterprise_id = runtime.get("enterprise_id")
+    app_id = runtime.get("app_id")
     workflow_name = runtime.get("workflow_name") or runtime.get("workflow")
 
-    logger = get_workflow_logger(workflow_name=(workflow_name or "unknown"), chat_id=chat_id, enterprise_id=enterprise_id)
+    logger = get_workflow_logger(workflow_name=(workflow_name or "unknown"), chat_id=chat_id, app_id=app_id)
     
     # Resolve configuration
     try:
@@ -168,13 +168,13 @@ async def load_from_database(
     except Exception as e:
         return {"status": "error", "message": f"Configuration error: {e}"}
 
-    # Build secure query (always scope to enterprise)
+    # Build secure query (always scope to app)
     secure_query = dict(query)
-    if enterprise_id:
+    if app_id:
         try:
-            secure_query["enterprise_id"] = ObjectId(enterprise_id)
+            secure_query["app_id"] = ObjectId(app_id)
         except:
-            secure_query["enterprise_id"] = enterprise_id
+            secure_query["app_id"] = app_id
 
     try:
         client = get_mongo_client()
@@ -188,8 +188,8 @@ async def load_from_database(
         for doc in documents:
             if "_id" in doc:
                 doc["_id"] = str(doc["_id"])
-            if "enterprise_id" in doc and isinstance(doc["enterprise_id"], ObjectId):
-                doc["enterprise_id"] = str(doc["enterprise_id"])
+            if "app_id" in doc and isinstance(doc["app_id"], ObjectId):
+                doc["app_id"] = str(doc["app_id"])
         
         logger.info(f"📖 Loaded {len(documents)} documents from {db_name}.{coll_name}")
         
@@ -218,7 +218,7 @@ async def update_in_database(
 
     Primary Objective:
         Provide agents an easy way to update MongoDB documents using workflow configuration.
-        Automatically scopes to enterprise_id and adds updated_at timestamp.
+        Automatically scopes to app_id and adds updated_at timestamp.
 
     Args:
         query: MongoDB query to find documents to update
@@ -231,10 +231,10 @@ async def update_in_database(
         Dict containing status, modified_count, and metadata
     """
     chat_id = runtime.get("chat_id")
-    enterprise_id = runtime.get("enterprise_id")
+    app_id = runtime.get("app_id")
     workflow_name = runtime.get("workflow_name") or runtime.get("workflow")
 
-    logger = get_workflow_logger(workflow_name=(workflow_name or "unknown"), chat_id=chat_id, enterprise_id=enterprise_id)
+    logger = get_workflow_logger(workflow_name=(workflow_name or "unknown"), chat_id=chat_id, app_id=app_id)
     
     # Resolve configuration
     try:
@@ -246,11 +246,11 @@ async def update_in_database(
 
     # Build secure query
     secure_query = dict(query)
-    if enterprise_id:
+    if app_id:
         try:
-            secure_query["enterprise_id"] = ObjectId(enterprise_id)
+            secure_query["app_id"] = ObjectId(app_id)
         except:
-            secure_query["enterprise_id"] = enterprise_id
+            secure_query["app_id"] = app_id
 
     # Prepare update with timestamp
     update_doc = {
@@ -296,7 +296,7 @@ async def delete_from_database(
 
     Primary Objective:
         Provide agents an easy way to delete MongoDB documents using workflow configuration.
-        Automatically scopes to enterprise_id for security.
+        Automatically scopes to app_id for security.
 
     Args:
         query: MongoDB query to find documents to delete
@@ -308,10 +308,10 @@ async def delete_from_database(
         Dict containing status, deleted_count, and metadata
     """
     chat_id = runtime.get("chat_id")
-    enterprise_id = runtime.get("enterprise_id")
+    app_id = runtime.get("app_id")
     workflow_name = runtime.get("workflow_name") or runtime.get("workflow")
 
-    logger = get_workflow_logger(workflow_name=(workflow_name or "unknown"), chat_id=chat_id, enterprise_id=enterprise_id)
+    logger = get_workflow_logger(workflow_name=(workflow_name or "unknown"), chat_id=chat_id, app_id=app_id)
     
     # Resolve configuration
     try:
@@ -323,11 +323,11 @@ async def delete_from_database(
 
     # Build secure query
     secure_query = dict(query)
-    if enterprise_id:
+    if app_id:
         try:
-            secure_query["enterprise_id"] = ObjectId(enterprise_id)
+            secure_query["app_id"] = ObjectId(app_id)
         except:
-            secure_query["enterprise_id"] = enterprise_id
+            secure_query["app_id"] = app_id
 
     try:
         client = get_mongo_client()

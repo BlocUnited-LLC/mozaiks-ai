@@ -3,6 +3,9 @@
     {
       "id": "implementation_loop",
       "trigger_agent": "PatternAgent",
+      "spawn_mode": "generator_subrun",
+      "generator_workflow": "AgentGenerator",
+      "child_initial_agent": "WorkflowStrategyAgent",
       "resume_agent": "ProjectOverviewAgent",
       "logic": "Analyze the user's request. Trigger decomposition if the request involves generating multiple distinct, independent components such as: separate frontend and backend applications, multiple microservices, or multi-platform deliverables (web + mobile + API). Once the agent roster is this is determined, proceed to plan the necessary tools and technologies required for implementation. Do NOT trigger for simple single-application requests."
     },

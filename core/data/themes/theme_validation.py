@@ -1,6 +1,6 @@
 # =============================================================================
 # FILE: core/data/theme_validation.py
-# DESCRIPTION: Shared utilities for validating enterprise theme configurations
+# DESCRIPTION: Shared utilities for validating app theme configurations
 # =============================================================================
 from __future__ import annotations
 
@@ -221,7 +221,7 @@ def _print_merged(result: ThemeValidationResult, args: argparse.Namespace) -> No
 
 def build_theme_validation_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Validate enterprise theme payloads against the runtime schema",
+        description="Validate app theme payloads against the runtime schema",
     )
     parser.add_argument("--input", "-i", default="-", help="Path to JSON payload (use '-' for stdin)")
     parser.add_argument("--mode", choices=["auto", "update", "full"], default="auto", help="Validation mode")

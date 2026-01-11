@@ -53,7 +53,7 @@ $env:CLEAR_LOGS_ON_START = "1"
 
 **Important:**
 - **Never set `LLM_DEFAULT_CACHE_SEED` in production** unless you understand the reproducibility implications.
-- Per-chat cache seeds (derived from `enterprise_id:chat_id`) always override the default.
+- Per-chat cache seeds (derived from `app_id:chat_id`) always override the default.
 
 **Examples:**
 ```powershell
@@ -94,7 +94,7 @@ $env:CHAT_START_IDEMPOTENCY_SEC = "30"
 | `FREE_TRIAL_ENABLED` | boolean | `true` | Enable free trial token allocation for new users |
 | `FREE_TRIAL_TOKENS` | integer | `10000` | Token allocation for free trial accounts |
 
-**Note:** Token billing is platform-controlled (MozaiksStream integration). These settings only apply to internal token tracking.
+**Note:** Token billing is platform-controlled (MozaiksPay integration). These settings only apply to internal token tracking.
 
 **Examples:**
 ```powershell
@@ -364,7 +364,7 @@ services:
 **Per-Chat Deterministic (Default):**
 ```powershell
 # No env vars needed
-# Cache seed automatically derived from enterprise_id:chat_id
+# Cache seed automatically derived from app_id:chat_id
 ```
 
 **Randomized Process Default:**

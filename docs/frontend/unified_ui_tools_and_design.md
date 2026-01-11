@@ -3,7 +3,7 @@
 This single document supersedes and replaces the following prior files (now deprecated and slated for removal):
 
 - UI_COMPONENT_DESIGN_GUIDE.md
-- ENTERPRISE_THEME_MANAGEMENT.md
+- app_THEME_MANAGEMENT.md
 - AUTO_TOOL_COMPLETE_FLOW.md
 - AUTO_TOOL_PAYLOAD_FLATTENING.md
 - AUTO_TOOL_WORKFLOW_DISCOVERY_FIX.md
@@ -19,7 +19,7 @@ Author interactive UI tools (Python async tool + React component) that integrate
 - Emit UI events through `emit_ui_tool_event` / await `wait_for_ui_tool_response`.
 - Render components using the shared design system.
 - Support auto-tool structured output flow (flattening + discovery) without extra per-tool logic.
-- Respect enterprise theming without breaking multi-tenant isolation.
+- Respect app theming without breaking multi-tenant isolation.
 
 ---
 ## 2. High-Level Lifecycle
@@ -242,9 +242,9 @@ if (payload?.interaction_type === 'auto_tool' && !display) return true; // skip
 Use `payload.workflow_name` (source workflow) for module resolution. Do NOT use `payload.workflow.name` (user-generated metadata). Fix included in WorkflowUIRouter to avoid module lookup failures.
 
 ---
-## 11. Enterprise Theming Integration (Runtime Summary)
-- Themes stored in `Themes` collection, keyed by enterprise id.
-- GET `/api/themes/{enterprise_id}` returns merged theme (custom overrides + defaults).
+## 11. App Theming Integration (Runtime Summary)
+- Themes stored in `Themes` collection, keyed by app id.
+- GET `/api/themes/{app_id}` returns merged theme (custom overrides + defaults).
 - Frontend `themeProvider.js` loads and injects fonts + CSS vars.
 - Missing sections fallback automatically; never assume full override.
 - Theme metadata: fonts, colors.primary/background, shadows, branding.
@@ -307,7 +307,7 @@ If a session is paused (low balance) backend will not dispatch new tool events. 
 | Old File | Status | Integrated Section |
 |----------|--------|--------------------|
 | UI_COMPONENT_DESIGN_GUIDE.md | deprecated | §7 Design System Essentials |
-| ENTERPRISE_THEME_MANAGEMENT.md | deprecated | §11 Theming Integration |
+| app_THEME_MANAGEMENT.md | deprecated | §11 Theming Integration |
 | AUTO_TOOL_COMPLETE_FLOW.md | deprecated | §§8–10 Flow/Events/Discovery |
 | AUTO_TOOL_PAYLOAD_FLATTENING.md | deprecated | §8 Flattening |
 | AUTO_TOOL_WORKFLOW_DISCOVERY_FIX.md | deprecated | §10 Discovery |

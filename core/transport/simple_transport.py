@@ -8,6 +8,8 @@ import re
 import json
 import uuid
 import traceback
+import os
+import importlib
 from typing import Dict, Any, Optional, Union, Tuple, List
 from fastapi import WebSocket
 from datetime import datetime, timezone
@@ -29,10 +31,46 @@ from logs.logging_config import get_core_logger
 # Session manager for multi-workflow navigation
 from core.workflow import session_manager
 from core.transport.session_registry import session_registry
-from core.assistant.ask_mozaiks import get_ask_mozaiks_service
+
+# Runtime extensions (workflow-declared lifecycle hooks)
+from core.runtime.extensions import get_workflow_lifecycle_hooks
 
 # Get our enhanced loggers
 logger = get_core_logger("simple_transport")
+
+
+def _load_general_agent_service():
+    """Load the non-AG2 capability executor used for "general" mode.
+
+    Core transport must remain workflow-agnostic, so we resolve this via a module
+    path rather than importing workflow-specific code directly.
+    """
+
+    module_path = os.getenv("MOZAIKS_GENERAL_AGENT_MODULE", "core.capabilities.simple_llm")
+    factory_name = os.getenv("MOZAIKS_GENERAL_AGENT_FACTORY", "get_general_capability_service")
+    try:
+        module = importlib.import_module(module_path)
+        factory = getattr(module, factory_name, None)
+        if callable(factory):
+            return factory()
+        logger.debug(
+            "General agent factory not callable",
+            extra={"module": module_path, "factory": factory_name},
+        )
+    except Exception as exc:
+        logger.debug(
+            "General agent service unavailable",
+            extra={"module": module_path, "factory": factory_name, "error": str(exc)},
+        )
+    return None
+
+
+# NOTE: _load_platform_build_lifecycle() has been REMOVED.
+# Lifecycle hooks are now declared per-workflow in orchestrator.yaml via:
+#   runtime_extensions:
+#     - kind: lifecycle_hooks
+#       entrypoint: workflows.MyWorkflow.tools.lifecycle:get_hooks
+# Use get_workflow_lifecycle_hooks(workflow_name) from core.runtime.extensions instead.
 
 
 # Module-level content cleaner to allow reuse without constructing SimpleTransport
@@ -120,9 +158,49 @@ class SimpleTransport:
         self.pending_ui_tool_responses: Dict[str, asyncio.Future] = {}
         self._ui_tool_metadata: Dict[str, Dict[str, Any]] = {}
 
+        # Runtime context trigger managers (per chat)
+        # Used to apply declarative ui_response triggers without bespoke agents.
+        self._derived_context_managers: Dict[str, Any] = {}
+
+        # Background workflow execution (for parallel child chats)
+        self._background_tasks: Dict[str, asyncio.Task] = {}
+        try:
+            max_parallel = int(os.environ.get("MOZAIKS_MAX_PARALLEL_WORKFLOWS", "4"))
+        except Exception:
+            max_parallel = 4
+        self._workflow_spawn_semaphore = asyncio.Semaphore(max(1, max_parallel))
+
+        # Usage emission fan-out (measurement only; no billing enforcement).
+        try:
+            from core.events.unified_event_dispatcher import get_event_dispatcher
+
+            dispatcher = get_event_dispatcher()
+            dispatcher.register_handler("chat.usage_delta", self._handle_usage_delta_event)
+            dispatcher.register_handler("chat.usage_summary", self._handle_usage_summary_event)
+        except Exception:
+            logger.debug("Usage event handler registration skipped", exc_info=True)
+
         self._initialized = True
         logger.info("🚀 SimpleTransport singleton initialized")
         
+    async def _handle_usage_delta_event(self, payload: Dict[str, Any]) -> None:
+        chat_id = payload.get("chat_id")
+        if not chat_id:
+            return
+        try:
+            await self.send_event_to_ui({"kind": "usage_delta", **payload}, str(chat_id))
+        except Exception:
+            logger.debug("Failed to forward usage_delta to UI", exc_info=True)
+
+    async def _handle_usage_summary_event(self, payload: Dict[str, Any]) -> None:
+        chat_id = payload.get("chat_id")
+        if not chat_id:
+            return
+        try:
+            await self.send_event_to_ui({"kind": "usage_summary", **payload}, str(chat_id))
+        except Exception:
+            logger.debug("Failed to forward usage_summary to UI", exc_info=True)
+
     # ==================================================================================
     # USER INPUT COLLECTION (Production-Ready)
     # ==================================================================================
@@ -255,6 +333,37 @@ class SimpleTransport:
         
         return True
 
+    def _sanitize_trace_content(self, content: str, *, limit: int = 800) -> Tuple[str, bool, bool]:
+        """Redact likely secrets and truncate trace content before sending to UI."""
+        if not isinstance(content, str):
+            return str(content), False, False
+
+        redacted = False
+        value = content
+
+        rules: List[Tuple[re.Pattern, str]] = [
+            (re.compile(r"\bBearer\s+[A-Za-z0-9\-_\.=]+\b"), "Bearer [REDACTED]"),
+            (re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"), "sk-[REDACTED]"),
+            (re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"), "ghp_[REDACTED]"),
+            (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AKIA[REDACTED]"),
+            (re.compile(r"mongodb\+srv://[^\s]+"), "mongodb+srv://[REDACTED]"),
+            (re.compile(r"mongodb://[^\s]+"), "mongodb://[REDACTED]"),
+            (re.compile(r"eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}"), "[REDACTED_JWT]"),
+            (re.compile(r"(?i)\b(api[_-]?key|secret|password)\s*[:=]\s*[^\s]+"), r"\1=[REDACTED]"),
+        ]
+
+        for pattern, replacement in rules:
+            if pattern.search(value):
+                redacted = True
+                value = pattern.sub(replacement, value)
+
+        truncated = False
+        if limit and len(value) > limit:
+            value = value[:limit].rstrip() + "…"
+            truncated = True
+
+        return value, redacted, truncated
+
     # ==================================================================================
     # UNIFIED USER MESSAGE INGESTION
     # ==================================================================================
@@ -309,7 +418,7 @@ class SimpleTransport:
         except Exception as emit_err:
             logger.error(f"Failed to emit user message event for {chat_id}: {emit_err}")
 
-    async def process_component_action(self, *, chat_id: str, enterprise_id: str, component_id: str, action_type: str, action_data: dict) -> Dict[str, Any]:
+    async def process_component_action(self, *, chat_id: str, app_id: str, component_id: str, action_type: str, action_data: dict) -> Dict[str, Any]:
         """Apply a component action to context variables and emit acknowledgement.
 
         Returns a structured result indicating applied changes.
@@ -341,7 +450,7 @@ class SimpleTransport:
                         'timestamp': now,
                         'event_type': 'context.updated',
                     }
-                    await coll.update_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"$push": {"messages": snapshot_doc}, "$set": {"last_updated_at": now}})
+                    await coll.update_one({"_id": chat_id, "app_id": app_id}, {"$push": {"messages": snapshot_doc}, "$set": {"last_updated_at": now}})
                 except Exception as pe:
                     logger.debug(f"Context snapshot persistence failed: {pe}")
             # Emit acknowledgement event
@@ -404,6 +513,27 @@ class SimpleTransport:
             logger.info(f"✅ [TRANSPORT] Envelope created successfully: type={envelope.get('type')}, has_data={bool(envelope.get('data'))}")
 
             envelope_type = envelope.get('type') if isinstance(envelope, dict) else None
+
+            def _downgrade_to_trace(*, agent: str) -> bool:
+                """Convert non-visual chat.text/print into a UI-hidden trace event."""
+                if not isinstance(envelope, dict):
+                    return False
+                if envelope_type not in ("chat.text", "chat.print"):
+                    return False
+                data_payload = envelope.get("data")
+                if not isinstance(data_payload, dict):
+                    return False
+                original_content = data_payload.get("content")
+                if isinstance(original_content, str):
+                    sanitized, redacted, truncated = self._sanitize_trace_content(original_content)
+                    data_payload["content"] = sanitized
+                    data_payload["trace_original_len"] = len(original_content)
+                    data_payload["trace_redacted"] = redacted
+                    data_payload["trace_truncated"] = truncated
+                data_payload["ui_visibility"] = "trace"
+                data_payload["trace_reason"] = "visual_agents_gate"
+                data_payload["trace_agent"] = agent
+                return True
             
             # Determine if this is a UI tool event (requires user interaction)
             is_ui_tool_event = False
@@ -430,8 +560,11 @@ class SimpleTransport:
             if isinstance(event, BaseEvent) and hasattr(event, 'sender') and getattr(event.sender, 'name', None):  # type: ignore
                 agent_name = event.sender.name  # type: ignore
             if not skip_visibility_filter and agent_name and not self.should_show_to_user(agent_name, chat_id):
-                logger.info(f"🚫 [TRANSPORT] Filtered out AG2 event from agent '{agent_name}' for chat {chat_id} (should_show_to_user=False)")
-                return
+                if _downgrade_to_trace(agent=str(agent_name)):
+                    logger.info(f"[TRANSPORT] Downgraded non-visual message from '{agent_name}' to trace for chat {chat_id}")
+                else:
+                    logger.info(f"🚫 [TRANSPORT] Filtered out AG2 event from agent '{agent_name}' for chat {chat_id} (should_show_to_user=False)")
+                    return
 
             # Apply visibility filtering for dict events (post-envelope) as well
             if not agent_name:
@@ -441,8 +574,11 @@ class SimpleTransport:
                     if not agent_name and isinstance(event, dict):
                         agent_name = event.get('agent') or event.get('agent_name')
                 if not skip_visibility_filter and agent_name and not self.should_show_to_user(agent_name, chat_id):
-                    logger.info(f"🚫 [TRANSPORT] Filtered out event from agent '{agent_name}' for chat {chat_id} (visual_agents gate, should_show_to_user=False)")
-                    return
+                    if _downgrade_to_trace(agent=str(agent_name)):
+                        logger.info(f"[TRANSPORT] Downgraded non-visual message from '{agent_name}' to trace for chat {chat_id}")
+                    else:
+                        logger.info(f"🚫 [TRANSPORT] Filtered out event from agent '{agent_name}' for chat {chat_id} (visual_agents gate, should_show_to_user=False)")
+                        return
                 
             # Record performance metrics for tool calls (best-effort)
             try:
@@ -468,6 +604,29 @@ class SimpleTransport:
 
             logger.info(f"📤 [TRANSPORT] Sending envelope: type={envelope.get('type')}, chat_id={chat_id}")
             await self._broadcast_to_websockets(envelope, chat_id)
+
+            # Runtime hook: surface run completion to the unified dispatcher so
+            # higher-level coordinators (e.g., workflow pack adapter) can react.
+            try:
+                envelope_type = envelope.get('type') if isinstance(envelope, dict) else None
+                if envelope_type == 'chat.run_complete':
+                    data_payload = envelope.get('data') if isinstance(envelope, dict) else None
+                    if isinstance(data_payload, dict):
+                        dispatch_payload = dict(data_payload)
+                        if chat_id and "chat_id" not in dispatch_payload:
+                            dispatch_payload["chat_id"] = chat_id
+                        try:
+                            conn = self.connections.get(chat_id) if chat_id else None
+                            if isinstance(conn, dict):
+                                for k in ("app_id", "user_id", "workflow_name", "ws_id"):
+                                    v = conn.get(k)
+                                    if v is not None and k not in dispatch_payload:
+                                        dispatch_payload[k] = v
+                        except Exception:
+                            pass
+                        asyncio.create_task(dispatcher.emit('chat.run_complete', dispatch_payload))
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"❌ Failed to serialize or send UI event: {e}\n{traceback.format_exc()}")
 
@@ -652,11 +811,11 @@ class SimpleTransport:
         artifact_id = data.get("artifact_id")
         
         conn_meta = self.connections.get(chat_id, {})
-        enterprise_id = conn_meta.get("enterprise_id")
+        app_id = conn_meta.get("app_id")
         user_id = conn_meta.get("user_id")
         
-        if not enterprise_id or not user_id:
-            logger.error(f"❌ Missing enterprise_id or user_id for artifact action in chat {chat_id}")
+        if not app_id or not user_id:
+            logger.error(f"❌ Missing app_id or user_id for artifact action in chat {chat_id}")
             return
         
         # Route: launch_workflow (pause current, create new session)
@@ -668,20 +827,25 @@ class SimpleTransport:
             
             logger.info(f"🚀 Launching workflow {target_workflow} from chat {chat_id}")
             
-            # Validate dependencies before launching
-            from core.workflow.dependencies import dependency_manager
-            is_valid, error_msg = await dependency_manager.validate_workflow_dependencies(
-                target_workflow, enterprise_id, user_id
+        # Validate pack prerequisites before launching
+            from core.workflow.pack.gating import validate_pack_prereqs
+
+            pm = self._get_or_create_persistence_manager()
+            is_valid, error_msg = await validate_pack_prereqs(
+                app_id=str(app_id),
+                user_id=str(user_id),
+                workflow_name=str(target_workflow),
+                persistence=pm,
             )
             
             if not is_valid:
-                logger.warning(f"⚠️ Dependency validation failed for {target_workflow}: {error_msg}")
+                logger.warning(f"⚠️ Prerequisite validation failed for {target_workflow}: {error_msg}")
                 await websocket.send_json({
-                    "type": "chat.dependency_blocked",
+                    "type": "chat.prereq_blocked",
                     "data": {
                         "workflow_name": target_workflow,
                         "message": error_msg or "Prerequisites not met",
-                        "error_code": "WORKFLOW_DEPENDENCIES_NOT_MET"
+                        "error_code": "WORKFLOW_PREREQS_NOT_MET"
                     },
                     "chat_id": chat_id,
                     "timestamp": datetime.now(timezone.utc).isoformat()
@@ -690,15 +854,15 @@ class SimpleTransport:
             
             # Create new session and artifact (old session stays IN_PROGRESS)
             new_session = await session_manager.create_workflow_session(
-                enterprise_id, user_id, target_workflow
+                app_id, user_id, target_workflow
             )
             artifact = await session_manager.create_artifact_instance(
-                enterprise_id,
+                app_id,
                 target_workflow,
                 payload.get("artifact_type", "ActionPlan")
             )
             await session_manager.attach_artifact_to_session(
-                new_session["_id"], artifact["_id"], enterprise_id
+                new_session["_id"], artifact["_id"], app_id
             )
             
             logger.info(f"✅ Created new session {new_session['_id']} with artifact {artifact['_id']}")
@@ -710,7 +874,7 @@ class SimpleTransport:
                     "chat_id": new_session["_id"],
                     "workflow_name": target_workflow,
                     "artifact_instance_id": artifact["_id"],
-                    "enterprise_id": enterprise_id
+                    "app_id": app_id
                 },
                 "correlation_id": event.get("correlation_id"),
                 "timestamp": datetime.now(timezone.utc).isoformat()
@@ -725,7 +889,7 @@ class SimpleTransport:
                 return
             
             await session_manager.update_artifact_state(
-                artifact_id, enterprise_id, state_updates
+                artifact_id, app_id, state_updates
             )
             
             logger.info(f"✅ Updated artifact state for {artifact_id}: {list(state_updates.keys())}")
@@ -775,76 +939,37 @@ class SimpleTransport:
         the WebSocket consumer a minimal, deterministic replay mechanism.
         """
         try:
-            from core.data.persistence.persistence_manager import AG2PersistenceManager
-            if not hasattr(self, '_persistence_manager'):
-                self._persistence_manager = AG2PersistenceManager()
             conn_meta = self.connections.get(chat_id) or {}
-            enterprise_id = conn_meta.get('enterprise_id')
-            if not enterprise_id:
-                raise RuntimeError("Missing enterprise_id for resume")
+            app_id = conn_meta.get('app_id')
+            if not app_id:
+                raise RuntimeError("Missing app_id for resume")
 
-            # Fetch full message history (in-progress or completed allowed).
-            # We intentionally do not restrict to IN_PROGRESS so a user can
-            # re-open a completed chat in a read-only fashion.
-            coll = await self._persistence_manager._coll()  # type: ignore[attr-defined]
-            doc = await coll.find_one({"_id": chat_id, "enterprise_id": enterprise_id}, {"messages": 1})
-            full_messages: List[Dict[str, Any]] = doc.get("messages", []) if doc else []
+            # Use the AG2-aligned resumer so visibility filtering and UI tool replay
+            # semantics stay consistent with live events (no leaking hidden agents).
+            from core.transport.resume_groupchat import GroupChatResumer
 
-            if last_client_index < -1:
-                last_client_index = -1  # sanitize
+            resumer = GroupChatResumer()
+            summary = await resumer.handle_resume_request(
+                chat_id=str(chat_id),
+                app_id=str(app_id),
+                last_client_index=int(last_client_index),
+                send_event=self.send_event_to_ui,
+            )
 
-            # Determine missing slice (exclusive of last_client_index)
-            start_idx = last_client_index + 1
-            if start_idx < 0:
-                start_idx = 0
-            missing = full_messages[start_idx:]
-
-            replayed_count = 0
-            last_idx_sent = last_client_index
-            for idx_offset, env in enumerate(missing):
-                absolute_index = start_idx + idx_offset
-                last_idx_sent = absolute_index
-                try:
-                    role = env.get('role')
-                    if role == 'assistant':
-                        agent_name = env.get('agent_name') or env.get('name') or 'assistant'
-                    else:
-                        agent_name = 'user'
-                    await websocket.send_json({
-                        'type': 'chat.text',
-                        'data': {
-                            'agent': agent_name,
-                            'content': env.get('content'),
-                            'index': absolute_index,
-                            'replay': True,
-                            'chat_id': chat_id,
-                        },
-                        'timestamp': datetime.now(timezone.utc).isoformat()
-                    })
-                    replayed_count += 1
-                except Exception as re:
-                    logger.warning(f"Failed to replay message index={absolute_index}: {re}")
-
-            await websocket.send_json({
-                'type': 'chat.resume_boundary',
-                'data': {
-                    'chat_id': chat_id,
-                    'replayed_messages': replayed_count,
-                    'last_message_index': last_idx_sent,
-                    'total_messages': len(full_messages)
-                },
-                'timestamp': datetime.now(timezone.utc).isoformat()
-            })
-
-            # Real-time sequence continuity: if we already had a higher
-            # counter (e.g. resumed mid-flight) we do not reduce it.
-            if replayed_count:
+            # Real-time sequence continuity: do not reduce existing counter.
+            last_idx_sent = summary.get("last_message_index") if isinstance(summary, dict) else None
+            if isinstance(last_idx_sent, int):
                 existing_seq = self._sequence_counters.get(chat_id, 0)
                 if existing_seq < last_idx_sent + 1:
                     self._sequence_counters[chat_id] = last_idx_sent + 1
 
             logger.info(
-                f"✅ Resume complete chat={chat_id} sent={replayed_count} missing_from>{last_client_index} now_at_index={last_idx_sent}"
+                "✅ Resume complete chat=%s replayed=%s missing_from>%s now_at_index=%s total=%s",
+                chat_id,
+                (summary.get("replayed_messages") if isinstance(summary, dict) else None),
+                last_client_index,
+                last_idx_sent,
+                (summary.get("total_messages") if isinstance(summary, dict) else None),
             )
         except Exception as e:
             logger.error(f"❌ Resume failed chat={chat_id}: {e}")
@@ -877,7 +1002,13 @@ class SimpleTransport:
             # Canonical resume field: lastClientIndex (0-based index of last message the client has)
             return all(field in message_data for field in ["chat_id", "lastClientIndex"]) and isinstance(message_data.get("lastClientIndex"), int)
         
-        elif msg_type in ("chat.enter_general_mode", "chat.start_general_chat", "chat.switch_workflow"):
+        elif msg_type in (
+            "chat.enter_general_mode",
+            "chat.start_general_chat",
+            "chat.switch_workflow",
+            "chat.start_workflow",
+            "chat.start_workflow_batch",
+        ):
             # Mode switching commands - no additional validation needed
             return True
         
@@ -914,7 +1045,7 @@ class SimpleTransport:
         chat_id: str,
         user_id: str,
         workflow_name: str,
-        enterprise_id: Optional[str] = None,
+        app_id: Optional[str] = None,
         ws_id: Optional[int] = None
     ) -> None:
         """Handle WebSocket connection for real-time communication with multi-workflow session support"""
@@ -928,7 +1059,7 @@ class SimpleTransport:
             "websocket": websocket,
             "user_id": user_id,
             "workflow_name": workflow_name,
-            "enterprise_id": enterprise_id,
+            "app_id": app_id,
             "active": True,
             "ws_id": ws_id,  # Track WebSocket ID for session switching
         }
@@ -951,7 +1082,7 @@ class SimpleTransport:
                 await self._flush_message_queue(chat_id)
 
         # H5: Auto-resume for IN_PROGRESS chats (check status and restore chat history)
-        await self._auto_resume_if_needed(chat_id, websocket, enterprise_id)
+        await self._auto_resume_if_needed(chat_id, websocket, app_id)
         
         try:
             # Inbound loop: receive JSON control messages from client
@@ -999,13 +1130,13 @@ class SimpleTransport:
                     if not req_id and is_general_mode:
                         if not text:
                             await websocket.send_json({
-                                "type": "chat.error",
-                                "data": {
-                                    "message": "Message cannot be empty in Ask Mozaiks mode",
-                                    "error_code": "GENERAL_MODE_EMPTY_MESSAGE"
-                                },
-                                "timestamp": datetime.now(timezone.utc).isoformat()
-                            })
+                                    "type": "chat.error",
+                                    "data": {
+                                        "message": "Message cannot be empty in general mode",
+                                        "error_code": "GENERAL_MODE_EMPTY_MESSAGE"
+                                    },
+                                    "timestamp": datetime.now(timezone.utc).isoformat()
+                                })
                             continue
                         try:
                             await self._handle_general_agent_exchange(
@@ -1020,11 +1151,11 @@ class SimpleTransport:
                                 "timestamp": datetime.now(timezone.utc).isoformat()
                             })
                         except Exception as general_err:
-                            logger.error(f"Failed to process Ask Mozaiks message for {chat_id}: {general_err}")
+                            logger.error(f"Failed to process general-mode message for {chat_id}: {general_err}")
                             await websocket.send_json({
                                 "type": "chat.error",
                                 "data": {
-                                    "message": "Ask Mozaiks is unavailable right now. Please try again.",
+                                    "message": "General mode is unavailable right now. Please try again.",
                                     "error_code": "GENERAL_MODE_FAILED"
                                 },
                                 "timestamp": datetime.now(timezone.utc).isoformat()
@@ -1047,15 +1178,23 @@ class SimpleTransport:
                     else:
                         # Free-form user message (no pending request). Persist & feed to orchestrator.
                         try:
+                            target_chat_id = chat_id
+                            try:
+                                if ws_id:
+                                    active_ctx = session_registry.get_active_workflow(ws_id)
+                                    if active_ctx and getattr(active_ctx, "chat_id", None):
+                                        target_chat_id = str(active_ctx.chat_id)
+                            except Exception:
+                                target_chat_id = chat_id
                             await self.process_incoming_user_message(
-                                chat_id=chat_id,
-                                user_id=self.connections.get(chat_id, {}).get('user_id'),
+                                chat_id=target_chat_id,
+                                user_id=self.connections.get(target_chat_id, {}).get('user_id') or self.connections.get(chat_id, {}).get('user_id'),
                                 content=text,
                                 source='ws'
                             )
                             await websocket.send_json({
                                 "type": "chat.input_ack",
-                                "data": {"chat_id": chat_id, "status": "accepted"},
+                                "data": {"chat_id": target_chat_id, "status": "accepted"},
                                 "timestamp": datetime.now(timezone.utc).isoformat()
                             })
                         except Exception as e:
@@ -1106,6 +1245,7 @@ class SimpleTransport:
                 if mtype == "chat.switch_workflow":
                     try:
                         target_chat_id = data.get("chat_id")
+                        frontend_context = data.get("frontend_context")  # UI-scoped context from host app
                         
                         if not target_chat_id:
                             raise ValueError("chat_id required for workflow switch")
@@ -1113,6 +1253,13 @@ class SimpleTransport:
                         ws_id = self.connections.get(chat_id, {}).get("ws_id")
                         if not ws_id:
                             raise ValueError("WebSocket ID not found in connection metadata")
+                        
+                        # Store frontend context in connection metadata for this chat
+                        if frontend_context and isinstance(frontend_context, dict):
+                            if target_chat_id not in self.connections:
+                                self.connections[target_chat_id] = {}
+                            self.connections[target_chat_id]["frontend_context"] = frontend_context
+                            logger.info(f"📋 Stored frontend context for {target_chat_id}: {list(frontend_context.keys())}")
                         
                         # Switch workflow context in registry
                         active_context = session_registry.switch_workflow(ws_id, target_chat_id)
@@ -1130,7 +1277,7 @@ class SimpleTransport:
                                 "to_chat_id": target_chat_id,
                                 "workflow_name": active_context.workflow_name,
                                 "artifact_id": active_context.artifact_id,
-                                "enterprise_id": active_context.enterprise_id
+                                "app_id": active_context.app_id
                             },
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         })
@@ -1143,7 +1290,7 @@ class SimpleTransport:
                         })
                     continue
                 
-                # Handle "Ask Mozaiks" mode (pause all workflows, general Q&A)
+                # Handle general mode (pause all workflows; non-AG2 capability execution)
                 if mtype == "chat.enter_general_mode":
                     try:
                         ws_id = self.connections.get(chat_id, {}).get("ws_id")
@@ -1159,39 +1306,8 @@ class SimpleTransport:
                         logger.info(
                             f"💬 Entered general mode (ws_id={ws_id}, general_chat={general_chat_id})"
                         )
-                        
-                        # Only send greeting if this is a new session (no existing messages)
-                        enterprise_id = self.connections.get(chat_id, {}).get("enterprise_id")
-                        pm = self._get_or_create_persistence_manager()
-                        transcript = await pm.fetch_general_chat_transcript(
-                            general_chat_id=general_chat_id,
-                            enterprise_id=enterprise_id,
-                            limit=1
-                        )
-                        
-                        has_messages = transcript and transcript.get("messages") and len(transcript["messages"]) > 0
-                        
-                        if not has_messages:
-                            # New session - send static welcome message (no LLM call to save tokens)
-                            logger.info(f"🆕 [GENERAL_MODE] New session, sending greeting for {general_chat_id}")
-                            await self.send_event_to_ui(
-                                {
-                                    "kind": "text",
-                                    "agent": "Ask Mozaiks",
-                                    "content": "Hi! I'm Ask Mozaiks, your AI companion. What can I help you with today? 😊",
-                                    "chat_id": chat_id,
-                                    "metadata": {
-                                        "source": "general_agent",
-                                        "general_chat_id": general_chat_id,
-                                        "is_greeting": True,
-                                    },
-                                },
-                                chat_id,
-                            )
-                        else:
-                            logger.info(f"🔄 [GENERAL_MODE] Resuming existing session {general_chat_id} (has messages, skipping greeting)")
-                        
-                        # Notify frontend (no message field - greeting sent separately)
+
+                        # Notify frontend
                         await websocket.send_json({
                             "type": "chat.mode_changed",
                             "data": {
@@ -1220,23 +1336,7 @@ class SimpleTransport:
                             raise ValueError("WebSocket ID not found in connection metadata")
                         session_registry.enter_general_mode(ws_id)
                         general_ctx = await self._ensure_general_chat_context(chat_id=chat_id, force_new=True)
-                        
-                        # Send static welcome message for new session (no LLM call)
-                        await self.send_event_to_ui(
-                            {
-                                "kind": "text",
-                                "agent": "Ask Mozaiks",
-                                "content": "Hi! I'm Ask Mozaiks, your AI companion. What can I help you with today? 😊",
-                                "chat_id": chat_id,
-                                "metadata": {
-                                    "source": "general_agent",
-                                    "general_chat_id": general_ctx.get("chat_id"),
-                                    "is_greeting": True,
-                                },
-                            },
-                            chat_id,
-                        )
-                        
+
                         await websocket.send_json({
                             "type": "chat.general_session_created",
                             "data": {
@@ -1263,26 +1363,69 @@ class SimpleTransport:
                 if mtype == "chat.start_workflow":
                     try:
                         target_workflow = data.get("workflow_name")
+                        initial_message = data.get("initial_message") or data.get("message")
+                        auto_run = bool(data.get("auto_run", True))
+                        initial_agent_name_override = data.get("initial_agent") or data.get("initial_agent_name")
+                        frontend_context = data.get("frontend_context")  # UI-scoped context from host app
                         
                         if not target_workflow:
                             raise ValueError("workflow_name required")
                         
                         ws_id = self.connections.get(chat_id, {}).get("ws_id")
-                        ent_id = self.connections.get(chat_id, {}).get("enterprise_id")
+                        ent_id = self.connections.get(chat_id, {}).get("app_id")
                         usr_id = self.connections.get(chat_id, {}).get("user_id")
                         
                         if not ws_id or not ent_id or not usr_id:
                             raise ValueError("Missing connection metadata")
+
+                        # Enforce pack prerequisites before starting/spawning.
+                        from core.workflow.pack.gating import validate_pack_prereqs
+                        pm = self._get_or_create_persistence_manager()
+                        ok, prereq_error = await validate_pack_prereqs(
+                            app_id=str(ent_id),
+                            user_id=str(usr_id),
+                            workflow_name=str(target_workflow),
+                            persistence=pm,
+                        )
+                        if not ok:
+                            await websocket.send_json(
+                                {
+                                    "type": "chat.prereq_blocked",
+                                    "data": {
+                                        "workflow_name": str(target_workflow),
+                                        "message": prereq_error or "Prerequisites not met",
+                                        "error_code": "WORKFLOW_PREREQS_NOT_MET",
+                                    },
+                                    "chat_id": chat_id,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
+                            continue
                         
                         # Create new chat session
                         new_chat_id = f"chat_{target_workflow}_{uuid.uuid4().hex[:8]}"
+
+                        # Ensure Mongo chat session exists so downstream persistence works
+                        await pm.create_chat_session(
+                            chat_id=new_chat_id,
+                            app_id=str(ent_id),
+                            workflow_name=str(target_workflow),
+                            user_id=str(usr_id),
+                        )
+                        
+                        # Store frontend context in connection metadata for this chat
+                        if frontend_context and isinstance(frontend_context, dict):
+                            if new_chat_id not in self.connections:
+                                self.connections[new_chat_id] = {}
+                            self.connections[new_chat_id]["frontend_context"] = frontend_context
+                            logger.info(f"📋 Stored frontend context for new workflow {new_chat_id}: {list(frontend_context.keys())}")
                         
                         # Register in session registry (pauses current workflow)
                         session_registry.add_workflow(
                             ws_id=ws_id,
                             chat_id=new_chat_id,
                             workflow_name=target_workflow,
-                            enterprise_id=ent_id,
+                            app_id=ent_id,
                             user_id=usr_id,
                             auto_activate=True
                         )
@@ -1295,11 +1438,25 @@ class SimpleTransport:
                             "data": {
                                 "chat_id": new_chat_id,
                                 "workflow_name": target_workflow,
-                                "enterprise_id": ent_id,
+                                "app_id": ent_id,
                                 "user_id": usr_id
                             },
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         })
+
+                        # Optionally start execution immediately (parallel-safe)
+                        if auto_run:
+                            self._background_tasks[new_chat_id] = asyncio.create_task(
+                                self._run_workflow_background(
+                                    chat_id=new_chat_id,
+                                    workflow_name=str(target_workflow),
+                                    app_id=str(ent_id),
+                                    user_id=str(usr_id),
+                                    ws_id=ws_id,
+                                    initial_message=str(initial_message) if isinstance(initial_message, str) and initial_message.strip() else None,
+                                    initial_agent_name_override=str(initial_agent_name_override) if isinstance(initial_agent_name_override, str) and initial_agent_name_override.strip() else None,
+                                )
+                            )
                     except Exception as we:
                         logger.error(f"❌ Failed to start workflow: {we}")
                         await websocket.send_json({
@@ -1307,6 +1464,148 @@ class SimpleTransport:
                             "data": {"message": f"Workflow start failed: {str(we)}", "error_code": "START_WORKFLOW_FAILED"},
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         })
+                    continue
+
+                # Start multiple workflows concurrently (batch)
+                if mtype == "chat.start_workflow_batch":
+                    try:
+                        runs = data.get("runs")
+                        activate_first = bool(data.get("activate_first", False))
+                        auto_run = bool(data.get("auto_run", True))
+
+                        ws_id = self.connections.get(chat_id, {}).get("ws_id")
+                        ent_id = self.connections.get(chat_id, {}).get("app_id")
+                        usr_id = self.connections.get(chat_id, {}).get("user_id")
+                        if not ws_id or not ent_id or not usr_id:
+                            raise ValueError("Missing connection metadata")
+
+                        if not isinstance(runs, list) or not runs:
+                            raise ValueError("runs must be a non-empty list")
+
+                        pm = self._get_or_create_persistence_manager()
+                        from core.workflow.pack.gating import validate_pack_prereqs
+
+                        started: List[Dict[str, Any]] = []
+                        blocked: List[Dict[str, Any]] = []
+                        for i, run in enumerate(runs):
+                            if not isinstance(run, dict):
+                                raise ValueError("Each run must be an object")
+                            target_workflow = run.get("workflow_name")
+                            if not target_workflow:
+                                raise ValueError("Each run requires workflow_name")
+
+                            initial_message = run.get("initial_message") or run.get("message") or run.get("prompt")
+                            initial_agent_name_override = run.get("initial_agent") or run.get("initial_agent_name")
+                            label = run.get("label")
+
+                            ok, prereq_error = await validate_pack_prereqs(
+                                app_id=str(ent_id),
+                                user_id=str(usr_id),
+                                workflow_name=str(target_workflow),
+                                persistence=pm,
+                            )
+                            if not ok:
+                                blocked.append(
+                                    {
+                                        "workflow_name": str(target_workflow),
+                                        "reason": prereq_error or "Prerequisites not met",
+                                    }
+                                )
+                                await websocket.send_json(
+                                    {
+                                        "type": "chat.prereq_blocked",
+                                        "data": {
+                                            "workflow_name": str(target_workflow),
+                                            "message": prereq_error or "Prerequisites not met",
+                                            "error_code": "WORKFLOW_PREREQS_NOT_MET",
+                                        },
+                                        "chat_id": chat_id,
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    }
+                                )
+                                continue
+
+                            new_chat_id = f"chat_{target_workflow}_{uuid.uuid4().hex[:8]}"
+
+                            await pm.create_chat_session(
+                                chat_id=new_chat_id,
+                                app_id=str(ent_id),
+                                workflow_name=str(target_workflow),
+                                user_id=str(usr_id),
+                            )
+
+                            # Register but keep paused by default so we don't thrash the active chat
+                            session_registry.add_workflow(
+                                ws_id=ws_id,
+                                chat_id=new_chat_id,
+                                workflow_name=str(target_workflow),
+                                app_id=str(ent_id),
+                                user_id=str(usr_id),
+                                auto_activate=bool(activate_first and i == 0),
+                            )
+
+                            started.append(
+                                {
+                                    "chat_id": new_chat_id,
+                                    "workflow_name": str(target_workflow),
+                                    "app_id": str(ent_id),
+                                    "user_id": str(usr_id),
+                                    "label": str(label) if label else None,
+                                }
+                            )
+
+                            # Notify frontend using the existing single-start event (so tabs can appear)
+                            await websocket.send_json(
+                                {
+                                    "type": "chat.workflow_started",
+                                    "data": {
+                                        "chat_id": new_chat_id,
+                                        "workflow_name": str(target_workflow),
+                                        "app_id": str(ent_id),
+                                        "user_id": str(usr_id),
+                                        "label": str(label) if label else None,
+                                    },
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
+
+                            if auto_run:
+                                self._background_tasks[new_chat_id] = asyncio.create_task(
+                                    self._run_workflow_background(
+                                        chat_id=new_chat_id,
+                                        workflow_name=str(target_workflow),
+                                        app_id=str(ent_id),
+                                        user_id=str(usr_id),
+                                        ws_id=ws_id,
+                                        initial_message=str(initial_message) if isinstance(initial_message, str) and initial_message.strip() else None,
+                                        initial_agent_name_override=str(initial_agent_name_override) if isinstance(initial_agent_name_override, str) and initial_agent_name_override.strip() else None,
+                                    )
+                                )
+
+                        # Summary ack (best-effort)
+                        await websocket.send_json(
+                            {
+                                "type": "chat.workflow_batch_started",
+                                "data": {
+                                    "count": len(started),
+                                    "workflows": started,
+                                    "blocked": blocked,
+                                },
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                    except Exception as be:
+                        logger.error(f"❌ Failed to start workflow batch: {be}")
+                        await websocket.send_json(
+                            {
+                                "type": "chat.error",
+                                "data": {
+                                    "message": f"Workflow batch start failed: {str(be)}",
+                                    "error_code": "START_WORKFLOW_BATCH_FAILED",
+                                },
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
                     continue
                 
                 # Client resume handshake (B11)
@@ -1342,7 +1641,8 @@ class SimpleTransport:
         user_id: Optional[str],
         workflow_name: str,
         message: Optional[str],
-        enterprise_id: str
+        app_id: str,
+        initial_agent_name_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Handle user input from the POST API endpoint with smart routing
@@ -1351,6 +1651,22 @@ class SimpleTransport:
         If yes, passes message to existing session. If no, starts new workflow.
         """
         try:
+            starting_new_workflow = False
+            is_build = False
+            
+            # Load workflow-declared lifecycle hooks (modular, per-workflow)
+            lifecycle = get_workflow_lifecycle_hooks(workflow_name)
+            _is_build_workflow = lifecycle.get("is_build_workflow")
+            _emit_build_started = lifecycle.get("on_start")
+            _emit_build_completed = lifecycle.get("on_complete")
+            _emit_build_failed = lifecycle.get("on_fail")
+            
+            try:
+                if callable(_is_build_workflow):
+                    is_build = bool(_is_build_workflow(workflow_name))
+            except Exception:
+                is_build = False
+
             # Check if there's an active AG2 session waiting for user input
             has_active_session = bool(self._input_request_registries.get(chat_id))
 
@@ -1399,6 +1715,7 @@ class SimpleTransport:
 
             # No active session or callback failed - start new workflow
             logger.info(f"🚀 [SMART_ROUTING] Starting new workflow for chat {chat_id}")
+            starting_new_workflow = True
 
             from core.workflow.orchestration_patterns import run_workflow_orchestration
 
@@ -1415,25 +1732,214 @@ class SimpleTransport:
                 except Exception as persist_err:
                     logger.debug(f"Early persistence of user message failed (non-fatal): {persist_err}")
 
+            # Build lifecycle reporting (best-effort; non-blocking).
+            if is_build and _emit_build_started is not None:
+                try:
+                    asyncio.create_task(
+                        _emit_build_started(
+                            app_id=app_id,
+                            build_id=chat_id,
+                            user_id=user_id,
+                            workflow_name=workflow_name,
+                        )
+                    )
+                except Exception:
+                    pass
+
             # Launch orchestration (will also seed initial_messages including the persisted one)
             await run_workflow_orchestration(
                 workflow_name=workflow_name,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 chat_id=chat_id,
                 user_id=user_id,
-                initial_message=None  # already persisted & sent upstream
+                initial_message=None,  # already persisted & sent upstream
+                initial_agent_name_override=initial_agent_name_override,
             )
+
+            if is_build and _emit_build_completed is not None:
+                try:
+                    asyncio.create_task(
+                        _emit_build_completed(
+                            app_id=app_id,
+                            build_id=chat_id,
+                            user_id=user_id,
+                            workflow_name=workflow_name,
+                        )
+                    )
+                except Exception:
+                    pass
 
             return {"status": "success", "chat_id": chat_id, "message": "Workflow started successfully.", "route": "new_workflow"}
 
         except Exception as e:
             logger.error(f"❌ User input handling failed for chat {chat_id}: {e}\n{traceback.format_exc()}")
+            if starting_new_workflow and is_build and _emit_build_failed is not None:
+                try:
+                    err_details = traceback.format_exc()
+                    asyncio.create_task(
+                        _emit_build_failed(
+                            app_id=app_id,
+                            build_id=chat_id,
+                            user_id=user_id,
+                            workflow_name=workflow_name,
+                            message=str(e),
+                            details=str(err_details) if isinstance(err_details, str) else None,
+                        )
+                    )
+                except Exception:
+                    pass
             await self.send_error(
                 error_message=f"An internal error occurred: {e}",
                 error_code="WORKFLOW_EXECUTION_FAILED",
                 chat_id=chat_id
             )
             return {"status": "error", "chat_id": chat_id, "message": str(e)}
+
+    async def _run_workflow_background(
+        self,
+        *,
+        chat_id: str,
+        workflow_name: str,
+        app_id: str,
+        user_id: str,
+        ws_id: Optional[int],
+        initial_message: Optional[str] = None,
+        initial_agent_name_override: Optional[str] = None,
+    ) -> None:
+        """Run a workflow orchestration in the background.
+
+        This enables parallel execution of multiple independent chats (each with its
+        own chat_id) while preserving AG2-native semantics within each chat.
+        """
+        try:
+            async with self._workflow_spawn_semaphore:
+                try:
+                    result = await self.handle_user_input_from_api(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        workflow_name=workflow_name,
+                        message=initial_message,
+                        app_id=app_id,
+                        initial_agent_name_override=initial_agent_name_override,
+                    )
+                    # Emit run_complete success asynchronously to dispatcher
+                    try:
+                        from core.events.unified_event_dispatcher import get_event_dispatcher
+
+                        dispatcher = get_event_dispatcher()
+                        asyncio.create_task(
+                            dispatcher.emit(
+                                "chat.run_complete",
+                                {
+                                    "chat_id": chat_id,
+                                    "workflow_name": workflow_name,
+                                    "app_id": app_id,
+                                    "user_id": user_id,
+                                    "status": "completed",
+                                },
+                            )
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    # Emit failed run_complete before re-raising so listeners can react
+                    try:
+                        from core.events.unified_event_dispatcher import get_event_dispatcher
+
+                        dispatcher = get_event_dispatcher()
+                        asyncio.create_task(
+                            dispatcher.emit(
+                                "chat.run_complete",
+                                {
+                                    "chat_id": chat_id,
+                                    "workflow_name": workflow_name,
+                                    "app_id": app_id,
+                                    "user_id": user_id,
+                                    "status": "failed",
+                                },
+                            )
+                        )
+                    except Exception:
+                        pass
+                    raise
+        except asyncio.CancelledError:
+            # Treat cancellation as an explicit pause request (adapter-driven).
+            logger.info(
+                "⏸️ Background workflow cancelled (paused) workflow=%s chat=%s",
+                workflow_name,
+                chat_id,
+            )
+            raise
+        except Exception as e:
+            logger.error(
+                f"❌ Background workflow run failed (workflow={workflow_name} chat={chat_id}): {e}",
+                exc_info=True,
+            )
+            try:
+                await self.send_error(
+                    error_message=f"Background workflow failed: {e}",
+                    error_code="WORKFLOW_BACKGROUND_FAILED",
+                    chat_id=chat_id,
+                )
+            except Exception:
+                pass
+        finally:
+            # Drop task handle
+            try:
+                self._background_tasks.pop(chat_id, None)
+            except Exception:
+                pass
+
+            # Mark completed ONLY if we weren't cancelled.
+            try:
+                if ws_id:
+                    task = asyncio.current_task()
+                    was_cancelled = bool(task and task.cancelled())
+                    if not was_cancelled:
+                        session_registry.complete_workflow(ws_id, chat_id)
+            except Exception:
+                pass
+
+    async def pause_background_workflow(self, *, chat_id: str, reason: str = "paused") -> bool:
+        """Cancel a running background workflow task so it can be resumed later.
+
+        This is runtime-level orchestration only: AG2 state is persisted to Mongo,
+        and resuming replays messages + continues from history.
+        """
+        task = self._background_tasks.get(chat_id)
+        if not task:
+            return False
+        if task.done():
+            return False
+
+        # Best-effort: mark session as paused in the runtime registry.
+        try:
+            conn = self.connections.get(chat_id) or {}
+            ws_id = conn.get("ws_id")
+            if ws_id:
+                # switch_workflow will mark the previous active chat paused; we also
+                # want this chat paused if it was active.
+                ctx = session_registry.get_workflow_by_chat_id(ws_id, chat_id)
+                if ctx and getattr(ctx, "status", None) != "completed":
+                    ctx.status = "paused"
+        except Exception:
+            pass
+
+        # Emit a lightweight runtime event for observability.
+        try:
+            from core.events.unified_event_dispatcher import get_event_dispatcher
+
+            dispatcher = get_event_dispatcher()
+            if dispatcher:
+                await dispatcher.emit(
+                    "runtime.workflow_paused",
+                    {"chat_id": chat_id, "reason": str(reason)},
+                )
+        except Exception:
+            pass
+
+        task.cancel()
+        return True
 
     # ==================================================================================
     # SIMPLIFIED EVENT API - WEBSOCKET ONLY
@@ -1493,14 +1999,14 @@ class SimpleTransport:
             if isinstance(existing_ctx, dict) and existing_ctx.get("chat_id"):
                 return existing_ctx
 
-        enterprise_id = conn.get("enterprise_id")
+        app_id = conn.get("app_id")
         user_id = conn.get("user_id") or "anonymous"
-        if not enterprise_id:
-            raise RuntimeError("Cannot create general chat without enterprise context")
+        if not app_id:
+            raise RuntimeError("Cannot create general chat without app context")
 
         pm = self._get_or_create_persistence_manager()
         session_info = await pm.create_general_chat_session(
-            enterprise_id=str(enterprise_id),
+            app_id=str(app_id),
             user_id=str(user_id),
         )
 
@@ -1508,7 +2014,7 @@ class SimpleTransport:
             "chat_id": session_info.get("chat_id"),
             "label": session_info.get("label"),
             "sequence": session_info.get("sequence"),
-            "enterprise_id": str(enterprise_id),
+            "app_id": str(app_id),
             "user_id": str(user_id),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -1523,13 +2029,13 @@ class SimpleTransport:
         user_message: str,
         ui_context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Route a general-mode utterance to the Ask Mozaiks companion."""
+        """Route a general-mode utterance to the configured non-AG2 capability executor."""
 
         conn = self.connections.get(chat_id) or {}
-        enterprise_id = conn.get("enterprise_id")
+        app_id = conn.get("app_id")
         user_id = conn.get("user_id")
-        if not enterprise_id:
-            raise RuntimeError("Cannot route Ask Mozaiks message without enterprise context")
+        if not app_id:
+            raise RuntimeError("Cannot route general-mode message without app context")
 
         general_ctx = await self._ensure_general_chat_context(chat_id=chat_id)
         general_chat_id = general_ctx.get("chat_id")
@@ -1549,7 +2055,7 @@ class SimpleTransport:
                         "workflow_name": getattr(ctx, "workflow_name", None),
                         "status": getattr(ctx, "status", None),
                         "artifact_id": getattr(ctx, "artifact_id", None),
-                        "enterprise_id": getattr(ctx, "enterprise_id", None),
+                        "app_id": getattr(ctx, "app_id", None),
                         "user_id": getattr(ctx, "user_id", None),
                     })
 
@@ -1563,7 +2069,7 @@ class SimpleTransport:
 
         await self._persist_general_message(
             general_chat_id=str(general_chat_id),
-            enterprise_id=str(enterprise_id),
+            app_id=str(app_id),
             role="user",
             content=user_message,
             user_id=str(user_id) if user_id else None,
@@ -1581,11 +2087,20 @@ class SimpleTransport:
             chat_id,
         )
 
-        service = get_ask_mozaiks_service()
+        service = _load_general_agent_service()
+        if service is None:
+            await self.send_chat_message(
+                "General mode is not configured for this runtime.",
+                agent_name="System",
+                chat_id=chat_id,
+                metadata=metadata_base,
+            )
+            return
+
         response = await service.generate_response(
             prompt=user_message,
             workflows=workflows_payload,
-            enterprise_id=str(enterprise_id),
+            app_id=str(app_id),
             user_id=str(user_id) if user_id else None,
             ui_context=ui_context,
         )
@@ -1600,7 +2115,7 @@ class SimpleTransport:
 
         await self._persist_general_message(
             general_chat_id=str(general_chat_id),
-            enterprise_id=str(enterprise_id),
+            app_id=str(app_id),
             role="assistant",
             content=response.get("content", ""),
             user_id=str(user_id) if user_id else None,
@@ -1609,7 +2124,7 @@ class SimpleTransport:
 
         await self.send_chat_message(
             response.get("content", ""),
-            agent_name="Ask Mozaiks",
+            agent_name="Assistant",
             chat_id=chat_id,
             metadata=assistant_metadata,
         )
@@ -1619,23 +2134,67 @@ class SimpleTransport:
             pm = self._get_or_create_persistence_manager()
             await pm.update_session_metrics(
                 chat_id=str(general_chat_id),
-                enterprise_id=str(enterprise_id),
+                app_id=str(app_id),
                 user_id=str(user_id) if user_id else "anonymous",
-                workflow_name="AskMozaiks",
+                workflow_name="GeneralCapability",
                 prompt_tokens=int(usage.get("prompt_tokens") or 0),
                 completion_tokens=int(usage.get("completion_tokens") or 0),
                 cost_usd=0.0,
-                agent_name="AskMozaiks",
+                agent_name="assistant",
                 session_type="general",
             )
+            try:
+                from core.tokens.manager import TokenManager
+
+                await TokenManager.emit_usage_delta(
+                    chat_id=str(general_chat_id),
+                    app_id=str(app_id),
+                    user_id=str(user_id) if user_id else "anonymous",
+                    workflow_name="GeneralCapability",
+                    agent_name="assistant",
+                    prompt_tokens=int(usage.get("prompt_tokens") or 0),
+                    completion_tokens=int(usage.get("completion_tokens") or 0),
+                    total_tokens=int(
+                        usage.get("total_tokens")
+                        or (int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0))
+                    ),
+                    cached=False,
+                    duration_sec=0.0,
+                )
+
+                # Emit a cumulative usage summary snapshot for the general session.
+                try:
+                    coll = await pm._general_coll()  # type: ignore[attr-defined]
+                    totals = await coll.find_one(
+                        {"_id": str(general_chat_id), "app_id": str(app_id)},
+                        {
+                            "usage_prompt_tokens_final": 1,
+                            "usage_completion_tokens_final": 1,
+                            "usage_total_tokens_final": 1,
+                        },
+                    )
+                    if isinstance(totals, dict):
+                        await TokenManager.emit_usage_summary(
+                            chat_id=str(general_chat_id),
+                            app_id=str(app_id),
+                            user_id=str(user_id) if user_id else "anonymous",
+                            workflow_name="GeneralCapability",
+                            prompt_tokens=int(totals.get("usage_prompt_tokens_final") or 0),
+                            completion_tokens=int(totals.get("usage_completion_tokens_final") or 0),
+                            total_tokens=int(totals.get("usage_total_tokens_final") or 0),
+                        )
+                except Exception:
+                    logger.debug("Failed to emit general-mode usage summary", exc_info=True)
+            except Exception:
+                logger.debug("Failed to emit general-mode usage delta", exc_info=True)
         except Exception as metrics_err:
-            logger.debug(f"Failed to record Ask Mozaiks usage metrics: {metrics_err}")
+            logger.debug(f"Failed to record general-mode usage metrics: {metrics_err}")
 
     async def _persist_general_message(
         self,
         *,
         general_chat_id: str,
-        enterprise_id: str,
+        app_id: str,
         role: str,
         content: str,
         user_id: Optional[str],
@@ -1645,7 +2204,7 @@ class SimpleTransport:
         try:
             await pm.append_general_message(
                 general_chat_id=general_chat_id,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 role=role,
                 content=content,
                 user_id=user_id,
@@ -1661,30 +2220,30 @@ class SimpleTransport:
         pm,
         payload_workflow: Optional[str] = None,
     ) -> Tuple[Optional[str], Optional[str]]:
-        """Resolve enterprise/workflow for a chat regardless of live connection."""
+        """Resolve app/workflow for a chat regardless of live connection."""
         if not chat_id:
             return None, payload_workflow
 
-        enterprise_id: Optional[str] = None
+        app_id: Optional[str] = None
         workflow_name: Optional[str] = payload_workflow
 
         conn = self.connections.get(chat_id)
         if conn:
-            raw_ent = conn.get("enterprise_id")
+            raw_ent = conn.get("app_id")
             if raw_ent:
-                enterprise_id = str(raw_ent)
+                app_id = str(raw_ent)
             if not workflow_name:
                 workflow_name = conn.get("workflow_name")
 
-        if enterprise_id and workflow_name:
-            return enterprise_id, workflow_name
+        if app_id and workflow_name:
+            return app_id, workflow_name
 
         try:
             coll = await pm._coll()
-            doc = await coll.find_one({"_id": chat_id}, {"enterprise_id": 1, "workflow_name": 1})
+            doc = await coll.find_one({"_id": chat_id}, {"app_id": 1, "workflow_name": 1})
             if doc:
-                if not enterprise_id and doc.get("enterprise_id") is not None:
-                    enterprise_id = str(doc.get("enterprise_id"))
+                if not app_id and doc.get("app_id") is not None:
+                    app_id = str(doc.get("app_id"))
                 if not workflow_name and doc.get("workflow_name"):
                     workflow_name = doc.get("workflow_name")
         except Exception as ctx_err:
@@ -1692,12 +2251,12 @@ class SimpleTransport:
 
         if chat_id in self.connections:
             conn = self.connections[chat_id]
-            if enterprise_id and not conn.get("enterprise_id"):
-                conn["enterprise_id"] = enterprise_id
+            if app_id and not conn.get("app_id"):
+                conn["app_id"] = app_id
             if workflow_name and not conn.get("workflow_name"):
                 conn["workflow_name"] = workflow_name
 
-        return enterprise_id, workflow_name
+        return app_id, workflow_name
 
     async def _persist_ui_tool_state(
         self,
@@ -1739,13 +2298,13 @@ class SimpleTransport:
             return
 
         try:
-            enterprise_id, workflow_name = await self._resolve_chat_context(
+            app_id, workflow_name = await self._resolve_chat_context(
                 chat_id,
                 pm=pm,
                 payload_workflow=payload.get("workflow_name"),
             )
-            if not enterprise_id:
-                logger.debug(f"dY'\" [UI_TOOL] Missing enterprise_id for chat {chat_id}; skipping last_artifact persist")
+            if not app_id:
+                logger.debug(f"dY'\" [UI_TOOL] Missing app_id for chat {chat_id}; skipping last_artifact persist")
                 return
 
             try:
@@ -1762,7 +2321,7 @@ class SimpleTransport:
             }
             await pm.update_last_artifact(
                 chat_id=chat_id,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 artifact=artifact_doc,
             )
         except Exception as persist_err:
@@ -1776,6 +2335,7 @@ class SimpleTransport:
         component_name: str,
         display_type: str,
         payload: Dict[str, Any],
+        awaiting_response: bool = True,
         agent_name: Optional[str] = None
     ) -> None:
         """
@@ -1790,7 +2350,7 @@ class SimpleTransport:
             "kind": "tool_call",
             "tool_name": tool_name,
             "component_type": component_name,
-            "awaiting_response": True,
+            "awaiting_response": bool(awaiting_response),
             "payload": payload,
             "corr": event_id,
             "display": display_type,
@@ -1816,7 +2376,7 @@ class SimpleTransport:
             )
         except Exception as persist_exc:  # pragma: no cover
             logger.debug(f"🧩 [UI_TOOL] Persist hook raised for chat {chat_id}: {persist_exc}")
-        if event_id:
+        if event_id and bool(awaiting_response):
             self._ui_tool_metadata[event_id] = {
                 "chat_id": chat_id,
                 "tool_name": tool_name,
@@ -1869,6 +2429,25 @@ class SimpleTransport:
                 if metadata:
                     display_mode = (metadata.get("display") or "").lower()
                     chat_ref = metadata.get("chat_id")
+                    tool_name = metadata.get("tool_name")
+
+                    # Apply declarative ui_response triggers into AG2 ContextVariables
+                    # (AG2-native: updates the same context object used by handoffs).
+                    if chat_ref and tool_name:
+                        manager = self._derived_context_managers.get(chat_ref)
+                        if manager and hasattr(manager, "apply_ui_tool_response"):
+                            try:
+                                updated = manager.apply_ui_tool_response(
+                                    tool_name=str(tool_name),
+                                    response_data=response_data if isinstance(response_data, dict) else {},
+                                )
+                                if updated:
+                                    logger.info(
+                                        f"🧭 [UI_TOOL] Applied ui_response triggers: chat={chat_ref} tool={tool_name} vars={updated}"
+                                    )
+                            except Exception as trigger_err:
+                                logger.debug(f"[UI_TOOL] ui_response trigger apply failed: {trigger_err}")
+
                     if display_mode == "artifact":
                         try:
                             await self.send_event_to_ui({"kind": "ui_tool_dismiss", "event_id": event_id, "ui_tool_id": metadata.get("tool_name")}, chat_ref)
@@ -1883,6 +2462,19 @@ class SimpleTransport:
         else:
             logger.warning(f"⚠️ [UI_TOOL] No pending event found for {event_id}")
             return False
+
+    # ------------------------------------------------------------------
+    # Context trigger manager registry
+    # ------------------------------------------------------------------
+    def register_derived_context_manager(self, chat_id: str, manager: Any) -> None:
+        if not chat_id:
+            return
+        self._derived_context_managers[chat_id] = manager
+
+    def unregister_derived_context_manager(self, chat_id: str) -> None:
+        if not chat_id:
+            return
+        self._derived_context_managers.pop(chat_id, None)
 
     # T3: Sequence tracking methods for resume capability
     def _get_next_sequence(self, chat_id: str) -> int:
@@ -2033,11 +2625,11 @@ class SimpleTransport:
             del self._heartbeat_tasks[chat_id]
             logger.debug(f"💔 Stopped heartbeat for {chat_id}")
 
-    async def _auto_resume_if_needed(self, chat_id: str, websocket, enterprise_id: Optional[str]) -> None:
+    async def _auto_resume_if_needed(self, chat_id: str, websocket, app_id: Optional[str]) -> None:
         """Automatically restore chat history for IN_PROGRESS chats on WebSocket connection."""
         try:
-            if not enterprise_id:
-                logger.debug(f"[AUTO_RESUME] No enterprise_id for {chat_id}, skipping auto-resume")
+            if not app_id:
+                logger.debug(f"[AUTO_RESUME] No app_id for {chat_id}, skipping auto-resume")
                 return
 
             # Get workflow name and startup_mode from connection
@@ -2088,7 +2680,7 @@ class SimpleTransport:
             # Call the resumer with startup_mode filtering
             await resumer.auto_resume_if_needed(
                 chat_id=chat_id,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 send_event=send_event_wrapper,
                 startup_mode=startup_mode,
             )

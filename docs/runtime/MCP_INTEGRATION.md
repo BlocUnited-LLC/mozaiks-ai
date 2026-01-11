@@ -292,7 +292,7 @@ async def notify_support_team(
         channel: Slack channel ID
         message: Notification content
         priority: "high" | "medium" | "low"
-        **runtime: chat_id, workflow_name, enterprise_id, user_id
+        **runtime: chat_id, workflow_name, app_id, user_id
     
     Returns:
         {"status": "success" | "fallback", "delivery_method": "slack" | "email"}
@@ -503,7 +503,7 @@ async def _load_tool_callable(tool_spec: dict, chat_id: str, workflow_name: str)
             **kwargs,
             chat_id=chat_id,
             workflow_name=workflow_name,
-            enterprise_id=runtime_context.get("enterprise_id"),
+            app_id=runtime_context.get("app_id"),
             user_id=runtime_context.get("user_id")
         )
     
@@ -567,7 +567,7 @@ MCP server starts with environment variables set
 | User approval checkpoints | Human-in-the-loop required |
 
 **Examples:**
-- "If customer is enterprise tier AND system is down, escalate to PagerDuty"
+- "If customer is app tier AND system is down, escalate to PagerDuty"
 - "Query database, calculate score, then notify if score > threshold"
 
 ### ⚠️ Do NOT Use MCP For
@@ -729,7 +729,7 @@ log_event(
 **MCP tool calls do NOT generate LLM tokens** (it's Python code execution). However:
 
 - Composite stub invocation counts as **1 tool call token event** (same as any AG2 tool)
-- MozaiksStream tracks tool calls for billing purposes
+- MozaiksPay tracks tool calls for billing purposes
 - No changes needed to `realtime_token_logger.py`
 
 ### Performance Metrics
@@ -787,20 +787,20 @@ metrics.record("tool_calls_saved", count=3, tags={"stub": "notify_support_team"}
 
 ### Token Tracking (Multi-Tenant)
 
-**MCP tool calls must be attributed to `enterprise_id` and `user_id`:**
+**MCP tool calls must be attributed to `app_id` and `user_id`:**
 
 ```python
 # In composite stub
 await log_tool_execution(
     chat_id=chat_id,
-    enterprise_id=runtime["enterprise_id"],  # Platform-controlled
+    app_id=runtime["app_id"],  # Platform-controlled
     user_id=runtime["user_id"],              # Platform-controlled
     tool_name="notify_support_team",
     result={"status": "success"}
 )
 ```
 
-**MozaiksStream** tracks tool call costs per enterprise_id for billing.
+**MozaiksPay** tracks tool call costs per app_id for billing.
 
 ---
 

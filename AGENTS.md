@@ -9,8 +9,8 @@ WHAT MOZAIKS IS
 - Three layers:
   - MozaiksCore: Production foundation (user/subscription management) and the agentic backbone (runtime + ChatUI).
   - MozaiksAI Runtime (this repo): Executes workflows, maintains event transport, persistence, and observability for agentic apps.
-  - MozaiksStream: Token engine that tracks usage/costs per enterprise_id and user_id (platform‑controlled billing and analytics).
-- Multi‑App, Multi‑Tenant: Users can create multiple apps (“enterprises”) with isolated runtime state. Token tracking is by enterprise_id and user_id.
+  - MozaiksPay: Token engine that tracks usage/costs per app_id and user_id (platform‑controlled billing and analytics).
+- Multi‑App, Multi‑Tenant: Users can create multiple apps (“apps”) with isolated runtime state. Token tracking is by app_id and user_id.
 
 SEPARATION OF CONCERNS
 - Generator Layer: Produces declarative workflow JSON, tool manifests, and optional stubs. It defines WHAT should run.
@@ -27,7 +27,7 @@ OPEN SOURCE & MODULARITY (strategic posture)
 TRUSTED CONTEXT (Ground truth)
 - Use the repository’s current code and JSON configs as the source of truth.
 - Architecture docs are informative but not authoritative if they conflict with code.
-- The platform is multi-tenant (enterprise_id, user_id) with session persistence and event streaming.
+- The platform is multi-tenant (app_id, user_id) with session persistence and event streaming.
 - CONTEXT_AWARE controls platform-level concept awareness; do not assume open source.
 
 AG2 (AUTOGEN) IS THE CORE ENGINE
@@ -45,7 +45,7 @@ PRIMARY OBJECTIVES
 1) Provide robust, minimal-diff changes to transport/orchestration/persistence without breaking declarative workflow contracts.
 2) Maintain hot-swappable workflow loading and execution (no hardcoding).
 3) Preserve observability (logging, perf metrics, runtime logging) and persistence (Mongo) at all times.
-4) Enforce multi-tenant boundaries; never leak data across chats/enterprises; ensure token accounting hooks remain intact.
+4) Enforce multi-tenant boundaries; never leak data across chats/apps; ensure token accounting hooks remain intact.
 
 PLATFORM CAPABILITIES (runtime layer)
 - Runtime: FastAPI app in `shared_app.py`, WebSocket transport, AG2 hooks, MongoDB via `AG2PersistenceManager`.
@@ -57,7 +57,7 @@ PLATFORM CAPABILITIES (runtime layer)
 INTERACTIONS WITH UI/TOOLS (runtime contract only)
 - The runtime forwards and correlates UI/tool interactions but does not define UI schemas.
 - Provide stable event routing, correlation IDs, and response waiting primitives; do not impose component shapes.
-- Ensure idempotency and traceability (eventId, chat_id, enterprise_id) and avoid logging secrets.
+- Ensure idempotency and traceability (eventId, chat_id, app_id) and avoid logging secrets.
 
 OPERATING PROCESS
 1) Understand Ask

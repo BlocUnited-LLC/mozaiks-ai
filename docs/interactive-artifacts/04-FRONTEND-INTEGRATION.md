@@ -66,7 +66,7 @@ export interface NavigateEvent {
     chat_id: string;
     workflow_name: string;
     artifact_instance_id: string;
-    enterprise_id: string;
+    app_id: string;
   };
 }
 

@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import os
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .adapter import create_context_container
@@ -23,6 +25,39 @@ business_logger = get_workflow_logger("context_variables")
 
 _TRUE_FLAG_VALUES = {"1", "true", "yes", "on"}
 TRUNCATE_CHARS = int(os.getenv("CONTEXT_SCHEMA_TRUNCATE_CHARS", "4000") or 4000)
+_FILE_CONTEXT_ALLOW_OUTSIDE_ROOT = os.getenv("CONTEXT_FILE_ALLOW_OUTSIDE_ROOT", "false").strip().lower() in _TRUE_FLAG_VALUES
+
+
+def _find_repo_root() -> Path:
+    """Best-effort repo root discovery.
+
+    We avoid trusting Path.cwd() because runtimes can launch from arbitrary working dirs.
+    This searches upward from this module for common repo markers.
+    """
+
+    try:
+        here = Path(__file__).resolve()
+    except Exception:  # pragma: no cover
+        return Path.cwd().resolve()
+
+    for parent in [here] + list(here.parents):
+        try:
+            if (parent / "workflows").is_dir() and (parent / "core").is_dir() and (parent / "requirements.txt").exists():
+                return parent
+        except Exception:
+            continue
+
+    # Fallback
+    return Path.cwd().resolve()
+
+
+def _is_within_root(candidate: Path, root: Path) -> bool:
+    try:
+        candidate_resolved = candidate.resolve()
+        root_resolved = root.resolve()
+    except Exception:
+        return False
+    return candidate_resolved == root_resolved or root_resolved in candidate_resolved.parents
 
 
 # ---------------------------------------------------------------------------
@@ -74,16 +109,73 @@ def _resolve_state_default(definition: ContextVariableDefinition) -> Any:
     return _coerce_value(definition, definition.source.default)
 
 
-def _create_minimal_context(workflow_name: str, enterprise_id: Optional[str]):
+def _resolve_file_source(definition: ContextVariableDefinition) -> Any:
+    source = definition.source
+    path = (source.path or "").strip()
+    if not path:
+        if source.required:
+            raise ValueError("File context variable is required but 'path' is missing")
+        return _coerce_value(definition, source.default)
+
+    repo_root = _find_repo_root()
+    p = Path(path)
+    if not p.is_absolute():
+        p = repo_root / p
+
+    # Resolve symlinks/.. and enforce root boundary unless explicitly allowed.
+    try:
+        resolved = p.resolve()
+    except Exception as err:
+        if source.required:
+            raise ValueError(f"Invalid file context variable path: {p}") from err
+        business_logger.warning("Invalid file context variable path '%s': %s", str(p), err)
+        return _coerce_value(definition, source.default)
+
+    if not _is_within_root(resolved, repo_root) and not _FILE_CONTEXT_ALLOW_OUTSIDE_ROOT:
+        msg = f"Refusing to load file context outside repo root (set CONTEXT_FILE_ALLOW_OUTSIDE_ROOT=true to override): {resolved}"
+        if source.required:
+            raise ValueError(msg)
+        business_logger.warning(msg)
+        return _coerce_value(definition, source.default)
+
+    # Very small denylist for common secret files.
+    blocked_names = {".env", ".env.local", ".env.production", ".env.development"}
+    blocked_suffixes = {".pem", ".key", ".pfx", ".p12"}
+    if resolved.name.lower() in blocked_names or resolved.suffix.lower() in blocked_suffixes:
+        msg = f"Refusing to load likely-secret file via context variable: {resolved}"
+        if source.required:
+            raise ValueError(msg)
+        business_logger.warning(msg)
+        return _coerce_value(definition, source.default)
+
+    if not resolved.exists():
+        if source.required:
+            raise ValueError(f"Required file context variable not found: {resolved}")
+        return _coerce_value(definition, source.default)
+
+    encoding = source.encoding or "utf-8"
+    raw = resolved.read_text(encoding=encoding)
+    fmt = (source.format or "json").lower()
+    if fmt == "text":
+        return _coerce_value(definition, raw)
+    if fmt == "yaml":
+        import yaml
+
+        return _coerce_value(definition, yaml.safe_load(raw))
+    # default json
+    return _coerce_value(definition, json.loads(raw))
+
+
+def _create_minimal_context(workflow_name: str, app_id: Optional[str]):
     context = create_context_container()
-    if enterprise_id:
-        context.set("enterprise_id", enterprise_id)
+    if app_id:
+        context.set("app_id", app_id)
     if workflow_name:
         context.set("workflow_name", workflow_name)
     business_logger.info(
         "Created minimal context",
         extra={
-            "enterprise_id": enterprise_id,
+            "app_id": app_id,
             "workflow_name": workflow_name,
             "environment": os.getenv("ENVIRONMENT", "unknown"),
         },
@@ -99,18 +191,18 @@ def _database_defaults(raw_section: Dict[str, Any]) -> Optional[str]:
     return defaults
 
 
-def _resolve_template_value(template: Any, context: Any, enterprise_id: str) -> Any:
+def _resolve_template_value(template: Any, context: Any, app_id: str) -> Any:
     if not isinstance(template, str) or not template.startswith("{{") or not template.endswith("}}"):
         return template
     inner = template[2:-2].strip()
     if not inner:
         return template
 
-    # runtime scoped value (e.g., {{runtime.enterprise_id}})
+    # runtime scoped value (e.g., {{runtime.app_id}})
     if inner.startswith("runtime."):
         key = inner.split(".", 1)[1]
-        if key == "enterprise_id":
-            return enterprise_id
+        if key == "app_id":
+            return app_id
         try:
             return context.get(key)  # type: ignore[attr-defined]
         except Exception:
@@ -133,13 +225,13 @@ def _resolve_template_value(template: Any, context: Any, enterprise_id: str) -> 
 def _materialize_query_template(
     template: Optional[Dict[str, Any]],
     context: Any,
-    enterprise_id: str,
+    app_id: str,
 ) -> Dict[str, Any]:
     if not template:
-        return {"enterprise_id": enterprise_id}
+        return {"app_id": app_id}
     resolved: Dict[str, Any] = {}
     for key, value in template.items():
-        resolved[key] = _resolve_template_value(value, context, enterprise_id)
+        resolved[key] = _resolve_template_value(value, context, app_id)
     return resolved
 
 
@@ -148,7 +240,7 @@ async def _load_data_reference_value(
     definition: ContextVariableDefinition,
     *,
     default_database_name: Optional[str],
-    enterprise_id: str,
+    app_id: str,
     context: Any,
 ) -> Any:
     source = definition.source
@@ -161,10 +253,10 @@ async def _load_data_reference_value(
         return None
 
     try:
-        query = _materialize_query_template(source.query_template, context, enterprise_id)
+        query = _materialize_query_template(source.query_template, context, app_id)
         projection = {field: 1 for field in (source.fields or [])} or None
         
-        business_logger.info(f"[DATA_REFERENCE] Resolved query for '{name}': query={query}, projection={projection}, enterprise_id={enterprise_id}")
+        business_logger.info(f"[DATA_REFERENCE] Resolved query for '{name}': query={query}, projection={projection}, app_id={app_id}")
         
         doc = await adapter.fetch_one(source, query, projection)
 
@@ -213,7 +305,7 @@ def _create_data_entity_manager(
         manager = DataEntityManager(
             database_name=db_name,
             collection=collection,
-            schema=source.schema,
+            schema=source.entity_schema,
             indexes=source.indexes,
             write_strategy=source.write_strategy or "immediate",
             search_by=source.search_by,
@@ -308,7 +400,7 @@ async def _get_database_schema_async(database_name: str) -> Dict[str, Any]:
         schema_lines.append(f"TOTAL COLLECTIONS: {len(collection_names)}")
         schema_lines.append("")
 
-        enterprise_collections: List[str] = []
+        app_collections: List[str] = []
         collection_schemas: Dict[str, Dict[str, str]] = {}
 
         for collection_name in collection_names:
@@ -329,8 +421,8 @@ async def _get_database_schema_async(database_name: str) -> Dict[str, Any]:
                     field_types[field_name] = field_type
                 collection_schemas[collection_name] = field_types
 
-                if "enterprise_id" in sample_doc:
-                    enterprise_collections.append(collection_name)
+                if "app_id" in sample_doc:
+                    app_collections.append(collection_name)
             except Exception as err:
                 business_logger.debug(f"Could not analyze {collection_name}: {err}")
                 collection_schemas[collection_name] = {"error": f"Analysis failed: {err}"}
@@ -340,8 +432,8 @@ async def _get_database_schema_async(database_name: str) -> Dict[str, Any]:
             error = fields.get("error") if isinstance(fields, dict) else None
             if note or error:
                 continue
-            is_enterprise = " [Enterprise-specific]" if collection_name in enterprise_collections else ""
-            schema_lines.append(f"{collection_name.upper()}{is_enterprise}:")
+            is_app = " [app-specific]" if collection_name in app_collections else ""
+            schema_lines.append(f"{collection_name.upper()}{is_app}:")
             schema_lines.append("  Fields:")
             for field_name, field_type in fields.items():
                 schema_lines.append(f"    - {field_name}: {field_type}")
@@ -353,7 +445,7 @@ async def _get_database_schema_async(database_name: str) -> Dict[str, Any]:
             extra={
                 "database": database_name,
                 "collections": len(collection_names),
-                "enterprise_collections": len(enterprise_collections),
+                "app_collections": len(app_collections),
             },
         )
     except Exception as err:
@@ -367,10 +459,10 @@ async def _get_database_schema_async(database_name: str) -> Dict[str, Any]:
 # Main loader
 # ---------------------------------------------------------------------------
 
-async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]):
+async def _load_context_async(workflow_name: str, app_id: Optional[str]):
     business_logger.info(f"Loading context for workflow={workflow_name}")
-    context = _create_minimal_context(workflow_name, enterprise_id)
-    internal_enterprise_id = enterprise_id or ""
+    context = _create_minimal_context(workflow_name, app_id)
+    internal_app_id = app_id or ""
 
     plan, raw_context_section = _load_workflow_plan(workflow_name)
 
@@ -419,12 +511,12 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]):
             context.set(name, value)
             business_logger.info("Loaded config variable %s", name)
         elif source_type == "data_reference":
-            business_logger.info(f"[DATA_REFERENCE] Loading '{name}' for enterprise_id={internal_enterprise_id}")
+            business_logger.info(f"[DATA_REFERENCE] Loading '{name}' for app_id={internal_app_id}")
             value = await _load_data_reference_value(
                 name,
                 definition,
                 default_database_name=default_db,
-                enterprise_id=internal_enterprise_id,
+                app_id=internal_app_id,
                 context=context,
             )
             context.set(name, value)
@@ -446,16 +538,24 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]):
         elif source_type == "state":
             value = _resolve_state_default(definition)
             context.set(name, value)
-            transition_count = len(source.transitions)
+            trigger_count = len(getattr(source, "triggers", []) or [])
             business_logger.info(
-                "Initialized state variable %s with default=%s, transitions=%d",
+                "Initialized state variable %s with default=%s, triggers=%d",
                 name,
                 value,
-                transition_count,
+                trigger_count,
             )
         elif source_type == "external":
             context.set(name, None)
             business_logger.debug("Registered external variable %s (fetched by tools)", name)
+        elif source_type == "file":
+            try:
+                value = _resolve_file_source(definition)
+            except Exception as err:
+                business_logger.error("Failed loading file variable %s: %s", name, err)
+                value = None
+            context.set(name, value)
+            business_logger.info("Loaded file variable %s", name)
         else:
             business_logger.debug("Unsupported source type for %s: %s", name, source_type)
 
@@ -470,7 +570,7 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]):
 
     # Log context summary
     try:
-        keys = [k for k in context.keys() if k != "enterprise_id"]  # type: ignore[attr-defined]
+        keys = [k for k in context.keys() if k != "app_id"]  # type: ignore[attr-defined]
     except Exception:
         keys = list(_context_to_dict(context).keys())
     business_logger.info(
@@ -487,8 +587,8 @@ async def _load_context_async(workflow_name: str, enterprise_id: Optional[str]):
         except Exception:
             pass
 
-    if internal_enterprise_id and not (hasattr(context, "contains") and context.contains("enterprise_id")):
-        context.set("enterprise_id", internal_enterprise_id)
+    if internal_app_id and not (hasattr(context, "contains") and context.contains("app_id")):
+        context.set("app_id", internal_app_id)
 
     return context
 

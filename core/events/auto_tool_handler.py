@@ -314,7 +314,7 @@ class AutoToolEventHandler:
         # Provide contextual metadata when the tool function explicitly accepts it.
         context_fallbacks = {
             "chat_id": context.get("chat_id"),
-            "enterprise_id": context.get("enterprise_id"),
+            "app_id": context.get("app_id"),
             "workflow_name": context.get("workflow_name"),
             "turn_idempotency_key": context.get("turn_idempotency_key"),
             "agent_name": context.get("agent_name"),
@@ -335,7 +335,7 @@ class AutoToolEventHandler:
                 # Fallback: create ephemeral container from snapshot
                 snapshot = context.get("context_variables") if isinstance(context.get("context_variables"), dict) else None
                 container = create_context_container(snapshot)
-                for key in ("chat_id", "enterprise_id", "workflow_name", "turn_idempotency_key", "agent_name"):
+                for key in ("chat_id", "app_id", "workflow_name", "turn_idempotency_key", "agent_name"):
                     value = context.get(key)
                     if value is not None:
                         try:

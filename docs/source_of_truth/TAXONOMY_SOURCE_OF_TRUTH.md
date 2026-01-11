@@ -128,7 +128,7 @@ This document consolidates **every taxonomy** used in MozaiksAI. When making cha
 | 8 | Star | Central coordinator + independent specialists |
 | 9 | Triage with Tasks | Many tasks with strict sequencing/dependencies |
 
-**Schema Location**: `structured_outputs.json` → `PatternSelection.selected_pattern` (int 1-9)
+**Schema Location**: `structured_outputs.json` → `PatternSelection.workflows[].pattern_id` (int 1-9)
 
 ---
 

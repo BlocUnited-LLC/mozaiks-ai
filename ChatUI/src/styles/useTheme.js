@@ -5,7 +5,7 @@
 // ============================================================================
 
 import { useState, useEffect } from 'react';
-import { getTheme, DEFAULT_THEME, getCurrentEnterpriseId } from './themeProvider';
+import { getTheme, DEFAULT_THEME, getCurrentAppId } from './themeProvider';
 
 const DYNAMIC_FALLBACKS = {
   primary: {
@@ -119,7 +119,7 @@ const VAR_MAP = {
  * THEME CONTEXT HOOK
  * Provides access to current theme configuration
  * 
- * @param {string} enterpriseId - Optional enterprise ID (defaults to context)
+ * @param {string} appId - Optional app ID (defaults to context)
  * @returns {Object} Theme configuration object
  * 
  * @example
@@ -127,7 +127,7 @@ const VAR_MAP = {
  * console.log(theme.colors.primary.main); // '#06b6d4'
  * console.log(theme.fonts.heading.family); // 'Orbitron'
  */
-export function useTheme(enterpriseId = null) {
+export function useTheme(appId = null) {
   const [theme, setTheme] = useState(DEFAULT_THEME);
   const [loading, setLoading] = useState(true);
 
@@ -136,10 +136,10 @@ export function useTheme(enterpriseId = null) {
 
     async function loadTheme() {
       try {
-        // Get enterprise ID from props or context
-        const eid = enterpriseId || getCurrentEnterpriseId();
+        // Get app ID from props or context
+        const eid = appId || getCurrentAppId();
         
-        console.log(`🎨 [useTheme] Loading theme for enterprise: ${eid}`);
+        console.log(`🎨 [useTheme] Loading theme for app: ${eid}`);
         const loadedTheme = await getTheme(eid);
         
         if (!cancelled) {
@@ -160,7 +160,7 @@ export function useTheme(enterpriseId = null) {
     return () => {
       cancelled = true;
     };
-  }, [enterpriseId]);
+  }, [appId]);
 
   return { theme, loading };
 }

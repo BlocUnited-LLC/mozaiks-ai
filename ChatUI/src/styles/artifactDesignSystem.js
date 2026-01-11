@@ -9,7 +9,7 @@
 /**
  * FONT SYSTEM
  * Uses Tailwind font utilities that map to theme-configured fonts
- * The actual font families are loaded dynamically per enterprise
+ * The actual font families are loaded dynamically per app
  * via themeProvider.js and tailwind.config.js
  * 
  * Default (MozaiksAI brand):
@@ -17,7 +17,7 @@
  * - Headings: Orbitron (font-heading)
  * - Logo/Branding: Fagrak Inline (font-logo)
  * 
- * These can be overridden per enterprise via theme API
+ * These can be overridden per app via theme API
  */
 export const fonts = {
   // Body text - default across all components

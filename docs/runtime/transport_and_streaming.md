@@ -57,7 +57,7 @@ Each chat session has an associated WebSocket connection entry:
 ```python
 self.connections[chat_id] = {
     "websocket": websocket,  # WebSocket instance
-    "enterprise_id": enterprise_id,
+    "app_id": app_id,
     "workflow_name": workflow_name,
     "chat_id": chat_id,
     "connected_at": datetime.now(UTC).isoformat(),
@@ -89,7 +89,7 @@ self._preconnection_buffers[chat_id] = [
 
 **Flush on Connect:**
 ```python
-async def handle_websocket(self, websocket, chat_id, enterprise_id, workflow_name):
+async def handle_websocket(self, websocket, chat_id, app_id, workflow_name):
     # ... register connection ...
     
     # Flush buffered events
@@ -332,20 +332,20 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
     await transport.handle_websocket(
         websocket=websocket,
         chat_id=chat_id,
-        enterprise_id=enterprise_id,
+        app_id=app_id,
         workflow_name=workflow_name
     )
 ```
 
 **Handle WebSocket:**
 ```python
-async def handle_websocket(self, websocket, chat_id, enterprise_id, workflow_name):
+async def handle_websocket(self, websocket, chat_id, app_id, workflow_name):
     await websocket.accept()
     
     # Register connection
     self.connections[chat_id] = {
         "websocket": websocket,
-        "enterprise_id": enterprise_id,
+        "app_id": app_id,
         "workflow_name": workflow_name,
         "chat_id": chat_id,
         "connected_at": datetime.now(UTC).isoformat()
@@ -482,12 +482,12 @@ if msg_type == "user.input.response":
 ```python
 # Future SSE endpoint (not currently implemented)
 @app.get("/sse/chat/{chat_id}")
-async def sse_endpoint(request: Request, chat_id: str, enterprise_id: str, workflow_name: str):
+async def sse_endpoint(request: Request, chat_id: str, app_id: str, workflow_name: str):
     """Stream workflow events via SSE for headless monitoring."""
     queue = asyncio.Queue()
     
     # Register SSE connection (different from WebSocket registry)
-    transport.register_sse_connection(chat_id, queue, enterprise_id, workflow_name)
+    transport.register_sse_connection(chat_id, queue, app_id, workflow_name)
     
     async def event_generator():
         try:
@@ -952,7 +952,7 @@ IOWebsockets.run_server_in_thread(
 - ✅ Full control over event structure and routing
 - ✅ Integration with FastAPI routes and middleware
 - ✅ Custom persistence and observability hooks
-- ✅ Multi-tenant enterprise scoping built-in
+- ✅ Multi-tenant app scoping built-in
 
 **When to Consider AG2 Native:**
 - Single-tenant or simple deployments
@@ -961,7 +961,7 @@ IOWebsockets.run_server_in_thread(
 - Reduce maintenance burden
 
 **When MozaiksAI Custom Makes Sense:**
-- Multi-tenant SaaS with enterprise isolation
+- Multi-tenant SaaS with app isolation
 - Complex event pipeline (persistence, observability, token tracking)
 - Custom transport requirements (future SSE support)
 - Tight integration with FastAPI ecosystem
@@ -970,8 +970,8 @@ IOWebsockets.run_server_in_thread(
 
 ## Security Considerations
 
-**1. Enterprise Isolation:**
-- All WebSocket connections scoped by `enterprise_id`
+**1. App Isolation:**
+- All WebSocket connections scoped by `app_id`
 - Events only routed to correct chat session
 - No cross-chat event leakage
 

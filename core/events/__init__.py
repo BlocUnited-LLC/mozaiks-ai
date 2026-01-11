@@ -16,7 +16,7 @@ This package handles THREE separate event systems, each with different purposes:
 2. UI TOOL EVENTS (Agent-to-UI Communication) 
    - Field: ui_tool_id
    - Purpose: Interactive components, user input requests, dynamic UI
-   - Usage: emit_ui_tool_event("agent_api_key_input", {...}, workflow_name="AgentGenerator")
+    - Usage: emit_ui_tool_event("agent_api_key_input", {...}, workflow_name="SomeWorkflow")
 
 3. AG2 RUNTIME EVENTS (AutoGen Workflow Events)
    - Field: kind (internal) -> type (WebSocket)  
@@ -31,7 +31,7 @@ Usage Examples:
 
     # UI tool events (agent-UI interaction)
     from core.events import emit_ui_tool_event  
-    await emit_ui_tool_event("api_key_input", {"service": "openai"}, "AgentGenerator")
+    await emit_ui_tool_event("api_key_input", {"service": "openai"}, "SomeWorkflow")
 
     # AG2 runtime events are handled automatically by the orchestration layer
     # via event_serialization.py - no direct API needed

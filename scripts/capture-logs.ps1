@@ -23,7 +23,7 @@ param(
     [switch]$IncludeInfra
 )
 
-function Ensure-Dir($p) {
+function Initialize-Directory($p) {
     if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p | Out-Null }
 }
 
@@ -32,7 +32,7 @@ $ScriptRoot = $PSScriptRoot
 if (-not $ScriptRoot) { try { $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path } catch { $ScriptRoot = (Get-Location).ProviderPath } }
 $outDir = Join-Path -Path $ScriptRoot -ChildPath "..\logs\logs" | Resolve-Path -Relative
 if (-not $outDir) { $outDir = Join-Path -Path $ScriptRoot -ChildPath "..\logs\logs" }
-Ensure-Dir $outDir
+Initialize-Directory $outDir
 
 $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
 $rawPath = Join-Path $outDir "backend-raw-$ts.log"

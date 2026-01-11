@@ -38,10 +38,10 @@ action_plan_agents:
     output_structure:
       StateArchitecture:  # Model: StateArchitecture (wrapped by StateArchitectureOutput)
         global_context_variables: list[RequiredContextVariable]
+        assets: list[WorkflowAsset]  # optional
         lifecycle_requirements:  # LifecycleRequirements | null
           before_chat: str | null
           after_chat: str | null
-        workflow_dependencies: list[str]
 
   # LAYER 2b: User Experience Architecture
   - name: UXArchitectAgent
@@ -55,7 +55,6 @@ action_plan_agents:
             label: str
             component: str
             display: enum(inline, artifact)
-            ui_pattern: enum(single_step, two_step_confirmation, multi_step)
             summary: str
 
   # LAYER 3a: Agent Roster
@@ -65,7 +64,6 @@ action_plan_agents:
       AgentRoster:  # Model: AgentRoster (wrapped by AgentRosterOutput)
         agents:  # list[WorkflowAgent]
           - agent_name: str
-            agent_type: str
             objective: str
             agent_tools:  # list[AgentTool]
               - name: str
@@ -106,19 +104,6 @@ action_plan_agents:
             agent: str | null
             trigger: enum(process_message_before_send, update_agent_state, process_last_received_message, process_all_messages_before_reply)
             purpose: str
-
-  # LAYER 3c: Signal Architecture
-  - name: SignalArchitectAgent
-    objective: Identify checkpoint locations and decomposition triggers
-    output_structure:
-      SignalsPlan:  # Model: SignalsOutput (wrapped by SignalsPlanOutput)
-        signals:  # list[SignalDefinition]
-          - signal_type: enum(Checkpoint, DecompositionTrigger)
-            trigger_agent: str
-            resume_agent: str
-            target_pattern_id: int | null
-            target_pattern_name: str | null
-            description: str
 
   # LAYER 4: Visualization and Validation
   - name: ProjectOverviewAgent

@@ -22,7 +22,7 @@ This log captures the latest interaction-layer upgrades so we can retrace how th
 
 ## 4. Auto-switch to Ask Mode Off Chat Routes
 - **Files:** `src/pages/ChatPage.js`
-- **What changed:** A guard watches the router path; if the user leaves the primary chat routes (`/chat`, enterprise deep links, etc.), the runtime automatically sends `chat.enter_general_mode` to park the session in Ask mode while keeping workflow state cached.
+- **What changed:** A guard watches the router path; if the user leaves the primary chat routes (`/chat`, app deep links, etc.), the runtime automatically sends `chat.enter_general_mode` to park the session in Ask mode while keeping workflow state cached.
 - **Why it matters:** Prevents partially completed workflows from staying “active” while the user browses other sections, and guarantees the widget always reflects Ask mode across the rest of the app.
 - **How to exercise:** Start in workflow mode, navigate to `/workflows`, then expand the widget or return to `/chat`. You should land in Ask mode with your previous Ask session restored while the workflow cache remains intact for later.
 

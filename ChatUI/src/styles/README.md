@@ -1,7 +1,7 @@
 # MozaiksAI Design System & Dynamic Theming
 
 ## Overview
-Multi-tenant design system enabling enterprise-specific branding (fonts, colors, logos) at runtime while maintaining consistent UI patterns across all workflow artifacts.
+Multi-tenant design system enabling app-specific branding (fonts, colors, logos) at runtime while maintaining consistent UI patterns across all workflow artifacts.
 
 ---
 
@@ -34,16 +34,16 @@ import { typography, components, spacing, layouts } from './styles/artifactDesig
 ---
 
 ### 🎨 `themeProvider.js`
-**Dynamic theme loading** - Manages enterprise-specific branding at runtime.
+**Dynamic theme loading** - Manages app-specific branding at runtime.
 
 **Key Functions:**
-- `initializeTheme(enterpriseId)` - Load and apply theme (call once in App.js)
+- `initializeTheme(appId)` - Load and apply theme (call once in App.js)
 - `DEFAULT_THEME` - Fallback MozaiksAI branding
-- `loadThemeFromAPI(enterpriseId)` - Fetch from `/api/themes/{enterpriseId}` with timeout + graceful fallback
+- `loadThemeFromAPI(appId)` - Fetch from `/api/themes/{appId}` with timeout + graceful fallback
 - `applyTheme(theme)` - Inject fonts, CSS variables, favicon
-- `clearThemeCache(enterpriseId?)` - Invalidate per-enterprise or global cache for hot-reload
-- `getThemeMetadata(enterpriseId?)` - Read cached `source`, `updatedAt`, `updatedBy` for UI messaging
-- `getCurrentEnterpriseId()` - Get active enterprise context
+- `clearThemeCache(appId?)` - Invalidate per-app or global cache for hot-reload
+- `getThemeMetadata(appId?)` - Read cached `source`, `updatedAt`, `updatedBy` for UI messaging
+- `getCurrentAppId()` - Get active app context
 
 **Theme Structure:**
 ```javascript
@@ -69,8 +69,8 @@ import { typography, components, spacing, layouts } from './styles/artifactDesig
 import { initializeTheme } from './styles/themeProvider';
 
 useEffect(() => {
-  const enterpriseId = getEnterpriseIdFromAuth();
-  initializeTheme(enterpriseId);
+  const appId = getAppIdFromAuth();
+  initializeTheme(appId);
 }, []);
 ```
 
@@ -80,7 +80,7 @@ useEffect(() => {
 **React hook** - Component-level theme access for dynamic branding.
 
 **Exports:**
-- `useTheme(enterpriseId?)` - Main hook returning `{ theme, loading }`
+- `useTheme(appId?)` - Main hook returning `{ theme, loading }`
 - `getThemeColor(theme, colorKey)` - Extract color config
 - `getThemeFont(theme, fontKey)` - Extract font config
 - `getDynamicColorClass(theme, type, variant, property)` - Generate Tailwind classes
@@ -110,7 +110,7 @@ const MyComponent = () => {
 - Dynamic button components
 - Theme switching logic
 - Backend API integration pattern
-- Testing different enterprise themes
+- Testing different app themes
 
 ---
 
@@ -140,7 +140,7 @@ Integration summary and architecture documentation.
 - Usage examples (manual + AI-generated)
 - Font stack alignment across layers
 - Color migration roadmap (static → CSS variables)
-- Enterprise theme API specification
+- App theme API specification
 - Implementation checklist
 
 ---
@@ -153,7 +153,7 @@ Integration summary and architecture documentation.
 - Maps to Tailwind utilities
 
 ### Layer 2: Dynamic Theme Provider (`themeProvider.js`)
-- Loads enterprise-specific configuration
+- Loads app-specific configuration
 - Injects Google Fonts dynamically
 - Injects CSS custom properties (--color-primary, etc.)
 - Updates favicon/branding
@@ -175,9 +175,9 @@ Integration summary and architecture documentation.
 ### 1. App Initialization
 ```javascript
 // App.js loads theme once
-initializeTheme(enterpriseId)
+initializeTheme(appId)
   ↓
-loadThemeFromAPI(enterpriseId)  // Fetches via /api/themes/{id}
+loadThemeFromAPI(appId)  // Fetches via /api/themes/{id}
   ↓
 applyTheme(theme)
   ↓
@@ -211,7 +211,7 @@ className={components.card.primary} // Uses theme colors (future CSS vars)
 
 ### ✅ Implemented (Phase 1)
 - Centralized design system with typography, spacing, components
-- Dynamic font loading per enterprise (Google Fonts + local fonts)
+- Dynamic font loading per app (Google Fonts + local fonts)
 - Theme provider infrastructure with caching
 - React hook for component-level theme access
 - CSS variable injection for colors
@@ -219,12 +219,12 @@ className={components.card.primary} // Uses theme colors (future CSS vars)
 
 ### 🔄 In Progress (Phase 2)
 - **Color migration**: Hardcoded Tailwind (border-cyan-500) → CSS variables (border-[var(--color-primary)])
-- Backend theme API endpoint (`/api/enterprises/{id}/theme`)
+- Backend theme API endpoint (`/api/apps/{id}/theme`)
 - Theme management admin UI
 
 ### 📋 Planned (Phase 3)
 - Theme preview/editor in admin panel
-- Theme inheritance (enterprise → default)
+- Theme inheritance (app → default)
 - Theme export/import for backup
 - A/B testing different themes
 - Analytics on theme usage
@@ -233,9 +233,9 @@ className={components.card.primary} // Uses theme colors (future CSS vars)
 
 ## Multi-Tenant Benefits
 
-1. **Brand Consistency**: Each enterprise sees their own fonts, colors, logos
+1. **Brand Consistency**: Each app sees their own fonts, colors, logos
 2. **Runtime Flexibility**: No code changes or rebuilds required
-3. **Scalability**: Single codebase serves unlimited enterprises
+3. **Scalability**: Single codebase serves unlimited apps
 4. **Performance**: Theme caching prevents redundant API calls
 5. **Developer Experience**: Design system prevents style drift
 6. **AI-Friendly**: Clear patterns for automated component generation
@@ -273,21 +273,21 @@ UIFileGenerator automatically includes design system imports and uses constants 
 
 ## Testing Themes
 
-### Mock Different Enterprises
+### Mock Different apps
 ```javascript
 // In themeProvider.js loadThemeFromAPI, replace with:
 const MOCK_THEMES = {
   'default': { /* MozaiksAI cyan/violet */ },
-  'enterprise-a': { /* Corporate blue */ },
-  'enterprise-b': { /* Startup green */ },
-  'enterprise-c': { /* Agency purple */ },
+  'app-a': { /* Corporate blue */ },
+  'app-b': { /* Startup green */ },
+  'app-c': { /* Agency purple */ },
 };
-return MOCK_THEMES[enterpriseId] || MOCK_THEMES['default'];
+return MOCK_THEMES[appId] || MOCK_THEMES['default'];
 ```
 
-### Switch Enterprises
+### Switch apps
 ```javascript
-localStorage.setItem('mozaiks.current_enterprise_id', 'enterprise-a');
+localStorage.setItem('mozaiks.current_app_id', 'app-a');
 window.location.reload();
 ```
 
@@ -329,7 +329,7 @@ colors.primary.border = 'border-[var(--color-primary)]'
 
 - **Design System Reference**: `docs/UI_COMPONENT_DESIGN_GUIDE.md`
 - **Integration Guide**: `docs/DESIGN_SYSTEM_INTEGRATION.md`
-- **Theme Runtime Guide**: `docs/ENTERPRISE_THEME_MANAGEMENT.md`
+- **Theme Runtime Guide**: `docs/app_THEME_MANAGEMENT.md`
 - **Code Examples**: `THEME_INTEGRATION_EXAMPLE.js`
 - **AI Agent Config**: `workflows/Generator/agents.json` (UIFileGenerator section)
 

@@ -11,7 +11,7 @@
 #   No manual parameter injection needed - AG2 handles this internally.
 #   
 #   Available in ContextVariables:
-#   - workflow_name, enterprise_id, chat_id, user_id (auto-injected by orchestrator)
+#   - workflow_name, app_id, chat_id, user_id (auto-injected by orchestrator)
 #   - concept_overview, schema_overview (loaded by context_variables.py)
 #   - Any other workflow-specific data from context_variables.json
 #   
@@ -56,13 +56,13 @@ def _wrap_with_validation(
         async def _async_wrapper(*args, **kwargs):
             # Extract context for logging
             chat_id = kwargs.get('chat_id') or (kwargs.get('context_variables', {}) or {}).get('chat_id')
-            enterprise_id = kwargs.get('enterprise_id') or (kwargs.get('context_variables', {}) or {}).get('enterprise_id')
+            app_id = kwargs.get('app_id') or (kwargs.get('context_variables', {}) or {}).get('app_id')
             
             # Get workflow-agnostic logger
             tool_logger = get_tool_logger(
                 tool_name=tool_name,
                 chat_id=chat_id,
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 workflow_name=workflow_name
             )
             
@@ -131,13 +131,13 @@ def _wrap_with_validation(
     def _sync_wrapper(*args, **kwargs):
         # Extract context for logging
         chat_id = kwargs.get('chat_id') or (kwargs.get('context_variables', {}) or {}).get('chat_id')
-        enterprise_id = kwargs.get('enterprise_id') or (kwargs.get('context_variables', {}) or {}).get('enterprise_id')
+        app_id = kwargs.get('app_id') or (kwargs.get('context_variables', {}) or {}).get('app_id')
         
         # Get workflow-agnostic logger
         tool_logger = get_tool_logger(
             tool_name=tool_name,
             chat_id=chat_id,
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             workflow_name=workflow_name
         )
         
@@ -221,14 +221,17 @@ def load_agent_tool_functions(workflow_name: str) -> Dict[str, List[Callable]]:
     """
     mapping: Dict[str, List[Callable]] = {}
     base_dir = Path('workflows') / workflow_name
-    tools_json_path = base_dir / 'tools.json'
-    if not tools_json_path.exists():
-        logger.debug(f"[TOOLS] No tools.json for workflow '{workflow_name}'")
+    tools_yaml_path = base_dir / 'tools.yaml'
+    
+    if not tools_yaml_path.exists():
+        logger.debug(f"[TOOLS] No tools.yaml for workflow '{workflow_name}'")
         return mapping
+    
     try:
-        data = json.loads(tools_json_path.read_text(encoding='utf-8')) or {}
+        import yaml
+        data = yaml.safe_load(tools_yaml_path.read_text(encoding='utf-8')) or {}
     except Exception as jerr:
-        logger.warning(f"[TOOLS] Failed to parse tools.json for '{workflow_name}': {jerr}")
+        logger.warning(f"[TOOLS] Failed to parse tools.yaml for '{workflow_name}': {jerr}")
         return mapping
     entries = data.get('tools', []) or []
     if not isinstance(entries, list):
@@ -310,6 +313,15 @@ def load_agent_tool_functions(workflow_name: str) -> Dict[str, List[Callable]]:
         tool_identifier = tool.get('name') or func_name
         tool_type = tool.get('tool_type') or tool.get('type')
         is_ui_tool = tool_type and str(tool_type).upper() == "UI_TOOL"
+        auto_invoke_raw = tool.get("auto_invoke")
+        if auto_invoke_raw is None:
+            # Match auto_tool_handler's default: UI tools auto-invoke by default, agent tools do not.
+            should_auto_invoke = bool(is_ui_tool)
+        else:
+            try:
+                should_auto_invoke = bool(auto_invoke_raw)
+            except Exception:
+                should_auto_invoke = False
         
         for ag in agent_targets:
             # UI_Tools are validated by auto_tool_handler at the model level (before invocation)
@@ -317,7 +329,10 @@ def load_agent_tool_functions(workflow_name: str) -> Dict[str, List[Callable]]:
             # receives decomposed kwargs that don't match the structured output schema.
             # Example: mermaid_sequence_diagram receives {MermaidSequenceDiagram: dict, agent_name: str}
             # but the model is MermaidSequenceDiagramCall with nested structure.
-            enforce_schema = ag in structured_registry and not is_ui_tool
+            # For agent tools that are manually invoked (auto_invoke=false), validating kwargs against the
+            # agent's structured output model will reject legitimate tool payloads. Only enforce schema
+            # for auto-invoked tools where kwargs are expected to match the agent's structured output.
+            enforce_schema = ag in structured_registry and should_auto_invoke and not is_ui_tool
             wrapped_func = _wrap_with_validation(
                 workflow_name=workflow_name,
                 agent_name=ag,
@@ -386,5 +401,4 @@ __all__ = [
     'load_agent_tool_functions',
     'clear_tool_cache',
 ]
-
 

@@ -1,6 +1,6 @@
 # ============================================================================
 # FILE: core/data/theme_manager.py
-# DESCRIPTION: Persistence and validation for enterprise theme configuration
+# DESCRIPTION: Persistence and validation for app theme configuration (legacy: app)
 # ============================================================================
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 from logs.logging_config import get_workflow_logger
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, ConfigDict
 
-from core.data.persistence.persistence_manager import PersistenceManager, InvalidEnterpriseIdError
+from core.data.persistence.persistence_manager import PersistenceManager
 
 logger = get_workflow_logger("theme_manager")
 
@@ -155,7 +155,7 @@ class ThemeUpdateRequest(BaseModel):
 
 
 class ThemeResponse(BaseModel):
-    enterprise_id: str
+    app_id: str
     theme: ThemeConfig
     source: str = Field(pattern=r"^(default|custom)$")
     updated_at: Optional[datetime] = Field(default=None, alias="updatedAt")
@@ -258,23 +258,23 @@ class ThemeManager:
 #################################################################################
             db = self._persistence.client["MozaiksAI"]
             self._collection = db["Themes"]
-            await self._collection.create_index("enterprise_id", unique=True)
+            # _id is the canonical key; keep secondary indexes non-unique to avoid
+            # unique-null collisions for legacy docs missing newer fields.
+            await self._collection.create_index("app_id")
             return self._collection
 ################################################################################
 
-    async def get_theme(self, enterprise_id: str) -> ThemeResponse:
-        enterprise_id = enterprise_id.strip() or "default"
-        if enterprise_id != "default":
-            await self._persistence._validate_enterprise_exists(enterprise_id)
+    async def get_theme(self, app_id: str) -> ThemeResponse:
+        app_id = app_id.strip() or "default"
 
         coll = await self._get_collection()
-        doc = await coll.find_one({"_id": enterprise_id})
+        doc = await coll.find_one({"_id": app_id})
 
         if not doc:
-            logger.debug("Theme fallback to default", extra={"enterprise_id": enterprise_id})
+            logger.debug("Theme fallback to default", extra={"app_id": app_id})
             theme = ThemeConfig.parse_obj(DEFAULT_THEME)
             return ThemeResponse(
-                enterprise_id=enterprise_id,
+                app_id=app_id,
                 theme=theme,
                 source="default",
                 updatedAt=None,
@@ -284,20 +284,18 @@ class ThemeManager:
         merged = _deep_merge(DEFAULT_THEME, doc.get("theme", {}))
         theme = ThemeConfig.parse_obj(merged)
         return ThemeResponse(
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             theme=theme,
             source="custom",
             updatedAt=doc.get("updated_at"),
             updatedBy=doc.get("updated_by"),
         )
 
-    async def upsert_theme(self, enterprise_id: str, payload: ThemeUpdateRequest) -> ThemeResponse:
-        enterprise_id = enterprise_id.strip() or "default"
-        if enterprise_id != "default":
-            await self._persistence._validate_enterprise_exists(enterprise_id)
+    async def upsert_theme(self, app_id: str, payload: ThemeUpdateRequest) -> ThemeResponse:
+        app_id = app_id.strip() or "default"
 
         coll = await self._get_collection()
-        existing_doc = await coll.find_one({"_id": enterprise_id})
+        existing_doc = await coll.find_one({"_id": app_id})
         base_theme = DEFAULT_THEME if not existing_doc else _deep_merge(DEFAULT_THEME, existing_doc.get("theme", {}))
 
         overrides = payload.theme.model_dump(exclude_none=True)
@@ -309,26 +307,26 @@ class ThemeManager:
         version = int(existing_doc.get("version", 0)) + 1 if existing_doc else 1
 
         doc = {
-            "_id": enterprise_id,
-            "enterprise_id": enterprise_id,
+            "_id": app_id,
+            "app_id": app_id,
             "theme": theme.dict(),
             "updated_at": now,
             "updated_by": updated_by,
             "version": version,
         }
 
-        await coll.replace_one({"_id": enterprise_id}, doc, upsert=True)
+        await coll.replace_one({"_id": app_id}, doc, upsert=True)
         logger.info(
             "Theme updated",
             extra={
-                "enterprise_id": enterprise_id,
+                "app_id": app_id,
                 "updated_by": updated_by,
                 "version": version,
             },
         )
 
         return ThemeResponse(
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             theme=theme,
             source="custom",
             updatedAt=now,
@@ -342,4 +340,3 @@ __all__ = [
     "ThemeUpdateRequest",
     "DEFAULT_THEME",
 ]
-

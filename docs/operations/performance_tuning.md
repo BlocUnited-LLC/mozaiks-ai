@@ -144,8 +144,8 @@ use mozaiks
 // Chat sessions: Lookup by chat_id (primary key)
 db.chat_sessions.createIndex({ chat_id: 1 }, { unique: true })
 
-// Chat sessions: List by enterprise and user
-db.chat_sessions.createIndex({ enterprise_id: 1, user_id: 1 })
+// Chat sessions: List by app and user
+db.chat_sessions.createIndex({ app_id: 1, user_id: 1 })
 
 // Chat sessions: Recent chats
 db.chat_sessions.createIndex({ created_at: -1 })
@@ -310,7 +310,7 @@ session = await collection.find_one(
 ```python
 # Efficient aggregation for analytics
 pipeline = [
-    {"$match": {"enterprise_id": "acme_corp"}},
+    {"$match": {"app_id": "acme_corp"}},
     {"$group": {
         "_id": "$workflow_name",
         "total_chats": {"$sum": 1},
@@ -788,7 +788,7 @@ async def call_llm_with_fallback(prompt: str):
 **Limit Conversation Length:**
 
 ```json
-// In workflow manifest.json
+// In workflow orchestrator.json
 {
   "max_turns": 10  // Down from 20+
 }
@@ -852,7 +852,7 @@ scenarios:
           url: "/api/start"
           json:
             workflow_name: "Generator"
-            enterprise_id: "test_enterprise"
+            app_id: "test_app"
             user_id: "test_user"
       - think: 2
 ```
@@ -979,8 +979,8 @@ MONGO_URI=mongodb+srv://...?readPreference=secondaryPreferred&maxStalenessSecond
 **When:** > 1TB data or > 100k concurrent users
 
 **Strategy:**
-- Shard by `enterprise_id` or `user_id`
-- Each shard handles subset of enterprises
+- Shard by `app_id` or `user_id`
+- Each shard handles subset of apps
 - MongoDB native sharding or app-level routing
 
 ---

@@ -1,8 +1,0 @@
-{
-  "pack_id": "agent_generator_micro",
-  "name": "Agent Generator Micro-Orchestrator",
-  "version": "1.0.0",
-  "description": "Micro-orchestration definitions for the AgentGenerator workflow, including nested chat loops.",
-  "type": "micro",
-  "parent_workflow": "AgentGenerator"
-}

@@ -112,7 +112,7 @@ def _parse_database_schema_info(
         # DATABASE: MozaiksCore
         # TOTAL COLLECTIONS: 5
         # 
-        # USERS [Enterprise-specific]:
+        # USERS [app-specific]:
         #   Fields:
         #     - user_id: str
         #     - email: str
@@ -134,18 +134,18 @@ def _parse_database_schema_info(
                 except ValueError:
                     pass
             
-            # New collection header (UPPERCASE: or UPPERCASE [Enterprise-specific]:)
+            # New collection header (UPPERCASE: or UPPERCASE [app-specific]:)
             elif line and ":" in line and line[0].isupper() and not line.startswith("Fields:"):
                 if current_collection:
                     database_info["collections"].append(current_collection)
                 
                 collection_name = line.split(":")[0].strip()
-                is_enterprise = "[Enterprise-specific]" in line
-                collection_name = collection_name.replace("[Enterprise-specific]", "").strip()
+                is_app = "[app-specific]" in line
+                collection_name = collection_name.replace("[app-specific]", "").strip()
                 
                 current_collection = {
                     "name": collection_name,
-                    "is_enterprise": is_enterprise,
+                    "is_app": is_app,
                     "fields": []
                 }
             
@@ -385,7 +385,6 @@ def _normalize_ui_components(value: Any) -> List[Dict[str, Any]]:
         label = _coerce_str(raw.get("label"))
         component = _coerce_str(raw.get("component"))
         display = _coerce_str(raw.get("display"), "inline")
-        ui_pattern = _coerce_str(raw.get("ui_pattern"), "single_step")
         summary = _coerce_str(raw.get("summary"))
 
         normalized.append(
@@ -396,7 +395,6 @@ def _normalize_ui_components(value: Any) -> List[Dict[str, Any]]:
                 "label": label,
                 "component": component,
                 "display": display,
-                "ui_pattern": ui_pattern,
                 "summary": summary,
             }
         )
@@ -747,7 +745,6 @@ async def action_plan(
                                 "agents": [
                                     {
                                         "agent_name": str,
-                                        "agent_type": "router"|"worker"|"evaluator"|"orchestrator"|"intake"|"generator",
                                         "objective": str,
                                         "human_interaction": "none"|"context"|"approval"|"feedback"|"single",
                                         "generation_mode": "text"|"image"|"video"|"audio"|null,
@@ -798,18 +795,21 @@ async def action_plan(
             combined review prompt when omitted.
     """
 
-    chat_id = enterprise_id = workflow_name = agent_name = None
+    chat_id = app_id = workflow_name = agent_name = None
     stored_plan: Dict[str, Any] = {}
     stored_diagram: Optional[str] = None
     stored_diagram_ready = False
     stored_diagram_meta: Dict[str, Any] = {}
     workflow_strategy: Optional[Dict[str, Any]] = None
     stored_blueprint: Optional[Dict[str, Any]] = None
+    is_multi_workflow = False
+    pack_name: Optional[str] = None
+    workflows_spec: List[Dict[str, Any]] = []
 
     if context_variables and hasattr(context_variables, "get"):
         try:
             chat_id = context_variables.get("chat_id")
-            enterprise_id = context_variables.get("enterprise_id")
+            app_id = context_variables.get("app_id")
             workflow_name = context_variables.get("workflow_name")
             agent_name = _extract_agent_name(context_variables)
 
@@ -831,6 +831,29 @@ async def action_plan(
             blueprint_candidate = context_variables.get("technical_blueprint")
             if isinstance(blueprint_candidate, dict):
                 stored_blueprint = blueprint_candidate
+
+            # Pack / decomposition context (PatternSelection tool)
+            is_multi_workflow = bool(context_variables.get("is_multi_workflow"))
+            pack_candidate = context_variables.get("pack_name")
+            if isinstance(pack_candidate, str) and pack_candidate.strip():
+                pack_name = pack_candidate.strip()
+
+            workflows_spec_candidate = context_variables.get("workflows_spec")
+            if isinstance(workflows_spec_candidate, list):
+                workflows_spec = [w for w in workflows_spec_candidate if isinstance(w, dict)]
+
+            ps_candidate = context_variables.get("PatternSelection")
+            if isinstance(ps_candidate, dict):
+                if not is_multi_workflow:
+                    is_multi_workflow = bool(ps_candidate.get("is_multi_workflow"))
+                if not pack_name:
+                    raw_pack = ps_candidate.get("pack_name")
+                    if isinstance(raw_pack, str) and raw_pack.strip():
+                        pack_name = raw_pack.strip()
+                if not workflows_spec:
+                    raw_workflows = ps_candidate.get("workflows")
+                    if isinstance(raw_workflows, list):
+                        workflows_spec = [w for w in raw_workflows if isinstance(w, dict)]
             
             # Extract database schema information for Data tab display
             schema_overview = context_variables.get("schema_overview")
@@ -848,10 +871,13 @@ async def action_plan(
             context_schema_db = None
             schema_capability_flag = False
             schema_capability_db = None
+            is_multi_workflow = False
+            pack_name = None
+            workflows_spec = []
 
-    if not chat_id or not enterprise_id:
-        _logger.warning("Missing routing keys: chat_id or enterprise_id not present on context_variables")
-        return {"status": "error", "message": "chat_id and enterprise_id are required"}
+    if not chat_id or not app_id:
+        _logger.warning("Missing routing keys: chat_id or app_id not present on context_variables")
+        return {"status": "error", "message": "chat_id and app_id are required"}
 
     # --- Module Agents Merge Logic ---------------------------------------------
     # If module_agents is provided, merge with workflow_strategy to build ActionPlan
@@ -1151,7 +1177,7 @@ async def action_plan(
     plan_workflow["name"] = wf_name
     ap_norm["workflow"] = plan_workflow
 
-    wf_logger = get_workflow_logger(workflow_name=wf_name, chat_id=chat_id, enterprise_id=enterprise_id)
+    wf_logger = get_workflow_logger(workflow_name=wf_name, chat_id=chat_id, app_id=app_id)
 
     _log_tool_event = None
     try:  # Optional telemetry logger
@@ -1160,7 +1186,7 @@ async def action_plan(
         tlog = _get_tool_logger(
             tool_name="ActionPlan",
             chat_id=chat_id,
-            enterprise_id=enterprise_id,
+            app_id=app_id,
             workflow_name=wf_name,
         )
         _log_tool_event = _lte
@@ -1204,6 +1230,66 @@ async def action_plan(
                 context_variables.set("mermaid_sequence_diagram", "")  # type: ignore[attr-defined]
                 context_variables.set("mermaid_diagram_ready", False)  # type: ignore[attr-defined]
                 context_variables.set("mermaid_diagram_metadata", {})  # type: ignore[attr-defined]
+
+            # If we're in a multi-workflow context, retain all action plans so the UI
+            # can render one tab per workflow.
+            try:
+                should_track_pack = bool(is_multi_workflow) or len(workflows_spec) > 1
+                if should_track_pack:
+                    existing_pack = context_variables.get("action_plan_workflows")  # type: ignore[attr-defined]
+                    pack_items: List[Dict[str, Any]] = (
+                        [item for item in existing_pack if isinstance(item, dict)]
+                        if isinstance(existing_pack, list)
+                        else []
+                    )
+
+                    order: List[str] = []
+                    spec_by_name: Dict[str, Dict[str, Any]] = {}
+                    for spec in workflows_spec:
+                        name = _coerce_str(spec.get("name")).strip()
+                        if not name:
+                            continue
+                        if name not in order:
+                            order.append(name)
+                        spec_by_name[name] = spec
+
+                    def _entry_name(entry: Dict[str, Any]) -> str:
+                        raw = entry.get("workflow_name")
+                        if isinstance(raw, str) and raw.strip():
+                            return raw.strip()
+                        wf_obj = entry.get("workflow")
+                        if isinstance(wf_obj, dict):
+                            return _coerce_str(wf_obj.get("name")).strip()
+                        return ""
+
+                    pack_items = [item for item in pack_items if _entry_name(item) != wf_name]
+                    pack_entry: Dict[str, Any] = {
+                        "workflow_name": wf_name,
+                        "workflow": copy.deepcopy(plan_workflow),
+                    }
+                    spec = spec_by_name.get(wf_name)
+                    if spec:
+                        role = spec.get("role")
+                        if isinstance(role, str) and role.strip():
+                            pack_entry["role"] = role.strip()
+                        desc = spec.get("description")
+                        if isinstance(desc, str) and desc.strip():
+                            pack_entry["description"] = desc.strip()
+
+                    pack_items.append(pack_entry)
+                    if order:
+                        pack_items.sort(
+                            key=lambda item: (
+                                order.index(_entry_name(item)) if _entry_name(item) in order else len(order)
+                            )
+                        )
+                    context_variables.set("action_plan_workflows", copy.deepcopy(pack_items))  # type: ignore[attr-defined]
+                    context_variables.set("has_children", len(pack_items) > 1)  # type: ignore[attr-defined]
+                    context_variables.set("children_count", len(pack_items))  # type: ignore[attr-defined]
+                    if pack_name:
+                        context_variables.set("action_plan_pack_name", pack_name)  # type: ignore[attr-defined]
+            except Exception as pack_err:  # pragma: no cover - best-effort only
+                wf_logger.debug("Failed to persist pack action plan list: %s", pack_err)
         except Exception as ctx_err:  # pragma: no cover - defensive logging
             wf_logger.debug("Failed to persist planning context: %s", ctx_err)
 

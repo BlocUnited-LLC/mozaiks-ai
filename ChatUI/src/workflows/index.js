@@ -18,11 +18,15 @@
  * - Clean separation of concerns
  */
 
+import config from '../config';
+
 class WorkflowRegistry {
   constructor() {
     this.loadedWorkflows = new Map();
     this.initialized = false;
-    this.apiBaseUrl = 'http://localhost:8000/api'; // Direct backend API base URL (bypass proxy)
+    const baseUrlRaw = typeof config?.get === 'function' ? config.get('api.baseUrl') : undefined;
+    const baseUrl = typeof baseUrlRaw === 'string' && baseUrlRaw.endsWith('/') ? baseUrlRaw.slice(0, -1) : (baseUrlRaw || 'http://localhost:8000');
+    this.apiBaseUrl = baseUrl.endsWith('/api') ? baseUrl : `${baseUrl}/api`; // Direct backend API base URL
     this.ready = false; // only true after at least one workflow loaded (or cached)
     this.lastError = null;
     this.maxRetries = 5;

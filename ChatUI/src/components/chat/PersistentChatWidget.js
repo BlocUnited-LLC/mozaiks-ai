@@ -1,126 +1,55 @@
 import React from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
 import { useChatUI } from '../../context/ChatUIContext';
 
 /**
  * PersistentChatWidget - Minimized chat window in bottom-left corner (20% of screen height)
  * 
  * Shows when user is on Discovery/Workflows page.
- * Click to navigate back to full chat and restore previous layout state.
- * Includes mode toggle (workflow ↔ Ask Mozaiks) with artifact state preservation.
+ * Small always-available chat widget.
+ *
+ * Contract (3 surfaces):
+ * - Bubble (minimized): opens this widget.
+ * - Widget (this): Ask-only preview surface.
+ * - Full-screen overlay: Ask or Workflow, opened via host API.
  */
 const PersistentChatWidget = ({
   chatId,
   workflowName,
   conversationMode
 }) => {
-  const navigate = useNavigate();
-  const location = useLocation();
   const {
-    sendWsMessage,
-    setConversationMode,
-    setIsInWidgetMode,
-    user,
-    config
+    setIsChatOverlayOpen,
+    setConversationMode
   } = useChatUI();
-  const pathSegments = location.pathname.split('/').filter(Boolean);
-  const isPrimaryChatRoute = pathSegments.length === 0 || pathSegments[0] === 'chat' || pathSegments[0] === 'enterprise';
   const widgetStyle = {
     height: '20vh',
     minHeight: '150px'
   };
 
-  const navigateToChat = () => {
-    // Navigate back to chat page and exit widget mode
-    console.log('🏠 [WIDGET] Expanding to full chat - clearing widget mode');
-    setIsInWidgetMode(false);
-    navigate('/chat');
-  };
-
-  const handleModeToggle = async () => {
-    console.log('🔄 [WIDGET_TOGGLE] handleModeToggle called');
-    console.log('🔄 [WIDGET_TOGGLE] Current conversationMode:', conversationMode);
-    console.log('🔄 [WIDGET_TOGGLE] Current chatId prop:', chatId);
-    console.log('🔄 [WIDGET_TOGGLE] Current workflowName prop:', workflowName);
-    console.log('🔄 [WIDGET_TOGGLE] isPrimaryChatRoute:', isPrimaryChatRoute);
-    
-    if (conversationMode === 'workflow') {
-      // Switch to Ask Mozaiks mode
-      console.log('🧠 [WIDGET_TOGGLE] Switching to Ask Mozaiks mode from widget');
-      const sent = sendWsMessage({ type: 'chat.enter_general_mode' });
-      if (sent) {
-        setConversationMode('ask');
-        // Artifact state is already cached by ChatPage's workflowArtifactPanelStateRef
-        // When user returns to /chat, the state will be restored
+  const requestOverlay = (detail) => {
+    try {
+      if (window.mozaiksChat && typeof window.mozaiksChat.open === 'function') {
+        window.mozaiksChat.open(detail);
+        return;
       }
-    } else {
-      // Switch to workflow mode - fetch oldest IN_PROGRESS workflow
-      console.log('🤖 [WIDGET_TOGGLE] Switching to workflow mode, fetching oldest IN_PROGRESS workflow');
-      console.log('🤖 [WIDGET_TOGGLE] Config available?', !!config);
-      console.log('🤖 [WIDGET_TOGGLE] User available?', !!user);
-      
-      const currentEnterpriseId = config?.chat?.defaultEnterpriseId || process.env.REACT_APP_DEFAULT_ENTERPRISE_ID;
-      const currentUserId = user?.id || config?.chat?.defaultUserId || '56132';
-      
-      try {
-        const endpoint = `http://localhost:8000/api/sessions/oldest/${currentEnterpriseId}/${currentUserId}`;
-        console.log('🌐 [WIDGET_TOGGLE] Calling endpoint:', endpoint);
-        const response = await fetch(endpoint);
-        console.log('🌐 [WIDGET_TOGGLE] Response status:', response.status, response.statusText);
-        
-        if (!response.ok) {
-          console.error('❌ [WIDGET_TOGGLE] Failed to fetch oldest workflow session');
-          console.error('❌ [WIDGET_TOGGLE] Response status:', response.status);
-          return;
-        }
-        
-        const data = await response.json();
-        console.log('✅ [WIDGET_TOGGLE] API response:', JSON.stringify(data, null, 2));
-        
-        if (!data.found) {
-          console.warn('⚠️ [WIDGET_TOGGLE] No IN_PROGRESS workflows available to resume');
-          console.warn('⚠️ [WIDGET_TOGGLE] Response found flag:', data.found);
-          return;
-        }
-        
-        const targetChatId = data.chat_id;
-        const targetWorkflowName = data.workflow_name;
-        
-        console.log(`🎯 [WIDGET_TOGGLE] Resuming oldest workflow: ${targetWorkflowName} (${targetChatId}`);
-        console.log('🎯 [WIDGET_TOGGLE] Will navigate to chat?', !isPrimaryChatRoute);
-        
-        const sendWorkflowSwitch = () => {
-          console.log('📤 [WIDGET_TOGGLE] Sending chat.switch_workflow message with chat_id:', targetChatId);
-          const sent = sendWsMessage({ type: 'chat.switch_workflow', chat_id: targetChatId });
-          console.log('📤 [WIDGET_TOGGLE] WebSocket send result:', sent);
-          if (sent) {
-            console.log('✅ [WIDGET_TOGGLE] Setting conversation mode to workflow');
-            setConversationMode('workflow');
-            // Exit widget mode - ChatPage should render full interface now
-            console.log('🚪 [WIDGET_TOGGLE] Clearing isInWidgetMode flag');
-            setIsInWidgetMode(false);
-            // Artifact state will be restored by ChatPage's workflowArtifactPanelStateRef
-          } else {
-            console.error('❌ [WIDGET_TOGGLE] Failed to send WebSocket message');
-          }
-        };
-
-        if (!isPrimaryChatRoute) {
-          console.log('📍 [WIDGET_TOGGLE] Navigating back to /chat before resuming workflow');
-          navigate('/chat');
-          console.log('📍 [WIDGET_TOGGLE] Setting timeout to send workflow switch');
-          setTimeout(sendWorkflowSwitch, 0);
-        } else {
-          console.log('📍 [WIDGET_TOGGLE] Already on chat route, sending workflow switch immediately');
-          sendWorkflowSwitch();
-        }
-      } catch (err) {
-        console.error('❌ [WIDGET_TOGGLE] Error fetching oldest workflow:', err);
-        console.error('❌ [WIDGET_TOGGLE] Error stack:', err.stack);
+      window.dispatchEvent(new CustomEvent('mozaiks:chat:open', { detail }));
+    } catch (_) {
+      // Fallback: at least open whatever surface is available.
+      if (detail?.mode === 'workflow') {
+        setConversationMode?.('workflow');
+      } else {
+        setConversationMode?.('ask');
       }
+      setIsChatOverlayOpen(true);
     }
-    console.log('✅ [WIDGET_TOGGLE] handleModeToggle completed');
   };
+
+  const openAskOverlay = () => requestOverlay({ mode: 'ask' });
+  const openWorkflowOverlay = () => requestOverlay({
+    mode: 'workflow',
+    ...(chatId ? { chat_id: chatId } : null),
+    ...(workflowName ? { workflow_name: workflowName } : null),
+  });
 
   // Minimized chat window (20% screen height) in bottom-left corner
   return (
@@ -153,20 +82,20 @@ const PersistentChatWidget = ({
         <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
           {/* Mode Toggle Button */}
           <button
-            onClick={handleModeToggle}
+            onClick={openWorkflowOverlay}
             className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-[var(--color-primary)]/20 hover:bg-[var(--color-primary)]/40 transition-all flex items-center justify-center group border border-[var(--color-primary-light)]/30"
-            title={conversationMode === 'workflow' ? 'Switch to Ask Mozaiks' : 'Switch to Workflow'}
+            title="Open Workflow (full screen)"
           >
             <span className="text-sm sm:text-base group-hover:scale-110 transition-transform">
-              {conversationMode === 'workflow' ? '🧠' : '🤖'}
+              🤖
             </span>
           </button>
 
           {/* Expand Chat Button */}
           <button
-            onClick={navigateToChat}
+            onClick={openAskOverlay}
             className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-[var(--color-primary)]/20 hover:bg-[var(--color-primary)]/40 transition-all flex items-center justify-center group border border-[var(--color-primary-light)]/30"
-            title="Expand Chat"
+            title="Open Ask (full screen)"
           >
             <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[var(--color-primary-light)] group-hover:scale-110 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
@@ -184,7 +113,7 @@ const PersistentChatWidget = ({
                 {conversationMode === 'workflow' ? '🤖' : '🧠'}
               </div>
               <p className="oxanium text-white font-semibold text-xs sm:text-sm">
-                {conversationMode === 'workflow' ? 'Workflow Mode' : 'Ask Mozaiks'}
+                Ask
               </p>
               <p className="text-[10px] sm:text-xs text-gray-500 mt-1 truncate px-2 max-w-full">{chatId}</p>
             </>
@@ -198,7 +127,7 @@ const PersistentChatWidget = ({
           )}
         </div>
         <button
-          onClick={navigateToChat}
+          onClick={openAskOverlay}
           className="mt-1 sm:mt-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-secondary)] text-white text-[10px] sm:text-xs rounded-lg hover:shadow-lg hover:shadow-[var(--color-primary)]/50 transition-all font-semibold oxanium"
         >
           Open Chat

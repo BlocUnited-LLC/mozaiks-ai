@@ -11,7 +11,7 @@
 #   No manual parameter injection needed - AG2 handles this internally.
 #   
 #   Available in ContextVariables:
-#   - workflow_name, enterprise_id, chat_id, user_id (auto-injected by orchestrator)
+#   - workflow_name, app_id, chat_id, user_id (auto-injected by orchestrator)
 #   - concept_overview, schema_overview (loaded by context_variables.py)
 #   - Any other workflow-specific data from context_variables.json
 #   
@@ -91,14 +91,17 @@ def load_agent_tool_functions(workflow_name: str) -> Dict[str, List[Callable]]:
     """
     mapping: Dict[str, List[Callable]] = {}
     base_dir = Path('workflows') / workflow_name
-    tools_json_path = base_dir / 'tools.json'
-    if not tools_json_path.exists():
-        logger.debug(f"[TOOLS] No tools.json for workflow '{workflow_name}'")
+    tools_yaml_path = base_dir / 'tools.yaml'
+    
+    if not tools_yaml_path.exists():
+        logger.debug(f"[TOOLS] No tools.yaml for workflow '{workflow_name}'")
         return mapping
+    
     try:
-        data = json.loads(tools_json_path.read_text(encoding='utf-8')) or {}
+        import yaml
+        data = yaml.safe_load(tools_yaml_path.read_text(encoding='utf-8')) or {}
     except Exception as jerr:
-        logger.warning(f"[TOOLS] Failed to parse tools.json for '{workflow_name}': {jerr}")
+        logger.warning(f"[TOOLS] Failed to parse tools.yaml for '{workflow_name}': {jerr}")
         return mapping
     entries = data.get('tools', []) or []
     if not isinstance(entries, list):

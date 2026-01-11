@@ -466,7 +466,7 @@ async def mermaid_sequence_diagram(
             agent_message | str | Optional hint that accompanies the eventual artifact.
 
         Behavior:
-            - Validates routing metadata (chat_id, enterprise_id).
+            - Validates routing metadata (chat_id, app_id).
             - Ensures a normalized action plan exists in context for augmentation.
             - Normalizes the provided mermaid_diagram text (prefix, spacing, reliability fixes).
             - Falls back to legend-based generation only when the provided diagram is unusable.
@@ -481,24 +481,24 @@ async def mermaid_sequence_diagram(
             Returns status="error" when required routing keys are missing or both diagram and legend are absent.
         """
 
-    chat_id = enterprise_id = workflow_name = None
+    chat_id = app_id = workflow_name = None
     if context_variables and hasattr(context_variables, "get"):
         try:
             chat_id = context_variables.get("chat_id")
-            enterprise_id = context_variables.get("enterprise_id")
+            app_id = context_variables.get("app_id")
             workflow_name = context_variables.get("workflow_name")
         except Exception as ctx_err:
             _logger.debug("Unable to read routing context: %s", ctx_err)
 
-    if not chat_id or not enterprise_id:
+    if not chat_id or not app_id:
         _logger.warning("Missing routing context for MermaidSequenceDiagram tool")
         return {
             "status": "error",
-            "message": "chat_id and enterprise_id are required",
+            "message": "chat_id and app_id are required",
         }
 
     wf_name = workflow_name or "Generated_Workflow"
-    wf_logger = get_workflow_logger(workflow_name=wf_name, chat_id=chat_id, enterprise_id=enterprise_id)
+    wf_logger = get_workflow_logger(workflow_name=wf_name, chat_id=chat_id, app_id=app_id)
 
     diagram_payload: Dict[str, Any] = {}
     if isinstance(MermaidSequenceDiagram, str):
@@ -562,6 +562,8 @@ async def mermaid_sequence_diagram(
     workflow_strategy: Optional[Dict[str, Any]] = None
     cached_module_agents: List[Dict[str, Any]] = []
     stored_technical_blueprint: Optional[Dict[str, Any]] = None
+    pack_entries: List[Dict[str, Any]] = []
+    pack_name: Optional[str] = None
     if context_variables and hasattr(context_variables, "get"):
         try:
             raw_plan = context_variables.get("action_plan")
@@ -584,6 +586,14 @@ async def mermaid_sequence_diagram(
             if isinstance(blueprint_candidate, dict):
                 stored_technical_blueprint = blueprint_candidate
                 wf_logger.info("[MERMAID] Retrieved technical_blueprint from context with keys: %s", list(blueprint_candidate.keys()))
+
+            pack_entries_candidate = context_variables.get("action_plan_workflows")
+            if isinstance(pack_entries_candidate, list):
+                pack_entries = [entry for entry in pack_entries_candidate if isinstance(entry, dict)]
+
+            pack_name_candidate = context_variables.get("action_plan_pack_name") or context_variables.get("pack_name")
+            if isinstance(pack_name_candidate, str) and pack_name_candidate.strip():
+                pack_name = pack_name_candidate.strip()
         except Exception as ctx_err:
             wf_logger.debug("Unable to retrieve stored action plan: %s", ctx_err)
 
@@ -669,6 +679,32 @@ async def mermaid_sequence_diagram(
     if display_message:
         diagram_metadata["agent_message"] = display_message
 
+    # If we have a multi-workflow ActionPlan cache, update the matching entry with the diagram.
+    if pack_entries:
+        def _pack_entry_name(entry: Dict[str, Any]) -> str:
+            raw = entry.get("workflow_name")
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+            wf_obj = entry.get("workflow")
+            if isinstance(wf_obj, dict):
+                return _coerce_str(wf_obj.get("name")).strip()
+            return ""
+
+        updated_entries: List[Dict[str, Any]] = []
+        for entry in pack_entries:
+            try:
+                name = _pack_entry_name(entry)
+                if name == payload_workflow_name:
+                    new_entry = dict(entry)
+                    new_entry["workflow_name"] = payload_workflow_name
+                    new_entry["workflow"] = copy.deepcopy(workflow_with_diagram)
+                    updated_entries.append(new_entry)
+                else:
+                    updated_entries.append(entry)
+            except Exception:
+                continue
+        pack_entries = updated_entries
+
     try:
         if context_variables and hasattr(context_variables, "set"):
             try:
@@ -676,6 +712,8 @@ async def mermaid_sequence_diagram(
                 context_variables.set("mermaid_diagram_ready", True)  # type: ignore[attr-defined]
                 context_variables.set("action_plan", workflow_with_diagram)  # type: ignore[attr-defined]
                 context_variables.set("mermaid_diagram_metadata", diagram_metadata)  # type: ignore[attr-defined]
+                if pack_entries:
+                    context_variables.set("action_plan_workflows", copy.deepcopy(pack_entries))  # type: ignore[attr-defined]
             except Exception as ctx_err:
                 wf_logger.debug("Failed to persist mermaid diagram context: %s", ctx_err)
 
@@ -704,6 +742,19 @@ async def mermaid_sequence_diagram(
         if legend:
             ui_payload["legend"] = legend
         ui_payload["mermaid"] = diagram_metadata
+        valid_pack_entries = (
+            [entry for entry in pack_entries if isinstance(entry, dict) and isinstance(entry.get("workflow"), dict)]
+            if pack_entries
+            else []
+        )
+        if len(valid_pack_entries) > 1:
+            ui_payload["workflows"] = valid_pack_entries
+            ui_payload["active_workflow_name"] = payload_workflow_name
+            ui_payload["has_children"] = True
+            ui_payload["children_count"] = len(valid_pack_entries)
+            if pack_name:
+                ui_payload["pack_name"] = pack_name
+                ui_payload["pack"] = {"name": pack_name, "count": len(valid_pack_entries)}
 
         try:
             response = await use_ui_tool(

@@ -199,7 +199,7 @@ if update_agent_state_before_reply:
 
 ```
 1. PatternAgent calls pattern_selection tool
-   └─► Stores in context_variables.data["PatternSelection"] = {"selected_pattern": 8, ...}
+   └─► Stores in context_variables.data["PatternSelection"] = {"is_multi_workflow": false, "pack_name": "...", "workflows": [{"pattern_id": 8, ...}]}
 
 2. GroupChat transitions to WorkflowStrategyAgent
 
@@ -209,14 +209,17 @@ if update_agent_state_before_reply:
    │   └─► inject_workflow_strategy_guidance(agent, messages) executes ← PATTERN INJECTION
    │       │
    │       ├─► _get_pattern_from_context(agent)
-   │       │   └─► Retrieves pattern ID 8 from context_variables.data
+   │       │   └─► Resolves pattern ID 8 from PatternSelection.workflows[current_workflow_index]
    │       │
-   │       ├─► _load_pattern_taxonomy()
-   │       │   └─► Loads workflows/Generator/ag2_pattern_taxonomy.json
+   │       ├─► _load_pattern_guidance_text()
+   │       │   └─► Loads docs/pattern_guidance.md
    │       │
-   │       ├─► Finds pattern 8 (Star Hub-and-Spoke)
+   │       ├─► _load_pattern_example_str()
+   │       │   └─► Loads docs/pattern_examples/pattern_8_star.yaml (WorkflowStrategy section)
    │       │
-   │       ├─► Builds guidance string with phase structure
+   │       ├─► Maps pattern 8 → Star (Hub-and-Spoke)
+   │       │
+   │       ├─► Builds guidance string with module topology + JSON example
    │       │
    │       └─► agent.system_message += guidance  ← SYSTEM MESSAGE UPDATED
    │

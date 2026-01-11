@@ -6,6 +6,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { FiMessageCircle, FiSend, FiX } from 'react-icons/fi';
+import config from '../../config';
 
 /**
  * 🎯 GENERIC USER INPUT REQUEST COMPONENT
@@ -27,7 +28,7 @@ const UserInputRequest = ({ payload, onResponse, onCancel, submitInputRequest })
     input_request_id,
     prompt = "Input required:",
     password = false,
-    // chat_id, enterprise_id, timestamp - unused for now
+    // chat_id, app_id, timestamp - unused for now
   } = payload || {};
 
   const handleSubmit = useCallback(async (e) => {
@@ -54,7 +55,9 @@ const UserInputRequest = ({ payload, onResponse, onCancel, submitInputRequest })
       
       // Fall back to REST if WebSocket failed or unavailable
       if (!success) {
-        const response = await fetch('http://localhost:8000/api/user-input/submit', {
+        const baseUrlRaw = typeof config?.get === 'function' ? config.get('api.baseUrl') : undefined;
+        const baseUrl = typeof baseUrlRaw === 'string' && baseUrlRaw.endsWith('/') ? baseUrlRaw.slice(0, -1) : (baseUrlRaw || 'http://localhost:8000');
+        const response = await fetch(`${baseUrl}/api/user-input/submit`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

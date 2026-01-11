@@ -132,6 +132,7 @@ const UIToolEventRenderer = React.memo(({ uiToolEvent, onResponse, submitInputRe
 const ModernChatInterface = ({ 
   messages, 
   onSendMessage, 
+  onUploadFile,
   loading, 
   onAgentAction, 
   onArtifactToggle,
@@ -139,6 +140,7 @@ const ModernChatInterface = ({
   connectionStatus,
   transportType,
   workflowName,
+  workflowHasChildren = false,
   conversationMode = 'workflow',
   onConversationModeChange,
   onStartGeneralChat,
@@ -150,22 +152,23 @@ const ModernChatInterface = ({
   startupMode,
   initialMessageToUser,
   onRetry,
-  tokensExhausted = false,
   submitInputRequest,
   onBrandClick, // Optional callback when brand/logo clicked
   isOnChatPage = true // Whether we're on the primary chat page (not discovery/workflows)
 }) => {
   const [message, setMessage] = useState('');
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
   const chatEndRef = useRef(null);
   const chatContainerRef = useRef(null);
+  const fileInputRef = useRef(null);
   const [buttonText, setButtonText] = useState('SEND');
   const [isScrolledUp, setIsScrolledUp] = useState(false);
   const navigate = useNavigate();
   const formattedWorkflowName = workflowName ? workflowName.charAt(0).toUpperCase() + workflowName.slice(1) : null;
   const conversationSubtitle = conversationMode === 'ask'
-    ? (generalChatSummary?.label || 'Ask Mozaiks Session')
-    : (formattedWorkflowName || 'AI-Powered Workflow');
+    ? (generalChatSummary?.label || 'Ask Session')
+    : `${formattedWorkflowName || 'AI-Powered Workflow'}${workflowHasChildren ? ' · Pack' : ''}`;
   // When not on chat page: only show 🧠 (ask→workflow toggle), hide 🤖 (workflow→ask toggle)
   const showModeToggle = isOnChatPage || conversationMode === 'ask';
   const showAskHistoryToggle = showAskHistoryMenu && typeof onAskHistoryToggle === 'function';
@@ -174,7 +177,7 @@ const ModernChatInterface = ({
     ? 'Return to chat'
     : conversationMode === 'ask'
       ? 'Switch to Workflow Mode'
-      : 'Switch to Ask Mozaiks';
+      : 'Switch to Ask Mode';
   // const renderCountRef = useRef(0); // For debugging renders if needed
   
   // Optional debug: enable to trace renders
@@ -200,7 +203,7 @@ const ModernChatInterface = ({
     }
   };
   
-  const { enterpriseId } = useParams();
+  const { appId } = useParams();
 
   // Agent action handler - used by UI tool event responses
   const handleAgentAction = (action) => {
@@ -213,22 +216,40 @@ const ModernChatInterface = ({
   const onSubmitClick = (event) => {
     event.preventDefault();
     if (buttonText === 'NEXT') {
-      const currentEnterpriseId = enterpriseId || process.env.REACT_APP_DEFAULT_ENTERPRISE_ID;
-      navigate("/chat/blueprint/" + currentEnterpriseId);
+      const currentAppId = appId || process.env.REACT_APP_DEFAULT_APP_ID || process.env.REACT_APP_DEFAULT_app_id;
+      navigate("/chat/blueprint/" + currentAppId);
       return;
     }
     
     if (message.trim() === '') return;
     
-    // Don't allow sending if tokens are exhausted
-    if (tokensExhausted) {
-      alert('💰 Unable to send message - your tokens have been exhausted. Please upgrade your plan to continue.');
-      return;
-    }
-    
     const newMessage = { "sender": "user", "content": message };
     onSendMessage(newMessage);
     setMessage('');
+  };
+
+  const onUploadClick = () => {
+    if (!onUploadFile) return;
+    if (buttonText === 'NEXT') return;
+    try {
+      fileInputRef.current?.click?.();
+    } catch {}
+  };
+
+  const onFileSelected = async (event) => {
+    try {
+      const file = event?.target?.files?.[0];
+      if (!file || !onUploadFile) return;
+
+      setIsUploadingFile(true);
+      await onUploadFile(file);
+    } finally {
+      setIsUploadingFile(false);
+      try {
+        // allow re-selecting the same file
+        if (event?.target) event.target.value = '';
+      } catch {}
+    }
   };
 
   const handleKeyPress = (event) => {
@@ -270,7 +291,7 @@ const ModernChatInterface = ({
     console.log('🔘 [CHAT_INTERFACE] showModeToggle:', showModeToggle);
     
     // When NOT on chat page and switching from Ask → Workflow:
-    // Immediately switch mode (which triggers oldest workflow fetch), navigation will follow
+    // Immediately switch mode (which triggers most recent workflow fetch), navigation will follow
     if (!isOnChatPage && conversationMode === 'ask') {
       console.log('🚀 [CHAT_INTERFACE] Off chat page in Ask mode → switching to workflow mode (will navigate)');
       onConversationModeChange('workflow');
@@ -313,8 +334,10 @@ const ModernChatInterface = ({
       const isEmptyContent = !(chat.content && String(chat.content).trim().length);
       const hasStructured = !!(chat.structuredOutput && typeof chat.structuredOutput === 'object');
       const hasUITool = !!chat.uiToolEvent;
+      const hasAttachment = !!chat.attachment;
+      const hasTrace = Array.isArray(chat.trace) && chat.trace.length > 0;
       const isSystem = chat.isTokenMessage || chat.isWarningMessage;
-      if (isEmptyContent && !chat.isThinking && !hasStructured && !hasUITool && !isSystem) {
+      if (isEmptyContent && !chat.isThinking && !hasStructured && !hasUITool && !hasAttachment && !hasTrace && !isSystem) {
         return null;
       }
 
@@ -349,6 +372,8 @@ const ModernChatInterface = ({
             structuredOutput={chat.structuredOutput}
             structuredSchema={chat.structuredSchema}
             isThinking={chat.isThinking}
+            attachment={chat.attachment}
+            trace={chat.trace}
           />
 
           {chat.uiToolEvent && (
@@ -512,6 +537,14 @@ const ModernChatInterface = ({
   {/* Fixed Transmission Input Area - Never moves */}
             <div className={`flex-shrink-0 p-2 sm:p-2.5 md:p-3 border-t border-[rgba(var(--color-primary-light-rgb),0.2)] bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.05)] to-[rgba(var(--color-secondary-rgb),0.05)] backdrop-blur-xl shadow-lg transition-all duration-500 transmission-input-tight rounded-b-[inherit]`}>
         <form onSubmit={onSubmitClick} className="flex gap-2 sm:gap-3 flex-row items-center">
+          {/* Hidden file input (Upload) */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            onChange={onFileSelected}
+          />
+
           <div className="flex-1 relative min-w-0 flex items-center">
             <textarea
               value={message}
@@ -524,8 +557,8 @@ const ModernChatInterface = ({
               }}
               onKeyPress={handleKeyPress}
               onFocus={() => setHasUserInteracted(true)}
-              placeholder={tokensExhausted ? "Tokens exhausted - please upgrade..." : "Transmit your message..."}
-              disabled={buttonText === 'NEXT' || tokensExhausted}
+              placeholder={"Transmit your message..."}
+              disabled={buttonText === 'NEXT'}
               rows={1}
               className={`w-full bg-white/10 border-2 rounded-lg sm:rounded-xl px-2.5 sm:px-3 py-1.5 sm:py-2 mt-0.5 text-[var(--color-text-primary)] text-slate-100 text-sm sm:text-base placeholder:text-[var(--color-text-secondary)] placeholder:text-slate-400 placeholder:text-xs sm:placeholder:text-sm focus:outline-none resize-none transition-all duration-300 transmission-typing-font min-h-[36px] sm:min-h-[40px] max-h-[120px] my-scroll1 backdrop-blur-sm ${
                 hasUserInteracted
@@ -543,20 +576,37 @@ const ModernChatInterface = ({
           </div>
 
           {/* Command Button - icon-only for simplicity */}
+          {onUploadFile && (
+            <button
+              type="button"
+              onClick={onUploadClick}
+              disabled={buttonText === 'NEXT' || isUploadingFile}
+              className={
+                `px-2 py-1.5 rounded-md transition-all duration-300 min-w-[36px] sm:min-w-[40px] w-auto h-8 sm:h-9 oxanium font-bold text-[13px] flex items-center justify-center letter-spacing-wide border-2 flex-shrink-0 ` +
+                `${(buttonText === 'NEXT' || isUploadingFile)
+                  ? 'bg-gray-800/50 text-gray-400 cursor-not-allowed border-gray-600/50'
+                  : 'bg-white/10 text-white border-[rgba(var(--color-primary-light-rgb),0.35)] hover:border-[rgba(var(--color-primary-light-rgb),0.7)] hover:bg-white/15 active:scale-95'
+                }`
+              }
+              title={isUploadingFile ? 'Uploading…' : 'Upload a file'}
+              aria-label={isUploadingFile ? 'Uploading file' : 'Upload file'}
+            >
+              <span className="text-base sm:text-lg" aria-hidden="true">📎</span>
+            </button>
+          )}
+
           <button
             type="submit"
-            disabled={!message.trim() || tokensExhausted}
+            disabled={!message.trim()}
             className={`
               px-2 py-1.5 rounded-md transition-all duration-300 min-w-[36px] sm:min-w-[40px] w-auto h-8 sm:h-9 oxanium font-bold text-[13px] flex items-center justify-center letter-spacing-wide border-2 flex-shrink-0
-              ${(!message.trim() || tokensExhausted)
+              ${(!message.trim())
                 ? 'bg-gray-800/50 text-gray-400 cursor-not-allowed border-gray-600/50'
                 : 'bg-gradient-to-r from-[rgba(var(--color-primary-rgb),0.8)] to-[rgba(var(--color-primary-dark-rgb),0.8)] hover:from-[rgba(var(--color-primary-light-rgb),0.9)] hover:to-[rgba(var(--color-primary-light-rgb),0.9)] text-white border-[rgba(var(--color-primary-light-rgb),0.5)] hover:border-[rgba(var(--color-primary-light-rgb),0.7)] shadow-sm [box-shadow:0_0_0_rgba(var(--color-primary-rgb),0.1)] hover:[box-shadow:0_0_0_rgba(var(--color-primary-light-rgb),0.2)] active:scale-95'
               }
             `}
           >
-            {tokensExhausted ? (
-              <span className="text-base sm:text-lg" aria-label="Upgrade required" role="img">💰</span>
-            ) : buttonText === 'NEXT' ? (
+            {buttonText === 'NEXT' ? (
               <span className="text-base sm:text-lg" aria-label="Launch" role="img">🚀</span>
             ) : (
               <span className="text-base sm:text-lg" aria-label="Transmit" role="img">📡</span>

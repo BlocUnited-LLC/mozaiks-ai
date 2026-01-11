@@ -297,7 +297,7 @@ export LOGS_AS_JSON=false
   "logger": "workflow_execution",
   "message": "Agent turn completed",
   "chat_id": "550e8400-e29b-41d4-a716-446655440000",
-  "enterprise_id": "507f1f77bcf86cd799439011",
+  "app_id": "507f1f77bcf86cd799439011",
   "agent_name": "ArchitectAgent",
   "duration_ms": 1234
 }
@@ -637,7 +637,7 @@ def get_free_trial_config() -> Dict[str, Any]:
 # In persistence_manager.py
 cfg = get_free_trial_config()
 if not cfg.get("enabled", False):
-    await self.debit_tokens(user_id, enterprise_id, total_tokens, reason="realtime_usage")
+    await self.debit_tokens(user_id, app_id, total_tokens, reason="realtime_usage")
 ```
 
 ---
@@ -659,7 +659,7 @@ export CHAT_START_IDEMPOTENCY_SEC=30
 ```
 
 **Behavior:**
-- If same `(enterprise_id, user_id, workflow_name)` requested within window, returns existing `chat_id`
+- If same `(app_id, user_id, workflow_name)` requested within window, returns existing `chat_id`
 - Prevents race conditions from double-click or network retries
 
 **Code Reference:**
