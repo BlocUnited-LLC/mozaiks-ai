@@ -1,0 +1,60 @@
+name: Sync to Open Source Repo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove proprietary code (keep underscore-prefixed)
+        run: |
+          # ============================================
+          # CONVENTION: _ prefix = PUBLIC, else PRIVATE
+          # ============================================
+          
+          # workflows/ - Keep only _prefixed folders
+          find workflows -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec rm -rf {} + 2>/dev/null || true
+          
+          # ChatUI/src/workflows/ - Keep only _prefixed folders + index.js
+          find ChatUI/src/workflows -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec rm -rf {} + 2>/dev/null || true
+          
+          # tests/ - Keep core/, _prefixed, and markdown files
+          find tests -mindepth 1 -maxdepth 1 ! -name 'core' ! -name '_*' ! -name '*.md' ! -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+          
+          # docs/ - Remove internal/proprietary docs
+          rm -rf docs/source_of_truth 2>/dev/null || true
+          rm -rf docs/workflows 2>/dev/null || true
+          rm -rf docs/chatui 2>/dev/null || true
+          rm -rf docs/operations 2>/dev/null || true
+          rm -rf docs/_archive 2>/dev/null || true
+          
+          echo "✅ Proprietary code removed"
+          echo ""
+          echo "📁 Remaining workflows:"
+          ls -la workflows/ 2>/dev/null || echo "  (none)"
+          echo ""
+          echo "📁 Remaining ChatUI workflows:"
+          ls -la ChatUI/src/workflows/ 2>/dev/null || echo "  (none)"
+          echo ""
+          echo "📁 Remaining tests:"
+          ls -la tests/ 2>/dev/null || echo "  (none)"
+
+      - name: Commit filtered state
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -m "Sync: Remove proprietary code" --allow-empty
+
+      - name: Push to public repo
+        run: |
+          git remote add public https://x-access-token:${{ secrets.PUBLIC_REPO_TOKEN }}@github.com/${{ vars.PUBLIC_REPO }}.git
+          git push public main --force
