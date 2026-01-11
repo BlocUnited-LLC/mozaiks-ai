@@ -37,6 +37,10 @@ jobs:
           rm -rf docs/operations 2>/dev/null || true
           rm -rf docs/_archive 2>/dev/null || true
           rm -f docs/KEY_VAULT_INTEGRATION.md 2>/dev/null || true
+
+          # .github/workflows/ - Do not sync workflow files to the public repo
+          # (GitHub blocks PATs without explicit workflow permission from creating/updating workflow files)
+          rm -rf .github/workflows 2>/dev/null || true
           
           echo "✅ Proprietary code removed"
           echo ""
