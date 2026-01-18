@@ -1,0 +1,83 @@
+structured_outputs:
+  models:
+    DownloadRequest:
+      type: model
+      fields:
+        confirmation_only:
+          type: bool
+          description: If true, show confirmation UI first and create files after
+            user confirms.
+          default: false
+        storage_backend:
+          type: str
+          description: Storage target ('none', 'local', 's3').
+          default: none
+        description:
+          type: union
+          variants:
+          - str
+          - 'null'
+          description: Optional description text (reserved).
+    DownloadRequestCall:
+      type: model
+      fields:
+        DownloadRequest:
+          type: DownloadRequest
+          description: Download configuration.
+        agent_message:
+          type: str
+          description: Concise message (<=140 chars) shown in download UI.
+    ValidationErrorEntry:
+      type: model
+      fields:
+        file:
+          type: str
+          description: Relative file path.
+        line:
+          type: int
+          description: 1-based line number.
+        column:
+          type: union
+          variants:
+          - int
+          - 'null'
+          description: 1-based column number when available.
+        message:
+          type: str
+          description: Error message.
+    AppValidation:
+      type: model
+      fields:
+        validation_passed:
+          type: bool
+          description: Whether the app built and ran successfully.
+        preview_url:
+          type: union
+          variants:
+          - str
+          - 'null'
+          description: Preview URL to the running app (if started).
+        errors:
+          type: list
+          items: ValidationErrorEntry
+          description: Build/test errors with file/line info.
+        fix_suggestions:
+          type: optional_list
+          items: str
+          description: Suggested fixes for any errors.
+        next_action:
+          type: literal
+          values:
+          - export
+          - fix_and_retry
+          - manual_review
+          description: Recommended next step.
+    AppValidationOutput:
+      type: model
+      fields:
+        AppValidation:
+          type: AppValidation
+          description: Sandbox validation results.
+  registry:
+    AppValidationAgent: AppValidationOutput
+    DownloadAgent: DownloadRequestCall

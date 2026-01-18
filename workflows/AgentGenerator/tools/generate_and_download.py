@@ -13,11 +13,11 @@ import shutil
 import time
 import zipfile
 from logs.logging_config import get_workflow_logger
-from core.data.persistence.persistence_manager import AG2PersistenceManager
-from core.artifacts.attachments import inject_bundle_attachments_into_payload
+from mozaiksai.core.data.persistence.persistence_manager import AG2PersistenceManager
+from mozaiksai.core.artifacts.attachments import inject_bundle_attachments_into_payload
 from workflows._shared.agent_endpoints import resolve_agent_api_url, resolve_agent_websocket_url
 from workflows._shared.workflow_exports import record_workflow_export
-from core.workflow.outputs.ui_tools import use_ui_tool, UIToolError
+from mozaiksai.core.workflow.outputs.ui_tools import use_ui_tool, UIToolError
 from workflows.AgentGenerator.tools.workflow_converter import create_workflow_files
 from workflows.AgentGenerator.tools.export_agent_workflow import export_agent_workflow_to_github
 

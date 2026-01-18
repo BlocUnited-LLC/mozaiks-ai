@@ -20,17 +20,17 @@ from bson.objectid import ObjectId
 from uuid import uuid4
 import autogen
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
-from core.core_config import get_mongo_client
-from core.transport.simple_transport import SimpleTransport
-from core.workflow.workflow_manager import workflow_status_summary, get_workflow_transport, get_workflow_tools
-from core.data.persistence.persistence_manager import AG2PersistenceManager
-from core.data.themes.theme_manager import ThemeManager, ThemeResponse
-from core.multitenant import build_app_scope_filter, coalesce_app_id
-from core.artifacts.attachments import handle_chat_upload
-from core.runtime.extensions import mount_declared_routers, start_declared_services, stop_services
+from mozaiksai.core.core_config import get_mongo_client
+from mozaiksai.core.transport.simple_transport import SimpleTransport
+from mozaiksai.core.workflow.workflow_manager import workflow_status_summary, get_workflow_transport, get_workflow_tools
+from mozaiksai.core.data.persistence.persistence_manager import AG2PersistenceManager
+from mozaiksai.core.data.themes.theme_manager import ThemeManager, ThemeResponse
+from mozaiksai.core.multitenant import build_app_scope_filter, coalesce_app_id
+from mozaiksai.core.artifacts.attachments import handle_chat_upload
+from mozaiksai.core.runtime.extensions import mount_declared_routers, start_declared_services, stop_services
 
 # JWT Authentication dependencies
-from core.auth import (
+from mozaiksai.core.auth import (
     UserPrincipal,
     ServicePrincipal,
     require_user_scope,
@@ -38,9 +38,15 @@ from core.auth import (
     require_internal,
     optional_user,
     authenticate_websocket_with_path_user,
+    authenticate_websocket_with_path_binding,
     verify_user_owns_resource,
     get_auth_config,
     WS_CLOSE_POLICY_VIOLATION,
+)
+from mozaiksai.core.auth.dependencies import (
+    validate_path_app_id,
+    validate_path_chat_id,
+    require_execution_token,
 )
 
 # Initialize persistence manager (handles lean chat session storage internally)
@@ -181,12 +187,12 @@ def _patch_autogen_file_logger() -> None:
 _patch_autogen_file_logger()
 
 # Initialize unified event dispatcher
-from core.events import get_event_dispatcher
+from mozaiksai.core.events import get_event_dispatcher
 event_dispatcher = get_event_dispatcher()
 wf_logger.info("🎯 Unified Event Dispatcher initialized")
 
-from core.observability.performance_manager import get_performance_manager
-from core.workflow.orchestration_patterns import get_run_registry_summary
+from mozaiksai.core.observability.performance_manager import get_performance_manager
+from mozaiksai.core.workflow.orchestration_patterns import get_run_registry_summary
 
 # FastAPI app
 app = FastAPI(
@@ -214,6 +220,70 @@ else:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Principal Header Enforcement Middleware
+# ---------------------------------------------------------------------------
+# When MozaiksCore is the gateway, it attaches x-app-id and x-user-id headers
+# derived from the authenticated context. This middleware validates that those
+# headers (if present) match path parameters for defense-in-depth.
+
+_ENFORCE_PRINCIPAL_HEADERS = os.getenv("ENFORCE_PRINCIPAL_HEADERS", "false").lower() in ("true", "1", "yes")
+
+@app.middleware("http")
+async def principal_header_middleware(request: Request, call_next):
+    """Validate x-app-id / x-user-id headers match path params when present."""
+    if not _ENFORCE_PRINCIPAL_HEADERS:
+        return await call_next(request)
+    
+    # Extract headers (MozaiksCore gateway sets these)
+    hdr_app_id = request.headers.get("x-app-id") or request.headers.get("x-mozaiks-app-id")
+    hdr_user_id = request.headers.get("x-user-id") or request.headers.get("x-mozaiks-user-id")
+    
+    # Skip validation if headers not present (local dev / direct access)
+    if not hdr_app_id and not hdr_user_id:
+        return await call_next(request)
+    
+    # Extract path params (FastAPI resolves these after routing; we need to parse manually)
+    path = request.url.path
+    path_params = request.path_params  # Empty at middleware stage
+    
+    # Parse app_id from common path patterns: /api/chats/{app_id}/... or /ws/{workflow}/{app_id}/...
+    import re
+    app_id_match = re.search(r'/api/chats/([^/]+)/', path) or re.search(r'/ws/[^/]+/([^/]+)/', path)
+    user_id_match = re.search(r'/ws/[^/]+/[^/]+/[^/]+/([^/]+)', path)
+    
+    path_app_id = app_id_match.group(1) if app_id_match else None
+    path_user_id = user_id_match.group(1) if user_id_match else None
+    
+    # Enforce app_id match
+    if hdr_app_id and path_app_id:
+        if str(hdr_app_id).strip() != str(path_app_id).strip():
+            from fastapi.responses import JSONResponse
+            wf_logger.warning(
+                "PRINCIPAL_HEADER_MISMATCH",
+                extra={"header_app_id": hdr_app_id, "path_app_id": path_app_id}
+            )
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "x-app-id header does not match path app_id"}
+            )
+    
+    # Enforce user_id match
+    if hdr_user_id and path_user_id:
+        if str(hdr_user_id).strip() != str(path_user_id).strip():
+            from fastapi.responses import JSONResponse
+            wf_logger.warning(
+                "PRINCIPAL_HEADER_MISMATCH",
+                extra={"header_user_id": hdr_user_id, "path_user_id": path_user_id}
+            )
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "x-user-id header does not match path user_id"}
+            )
+    
+    return await call_next(request)
 
 # Mount workflow-declared routers (plugins)
 try:
@@ -469,7 +539,7 @@ async def startup():
     try:
         clear_tools = _env_bool("CLEAR_TOOL_CACHE_ON_START", default=(env != "production"))
         if clear_tools:
-            from core.workflow.agents.tools import clear_tool_cache
+            from mozaiksai.core.workflow.agents.tools import clear_tool_cache
             cleared = clear_tool_cache()  # clear all workflow tool modules
             wf_logger.info(f"🧹 TOOL_CACHE: Cleared {cleared} cached tool modules on startup")
         else:
@@ -480,7 +550,7 @@ async def startup():
     # Optional: clear LLM caches on startup (default OFF)
     try:
         if _env_bool("CLEAR_LLM_CACHES_ON_START", default=False):
-            from core.workflow.validation.llm_config import clear_llm_caches
+            from mozaiksai.core.workflow.validation.llm_config import clear_llm_caches
             clear_llm_caches(raw=True, built=True)
             wf_logger.info("🧹 LLM_CACHE: Cleared raw and built llm_config caches on startup")
         # Log effective TTL to aid ops visibility
@@ -834,7 +904,7 @@ async def health_check(
 # ============================================================================
 
 async def _validate_pack_prereqs(*, app_id: str, user_id: str, workflow_name: str) -> Tuple[bool, Optional[str]]:
-    from core.workflow.pack.gating import validate_pack_prereqs
+    from mozaiksai.core.workflow.pack.gating import validate_pack_prereqs
 
     ok, reason = await validate_pack_prereqs(
         app_id=app_id,
@@ -939,6 +1009,9 @@ async def start_chat(
     This prevents multiple empty ChatSessions docs when the frontend issues parallel start attempts during
     React StrictMode double-mount or network retries.
     """
+    # Enforce app_id binding: token app_id must match path app_id
+    validate_path_app_id(principal, app_id)
+    
     IDEMPOTENCY_WINDOW_SEC = int(os.getenv("CHAT_START_IDEMPOTENCY_SEC", "15"))
     now = datetime.now(UTC)
     reuse_cutoff = now - timedelta(seconds=IDEMPOTENCY_WINDOW_SEC)
@@ -1023,7 +1096,7 @@ async def start_chat(
 
                 # Auto-attach a journey instance when starting the first step of a journey.
                 try:
-                    from core.workflow.pack.config import load_pack_config, infer_auto_journey_for_start
+                    from mozaiksai.core.workflow.pack.config import load_pack_config, infer_auto_journey_for_start
 
                     pack = load_pack_config()
                     journey = infer_auto_journey_for_start(pack, workflow_name) if pack else None
@@ -1156,7 +1229,7 @@ async def list_user_sessions(
     user_id = _validate_user_id_against_principal(principal, path_user_id=user_id)
     
     try:
-        from core.data.models import WorkflowStatus
+        from mozaiksai.core.data.models import WorkflowStatus
         coll = await _chat_coll()
         
         # Find all IN_PROGRESS sessions for this user
@@ -1203,7 +1276,7 @@ async def get_most_recent_workflow_session(
     user_id = _validate_user_id_against_principal(principal, path_user_id=user_id)
     
     try:
-        from core.data.models import WorkflowStatus
+        from mozaiksai.core.data.models import WorkflowStatus
         coll = await _chat_coll()
 
         # Find all IN_PROGRESS sessions, sorted by last_updated_at descending (most recent first)
@@ -1364,7 +1437,7 @@ async def chat_meta(
     try:
         has_children = False
         try:
-            from core.workflow.pack.graph import workflow_has_nested_chats
+            from mozaiksai.core.workflow.pack.graph import workflow_has_nested_chats
 
             has_children = workflow_has_nested_chats(workflow_name)
         except Exception:
@@ -1386,7 +1459,7 @@ async def chat_meta(
         artifact_instance_id = None
         artifact_state = None
         try:
-            from core.workflow import session_manager
+            from mozaiksai.core.workflow import session_manager
             workflow_session = await session_manager.get_workflow_session(chat_id, app_id)
             if workflow_session and workflow_session.get("artifact_instance_id"):
                 artifact_instance_id = workflow_session["artifact_instance_id"]
@@ -1431,8 +1504,13 @@ async def websocket_endpoint(
         await websocket.close(code=1000, reason="Transport service not available")
         return
 
-    # Authenticate WebSocket connection and validate path user_id matches JWT
-    ws_user = await authenticate_websocket_with_path_user(websocket, user_id)
+    # Authenticate WebSocket connection and validate path bindings (user_id, app_id, chat_id)
+    ws_user = await authenticate_websocket_with_path_binding(
+        websocket, 
+        path_user_id=user_id,
+        path_app_id=app_id,
+        path_chat_id=chat_id,
+    )
     if ws_user is None:
         return  # Connection already closed with 1008
     
@@ -1459,7 +1537,7 @@ async def websocket_endpoint(
         wf_logger.debug(f"WS_CHAT_OWNERSHIP_CHECK_SKIPPED: {ownership_err}")
 
     # Register this WebSocket connection in session registry
-    from core.transport.session_registry import session_registry
+    from mozaiksai.core.transport.session_registry import session_registry
     ws_id = id(websocket)
 
     # Validate workflow prerequisites early (fail-closed) so we don't create/buffer state
@@ -1554,7 +1632,7 @@ async def websocket_endpoint(
     # Auto-start AgentDriven workflows once the socket is accepted and registered
     async def _auto_start_if_needed():
         try:
-            from core.workflow.workflow_manager import workflow_manager
+            from mozaiksai.core.workflow.workflow_manager import workflow_manager
             cfg = workflow_manager.get_config(workflow_name)
             if cfg.get("startup_mode", "AgentDriven") == "AgentDriven":
                 local_transport = simple_transport
@@ -1587,7 +1665,7 @@ async def websocket_endpoint(
     try:
         has_children = False
         try:
-            from core.workflow.pack.graph import workflow_has_nested_chats
+            from mozaiksai.core.workflow.pack.graph import workflow_has_nested_chats
 
             has_children = workflow_has_nested_chats(workflow_name)
         except Exception:
@@ -1846,7 +1924,7 @@ async def get_workflow_ui_tools_manifest(
 ):
     """Get UI tools manifest with schemas for frontend development."""
     try:
-        from core.workflow.workflow_manager import workflow_manager
+        from mozaiksai.core.workflow.workflow_manager import workflow_manager
         ui_tools = workflow_manager.get_workflow_tools(workflow_name)
         manifest = []
         for rec in ui_tools:
@@ -1879,7 +1957,7 @@ async def get_workflows(
 ):
     """Get all workflows for frontend (alias for /api/workflows/config)"""
     try:
-        from core.workflow.workflow_manager import workflow_manager
+        from mozaiksai.core.workflow.workflow_manager import workflow_manager
 
         workflow_names = list(workflow_manager.get_all_workflow_names())
 
@@ -1887,7 +1965,7 @@ async def get_workflows(
         # default workflow aligns with prerequisites (e.g., ValueEngine first).
         ordered_names: list[str] = []
         try:
-            from core.workflow.pack.config import load_pack_config
+            from mozaiksai.core.workflow.pack.config import load_pack_config
 
             pack = load_pack_config()
             journeys = pack.get("journeys") if isinstance(pack, dict) else None
@@ -1934,13 +2012,13 @@ async def get_workflow_configs(
 ):
     """Get all workflow configurations for frontend"""
     try:
-        from core.workflow.workflow_manager import workflow_manager
+        from mozaiksai.core.workflow.workflow_manager import workflow_manager
 
         workflow_names = list(workflow_manager.get_all_workflow_names())
 
         ordered_names: list[str] = []
         try:
-            from core.workflow.pack.config import load_pack_config
+            from mozaiksai.core.workflow.pack.config import load_pack_config
 
             pack = load_pack_config()
             journeys = pack.get("journeys") if isinstance(pack, dict) else None
@@ -2000,7 +2078,7 @@ async def get_available_workflows(
         Dict with 'workflows' array containing workflow metadata and availability status
     """
     try:
-        from core.workflow.pack.gating import list_workflow_availability
+        from mozaiksai.core.workflow.pack.gating import list_workflow_availability
 
         if principal.user_id == "anonymous":
             resolved_user_id = str(user_id or "").strip()

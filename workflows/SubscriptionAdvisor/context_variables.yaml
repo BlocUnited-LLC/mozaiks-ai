@@ -1,0 +1,58 @@
+# Context Variables for SubscriptionAdvisor Workflow
+
+context_variables:
+  # Input parameters (set by trigger)
+  scope:
+    type: string
+    description: "Advisory scope: 'platform' or 'app'"
+    default: null
+    
+  target_id:
+    type: string
+    description: "user_id for platform scope, app_id for app scope"
+    default: null
+    
+  include_alternatives:
+    type: boolean
+    description: "Include alternative pricing models in app advisories"
+    default: true
+    
+  date_range:
+    type: object
+    description: "Date range for KPI collection"
+    default:
+      start: null  # Defaults to 30 days ago
+      end: null    # Defaults to now
+      
+  # Runtime state (set by agents)
+  collected_kpis:
+    type: object
+    description: "KPIs collected by KPICollector agent"
+    default: null
+    
+  current_tier:
+    type: string
+    description: "User's current subscription tier (platform scope)"
+    default: null
+    
+  app_metadata:
+    type: object
+    description: "App description and market context (app scope)"
+    default: null
+    
+  # Output state
+  advisory_payload:
+    type: object
+    description: "Generated advisory document"
+    default: null
+    
+  advisory_id:
+    type: string
+    description: "UUID of the generated advisory"
+    default: null
+    
+  delivery_status:
+    type: string
+    description: "Webhook delivery status"
+    enum: ["pending", "delivered", "failed"]
+    default: "pending"

@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Annotated, List
 from datetime import datetime, timezone
 
 from logs.logging_config import get_workflow_logger
-from core.workflow.outputs.ui_tools import use_ui_tool, UIToolError
+from mozaiksai.core.workflow.outputs.ui_tools import use_ui_tool, UIToolError
 
 
 __all__ = ["request_api_key", "request_api_keys_bundle"]
@@ -40,7 +40,7 @@ async def _persist_api_key_metadata(
         key_length = 0
 
     try:
-        from core.core_config import get_mongo_client
+        from mozaiksai.core.core_config import get_mongo_client
         from bson import ObjectId
     except Exception as import_err:  # pragma: no cover - defensive guard
         wf_logger.warning(f"⚠️ Database client import failed (non-critical): {import_err}")

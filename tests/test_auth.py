@@ -85,7 +85,7 @@ class TestAuthConfig:
 
     def test_default_config(self, monkeypatch):
         """Test default Mozaiks CIAM config."""
-        from core.auth.config import get_auth_config, clear_auth_config_cache
+        from mozaiksai.core.auth.config import get_auth_config, clear_auth_config_cache
 
         # Clear any cached config
         clear_auth_config_cache()
@@ -108,7 +108,7 @@ class TestAuthConfig:
 
     def test_custom_config(self, monkeypatch):
         """Test custom config from env vars."""
-        from core.auth.config import get_auth_config, clear_auth_config_cache
+        from mozaiksai.core.auth.config import get_auth_config, clear_auth_config_cache
 
         clear_auth_config_cache()
 
@@ -142,10 +142,10 @@ class TestJWTValidator:
     @pytest.fixture(autouse=True)
     def setup_config(self, monkeypatch):
         """Setup test config with explicit overrides (skip discovery)."""
-        from core.auth.config import clear_auth_config_cache
-        from core.auth.jwt_validator import reset_jwt_validator
-        from core.auth.jwks import reset_jwks_client
-        from core.auth.discovery import reset_discovery_client
+        from mozaiksai.core.auth.config import clear_auth_config_cache
+        from mozaiksai.core.auth.jwt_validator import reset_jwt_validator
+        from mozaiksai.core.auth.jwks import reset_jwks_client
+        from mozaiksai.core.auth.discovery import reset_discovery_client
 
         clear_auth_config_cache()
         reset_jwt_validator()
@@ -169,8 +169,8 @@ class TestJWTValidator:
     @pytest.mark.asyncio
     async def test_valid_token(self, monkeypatch):
         """Test validation of a valid token."""
-        from core.auth.jwt_validator import get_jwt_validator
-        from core.auth.jwks import get_jwks_client
+        from mozaiksai.core.auth.jwt_validator import get_jwt_validator
+        from mozaiksai.core.auth.jwks import get_jwks_client
 
         # Mock JWKS client
         jwks_client = get_jwks_client()
@@ -192,8 +192,8 @@ class TestJWTValidator:
     @pytest.mark.asyncio
     async def test_expired_token(self, monkeypatch):
         """Test rejection of expired token."""
-        from core.auth.jwt_validator import get_jwt_validator, AuthError
-        from core.auth.jwks import get_jwks_client
+        from mozaiksai.core.auth.jwt_validator import get_jwt_validator, AuthError
+        from mozaiksai.core.auth.jwks import get_jwks_client
 
         jwks_client = get_jwks_client()
         async def mock_get_key(kid):
@@ -211,8 +211,8 @@ class TestJWTValidator:
     @pytest.mark.asyncio
     async def test_wrong_issuer(self, monkeypatch):
         """Test rejection of wrong issuer."""
-        from core.auth.jwt_validator import get_jwt_validator, AuthError
-        from core.auth.jwks import get_jwks_client
+        from mozaiksai.core.auth.jwt_validator import get_jwt_validator, AuthError
+        from mozaiksai.core.auth.jwks import get_jwks_client
 
         jwks_client = get_jwks_client()
         async def mock_get_key(kid):
@@ -229,8 +229,8 @@ class TestJWTValidator:
     @pytest.mark.asyncio
     async def test_wrong_audience(self, monkeypatch):
         """Test rejection of wrong audience."""
-        from core.auth.jwt_validator import get_jwt_validator, AuthError
-        from core.auth.jwks import get_jwks_client
+        from mozaiksai.core.auth.jwt_validator import get_jwt_validator, AuthError
+        from mozaiksai.core.auth.jwks import get_jwks_client
 
         jwks_client = get_jwks_client()
         async def mock_get_key(kid):
@@ -247,8 +247,8 @@ class TestJWTValidator:
     @pytest.mark.asyncio
     async def test_missing_scope(self, monkeypatch):
         """Test rejection when required scope is missing."""
-        from core.auth.jwt_validator import get_jwt_validator, AuthError
-        from core.auth.jwks import get_jwks_client
+        from mozaiksai.core.auth.jwt_validator import get_jwt_validator, AuthError
+        from mozaiksai.core.auth.jwks import get_jwks_client
 
         jwks_client = get_jwks_client()
         async def mock_get_key(kid):
@@ -273,9 +273,9 @@ class TestHTTPDependencies:
 
     @pytest.fixture(autouse=True)
     def setup(self, monkeypatch):
-        from core.auth.config import clear_auth_config_cache
-        from core.auth.jwt_validator import reset_jwt_validator
-        from core.auth.jwks import reset_jwks_client
+        from mozaiksai.core.auth.config import clear_auth_config_cache
+        from mozaiksai.core.auth.jwt_validator import reset_jwt_validator
+        from mozaiksai.core.auth.jwks import reset_jwks_client
 
         clear_auth_config_cache()
         reset_jwt_validator()
@@ -290,7 +290,7 @@ class TestHTTPDependencies:
     @pytest.mark.asyncio
     async def test_require_user_auth_disabled(self, monkeypatch):
         """Test require_user with auth disabled returns anonymous."""
-        from core.auth.dependencies import require_user
+        from mozaiksai.core.auth.dependencies import require_user
 
         monkeypatch.setenv("AUTH_ENABLED", "false")
 
@@ -307,7 +307,7 @@ class TestHTTPDependencies:
     @pytest.mark.asyncio
     async def test_require_user_missing_token(self, monkeypatch):
         """Test require_user raises 401 when token is missing."""
-        from core.auth.dependencies import require_user
+        from mozaiksai.core.auth.dependencies import require_user
         from fastapi import HTTPException
 
         monkeypatch.setenv("AUTH_ENABLED", "true")
@@ -330,9 +330,9 @@ class TestWebSocketAuth:
 
     @pytest.fixture(autouse=True)
     def setup(self, monkeypatch):
-        from core.auth.config import clear_auth_config_cache
-        from core.auth.jwt_validator import reset_jwt_validator
-        from core.auth.jwks import reset_jwks_client
+        from mozaiksai.core.auth.config import clear_auth_config_cache
+        from mozaiksai.core.auth.jwt_validator import reset_jwt_validator
+        from mozaiksai.core.auth.jwks import reset_jwks_client
 
         clear_auth_config_cache()
         reset_jwt_validator()
@@ -347,7 +347,7 @@ class TestWebSocketAuth:
     @pytest.mark.asyncio
     async def test_authenticate_websocket_auth_disabled(self, monkeypatch):
         """Test WebSocket auth with auth disabled returns anonymous."""
-        from core.auth.websocket_auth import authenticate_websocket
+        from mozaiksai.core.auth.websocket_auth import authenticate_websocket
 
         monkeypatch.setenv("AUTH_ENABLED", "false")
 
@@ -364,7 +364,7 @@ class TestWebSocketAuth:
     @pytest.mark.asyncio
     async def test_authenticate_websocket_missing_token(self, monkeypatch):
         """Test WebSocket auth closes connection when token is missing."""
-        from core.auth.websocket_auth import authenticate_websocket, WS_CLOSE_AUTH_REQUIRED
+        from mozaiksai.core.auth.websocket_auth import authenticate_websocket, WS_CLOSE_AUTH_REQUIRED
 
         monkeypatch.setenv("AUTH_ENABLED", "true")
 
@@ -383,7 +383,7 @@ class TestWebSocketAuth:
     @pytest.mark.asyncio
     async def test_verify_user_owns_resource(self):
         """Test resource ownership verification."""
-        from core.auth.websocket_auth import verify_user_owns_resource
+        from mozaiksai.core.auth.websocket_auth import verify_user_owns_resource
 
         assert verify_user_owns_resource("user-123", "user-123") is True
         assert verify_user_owns_resource("user-123", "user-456") is False

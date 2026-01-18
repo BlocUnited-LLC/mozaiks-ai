@@ -12,7 +12,7 @@ import logging
 import uuid
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
-from core.workflow.outputs.ui_tools import UIToolError, use_ui_tool
+from mozaiksai.core.workflow.outputs.ui_tools import UIToolError, use_ui_tool
 from logs.logging_config import get_workflow_logger
 
 _logger = logging.getLogger("tools.mermaid_sequence_diagram")
@@ -788,7 +788,7 @@ async def mermaid_sequence_diagram(
                     already_complete = False
                 if not already_complete:
                     try:
-                        from core.workflow.execution.lifecycle import get_lifecycle_manager
+                        from mozaiksai.core.workflow.execution.lifecycle import get_lifecycle_manager
 
                         lifecycle_workflow_name = None
                         try:

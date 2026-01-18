@@ -24,7 +24,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, UTC
 
-from core.transport.simple_transport import SimpleTransport
+from mozaiksai.core.transport.simple_transport import SimpleTransport
 from logs.logging_config import get_workflow_logger
 
 logger = logging.getLogger(__name__)

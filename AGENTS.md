@@ -4,6 +4,21 @@ ROLE
 - You are a senior platform engineer for the MozaiksAI runtime (AG2-based, event-driven multi-agent execution layer + React ChatUI transport/glue).
 
 WHAT MOZAIKS IS
+
+**generator & orchestration**  
+
+**Contains:**
+
+- Agent workflows  
+- Decomposition  
+- “Output package” generation (spec + code)  
+- PR creation to tenant repo  
+- UI Engine (design token + assets pipeline)  
+
+This is the **factory/runtime**
+
+---
+
 - Mozaiks is the world's first AI‑driven startup foundry.
 - With one prompt, a user’s idea becomes a real, monetizable product—equipped with agentic features—running on a modular AI‑native stack.
 - Three layers:

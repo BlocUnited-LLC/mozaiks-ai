@@ -1,0 +1,77 @@
+# Machine-friendly schema for the Pattern Context Contract
+# Minimal YAML schema; generator workflows can load this file to validate inputs.
+
+type: object
+required:
+  - app_id
+  - user_id
+  - workflows
+properties:
+  user_request:
+    type: string
+    description: The original natural language request
+  app_id:
+    type: string
+  user_id:
+    type: string
+  intent:
+    type: string
+  constraints:
+    type: object
+    description: Budget, deadline, and other constraints
+  desired_output:
+    type: string
+    description: e.g., declarative_workflow_pack, single_workflow
+  interaction_model_preferences:
+    type: string
+    enum: [user_driven, backend_only, scheduled]
+  lifecycle_requirements:
+    type: object
+  hitl_requirements:
+    type: [string, object]
+  security_constraints:
+    type: object
+  scalability_constraints:
+    type: object
+  existing_systems:
+    type: array
+    items:
+      type: object
+      properties:
+        name: { type: string }
+        type: { type: string }
+        endpoint: { type: string }
+  sample_data:
+    type: [object, string]
+    description: Small payload or URL to example dataset
+  success_criteria:
+    type: object
+  audience:
+    type: string
+  prior_artifacts:
+    type: array
+    items:
+      type: string
+  seed_context:
+    type: object
+  pack_hint:
+    type: boolean
+  max_workflows:
+    type: integer
+  workflows:
+    type: object
+    description: Mapping of workflow name to minimal runtime status. Producers should supply chat_id and status; generators may enrich with description and dependencies.
+    additionalProperties:
+      type: object
+      properties:
+        chat_id:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [not_started, in_progress, completed]
+        description:
+          type: string
+        dependencies:
+          type: array
+          items:
+            type: string

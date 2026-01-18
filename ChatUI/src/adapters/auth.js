@@ -19,12 +19,27 @@ export class AuthAdapter {
   onAuthStateChange(callback) {
     throw new Error('onAuthStateChange must be implemented');
   }
+  
+  /**
+   * Get the current access token for API calls.
+   * This is used by api.js to add Authorization headers.
+   */
+  getAccessToken() {
+    return null;
+  }
 }
 
-// Mock Authentication Adapter (for standalone mode)
+// Mock Authentication Adapter (for development/standalone mode ONLY)
+// WARNING: This adapter should NEVER be used in production!
 export class MockAuthAdapter extends AuthAdapter {
   constructor() {
     super();
+    // Check if we're in production and warn/disable
+    if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'production') {
+      console.error('[SECURITY ERROR] MockAuthAdapter cannot be used in production!');
+      this.disabled = true;
+    }
+    
     this.currentUser = {
       id: '56132',
       username: 'John Doe',
@@ -36,10 +51,13 @@ export class MockAuthAdapter extends AuthAdapter {
   }
 
   async getCurrentUser() {
+    if (this.disabled) return null;
     return this.currentUser;
   }
 
   async login(credentials) {
+    if (this.disabled) return { success: false, error: 'Mock auth disabled in production' };
+    
     // Mock login
     console.log('Mock login with:', credentials);
     this.notifyAuthStateChange(this.currentUser);
@@ -47,19 +65,28 @@ export class MockAuthAdapter extends AuthAdapter {
   }
 
   async logout() {
+    if (this.disabled) return { success: false };
+    
     this.currentUser = null;
     this.notifyAuthStateChange(null);
     return { success: true };
   }
 
   async refreshToken() {
+    if (this.disabled) return { success: false };
     return { success: true, token: 'mock-token' };
+  }
+  
+  getAccessToken() {
+    if (this.disabled) return null;
+    // Mock adapter returns a placeholder token for development
+    return 'mock-development-token';
   }
 
   onAuthStateChange(callback) {
     this.authStateCallbacks.push(callback);
     // Immediately call with current state
-    callback(this.currentUser);
+    callback(this.disabled ? null : this.currentUser);
   }
 
   notifyAuthStateChange(user) {
@@ -67,12 +94,15 @@ export class MockAuthAdapter extends AuthAdapter {
   }
 
   setUser(user) {
+    if (this.disabled) return;
     this.currentUser = user;
     this.notifyAuthStateChange(user);
   }
 }
 
 // External Authentication Adapter (for embedded mode)
+// Use this when ChatUI is embedded in MozaiksCore or another host app
+// that provides authentication context
 export class ExternalAuthAdapter extends AuthAdapter {
   constructor(externalAuthProvider) {
     super();
@@ -94,6 +124,14 @@ export class ExternalAuthAdapter extends AuthAdapter {
   async refreshToken() {
     return this.externalAuth.refreshToken();
   }
+  
+  getAccessToken() {
+    // Delegate to external auth provider
+    if (typeof this.externalAuth.getAccessToken === 'function') {
+      return this.externalAuth.getAccessToken();
+    }
+    return null;
+  }
 
   onAuthStateChange(callback) {
     return this.externalAuth.onAuthStateChange(callback);
@@ -113,7 +151,7 @@ export class TokenAuthAdapter extends AuthAdapter {
   async getCurrentUser() {
     if (this.currentUser) return this.currentUser;
 
-    const token = localStorage.getItem(this.tokenKey);
+    const token = this.getAccessToken();
     if (!token) return null;
 
     try {
@@ -164,6 +202,11 @@ export class TokenAuthAdapter extends AuthAdapter {
   async refreshToken() {
     // Implementation depends on your refresh token strategy
     return { success: true };
+  }
+  
+  getAccessToken() {
+    // Get token from localStorage
+    return localStorage.getItem(this.tokenKey);
   }
 
   onAuthStateChange(callback) {

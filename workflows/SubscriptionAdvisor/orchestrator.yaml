@@ -1,0 +1,72 @@
+# SubscriptionAdvisor Workflow
+# Advisory-only: observes and recommends; Control-Plane decides and enforces.
+# Constraints: read_only=true, no_external_mutations=true, tenant_scoped=true
+
+workflow_name: SubscriptionAdvisor
+max_turns: 10
+human_in_the_loop: false
+startup_mode: AgentDriven
+orchestration_pattern: Pipeline
+initial_message_to_user: null
+initial_message: >
+  SubscriptionAdvisor workflow initiated. KPICollector, begin gathering telemetry
+  for the specified scope and target.
+initial_agent: KPICollector
+
+# Workflow metadata
+metadata:
+  version: "1.0.0"
+  description: "Advisory-only workflow for subscription recommendations"
+  author: "MozaiksAI Platform"
+  constraints:
+    read_only: true
+    no_external_mutations: true
+    tenant_scoped: true
+
+# Trigger configuration (consumed by scheduler/runtime)
+triggers:
+  - type: scheduled
+    cron: "0 6 * * 1"  # Weekly on Monday at 6 AM UTC
+    description: "Weekly subscription health check"
+  - type: manual
+    endpoint: "/api/advisory/trigger"
+    description: "On-demand advisory generation"
+  - type: threshold
+    condition: "token_usage_percent > 0.8"
+    description: "Auto-trigger when token usage exceeds 80%"
+
+# Input schema
+inputs:
+  scope:
+    type: string
+    enum: ["platform", "app"]
+    required: true
+    description: "Advisory scope: platform (World A) or app (World B)"
+  target_id:
+    type: string
+    required: true
+    description: "user_id for platform scope, app_id for app scope"
+  include_alternatives:
+    type: boolean
+    default: true
+    description: "Include alternative pricing models in app advisories"
+  date_range:
+    type: object
+    properties:
+      start:
+        type: string
+        format: date
+      end:
+        type: string
+        format: date
+    description: "Optional date range for KPI collection (defaults to last 30 days)"
+
+# Output schema
+outputs:
+  advisory_payload:
+    type: object
+    description: "MozaiksPlatformAdvisory or AppSubscriptionAdvisor JSON"
+  delivery_target:
+    type: string
+    enum: ["control_plane_webhook", "user_notification", "dashboard"]
+    description: "Where the advisory should be delivered"

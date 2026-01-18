@@ -10,12 +10,12 @@ class TestStructuredOutputs:
 
     def test_structured_outputs_import(self):
         """Verify structured outputs module can be imported."""
-        from core.workflow.outputs import structured
+        from mozaiksai.core.workflow.outputs import structured
         assert structured is not None
 
     def test_pydantic_model_generator(self):
         """Verify Pydantic model can be generated from schema."""
-        from core.workflow.outputs.structured import create_pydantic_model_from_schema
+        from mozaiksai.core.workflow.outputs.structured import create_pydantic_model_from_schema
         
         schema = {
             "name": "TestModel",

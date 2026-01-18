@@ -2,6 +2,65 @@
 import workflowConfig from '../config/workflowConfig';
 import config from '../config';
 
+/**
+ * Get the current access token from storage.
+ * In production, this should be provided by the auth adapter.
+ * Falls back to localStorage for development/standalone mode.
+ */
+function getAccessToken() {
+  // Try window.mozaiksAuth first (set by embedding app)
+  if (typeof window !== 'undefined' && window.mozaiksAuth?.getAccessToken) {
+    return window.mozaiksAuth.getAccessToken();
+  }
+  
+  // Fallback to localStorage (development/standalone)
+  if (typeof localStorage !== 'undefined') {
+    return localStorage.getItem('chatui_token') || localStorage.getItem('access_token');
+  }
+  
+  return null;
+}
+
+/**
+ * Build headers with Authorization if token available.
+ * Always includes Content-Type for JSON requests.
+ */
+function buildAuthHeaders(contentType = 'application/json') {
+  const headers = {};
+  
+  if (contentType) {
+    headers['Content-Type'] = contentType;
+  }
+  
+  const token = getAccessToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  
+  return headers;
+}
+
+/**
+ * Wrapper for fetch with automatic auth header injection.
+ */
+async function authFetch(url, options = {}) {
+  const token = getAccessToken();
+  
+  const headers = {
+    ...options.headers,
+  };
+  
+  // Add Authorization header if token present and not already set
+  if (token && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  
+  return fetch(url, {
+    ...options,
+    headers,
+  });
+}
+
 export class ApiAdapter {
   constructor(adapterConfig = null) {
     this.config = adapterConfig || {};
@@ -72,7 +131,7 @@ export class ApiAdapter {
     const url = `${baseUrl}/api/general_chats/list/${encodeURIComponent(appId)}/${encodeURIComponent(userId)}?${searchParams.toString()}`;
 
     try {
-      const response = await fetch(url);
+      const response = await authFetch(url);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
@@ -97,7 +156,7 @@ export class ApiAdapter {
     const url = `${baseUrl}/api/general_chats/transcript/${encodeURIComponent(appId)}/${encodeURIComponent(generalChatId)}?${searchParams.toString()}`;
 
     try {
-      const response = await fetch(url);
+      const response = await authFetch(url);
       if (response.status === 404) {
         return null;
       }
@@ -164,9 +223,10 @@ export class WebSocketApiAdapter extends ApiAdapter {
     }
     
     try {
-      const response = await fetch(`http://localhost:8000/chat/${appId}/${chatId}/${userId}/input`, {
+      const baseUrl = this.getHttpBaseUrl();
+      const response = await authFetch(`${baseUrl}/chat/${appId}/${chatId}/${userId}/input`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildAuthHeaders(),
         body: JSON.stringify({ 
           message, 
           workflow_name: actualworkflowname,
@@ -206,8 +266,17 @@ export class WebSocketApiAdapter extends ApiAdapter {
     }
     
     const wsBase = this.getWsBaseUrl();
-    const wsUrl = `${wsBase}/ws/${actualworkflowname}/${appId}/${chatId}/${userId}`;
-    console.log(`🔗 Connecting to WebSocket: ${wsUrl}`);
+    
+    // Build WebSocket URL with access_token query param for authentication
+    let wsUrl = `${wsBase}/ws/${actualworkflowname}/${appId}/${chatId}/${userId}`;
+    const token = getAccessToken();
+    if (token) {
+      wsUrl += `?access_token=${encodeURIComponent(token)}`;
+      console.log(`🔗 Connecting to WebSocket with auth token: ${wsUrl.split('?')[0]}?access_token=***`);
+    } else {
+      console.log(`🔗 Connecting to WebSocket (no auth token): ${wsUrl}`);
+    }
+    
     const socket = new WebSocket(wsUrl);
     
     // F7/F8: Sequence tracking and resume capability (strict canonical key)
@@ -314,7 +383,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
   async getMessageHistory(appId, userId) {
     try {
       const baseUrl = this.getHttpBaseUrl();
-      const response = await fetch(
+      const response = await authFetch(
         `${baseUrl}/api/chat/history/${encodeURIComponent(appId)}/${encodeURIComponent(userId)}`
       );
       if (response.ok) {
@@ -342,7 +411,8 @@ export class WebSocketApiAdapter extends ApiAdapter {
 
     try {
       const baseUrl = this.getHttpBaseUrl();
-      const response = await fetch(`${baseUrl}/api/chat/upload`, {
+      // Note: Don't set Content-Type for FormData - browser sets it with boundary
+      const response = await authFetch(`${baseUrl}/api/chat/upload`, {
         method: 'POST',
         body: formData
       });
@@ -360,7 +430,7 @@ export class WebSocketApiAdapter extends ApiAdapter {
   async getWorkflowTransport(workflowname) {
     try {
       const baseUrl = this.getHttpBaseUrl();
-      const response = await fetch(`${baseUrl}/api/workflows/${encodeURIComponent(workflowname)}/transport`);
+      const response = await authFetch(`${baseUrl}/api/workflows/${encodeURIComponent(workflowname)}/transport`);
       if (response.ok) {
         return await response.json();
       }
@@ -389,11 +459,11 @@ export class WebSocketApiAdapter extends ApiAdapter {
       }
       this._startingChat = true;
       const baseUrl = this.getHttpBaseUrl();
-      const response = await fetch(`${baseUrl}/api/chats/${encodeURIComponent(appId)}/${encodeURIComponent(actualworkflowname)}/start`, {
+      const response = await authFetch(`${baseUrl}/api/chats/${encodeURIComponent(appId)}/${encodeURIComponent(actualworkflowname)}/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId, client_request_id: clientRequestId })
-        , ...fetchOpts
+        headers: buildAuthHeaders(),
+        body: JSON.stringify({ user_id: userId, client_request_id: clientRequestId }),
+        ...fetchOpts
       });
 
       if (response.ok) {
@@ -437,9 +507,9 @@ export class RestApiAdapter extends ApiAdapter {
   async sendMessage(message, appId, userId) {
     try {
       const baseUrl = this.getHttpBaseUrl();
-      const response = await fetch(`${baseUrl}/api/chat/send`, {
+      const response = await authFetch(`${baseUrl}/api/chat/send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildAuthHeaders(),
         body: JSON.stringify({ message, appId, userId })
       });
 
@@ -463,9 +533,10 @@ export class RestApiAdapter extends ApiAdapter {
     }
     
     try {
-      const response = await fetch(`http://localhost:8000/chat/${appId}/${chatId}/${userId}/input`, {
+      const baseUrl = this.getHttpBaseUrl();
+      const response = await authFetch(`${baseUrl}/chat/${appId}/${chatId}/${userId}/input`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildAuthHeaders(),
         body: JSON.stringify({ 
           message, 
           workflow_name: actualworkflowname,
@@ -497,7 +568,7 @@ export class RestApiAdapter extends ApiAdapter {
   async getMessageHistory(appId, userId) {
     try {
       const baseUrl = this.getHttpBaseUrl();
-      const response = await fetch(
+      const response = await authFetch(
         `${baseUrl}/api/chat/messages/${encodeURIComponent(appId)}/${encodeURIComponent(userId)}`
       );
       if (response.ok) {
@@ -522,7 +593,8 @@ export class RestApiAdapter extends ApiAdapter {
 
     try {
       const baseUrl = this.getHttpBaseUrl();
-      const response = await fetch(
+      // Note: Don't set Content-Type for FormData - browser sets it with boundary
+      const response = await authFetch(
         `${baseUrl}/api/chat/upload/${encodeURIComponent(appId)}/${encodeURIComponent(userId)}`,
         {
           method: 'POST',
@@ -543,7 +615,7 @@ export class RestApiAdapter extends ApiAdapter {
   async getWorkflowTransport(workflowname) {
     try {
       const baseUrl = this.getHttpBaseUrl();
-      const response = await fetch(`${baseUrl}/api/workflows/${encodeURIComponent(workflowname)}/transport`);
+      const response = await authFetch(`${baseUrl}/api/workflows/${encodeURIComponent(workflowname)}/transport`);
       if (response.ok) {
         return await response.json();
       }
@@ -564,11 +636,11 @@ export class RestApiAdapter extends ApiAdapter {
       }
       this._startingChat = true;
       const baseUrl = this.getHttpBaseUrl();
-      const response = await fetch(`${baseUrl}/api/chats/${encodeURIComponent(appId)}/${encodeURIComponent(actualworkflowname)}/start`, {
+      const response = await authFetch(`${baseUrl}/api/chats/${encodeURIComponent(appId)}/${encodeURIComponent(actualworkflowname)}/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId, client_request_id: clientRequestId })
-        , ...fetchOpts
+        headers: buildAuthHeaders(),
+        body: JSON.stringify({ user_id: userId, client_request_id: clientRequestId }),
+        ...fetchOpts
       });
 
       if (response.ok) {

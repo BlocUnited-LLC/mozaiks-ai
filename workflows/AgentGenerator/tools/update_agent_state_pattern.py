@@ -5,7 +5,7 @@ from typing import Any, List, Dict, Optional
 
 import yaml
 
-from core.workflow.agents.factory import _compose_prompt_sections
+from mozaiksai.core.workflow.agents.factory import _compose_prompt_sections
 
 logger = logging.getLogger(__name__)
 

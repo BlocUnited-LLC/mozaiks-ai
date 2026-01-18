@@ -8,7 +8,7 @@ def test_general_agent_loader_returns_none_on_missing_module(monkeypatch: pytest
     monkeypatch.setenv("MOZAIKS_GENERAL_AGENT_MODULE", "this.module.does.not.exist")
     monkeypatch.setenv("MOZAIKS_GENERAL_AGENT_FACTORY", "get_ask_mozaiks_service")
 
-    from core.transport import simple_transport
+    from mozaiksai.core.transport import simple_transport
 
     assert simple_transport._load_general_agent_service() is None
 
@@ -22,7 +22,7 @@ def test_general_agent_loader_returns_none_on_noncallable_factory(monkeypatch: p
     monkeypatch.setenv("MOZAIKS_GENERAL_AGENT_MODULE", module_name)
     monkeypatch.setenv("MOZAIKS_GENERAL_AGENT_FACTORY", "get_ask_mozaiks_service")
 
-    from core.transport import simple_transport
+    from mozaiksai.core.transport import simple_transport
 
     assert simple_transport._load_general_agent_service() is None
 
@@ -30,7 +30,7 @@ def test_general_agent_loader_returns_none_on_noncallable_factory(monkeypatch: p
 def test_platform_build_lifecycle_loader_returns_nones_on_missing_module(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MOZAIKS_PLATFORM_BUILD_LIFECYCLE_MODULE", "this.module.does.not.exist")
 
-    from core.transport import simple_transport
+    from mozaiksai.core.transport import simple_transport
 
     lifecycle = simple_transport._load_platform_build_lifecycle()
     assert set(lifecycle.keys()) == {

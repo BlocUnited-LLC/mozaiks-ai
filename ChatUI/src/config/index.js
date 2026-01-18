@@ -5,6 +5,18 @@ class ChatUIConfig {
   }
 
   loadConfig() {
+    // Detect production vs development
+    const isProduction = process.env.NODE_ENV === 'production';
+    
+    // Default auth mode: 'token' in production, 'mock' in development
+    // Mock mode should NEVER be used in production - it bypasses authentication
+    const defaultAuthMode = isProduction ? 'token' : (process.env.REACT_APP_AUTH_MODE || 'mock');
+    
+    // Warn if mock mode is explicitly set in production
+    if (isProduction && process.env.REACT_APP_AUTH_MODE === 'mock') {
+      console.error('[SECURITY WARNING] Mock auth mode is disabled in production builds');
+    }
+    
     const defaultConfig = {
       // API Configuration
       api: {
@@ -14,7 +26,9 @@ class ChatUIConfig {
 
       // Auth Configuration
       auth: {
-        mode: process.env.REACT_APP_AUTH_MODE || 'mock', // 'mock' or 'token'
+        // In production: always use 'token' mode (enforced)
+        // In development: use 'mock' for convenience unless overridden
+        mode: isProduction ? 'token' : defaultAuthMode,
       },
 
       // UI Configuration
