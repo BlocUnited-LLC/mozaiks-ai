@@ -1,2 +1,0 @@
-# AppGenerator tools package
-

@@ -1,5 +1,0 @@
-hooks:
-- hook_type: update_agent_state
-  hook_agent: all
-  filename: hook_code_context.py
-  function: inject_code_context
